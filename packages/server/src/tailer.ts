@@ -3960,14 +3960,64 @@ export function createTailer(deps: TailerDeps): Tailer {
     }
   }
 
+  // Where a BOUND transcript went when it stopped being where we left it. Two candidates, in this
+  // order: the file's DETERMINISTIC home under this project's own log dir, then any sibling bucket
+  // holding the same `<id>.jsonl`. The home is checked first and separately because
+  // `discoverTranscriptDir` will never name it — for that function's original caller `logDir` is the
+  // one place already known to have missed — and a transcript can move back as easily as away.
+  // Identity is the pinned FILE NAME, which is exactly the rule `samePinnedTranscript` already uses to
+  // accept a cached entry across a directory rename. Undefined = nothing anywhere else claims this id.
+  function relocatedTranscript(state: TailState): string | undefined {
+    const name = `${state.nativeSessionId}.jsonl`
+    const home = join(logDir, name)
+    if (home !== state.path && existsSync(home)) return home
+    const dir = discoverTranscriptDir(logDir, state.nativeSessionId)
+    if (!dir) return undefined
+    const moved = join(dir, name)
+    return moved === state.path ? undefined : moved
+  }
+
   // READ-SIDE TRANSCRIPT DISCOVERY for a registered row whose bound file hasn't produced bytes yet.
-  // Byte-identical for the healthy path: once a file binds (offset > 0) this is a no-op, and a
-  // within-grace missing file is left to the ordinary spinning-up spinner. ONLY a past-grace missing
-  // file engages discovery (throttled); on a hit it re-links + caches the drifted transcript and replays
-  // it silently (primed=false → the next prime adopts it with no notify), on a miss it flags the row
-  // no-transcript (a boot failure) so the board shows a degraded state, not an eternal spinner.
+  // Byte-identical for the healthy path: a file that is still where we bound it is one stat and out,
+  // and a within-grace missing file is left to the ordinary spinning-up spinner. ONLY a past-grace
+  // missing file engages discovery (throttled); on a hit it re-links + caches the drifted transcript
+  // and replays it silently (primed=false → the next prime adopts it with no notify), on a miss it
+  // flags the row no-transcript (a boot failure) so the board shows a degraded state, not an eternal
+  // spinner.
   function resolveTranscript(state: TailState, row: SessionRow, nowMs: number): boolean {
-    if (state.offset > 0) return true // already bound to a real transcript — the normal path, untouched
+    // A BOUND state (offset > 0) is a no-op for as long as its file is still THERE — one `existsSync`,
+    // ahead of the one `consume` is about to pay anyway. What must not be a no-op is the file having
+    // VANISHED: a worker that changes its cwd (EnterWorktree, and any other move of the checkout under
+    // a live session) makes Claude Code re-bucket the session transcript into the log dir for the NEW
+    // cwd, and the path we bound then names nothing, forever. Nothing downstream can tell — `consume`
+    // skips a missing file silently — so the fold simply STOPS, frozen at whatever turn it last held.
+    // Frozen mid-turn that is `in-flight`, which `computeTurn` derives from a trailing user record with
+    // no backstop behind it at all, so the board reads "Thinking…" for a thread that is doing nothing
+    // and can never be talked out of it. Measured 2026-08-21 on three live threads at once (their
+    // `tail_state` rows pinned to three deleted worktree buckets, one frozen 12 h, one reading
+    // "Thinking… 1h 1m" against a transcript that had been at rest the whole time).
+    //
+    // This branch used to be `if (state.offset > 0) return true`, which is what made the `strandedDir`
+    // recovery below — written for precisely this "the checkout moved" case — reachable only for a
+    // session that had NEVER bound a file.
+    if (state.offset > 0) {
+      if (existsSync(state.path)) return true
+      if (nowMs < state.nextDiscoverMs) return true
+      state.nextDiscoverMs = nowMs + DISCOVER_RETRY_MS
+      const moved = relocatedTranscript(state)
+      // Nothing claims the id anywhere: the transcript is genuinely gone (deleted, or a log dir the
+      // sweep cannot see). Leave the binding exactly as it is and look again on the next throttle —
+      // a bound row must never be flagged `noTranscript`, which means "the worker never wrote one" and
+      // cards the thread as a boot failure. This one demonstrably did write one.
+      if (!moved) return true
+      state.path = moved
+      // The SAME file, moved — its bytes below our cursor are the ones we already folded, so the fold
+      // RESUMES at the cursor rather than replaying, and `primed` stays true because this is a
+      // continuation and not a fresh adoption (the turn-done that has been owed since the relocation
+      // fires normally off the bytes we were locked out of). A file too short to hold that history
+      // cannot be it; `consume`'s own truncation path re-reads such a file from the top, unchanged.
+      return true
+    }
     // Presence alone isn't enough: a worker that creates `<id>.jsonl` then crashes before writing a
     // single record leaves a permanent 0-byte file. Treat empty-or-missing alike so a touched-but-never-
     // written transcript can't silently defeat the crash-net (found in review). A stat failure → size 0.

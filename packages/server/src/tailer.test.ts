@@ -2875,6 +2875,70 @@ test("tailer: a genuinely missing transcript still degrades — the sibling swee
   assert.equal(t.get(slug)?.noTranscript, true, "no transcript in ANY bucket is still a boot failure")
 })
 
+// THE ONE THAT SHOWS "Thinking…" FOREVER. Discovery used to be gated behind `state.offset > 0` — it
+// only ran for a session that had NEVER bound a file — so the sibling-bucket recovery above, written
+// for exactly this "the checkout moved" case, could not help a session that moved AFTER binding. And
+// a worker moves its own checkout routinely: `EnterWorktree` changes the cwd, and Claude Code
+// re-buckets the live session's transcript into the log dir for the new one. From that instant the
+// bound path names nothing; `consume` skips a missing file silently, so the fold FREEZES at whatever
+// turn it last held, with no signal anywhere that it has stopped reading.
+//
+// Frozen mid-turn that reading is "in-flight", and `computeTurn` derives it from a trailing user
+// record with NO backstop behind it (unlike the 5s one for an unknown stop_reason), so the board sits
+// on "Thinking…" for a thread that has been at rest for hours and cannot be talked out of it.
+// Measured 2026-08-21 on three live threads at once — three `tail_state` rows pinned to three deleted
+// worktree buckets, one of them reading "Thinking… 1h 1m" against a transcript whose last record was
+// an `end_turn` from the moment the clock started.
+test("tailer: a transcript that moves AFTER binding (the worker changed its cwd) is re-found mid-turn", () => {
+  const h = harness()
+  const slug = "moved-under-a-live-session"
+  const sid = "relocated-mid-turn"
+  h.storage.upsertSession(row({ slug, session_id: sid }))
+  fixture(h.logDir, sid, [IN_FLIGHT, TOOL])
+  const t = makeTailer(h)
+
+  h.clock.ms = PAST_GRACE
+  t.tick()
+  assert.equal(t.get(slug)?.turn, "in-flight", "bound and mid tool_use — the healthy path, untouched")
+
+  // The worker enters a worktree: same session, same file, a different bucket — and the turn it was
+  // in the middle of finishes THERE, where the old binding can never see it.
+  const worktree = join(dirname(h.logDir), "-a-project--claude-worktrees-a-branch")
+  mkdirSync(worktree, { recursive: true })
+  fixture(worktree, sid, [IN_FLIGHT, TOOL, DONE])
+  rmSync(join(h.logDir, `${sid}.jsonl`))
+
+  h.clock.ms = PAST_GRACE + 1000
+  t.tick()
+  assert.equal(t.get(slug)?.turn, "idle", "the fold follows the file and reads the rest it slept through")
+  assert.equal(t.get(slug)?.lastAssistant, "all done")
+  // A bound row has demonstrably written a transcript, so it must never be flagged as one that never
+  // did: `noTranscript` is what degradeIfNoTranscript turns into runtime "exited" — a yellow [!] and a
+  // Retry — and a thread that merely moved is not a boot failure.
+  assert.equal(t.get(slug)?.noTranscript ?? false, false, "moved is not missing")
+})
+
+test("tailer: a bound transcript that vanishes with nowhere to go keeps its binding rather than degrading", () => {
+  // The other half of the branch above, and the reason it does not simply reuse the unbound path: a
+  // stat that fails on a file which is still there (a read racing a write, a bucket briefly gone) must
+  // cost nothing but a retry. Flagging `noTranscript` here would card a healthy thread "Stalled".
+  const h = harness()
+  const slug = "vanished-with-no-sibling"
+  const sid = "no-bucket-claims-this-one"
+  h.storage.upsertSession(row({ slug, session_id: sid }))
+  fixture(h.logDir, sid, [IN_FLIGHT, TOOL, DONE])
+  const t = makeTailer(h)
+  h.clock.ms = PAST_GRACE
+  t.tick()
+  assert.equal(t.get(slug)?.turn, "idle")
+
+  rmSync(join(h.logDir, `${sid}.jsonl`))
+  h.clock.ms = PAST_GRACE + 1000
+  t.tick()
+  assert.equal(t.get(slug)?.noTranscript ?? false, false, "a bound row is never a boot failure")
+  assert.equal(t.get(slug)?.turn, "idle", "and its last real derivation stands")
+})
+
 test("tailer: a replacement during transcript discovery cannot inherit or transiently expose the stale transcript", () => {
   const h = harness()
   const stale = row({ session_id: "owner-a", runtime_generation: 3 })
