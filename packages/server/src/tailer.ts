@@ -220,6 +220,12 @@ export interface SubAgentView {
   state: "running" | "stale" | "rested"
   subagentType?: string // the dispatch's input.subagent_type verbatim (e.g. "frizz:frizz-opus-high"); absent when unset
   id: string // the dispatch tool_use id — the drill-in drawer's stable handle to this exact child
+  // The RUNTIME agent id (SubAgentEntry.taskId — Claude's `agentId: <id>` from the launch ack), which is
+  // the handle the WORKER was shown and therefore the one it names in an ```awaiting fence. Carried onto
+  // the view for exactly the reason the shell view carries its own `taskId`: `liveWaitHandles` checks a
+  // fence's `agent:` line against these handles, and without this it could only match the tool_use id.
+  // Absent until the launch ack is parsed, and on a prose-only row that never reports one.
+  taskId?: string
   lastActivityAt?: string // ISO8601 of the child transcript's last append (its output-file mtime)
   // ---- provider-reported progress (broker Claude rows only; see applyRuntimeTasks) ----
   // "there's not really any indication of what they're up to aside from starts and stops" — this is
@@ -2684,6 +2690,7 @@ export function createTailer(deps: TailerDeps): Tailer {
         state: entryStale(e, nowMs) ? "stale" : "running",
         subagentType: e.subagentType,
         id: e.toolUseId,
+        ...(e.taskId ? { taskId: e.taskId } : {}),
         ...(lastActivityAt ? { lastActivityAt } : {}),
         ...(p?.activity ? { activity: p.activity } : {}),
         ...(p?.activityDetail ? { activityDetail: p.activityDetail } : {}),

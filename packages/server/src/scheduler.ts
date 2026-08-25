@@ -543,7 +543,18 @@ function liveActivityOf(
   const agents = new Set<string>()
   for (const a of tele.subAgents ?? []) {
     if (a.state !== "running") continue
-    for (const h of [a.id, a.label]) if (h) agents.add(h)
+    // `taskId` FIRST, exactly as for shells above, and it was missing here until 2026-08-25. It is the
+    // runtime agent id the worker was handed at dispatch ("agentId: …"), which is precisely what the
+    // worker contract tells it to name — "the runtime ids you were handed when you launched them",
+    // written for `shells:` and `agents:` alike. Omitting it made that instruction impossible to obey on
+    // the agent side, so an HONEST fence was refused as a lie.
+    //
+    // Measured on thread `ship-…-prd-8235` (2026-08-21 22:28:48Z): a fence naming
+    // `agent: ace66d48bb8984206` was bumped "NOT RUNNING" while the very same message listed that child
+    // six lines lower as still running under `agent: toolu_01P7Hv6JpA1UtK4SMcSfhuNx` — one sub-agent,
+    // two ids, one of them refused. The `shell:` line in that same fence was also a runtime id and it
+    // passed, which is the whole A/B: the two loops differed by this one element.
+    for (const h of [a.taskId, a.id, a.label]) if (h) agents.add(h)
   }
   return { shells, agents, timers: armedTimerIds, prs: registeredPrWatches }
 }

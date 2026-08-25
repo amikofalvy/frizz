@@ -152,7 +152,7 @@ test("own background work does both — it cards AND it leaves the queue", () =>
 // blocking call that starved its own notification, a timer written in the past. Each one left a thread
 // looking parked forever, and frizz said nothing.
 
-function parkHarness(hints: FenceView["hints"], opts: { shells?: any[]; restedAt?: string; body?: string; retired?: any[] } = {}) {
+function parkHarness(hints: FenceView["hints"], opts: { shells?: any[]; agents?: any[]; restedAt?: string; body?: string; retired?: any[] } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "frizz-park-"))
   const storage = createStorage(join(dir, "ui.db"))
   storage.setSetting("signoffNudge", "off") // isolate SOURCE 12 from the nudge
@@ -173,7 +173,7 @@ function parkHarness(hints: FenceView["hints"], opts: { shells?: any[]; restedAt
         turn: "idle",
         lastAssistantAt: restedAt,
         lastActivityAt: restedAt,
-        subAgents: [],
+        subAgents: opts.agents ?? [],
         bgShells: opts.shells ?? [],
         retiredShells: opts.retired ?? [],
         pendingQuestion: false,
@@ -239,6 +239,50 @@ test("a park whose every item is live is left alone", async () => {
   try {
     await h.s.tick()
     assert.deepEqual(h.queued(), [], "an honest park is not interrupted")
+  } finally { h.close() }
+})
+
+// A SUB-AGENT ANSWERS TO ITS RUNTIME ID TOO, and until 2026-08-25 it did not. `liveActivityOf` built the
+// shell set from [taskId, id, label] and the agent set from [id, label] — one element apart — while the
+// worker contract tells workers to name "the runtime ids you were handed when you launched them" for
+// `shells:` and `agents:` alike. So the honest agent fence was the one shape the grammar refused.
+//
+// The real case, thread `ship-…-prd-8235` (2026-08-21 22:28:48Z). The bump declared
+// `agent: ace66d48bb8984206` NOT RUNNING and then, six lines lower in the SAME message, listed that very
+// child as still running under `agent: toolu_01P7Hv6JpA1UtK4SMcSfhuNx`. One sub-agent, two ids, one of
+// them refused — and the `shell:` line in that same fence was also a runtime id and passed, which is the
+// A/B control that makes this a bug and not a policy.
+const LIVE_AGENT = {
+  label: "Decomposing the spec into spec.json",
+  startedAt: "2026-08-21T22:27:09.308Z",
+  state: "running" as const,
+  id: "toolu_01P7Hv6JpA1UtK4SMcSfhuNx",
+  taskId: "ace66d48bb8984206",
+}
+
+test("a park naming a live sub-agent by its RUNTIME id is honoured, not bumped", async () => {
+  for (const [what, value] of [
+    ["the runtime agent id", "ace66d48bb8984206"],
+    ["the dispatch tool_use id", "toolu_01P7Hv6JpA1UtK4SMcSfhuNx"],
+    ["the label", "Decomposing the spec into spec.json"],
+  ] as const) {
+    const h = parkHarness([{ kind: "agent", value }, { kind: "for", value: "2h" }], { agents: [LIVE_AGENT] })
+    try {
+      await h.s.tick()
+      assert.deepEqual(h.queued(), [], `a fence naming ${what} of a running child is an honest park`)
+    } finally { h.close() }
+  }
+})
+
+// The integrity check still has to FAIL OPEN — widening the handles must not make an agent name
+// unfalsifiable, or a typo becomes a way to disappear from the board.
+test("a park naming a sub-agent id that matches nothing live is still bumped", async () => {
+  const h = parkHarness([{ kind: "agent", value: "aDEADBEEF" }, { kind: "for", value: "2h" }], { agents: [LIVE_AGENT] })
+  try {
+    await h.s.tick()
+    const rows = h.queued()
+    assert.equal(rows.length, 1, "an agent id matching nothing is not a park")
+    assert.match(rows[0].message, /aDEADBEEF.*NOT RUNNING/s)
   } finally { h.close() }
 })
 

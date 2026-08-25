@@ -336,7 +336,11 @@ function liveWaitHandles(tele: SessionTelemetry | undefined): Set<string> {
   }
   for (const agent of tele?.subAgents ?? []) {
     if (!isDirectSubAgent(agent) || agent.state !== "running") continue
+    // THREE HANDLES HERE TOO, for the reason spelled out for shells above: `taskId` is the runtime agent
+    // id the worker was shown at dispatch, `id` the launch tool_use id. Held/queue must agree with the
+    // scheduler's own check, whose matching loop (liveActivityOf) carries the measured case for both.
     handles.add(agent.id)
+    if (agent.taskId) handles.add(agent.taskId)
     if (agent.label) handles.add(agent.label)
   }
   return handles
