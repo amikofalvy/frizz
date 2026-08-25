@@ -7,7 +7,7 @@ import type { Bus } from "./bus.ts"
 import { permMarkerPath, type Project } from "./project.ts"
 import { isBrokerClaudeRow, isHeadlessRow } from "./storage.ts"
 import type { Storage, SessionRow } from "./storage.ts"
-import { discoverTranscriptDir, discoverTranscriptId, DISCOVERY_GRACE_MS } from "./discover.ts"
+import { discoverTranscriptDir, discoverTranscriptId, mtimeOfNonEmpty, DISCOVERY_GRACE_MS } from "./discover.ts"
 import type { AgentBackend, FoldState, NormalizedEvent, NormalizedTail } from "./backend/types.ts"
 import { adoptionRuntimeBinding } from "./adoption-recovery.ts"
 import { normalizeObservedThreadModel, validateThreadProfile } from "./backend/thread-profiles.ts"
@@ -3960,21 +3960,31 @@ export function createTailer(deps: TailerDeps): Tailer {
     }
   }
 
-  // Where a BOUND transcript went when it stopped being where we left it. Two candidates, in this
-  // order: the file's DETERMINISTIC home under this project's own log dir, then any sibling bucket
-  // holding the same `<id>.jsonl`. The home is checked first and separately because
-  // `discoverTranscriptDir` will never name it — for that function's original caller `logDir` is the
-  // one place already known to have missed — and a transcript can move back as easily as away.
-  // Identity is the pinned FILE NAME, which is exactly the rule `samePinnedTranscript` already uses to
-  // accept a cached entry across a directory rename. Undefined = nothing anywhere else claims this id.
+  // Where a BOUND transcript went when it stopped being where we left it. Two candidates: the file's
+  // DETERMINISTIC home under this project's own log dir, and whatever `discoverTranscriptDir` finds in
+  // a sibling bucket. The home has to be probed SEPARATELY because that function will never name it —
+  // for its original caller `logDir` is the one place already known to have missed — and a transcript
+  // can move back as easily as away.
+  //
+  // Both candidates go through `mtimeOfNonEmpty`, and the NEWEST non-empty one wins. Neither half of
+  // that is optional. Emptiness, because a worker can leave a permanent 0-byte `<id>.jsonl` behind and
+  // the unbound path 40 lines below already refuses to bind one ("presence alone isn't enough").
+  // Freshness, because one session id legitimately names two files at once — a small live one and a
+  // large stale one, measured 2026-08-11 and written up at discover.ts:185 — and `discoverTranscriptDir`
+  // resolves that same tie the same way precisely because losing the coin flip renders a truncated
+  // conversation. Returning `home` on bare existence would have skipped the tie-break for exactly one
+  // of the two candidates, which is the coin flip with a thumb on it. Undefined = nothing anywhere else
+  // holds a non-empty file for this id.
   function relocatedTranscript(state: TailState): string | undefined {
     const name = `${state.nativeSessionId}.jsonl`
     const home = join(logDir, name)
-    if (home !== state.path && existsSync(home)) return home
+    const homeAt = home === state.path ? undefined : mtimeOfNonEmpty(home)
     const dir = discoverTranscriptDir(logDir, state.nativeSessionId)
-    if (!dir) return undefined
-    const moved = join(dir, name)
-    return moved === state.path ? undefined : moved
+    const sibling = dir ? join(dir, name) : undefined
+    const siblingAt = sibling && sibling !== state.path ? mtimeOfNonEmpty(sibling) : undefined
+    if (homeAt === undefined) return siblingAt === undefined ? undefined : sibling
+    if (siblingAt === undefined) return home
+    return siblingAt > homeAt ? sibling : home
   }
 
   // READ-SIDE TRANSCRIPT DISCOVERY for a registered row whose bound file hasn't produced bytes yet.
@@ -4003,19 +4013,48 @@ export function createTailer(deps: TailerDeps): Tailer {
     if (state.offset > 0) {
       if (existsSync(state.path)) return true
       if (nowMs < state.nextDiscoverMs) return true
-      state.nextDiscoverMs = nowMs + DISCOVER_RETRY_MS
       const moved = relocatedTranscript(state)
       // Nothing claims the id anywhere: the transcript is genuinely gone (deleted, or a log dir the
-      // sweep cannot see). Leave the binding exactly as it is and look again on the next throttle —
-      // a bound row must never be flagged `noTranscript`, which means "the worker never wrote one" and
-      // cards the thread as a boot failure. This one demonstrably did write one.
-      if (!moved) return true
+      // sweep cannot see). Leave the binding exactly as it is and look again later — a bound row must
+      // never be flagged `noTranscript`, which means "the worker never wrote one" and cards the thread
+      // as a boot failure. This one demonstrably did write one.
+      //
+      // BACK OFF like the unbound miss below, and for the identical measured reason: a miss costs a
+      // full `readdirSync` + one stat per sibling bucket, SYNCHRONOUSLY on the tick, and
+      // `strandedLogDirs` memoizes only HITS, so a permanent miss re-pays it every single interval. A
+      // deleted worktree bucket is permanent, and it is the exact population this branch was written
+      // for — three of them at once on the board that motivated it. Degradation and backoff are
+      // separate decisions: this row still never becomes `noTranscript`, it just stops asking so often.
+      if (!moved) {
+        state.discoverMisses++
+        state.nextDiscoverMs = nowMs + Math.min(
+          DISCOVER_RETRY_MS * 2 ** (state.discoverMisses - 1),
+          DISCOVER_RETRY_MAX_MS,
+        )
+        return true
+      }
+      // RE-ADOPT, DO NOT RESUME. The relocated file was selected on its NAME, and a name is not
+      // evidence about the bytes below our cursor — `hydrateFromCache` faces this same situation and
+      // refuses to trust a cursor without `measureFence`/`fenceMatches`, a rule bought with a
+      // five-day silent freeze (see the note above it). Carrying the offset onto a same-named file
+      // whose prefix differs would resume the fold mid-record and silently swallow everything before
+      // it; carrying it onto a SHORTER one lands in `consume`'s truncation reset, which clears only
+      // `offset`/`partial` and leaves `primed` true — so the replay would fire a REAL turn-done notify
+      // for a historical record and let `onTurnDone` overwrite `rested_at`. That is the mirror image
+      // of the bug this branch exists to fix: a false rest instead of a false "Thinking…".
+      //
+      // So take the same safe adoption the `strandedDir` path below already performs: replay the file
+      // from the top with `primed` false, which is silent by construction. Nothing is lost by it — the
+      // rest the thread has been owed since the relocation is stamped by `onPrimedAtRest` off that very
+      // prime, so the thread still leaves "Thinking…" and enters the queue. Only the desktop notify is
+      // forgone, which is what EVERY silent re-adoption in this function already trades away.
       state.path = moved
-      // The SAME file, moved — its bytes below our cursor are the ones we already folded, so the fold
-      // RESUMES at the cursor rather than replaying, and `primed` stays true because this is a
-      // continuation and not a fresh adoption (the turn-done that has been owed since the relocation
-      // fires normally off the bytes we were locked out of). A file too short to hold that history
-      // cannot be it; `consume`'s own truncation path re-reads such a file from the top, unchanged.
+      state.offset = 0
+      state.partial = ""
+      state.primed = false
+      state.noTranscript = false
+      state.stallLogged = false
+      state.discoverMisses = 0
       return true
     }
     // Presence alone isn't enough: a worker that creates `<id>.jsonl` then crashes before writing a
@@ -4525,15 +4564,28 @@ export function createTailer(deps: TailerDeps): Tailer {
   // of historical transcripts on one tick (386 of one project's 427 sessions, measured 2026-08-11),
   // and a notify each would be hundreds of alerts for work that finished days ago.
   //
-  // The stored stamp is the guard against writing a rest BACKWARDS: it records the last rest frizz
-  // actually observed, so a fold that lands on that same rest (an ordinary bounce where nothing
-  // happened while we were down, or a silent replay of an already-folded prefix) writes nothing.
+  // THE CLOCK IS `lastAssistantAt`, NOT `lastActivityAt`, and the difference is the whole safety of
+  // this function. `lastAssistantAt` is the rest-time key by construction (see its assignment in
+  // applyRecord): it moves ONLY on the agent's own final output, never on a sub-agent's completion
+  // notification, a Claude `type:"system"` record, a tool_result echo, a codex `agent-report` or a
+  // compaction — all of which advance `lastActivityAt` while leaving the turn `idle`.
+  //
+  // `onTurnDone` reads `lastActivityAt` and gets away with it because it fires on the EDGE, where the
+  // turn-ending record is the last record there is. Prime has no such luck: it folds the WHOLE file,
+  // so any trailing activity-advancing record would be baked into the stamp. That is not a cosmetic
+  // drift — the monotonic guard below only blocks writes BACKWARDS, so a spuriously later value would
+  // overwrite a stamp that was already correct, and `bgSnoozeArmed` (board.ts) holds only while
+  // `bg_snooze_rested_at === rested_at`. A restart could then silently un-arm a snooze the operator
+  // set on an awaiting-background card, re-surfacing it for a condition that has not occurred.
+  //
+  // Reading the turn-ending record instead makes a bounce IDEMPOTENT: it re-derives the same instant
+  // `onTurnDone` already stamped, the guard sees `at <= stamped`, and nothing is written at all.
   function onPrimedAtRest(row: SessionRow, state: TailState): void {
     // Only a FOLDED rest counts. `sawRecords` keeps a transcript-less session — whose turn reads idle
     // by default rather than by evidence — from minting a rest it never took.
     if (state.turn !== "idle" || !state.sawRecords) return
-    const eventAt = state.lastActivityAt
-    if (!eventAt) return
+    const eventAt = state.lastAssistantAt
+    if (!eventAt) return // at rest with no output of its own: nothing to date the rest by
     const at = Date.parse(eventAt)
     if (!Number.isFinite(at)) return
     const stamped = row.rested_at ? Date.parse(row.rested_at) : NaN
