@@ -2343,6 +2343,79 @@ test("tailer: in-flight → idle fires exactly one turn-done + sets unread", () 
   assert.equal(h.events.filter((e) => e.type === "notify").length, 1)
 })
 
+// A TURN THAT ENDED WHILE FRIZZ WAS NOT WATCHING IS STILL A REST.
+//
+// `rested_at` was written by `onTurnDone` alone, which fires on the LIVE in-flight → idle edge. Prime
+// has no edge — it folds a whole transcript and adopts the turn it finds — so a turn that completed
+// while the server was down was never recorded as a rest at all, and never would be: prime runs once
+// per session per process. A worker is a detached broker daemon that keeps working across a frizz
+// restart by design, so this is the ordinary case on every bounce, not an edge.
+//
+// The column being wrong is not cosmetic: `snoozeAwaitingBackground` (router.ts) refuses a row with a
+// null `rested_at` — "This thread is not at rest; nothing to snooze" — and `bgSnoozeArmed` (board.ts)
+// can never arm one. Found 2026-08-25 on the maintainer's own board: a thread that ended its turn with
+// a ```question fence carried `turn: "idle"` and `rested_at: NULL` after a restart, alone among eleven
+// live threads.
+test("tailer: a prime that lands on a finished turn stamps rested_at (the rest is a FACT, not an event)", () => {
+  const h = harness()
+  h.storage.upsertSession(row())
+  fixture(h.logDir, "sid", [IN_FLIGHT, TOOL, DONE]) // the whole turn completed while nothing was watching
+  const t = makeTailer(h)
+
+  t.tick() // prime
+  assert.equal(t.get("t")?.turn, "idle")
+  assert.equal(
+    h.storage.getSession("t")?.rested_at,
+    "2026-07-01T00:00:02.000Z",
+    "the rest instant is the folded end-of-turn record, exactly as onTurnDone would have stamped it",
+  )
+  // ...and the EVENT stays suppressed. A rebind can bring back hundreds of historical transcripts on
+  // one tick; a notify each would be hundreds of alerts for work that finished days ago.
+  assert.equal(h.events.filter((e) => e.type === "notify").length, 0, "a silent prime stays silent")
+  assert.equal(h.storage.getSession("t")?.unread, 0, "and does not badge history unread")
+})
+
+test("tailer: a prime never writes the rest BACKWARDS over a newer stamp", () => {
+  const h = harness()
+  h.storage.upsertSession(row())
+  // The row already carries a LATER rest than anything in this transcript — the state a restart
+  // inherits when nothing happened while frizz was down. Seeded through the setter that owns the
+  // column: `upsertSession` deliberately does not write `rested_at`.
+  h.storage.setRestedAt("t", "2026-07-01T00:05:00.000Z")
+  fixture(h.logDir, "sid", [IN_FLIGHT, TOOL, DONE])
+  const t = makeTailer(h)
+
+  t.tick()
+  assert.equal(h.storage.getSession("t")?.rested_at, "2026-07-01T00:05:00.000Z", "the stored stamp wins")
+})
+
+test("tailer: a prime mid-turn stamps nothing — there is no rest to record", () => {
+  const h = harness()
+  h.storage.upsertSession(row())
+  fixture(h.logDir, "sid", [IN_FLIGHT, TOOL]) // still working
+  const t = makeTailer(h)
+
+  t.tick()
+  assert.equal(t.get("t")?.turn, "in-flight")
+  assert.equal(h.storage.getSession("t")?.rested_at ?? null, null)
+
+  // ...and the live edge that follows still owns the stamp + the notify, unchanged.
+  appendFileSync(join(h.logDir, "sid.jsonl"), DONE + "\n")
+  t.tick()
+  assert.equal(h.storage.getSession("t")?.rested_at, "2026-07-01T00:00:02.000Z")
+  assert.equal(h.events.filter((e) => e.type === "notify").length, 1, "the live transition still notifies")
+})
+
+test("tailer: a session with no transcript records mints no rest", () => {
+  const h = harness()
+  h.storage.upsertSession(row())
+  fixture(h.logDir, "sid", []) // the file exists and is empty
+  const t = makeTailer(h)
+
+  t.tick()
+  assert.equal(h.storage.getSession("t")?.rested_at ?? null, null, "idle-by-default is not evidence of a rest")
+})
+
 test("tailer: unread is gated on last_read_at (a read-past turn does not re-badge)", () => {
   const h = harness()
   // user already read at a time AFTER the (only) turn-end record's timestamp

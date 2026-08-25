@@ -4193,7 +4193,9 @@ export function createTailer(deps: TailerDeps): Tailer {
 
       // First sighting of a session (fresh dispatch OR restored after a server restart): read the
       // whole transcript to date and adopt its state as the baseline WITHOUT firing turn-done /
-      // exited notifies — those pre-restart events are history, not new activity.
+      // exited notifies — those pre-restart events are history, not new activity. The REST ITSELF is
+      // not an event though, it is a fact about the thread, and one taken while frizz was not watching
+      // still has to be recorded: `onPrimedAtRest` below stamps it, silently. See its own block.
       if (!state.primed) {
         // Bounded so activation never blocks the loop for seconds. The row keeps its place in the
         // registry and primes on a following tick; scheduleTick below re-arms immediately while any
@@ -4224,6 +4226,9 @@ export function createTailer(deps: TailerDeps): Tailer {
         drainUnretiredOps(state, row)
         if (state.offset !== primeOffset) transcriptDirty.push(row.slug)
         state.turn = turnFor(row, state, nowMs)
+        // The turn this prime just adopted may BE a rest frizz never saw happen. Stamped before the
+        // board's first assemble, so `rested_at` is already honest by the time anything reads it.
+        onPrimedAtRest(row, state)
         const pane = sniffPane(
           state,
           row,
@@ -4490,6 +4495,50 @@ export function createTailer(deps: TailerDeps): Tailer {
       title: row.slug,
       body: state.lastAssistant,
     })
+  }
+
+  // THE SAME REST, OBSERVED AT PRIME INSTEAD OF ON THE EDGE.
+  //
+  // `onTurnDone` above is the only thing that stamps `rested_at`, and it fires on a LIVE in-flight →
+  // idle transition. The prime path has no edge to fire: it folds a whole transcript and ADOPTS the
+  // turn it finds. So a turn that ended while frizz was not watching was never recorded as a rest at
+  // all, and nothing repaired it afterwards — prime runs once per session per process, so the row kept
+  // `rested_at` NULL for the rest of its life while sitting visibly at rest on the board.
+  //
+  // That window is not exotic. A worker is a DETACHED broker daemon in its own process group, so it
+  // keeps working across a frizz restart BY DESIGN (ARCHITECTURE.md) — which makes "the turn ended
+  // while frizz was down" the ordinary case every time the server bounces, not an edge.
+  //
+  // The consequences are all downstream of the column simply being WRONG:
+  //   • `snoozeAwaitingBackground` refuses the thread outright — "This thread is not at rest; nothing
+  //     to snooze" (router.ts) — on a thread that is plainly at rest, so the card's own Snooze throws;
+  //   • `bgSnoozeArmed` (board.ts) requires a non-null `rested_at`, so that snooze can never arm;
+  //   • the stored answer to "when did this agent last come to rest" is null for a thread whose
+  //     transcript answers it precisely.
+  // Measured 2026-08-25 on the maintainer's own board: `examine-the-tickets-in-this-issue` ended its
+  // turn at 19:19:26Z with a ```question fence, and after the server bounced it carried `turn: "idle"`,
+  // `lastAssistantHasQuestion: true` and `rested_at: NULL` — alone among eleven live threads.
+  //
+  // A REST IS A FACT; A TURN-DONE IS AN EVENT. Prime records the fact and stays SILENT about the
+  // event, which is the whole of the difference from `onTurnDone` and the reason this is not simply a
+  // call to it. The silence is deliberate and load-bearing at scale: a rebind can bring back hundreds
+  // of historical transcripts on one tick (386 of one project's 427 sessions, measured 2026-08-11),
+  // and a notify each would be hundreds of alerts for work that finished days ago.
+  //
+  // The stored stamp is the guard against writing a rest BACKWARDS: it records the last rest frizz
+  // actually observed, so a fold that lands on that same rest (an ordinary bounce where nothing
+  // happened while we were down, or a silent replay of an already-folded prefix) writes nothing.
+  function onPrimedAtRest(row: SessionRow, state: TailState): void {
+    // Only a FOLDED rest counts. `sawRecords` keeps a transcript-less session — whose turn reads idle
+    // by default rather than by evidence — from minting a rest it never took.
+    if (state.turn !== "idle" || !state.sawRecords) return
+    const eventAt = state.lastActivityAt
+    if (!eventAt) return
+    const at = Date.parse(eventAt)
+    if (!Number.isFinite(at)) return
+    const stamped = row.rested_at ? Date.parse(row.rested_at) : NaN
+    if (Number.isFinite(stamped) && at <= stamped) return // already recorded — nothing new to write
+    deps.storage.setRestedAtIfCurrent(row.slug, row.session_id, row.runtime_generation ?? 0, eventAt)
   }
 
   // owner death: stamp exited (keeps the stored column honest for the overlay) + badge unread +
