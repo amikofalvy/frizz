@@ -3068,15 +3068,33 @@ function usePinnedImageCeiling(
     setPerImage(`${Math.max(PINNED_IMAGE_FLOOR, Math.floor((budget - chrome) / images.length))}px`)
   }, [sticky, wrapperRef, columnRef])
   useLayoutEffect(() => { measure() })
-  // A picture has no height until it LOADS, and loading re-renders nothing — so the column is observed
-  // rather than only measured on render. The same observer covers expand/collapse and a width change.
+  // OBSERVED, NOT ONLY MEASURED ON RENDER, and the WRAPPER is the half that matters. A picture has no
+  // height until it LOADS, and loading re-renders nothing — that is why the column is watched. The
+  // wrapper is watched because the prose beside it GROWS ON A TRANSITION: `useStickyCollapse` writes the
+  // bubble's new `max-height` in the same commit this hook's layout effect runs in, and a read taken
+  // then returns the FROM value, so the budget was struck against the collapsed prose and the pictures
+  // were handed slack that no longer existed once the tween landed. Nothing corrected it either —
+  // `onCapTransitionEnd` re-measures `useStickyCollapse`, whose setters all take the values they
+  // already hold for a bubble under the cap, so React bails and this effect never re-runs; and the
+  // bubble is the column's SIBLING, so growing produced no record on a column-only observer. Measured
+  // at 1400x1000 with the fixture's `?size=medium` ask (108px of prose collapsed, 360px expanded) and
+  // three screenshots: 1101px in a 1000px window, over by exactly the 252px the prose grew.
+  //
+  // The wrapper resizes on every frame of that tween, so the budget tracks it and the last record is
+  // the settled one. It cannot chase itself: `budget - chrome` reduces to the ceiling minus everything
+  // in the message that is not picture ink, which the picture heights cancel out of entirely.
+  //
+  // It is exact at REST and approaches from above in motion, by one frame: a resize record is read
+  // after that frame's layout, so the pictures re-cap on the next one. Frame-sampled for the case
+  // above — 849, 915, 894, 883, 875, … 851, 849 — a single 16ms frame 7.7% over, then monotone down.
+  // Removing even that would mean knowing the prose's target height before it renders, which is only
+  // available for the expand direction and not worth the second source of truth.
   useEffect(() => {
-    const col = columnRef.current
-    if (!col || typeof ResizeObserver === "undefined") return
+    if (typeof ResizeObserver === "undefined") return
     const ro = new ResizeObserver(() => measure())
-    ro.observe(col)
+    for (const el of [columnRef.current, wrapperRef.current]) if (el) ro.observe(el)
     return () => ro.disconnect()
-  }, [measure, columnRef])
+  }, [measure, columnRef, wrapperRef])
   useEffect(() => {
     if (typeof window === "undefined") return
     const onResize = () => measure()

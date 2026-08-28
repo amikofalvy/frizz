@@ -111,13 +111,15 @@ test(`the pinned ask (${size}) collapses, expands on hover, and keeps its fade a
     // fixed sleep is a false-green waiting to happen: overrun the tween on a loaded box and all three
     // assertions below pass against the SETTLED state, which is not what any of them are about. Frame
     // sampling instead makes "the tween was never observed in flight" its own loud failure.
-    const collapseFrames = await page.evaluate(async () => {
+    const collapseFrames = await page.evaluate(async (expandedH: number) => {
       const band = document.querySelector("[data-transcript-sticky]")!
       band.querySelector("[data-frizz-msg]")!
         .dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: document.body }))
       const frames: { h: number; scrollH: number; fades: number }[] = []
       await new Promise<void>((done) => {
-        let last = -1
+        // Seeded from the height the box is LEAVING, so the "it stopped moving" counter cannot start
+        // advancing before the tween has begun and end the sampling early on a loaded machine.
+        let last = expandedH
         let unchanged = 0
         const tick = () => {
           const el = band.querySelector<HTMLElement>('[style*="max-height"]')
@@ -131,7 +133,7 @@ test(`the pinned ask (${size}) collapses, expands on hover, and keeps its fade a
         requestAnimationFrame(tick)
       })
       return frames
-    })
+    }, expanded.clientH!)
     // Strictly BETWEEN the two resting heights, so neither end state can satisfy it.
     const inFlight = collapseFrames.filter((f) => f.h < expanded.clientH! && f.h > capHeight)
     assert.ok(inFlight.length > 0, `the collapse was never caught in flight, so nothing below is being tested (${collapseFrames.length} frames)`)
@@ -243,7 +245,12 @@ test("a hovered pinned card never grows past the 85vh ceiling", {
   }
 })
 
-test("a pinned ask's pictures share the 85vh ceiling rather than clearing it", {
+// BOTH prose heights, because they exercise different halves of the budget. `short` is one line, so the
+// prose is the same height collapsed and expanded; `medium` grows 108px -> 360px on the same hover the
+// pictures are being sized for, which is the case a budget struck against a mid-transition read gets
+// wrong (measured 1101px in a 1000px window before the wrapper was observed).
+for (const size of ["short", "medium"]) {
+test(`a pinned ask's pictures share the 85vh ceiling rather than clearing it (${size} prose)`, {
   skip: !baseUrl,
   timeout: 60_000,
 }, async () => {
@@ -270,7 +277,7 @@ test("a pinned ask's pictures share the 85vh ceiling rather than clearing it", {
     })
 
     const paths = ["/tmp/shot-a.png", "/tmp/shot-b.png", "/tmp/shot-c.png"].join(",")
-    await page.goto(`${baseUrl}/sticky-user-message-fixture.html?surface=queue&size=short&img=${paths}`, { waitUntil: "networkidle0" })
+    await page.goto(`${baseUrl}/sticky-user-message-fixture.html?surface=queue&size=${size}&img=${paths}`, { waitUntil: "networkidle0" })
     await page.waitForSelector("[data-transcript-sticky] img")
 
     const measure = () => page.evaluate(() => {
@@ -301,9 +308,10 @@ test("a pinned ask's pictures share the 85vh ceiling rather than clearing it", {
     // 101.7% of a 1000px window and 145.4% of a 700px one, the pinned element hiding the transcript it
     // is pinned above. They now split what the ceiling leaves them.
     assert.ok(open.imgH.every((h) => h > shut.imgH[0]!), "hovering still grows the pictures")
-    assert.ok(open.imgH.every((h) => h < 420), `each picture is bounded BELOW the frame's own 420px cap (were ${open.imgH.join(", ")})`)
+    assert.ok(open.imgH.every((h) => h < 420), `each picture is bounded below FRAMED_IMAGE's own 420px cap, which the 400x1200 stub above would otherwise land exactly on (were ${open.imgH.join(", ")})`)
     assert.ok(open.msgH <= open.ceiling, `the whole pinned ask stays under 85vh (was ${open.msgH}px of ${open.ceiling}px)`)
   } finally {
     await browser.close()
   }
 })
+}
