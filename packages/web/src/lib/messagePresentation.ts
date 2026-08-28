@@ -7,15 +7,15 @@ export function messagePresentationText(message: Pick<TranscriptMessage, "text" 
 }
 
 // The CURRENT ASK: the most recent user turn the HUMAN is actually waiting on an answer to. It pins to
-// the pane top (ChatView's StickyUserBand) and supplies the retry text after a provider fault, so "who
-// wrote it" decides it — not the `user` role, which the transcript also uses for machine-written turns.
+// the pane top (ChatView's StickyUserBand), so "who wrote it" decides it — not the `user` role, which
+// the transcript also uses for machine-written turns. What a provider fault re-sends is a DIFFERENT
+// walk over the same rows; it diverges on `wake` alone, and lives in lastRetryIndex below.
 //
 // Excluded: a QUEUED/optimistic follow-up (it pins to the bottom until it lands), a SUB-AGENT's
 // upward report, and a SCHEDULER WAKE. `peerFrom` and `wake` are the server's own tells that a CHILD
-// or FRIZZ ITSELF wrote the turn (the schema calls them one defect class), and neither is an ask or
-// anything to retry. Without the `peerFrom` guard an orchestrator running a dozen children re-pins the
-// band to "Sub-agent «…» reported" on every report, burying the human's actual instruction, and a
-// fault retry would resend the child's words as the human's.
+// or FRIZZ ITSELF wrote the turn (the schema calls them one defect class), and neither is the human's
+// ask. Without the `peerFrom` guard an orchestrator running a dozen children re-pins the band to
+// "Sub-agent «…» reported" on every report, burying the human's actual instruction.
 //
 // `wake` is the same failure with a worse blast radius, because a wake does not render as a BUBBLE.
 // UserBubble collapses a pinned ask to four lines with hover-to-expand, so no human turn can ever

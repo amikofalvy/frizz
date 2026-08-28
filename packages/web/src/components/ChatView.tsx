@@ -2918,7 +2918,11 @@ const collapsedAskMax = (padY: string) => `calc(4lh + ${padY})`
 //
 // `ref` goes on the element being capped; `handlers` go on whatever the POINTER should count as
 // hovering, which is deliberately not the same node — a bubble's attachments render outside it.
-function useStickyCollapse(sticky: boolean | undefined, padY: string) {
+// `boundedRef` is the element the 85vh ceiling is meant to bound, when that is NOT the capped box
+// itself: AnswersCard caps its answer ROWS and wears its card chrome (head, `p-4`, border) outside
+// them, so capping the rows at 85vh would put the card at 85vh + chrome. Omit it when the capped box
+// IS the whole thing (the bubble).
+function useStickyCollapse(sticky: boolean | undefined, padY: string, boundedRef?: { readonly current: HTMLElement | null }) {
   const ref = useRef<HTMLDivElement>(null)
   const [expanded, setExpanded] = useState(false)
   const [overflows, setOverflows] = useState(false)
@@ -2934,18 +2938,42 @@ function useStickyCollapse(sticky: boolean | undefined, padY: string) {
   // Measure the real content height so max-height animates BOTH ways smoothly (a bare collapsed↔85vh
   // transition visibly lags on collapse) and so the fade shows ONLY when the text actually overflows.
   const [maxH, setMaxH] = useState<string | null>(null)
+  // The cap this hook last applied, and whether a max-height tween is still running toward it — which
+  // is how `measure` knows whether the box it is reading has settled. See the overflow test below.
+  const appliedMax = useRef<string | null>(null)
+  const capAnimating = useRef(false)
   const measure = useCallback(() => {
     const el = ref.current
-    if (!sticky || !el) { setMaxH(null); setOverflows(false); setExceedsCap(false); return }
-    const cap = Math.round((typeof window === "undefined" ? 800 : window.innerHeight) * 0.85)
+    if (!sticky || !el) { setMaxH(null); setOverflows(false); setExceedsCap(false); appliedMax.current = null; return }
+    const chrome = boundedRef?.current
+      ? Math.max(0, boundedRef.current.getBoundingClientRect().height - el.getBoundingClientRect().height)
+      : 0
+    const cap = Math.max(0, Math.round((typeof window === "undefined" ? 800 : window.innerHeight) * 0.85 - chrome))
     setExceedsCap(el.scrollHeight > cap)
+    const next = expanded ? `${Math.min(el.scrollHeight, cap)}px` : collapsedAskMax(padY)
     // THE OVERFLOW TEST IS READ OFF THE BOX, not computed from a line height. `clientHeight` while
     // collapsed IS whatever `calc(4lh + …)` resolved to in this font at this size, so the fade appears
     // exactly when there is something under it — with no second copy of the cap's arithmetic here to
     // drift from the CSS. It is only meaningful while collapsed; expanded, the box is the content.
-    if (!expanded) setOverflows(el.scrollHeight > el.clientHeight + 1)
-    setMaxH(expanded ? `${Math.min(el.scrollHeight, cap)}px` : collapsedAskMax(padY))
-  }, [sticky, expanded, padY])
+    //
+    // But it can only TURN THE FADE OFF from a settled box. While max-height is animating, the box is
+    // whatever size the tween is passing through — on the mouse-leave render it is still the EXPANDED
+    // height, where nothing overflows — so clearing on that reading blanks the fade for the whole 200ms
+    // collapse and the card shows the bare hard cut this fade exists to hide (measured on the answers
+    // card: no fade from 358px all the way down to 78px, content 358px throughout). So while a tween is
+    // in flight the fade only ever turns ON, and transitionend below — the one moment the box is the
+    // size the state claims — is what clears the flag and lets a settled reading turn it off again.
+    // (Deriving "in flight" from the cap changing on THIS render is not enough: applying the new cap
+    // re-runs this effect a second time with the cap already equal to itself, and that pass reads a box
+    // one frame into the tween.)
+    if (appliedMax.current !== null && next !== appliedMax.current) capAnimating.current = true
+    if (!expanded) {
+      const over = el.scrollHeight > el.clientHeight + 1
+      setOverflows((prev) => (capAnimating.current ? prev || over : over))
+    }
+    setMaxH(next)
+    appliedMax.current = next
+  }, [sticky, expanded, padY, boundedRef])
   useLayoutEffect(() => { measure() })
   // Re-measure on viewport resize so the 85vh cap / exceedsCap gate never go stale under a window resize.
   useEffect(() => {
@@ -2982,6 +3010,7 @@ function useStickyCollapse(sticky: boolean | undefined, padY: string) {
     onCapTransitionEnd: sticky
       ? (e: { propertyName: string }) => {
           if (e.propertyName !== "max-height") return
+          capAnimating.current = false
           if (expanded && exceedsCap) setScrollReady(true)
           measure()
         }
@@ -3472,17 +3501,21 @@ function AnswersCard({ answers, queued, sticky, sourceId }: { answers: PairedAns
   // body type `4lh` is 78px of content box, and this card's head (`text-[16px] leading-6` = 24px) plus
   // CardContent's `mt-1` take 28px of it, leaving ~2.5 lines. A collapsed pinned card then reads as a
   // header and half an answer, not as the human's own words, while the bubble beside it shows four.
-  const { ref, collapsed, overflows, maxH, scrollable, reserveGutter, handlers, onCapTransitionEnd } = useStickyCollapse(sticky, "0px")
+  //
+  // The EXPANDED ceiling still bounds the whole card, though: 85vh applied to the rows alone would seat
+  // a hovered over-cap card at 85vh plus that same chrome, so the hook is handed the card to subtract it.
+  const cardRef = useRef<HTMLDivElement>(null)
+  const { ref, overflows, maxH, scrollable, reserveGutter, handlers, onCapTransitionEnd } = useStickyCollapse(sticky, "0px", cardRef)
   return (
     <div data-frizz-msg={sourceId} data-answers-card {...handlers} className={`self-end flex w-full max-w-[85%] flex-col items-end ${queued ? "opacity-50" : ""}`}>
-      <div className={`relative w-full min-w-0 ${BLOCK_RADIUS} rounded-br-sm border border-border-strong bg-elevated p-4`}>
+      <div ref={cardRef} className={`relative w-full min-w-0 ${BLOCK_RADIUS} rounded-br-sm border border-border-strong bg-elevated p-4`}>
         <CardHead icon={ListChecks} label="Answers" />
         <CardContent>
           <div
             ref={ref}
             onTransitionEnd={onCapTransitionEnd}
             style={{ ...(maxH ? { maxHeight: maxH } : {}), ...(reserveGutter ? { paddingRight: "var(--sbw)" } : {}) }}
-            className={`flex flex-col gap-2.5 ${sticky ? `transition-[max-height] duration-200 ease-out ${scrollable ? "overflow-y-auto" : "overflow-hidden"}` : ""}`}
+            className={`relative flex flex-col gap-2.5 ${sticky ? `transition-[max-height] duration-200 ease-out ${scrollable ? "overflow-y-auto" : "overflow-hidden"}` : ""}`}
           >
             {answers.map((a, i) => (
               <div key={i} className="flex flex-col gap-1">
@@ -3505,13 +3538,16 @@ function AnswersCard({ answers, queued, sticky, sourceId }: { answers: PairedAns
                 </div>
               </div>
             ))}
+            {/* Same soft "there's more" cue the bubble wears, in THIS card's fill rather than the
+                bubble's — a hard clip on a bordered card reads as a broken card, not as a collapsed one.
+                It lives INSIDE the capped box, as the bubble's does, so `bottom-0` IS the clip line by
+                construction. Hung on the card root instead it sat 16px lower (the card's `p-4`), leaving
+                the cut row of text under only 0.6 of the veil and visibly showing through. */}
+            {overflows && (
+              <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-elevated to-transparent" />
+            )}
           </div>
         </CardContent>
-        {/* Same soft "there's more" cue the bubble wears, in THIS card's fill rather than the bubble's —
-            a hard clip on a bordered card reads as a broken card, not as a collapsed one. */}
-        {overflows && (
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-elevated to-transparent" />
-        )}
       </div>
     </div>
   )

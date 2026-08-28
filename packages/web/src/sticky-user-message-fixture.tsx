@@ -24,6 +24,10 @@ import "./styles.css"
 //                           lastAskIndex.
 //   ?sticky=on|off  the client stickyUserMessage view pref. Pinned ON by default HERE (the app's own
 //                   default is off) — this fixture exists to QA the pinned band, so it must show one.
+//   ?font=mono      this app renders in TWO type families (html[data-font], applied before first paint)
+//                   and the collapsed cap is `4lh` — one line box of the RESOLVED font — so the band is
+//                   a different height in each. Defaults to `sans`, index.html's own default; a fixture
+//                   that leaves data-font unset silently renders mono and measures the wrong band.
 //   ?img=<abs path> attach that picture to the pinned ask (repeatable, comma-separated). The
 //                   attachments render OUTSIDE the bubble, so they are capped separately from the
 //                   prose — collapsed they are a row of thumbnails, hovered they return to full size.
@@ -34,6 +38,7 @@ const surface = surfaceParam === "drawer" ? "drawer" : surfaceParam === "fence" 
 const sizeParam = params.get("size")
 const size = sizeParam === "tall" ? "tall" : sizeParam === "medium" ? "medium" : sizeParam === "wake" ? "wake" : sizeParam === "answers" ? "answers" : "short"
 prefs.stickyUserMessage = params.get("sticky") !== "off"
+document.documentElement.dataset.font = params.get("font") === "mono" ? "mono" : "sans"
 
 const SLUG = "sticky-demo"
 
