@@ -71,7 +71,7 @@ import { BLOCK_RADIUS, CARD_ACTION_EXPLAINER, CARD_ACTION_RADIUS, CARD_BODY, CAR
 import { QuestionBlockCard } from "./QuestionBlockCard.tsx"
 // ONE frame for every image the chat renders — border, inset mat, centered picture. See its module
 // header for why it spans the message width rather than shrink-wrapping each picture.
-import { FRAMED_IMAGE, ImageFrame } from "./ImageFrame.tsx"
+import { FRAMED_IMAGE, FRAMED_IMAGE_MAX_PX, ImageFrame } from "./ImageFrame.tsx"
 // The resting card, shared with the queue (TodosView passes it the event-Snooze; these two surfaces
 // deliberately pass no action — see the module header).
 import { AwaitingBackgroundCard, showsRestingCard } from "./AwaitingBackgroundCard.tsx"
@@ -3029,12 +3029,15 @@ function useStickyCollapse(sticky: boolean | undefined, padY: string, boundedRef
 // images, we should make sure to shrink up the images, so when you scroll, they don't cover the whole
 // screen"), and a ceiling that stops at the prose only half-keeps that promise.
 //
-// So the expanded pictures SPLIT what the ceiling leaves them, rather than scrolling inside it. Each is
-// still never taller than the 420px it renders at everywhere else, so one picture is unchanged and only
-// a stack is touched: measured at a 1000px viewport, three screenshots go from 297px each to 241px and
-// six to 110px, while one and two are left exactly where they were (they already fit). A
-// scroll region was the other option and is worse twice over — it hides the very thing hovering is FOR,
-// and it takes the wheel from the transcript for as long as the pointer rests on the band.
+// So the expanded pictures SPLIT what the ceiling leaves them, rather than scrolling inside it. Only a
+// SHRINK, which is what the clamp below is for: a budget struck from the viewport is an upper bound on
+// what the pictures may take, never a licence to take it, and a wide window hands out far more than the
+// 420px a picture draws in any other bubble. Unclamped, one 400x1200 screenshot on a pinned ask rendered
+// at 679px in a 900px-tall window and 1104px in a 1400px one, and two at 542px each — bigger pinned than
+// unpinned, which is exactly backwards. Clamped, one and two are left where they already were and only
+// a stack is touched: measured at a 1000px viewport, three go from 420px each to 241px and six to 110px.
+// A scroll region was the other option and is worse twice over — it hides the very thing hovering is
+// FOR, and it takes the wheel from the transcript for as long as the pointer rests on the band.
 //
 // Both quantities are READ OFF THE BOX. The budget is the ceiling minus everything in the message that
 // is not this column, so the prose's own share is whatever it actually took; the column's non-picture
@@ -3065,7 +3068,14 @@ function usePinnedImageCeiling(
     const ceiling = Math.round((typeof window === "undefined" ? 800 : window.innerHeight) * 0.85)
     const budget = ceiling - (wrap.getBoundingClientRect().height - colH)
     const chrome = colH - images.reduce((h, img) => h + img.getBoundingClientRect().height, 0)
-    setPerImage(`${Math.max(PINNED_IMAGE_FLOOR, Math.floor((budget - chrome) / images.length))}px`)
+    const per = Math.max(PINNED_IMAGE_FLOOR, Math.floor((budget - chrome) / images.length))
+    // NULL, not the number, once the share is at or above what the picture would have taken anyway.
+    // This hook only ever SHRINKS: a pinned ask is the one place a screenshot could otherwise render
+    // LARGER than the identical screenshot elsewhere in the app, and a budget struck from the viewport
+    // says nothing about how big a picture ought to be — a single attachment at 1400px tall was handed
+    // 1104px, against the 420px it draws in any other bubble. Standing down here returns it to
+    // FRAMED_IMAGE, which is where that decision lives; the class is only applied when it binds.
+    setPerImage(per >= FRAMED_IMAGE_MAX_PX ? null : `${per}px`)
   }, [sticky, wrapperRef, columnRef])
   useLayoutEffect(() => { measure() })
   // OBSERVED, NOT ONLY MEASURED ON RENDER, and the WRAPPER is the half that matters. A picture has no
@@ -3090,17 +3100,20 @@ function usePinnedImageCeiling(
   // Removing even that would mean knowing the prose's target height before it renders, which is only
   // available for the expand direction and not worth the second source of truth.
   useEffect(() => {
-    if (typeof ResizeObserver === "undefined") return
+    // `sticky` gates the SUBSCRIPTION, not just the measurement: `TodosView` renders every message of
+    // every queue card unvirtualized, so without it each historical bubble builds a ResizeObserver to
+    // watch a wrapper whose answer can only ever be null.
+    if (!sticky || typeof ResizeObserver === "undefined") return
     const ro = new ResizeObserver(() => measure())
     for (const el of [columnRef.current, wrapperRef.current]) if (el) ro.observe(el)
     return () => ro.disconnect()
-  }, [measure, columnRef, wrapperRef])
+  }, [sticky, measure, columnRef, wrapperRef])
   useEffect(() => {
-    if (typeof window === "undefined") return
+    if (!sticky || typeof window === "undefined") return
     const onResize = () => measure()
     window.addEventListener("resize", onResize)
     return () => window.removeEventListener("resize", onResize)
-  }, [measure])
+  }, [sticky, measure])
   return perImage
 }
 

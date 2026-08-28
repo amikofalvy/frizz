@@ -41,3 +41,8 @@ export const IMAGE_FRAME_MAT = "flex justify-center bg-panel-2 p-1.5"
 // The picture inside the frame: never wider than the mat, never taller than a screenful, always keeping
 // its intrinsic aspect. Shared so the frame's contents are as consistent as the frame itself.
 export const FRAMED_IMAGE = "block max-h-[420px] max-w-full w-auto rounded-md object-contain"
+
+// The same "screenful" as a NUMBER, for the one caller that has to compare against it rather than
+// apply it. Tailwind needs the literal inside the class string, so the two cannot be derived from
+// each other — keep them equal.
+export const FRAMED_IMAGE_MAX_PX = 420

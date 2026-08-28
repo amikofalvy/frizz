@@ -245,12 +245,16 @@ test("a hovered pinned card never grows past the 85vh ceiling", {
   }
 })
 
-// BOTH prose heights, because they exercise different halves of the budget. `short` is one line, so the
-// prose is the same height collapsed and expanded; `medium` grows 108px -> 360px on the same hover the
-// pictures are being sized for, which is the case a budget struck against a mid-transition read gets
-// wrong (measured 1101px in a 1000px window before the wrapper was observed).
-for (const size of ["short", "medium"]) {
-test(`a pinned ask's pictures share the 85vh ceiling rather than clearing it (${size} prose)`, {
+// Three arms, because the budget has two halves and its clamp has a third. The prose heights exercise
+// the budget: `short` is one line, so it is the same height collapsed and expanded, while `medium` grows
+// 108px -> 360px on the same hover the pictures are being sized for, which is the case a budget struck
+// against a mid-transition read gets wrong (measured 1101px in a 1000px window before the wrapper was
+// observed). The picture COUNT exercises the clamp, and three is the count that hides its absence: three
+// tall screenshots want more than a 1000px window has, so the budget binds either way. ONE wants less,
+// so an unclamped budget hands it MORE than it would have taken — 1104px in a 1400px-tall window against
+// the 420px it draws in every other bubble.
+for (const [size, count] of [["short", 3], ["medium", 3], ["short", 1]] as const) {
+test(`a pinned ask's pictures share the 85vh ceiling rather than clearing it (${size} prose, ${count} ${count === 1 ? "picture" : "pictures"})`, {
   skip: !baseUrl,
   timeout: 60_000,
 }, async () => {
@@ -259,6 +263,13 @@ test(`a pinned ask's pictures share the 85vh ceiling rather than clearing it (${
   try {
     const page = await browser.newPage()
     await page.setViewport({ width: 1400, height: 1000, deviceScaleFactor: 1 })
+    // Watched because the hook under test is loop-shaped — a ResizeObserver callback writing a custom
+    // property onto a descendant of the observed element — and "ResizeObserver loop completed with
+    // undelivered notifications" is how Chrome reports one that fails to settle. It settles here in
+    // three rounds during the expand tween, and this is what would notice if it stopped.
+    const errors: string[] = []
+    page.on("console", (m) => { if (m.type() === "error" && !/404|favicon/i.test(m.text())) errors.push(m.text()) })
+    page.on("pageerror", (e) => errors.push(String(e)))
     // The attachments are real `/local-image` requests for real absolute paths — the fixture spells a
     // send exactly the way the composer does — so the pictures are served here rather than the fixture
     // being taught to fake them. Deliberately TALLER than it is wide: unconstrained, each one renders
@@ -276,7 +287,7 @@ test(`a pinned ask's pictures share the 85vh ceiling rather than clearing it (${
       })
     })
 
-    const paths = ["/tmp/shot-a.png", "/tmp/shot-b.png", "/tmp/shot-c.png"].join(",")
+    const paths = ["/tmp/shot-a.png", "/tmp/shot-b.png", "/tmp/shot-c.png"].slice(0, count).join(",")
     await page.goto(`${baseUrl}/sticky-user-message-fixture.html?surface=queue&size=${size}&img=${paths}`, { waitUntil: "networkidle0" })
     await page.waitForSelector("[data-transcript-sticky] img")
 
@@ -291,10 +302,10 @@ test(`a pinned ask's pictures share the 85vh ceiling rather than clearing it (${
     })
 
     const shut = await measure()
-    // Collapsed is the half that already worked, and the picture ceiling must not disturb it: three
-    // screenshots still cost ONE band of thumbnails, not three.
-    assert.equal(shut.imgH.length, 3)
-    assert.ok(shut.msgH < 250, `collapsed, three pictures are one thumbnail row (was ${shut.msgH}px)`)
+    // Collapsed is the half that already worked, and the picture ceiling must not disturb it: N
+    // screenshots still cost ONE band of thumbnails, not N.
+    assert.equal(shut.imgH.length, count)
+    assert.ok(shut.msgH < 250, `collapsed, the pictures are one thumbnail row (was ${shut.msgH}px)`)
 
     await page.evaluate(() => {
       document.querySelector("[data-transcript-sticky] [data-frizz-msg]")!
@@ -308,8 +319,14 @@ test(`a pinned ask's pictures share the 85vh ceiling rather than clearing it (${
     // 101.7% of a 1000px window and 145.4% of a 700px one, the pinned element hiding the transcript it
     // is pinned above. They now split what the ceiling leaves them.
     assert.ok(open.imgH.every((h) => h > shut.imgH[0]!), "hovering still grows the pictures")
-    assert.ok(open.imgH.every((h) => h < 420), `each picture is bounded below FRAMED_IMAGE's own 420px cap, which the 400x1200 stub above would otherwise land exactly on (were ${open.imgH.join(", ")})`)
+    // AT MOST what the same picture draws unpinned, never more. `<=` rather than `<` because the arms
+    // satisfy it from opposite sides: three tall stubs are squeezed well under 420 by the ceiling,
+    // while ONE is squeezed by nothing and comes to rest exactly ON it. Only the one-picture arm ever
+    // failed — at 764px in this viewport, i.e. the pin rendering a screenshot nearly twice the size
+    // the very same file draws in the bubble below it.
+    assert.ok(open.imgH.every((h) => h <= 420), `no picture outgrows FRAMED_IMAGE's own 420px cap, which the 400x1200 stub above renders at unpinned (were ${open.imgH.join(", ")})`)
     assert.ok(open.msgH <= open.ceiling, `the whole pinned ask stays under 85vh (was ${open.msgH}px of ${open.ceiling}px)`)
+    assert.deepEqual(errors, [])
   } finally {
     await browser.close()
   }
