@@ -3018,6 +3018,74 @@ function useStickyCollapse(sticky: boolean | undefined, padY: string, boundedRef
   }
 }
 
+// THE PICTURES SHARE THE PIN'S CEILING — the half of a pinned ask that `useStickyCollapse` cannot
+// reach. It bounds the box it CAPS, and for a bubble that box is the prose alone: attachments are the
+// bubble's SIBLINGS, outside it (see the collapse note on the thumbnail row below). Collapsed they are
+// already handled, as one non-wrapping row of thumbnails. It is the EXPANDED state the ceiling never
+// covered, because each picture returns to FRAMED_IMAGE's flat `max-h-[420px]` and they STACK: measured
+// at 1400px wide with three screenshots, hovering the pinned ask opened the band to 1035px — 101.7% of
+// a 1000px window and 145.4% of a 700px one. A pinned element taller than the window, hiding the whole
+// transcript behind it, is the defect this band exists to prevent (maintainer 2026-08-25: "if there's
+// images, we should make sure to shrink up the images, so when you scroll, they don't cover the whole
+// screen"), and a ceiling that stops at the prose only half-keeps that promise.
+//
+// So the expanded pictures SPLIT what the ceiling leaves them, rather than scrolling inside it. Each is
+// still never taller than the 420px it renders at everywhere else, so one picture is unchanged and only
+// a stack is touched: measured at a 1000px viewport, three screenshots go from 297px each to 241px and
+// six to 110px, while one and two are left exactly where they were (they already fit). A
+// scroll region was the other option and is worse twice over — it hides the very thing hovering is FOR,
+// and it takes the wheel from the transcript for as long as the pointer rests on the band.
+//
+// Both quantities are READ OFF THE BOX. The budget is the ceiling minus everything in the message that
+// is not this column, so the prose's own share is whatever it actually took; the column's non-picture
+// height (the gaps, and each frame's border and mat) is measured rather than restated, so no constant
+// here can drift from ImageFrame's. Convergence is one pass, not a loop: shrinking the pictures changes
+// neither of them.
+//
+// THE FLOOR IS A DELIBERATE HOLE IN THE CEILING, and it is the only one. An ask whose PROSE alone
+// spends the whole 85vh leaves the pictures a budget of nothing, and the alternative to a floor is a
+// picture the human attached rendering at zero height. So they fall back to what they already show
+// collapsed and the message runs over: measured at a 1000px viewport with a 3804px ask and three
+// screenshots, 180% of the window before this hook and 120% after — improved, not fixed, in the
+// one case where nothing here can fix it. The ordinary shape of the defect, a SHORT ask carrying
+// screenshots, is the one that lands at 85% exactly.
+const PINNED_IMAGE_FLOOR = 96 // = the collapsed row's max-h-24; the pictures never expand to LESS than they collapse to
+function usePinnedImageCeiling(
+  sticky: boolean | undefined,
+  wrapperRef: { readonly current: HTMLElement | null },
+  columnRef: { readonly current: HTMLElement | null },
+) {
+  const [perImage, setPerImage] = useState<string | null>(null)
+  const measure = useCallback(() => {
+    const wrap = wrapperRef.current, col = columnRef.current
+    if (!sticky || !wrap || !col) return setPerImage(null)
+    const images = [...col.querySelectorAll("img")]
+    if (images.length === 0) return setPerImage(null)
+    const colH = col.getBoundingClientRect().height
+    const ceiling = Math.round((typeof window === "undefined" ? 800 : window.innerHeight) * 0.85)
+    const budget = ceiling - (wrap.getBoundingClientRect().height - colH)
+    const chrome = colH - images.reduce((h, img) => h + img.getBoundingClientRect().height, 0)
+    setPerImage(`${Math.max(PINNED_IMAGE_FLOOR, Math.floor((budget - chrome) / images.length))}px`)
+  }, [sticky, wrapperRef, columnRef])
+  useLayoutEffect(() => { measure() })
+  // A picture has no height until it LOADS, and loading re-renders nothing — so the column is observed
+  // rather than only measured on render. The same observer covers expand/collapse and a width change.
+  useEffect(() => {
+    const col = columnRef.current
+    if (!col || typeof ResizeObserver === "undefined") return
+    const ro = new ResizeObserver(() => measure())
+    ro.observe(col)
+    return () => ro.disconnect()
+  }, [measure, columnRef])
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const onResize = () => measure()
+    window.addEventListener("resize", onResize)
+    return () => window.removeEventListener("resize", onResize)
+  }, [measure])
+  return perImage
+}
+
 // The user chat bubble, right-justified. When `sticky` (the pinned most-recent ask), it COLLAPSES: a
 // fully-rounded four-line card whose text FADES into the bubble colour near the bottom (no hard clip, no
 // ellipsis) with a soft "there's more" cue, and whose ATTACHMENTS drop to a row of thumbnails; hovering
@@ -3026,6 +3094,9 @@ function useStickyCollapse(sticky: boolean | undefined, padY: string, boundedRef
 // Its own component so the sticky hover/measure hooks stay out of memoized Message.
 function UserBubble({ text, rawText, queued, sticky, deliveryUnconfirmed, deliveryId, sourceId }: { text: string; rawText?: string; queued?: boolean; sticky?: boolean; deliveryUnconfirmed?: boolean; deliveryId?: string; sourceId?: string }) {
   const { ref, collapsed, overflows, maxH, scrollable, reserveGutter, handlers, onCapTransitionEnd } = useStickyCollapse(sticky, "1.5rem") // py-3
+  const wrapRef = useRef<HTMLDivElement>(null)
+  const imageColRef = useRef<HTMLDivElement>(null)
+  const pinnedImageMax = usePinnedImageCeiling(sticky, wrapRef, imageColRef)
   // TAKE IT BACK. A still-queued send is the one bubble in the transcript that isn't history yet, so
   // it alone is clickable: the click unqueues it at the provider and hands the words back to the
   // prompt box (see lib/unqueueFollowUp.ts). Three gates, all of them load-bearing:
@@ -3071,7 +3142,7 @@ function UserBubble({ text, rawText, queued, sticky, deliveryUnconfirmed, delive
     // render outside it, on the dark page — see the row below). Hung on the bubble, moving the pointer
     // onto a pinned screenshot collapsed the very thing you were reaching for, and the picture — the
     // biggest thing in the band — could never be expanded by pointing at it.
-    <div data-frizz-msg={sourceId} {...handlers} className="self-end flex flex-col items-end gap-0.5 max-w-[85%]">
+    <div ref={wrapRef} data-frizz-msg={sourceId} {...handlers} className="self-end flex flex-col items-end gap-0.5 max-w-[85%]">
       {/* OFF-WHITE bubble, BLACK text — the human's words POP against the dark page + agent prose. bg-user-bubble
           is a tick less white than bg-fg so it reads as a card. whitespace-pre-wrap is load-bearing: user text
           is verbatim, so its line breaks must survive. Skipped entirely for an attachment-only send, so the
@@ -3166,9 +3237,10 @@ function UserBubble({ text, rawText, queued, sticky, deliveryUnconfirmed, delive
               intrinsic width when there are more than the band is wide — which is what makes the cost
               of N pictures one band of height at ANY width, rather than N. Measured in a 403px-wide
               drawer band: one thumb 96px tall, two 89px, three 57px, and the whole collapsed ask 242px
-              → 203px as pictures are added. Expanded, the clamp lifts and the column returns — the
-              pictures go back to exactly the size they render at everywhere else, which is what
-              hovering is FOR.
+              → 203px as pictures are added. Expanded, the row becomes the column again and each picture
+              grows back toward the size it renders at everywhere else — bounded by what the pin's own
+              ceiling leaves them, so a stack of screenshots cannot do on hover what the thumbnails stop
+              it doing on scroll (usePinnedImageCeiling).
               `flex-wrap` was the first attempt and it is a trap here: the max-content size of a MULTI-LINE
               flex container is its widest ITEM, not the sum of them, so inside this shrink-to-fit column
               the row collapsed to one thumb's width and every picture took its own line — three
@@ -3181,10 +3253,12 @@ function UserBubble({ text, rawText, queued, sticky, deliveryUnconfirmed, delive
               level with the collapsed bubble, so a collapsed ask reads as one band rather than two. */}
           {attachments.some((a) => a.kind === "image") && (
             <div
+              ref={imageColRef}
+              style={pinnedImageMax ? ({ "--pin-img-max": pinnedImageMax } as CSSProperties) : undefined}
               className={`flex gap-1.5 ${
                 collapsed
                   ? "max-w-full flex-row flex-nowrap justify-end [&>*]:min-w-0 [&_img]:max-h-24"
-                  : "flex-col items-end"
+                  : `flex-col items-end ${pinnedImageMax ? "[&_img]:max-h-[var(--pin-img-max)]" : ""}`
               }`}
             >
               {attachments.filter((a) => a.kind === "image").map((a, i) => <BlockImage key={`i${i}-${a.path}`} path={a.path} hideCaption />)}
