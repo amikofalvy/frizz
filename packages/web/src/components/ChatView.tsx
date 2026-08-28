@@ -3034,8 +3034,11 @@ function useStickyCollapse(sticky: boolean | undefined, padY: string, boundedRef
 // what the pictures may take, never a licence to take it, and a wide window hands out far more than the
 // 420px a picture draws in any other bubble. Unclamped, one 400x1200 screenshot on a pinned ask rendered
 // at 679px in a 900px-tall window and 1104px in a 1400px one, and two at 542px each — bigger pinned than
-// unpinned, which is exactly backwards. Clamped, one and two are left where they already were and only
-// a stack is touched: measured at a 1000px viewport, three go from 420px each to 241px and six to 110px.
+// unpinned, which is exactly backwards. Clamped, a lone picture keeps its usual 420px at every height
+// measured, and every other reading is scoped to the window it was taken in: at a 1000px viewport two
+// land at 372px each, three at 241px and six at 110px; at 900px two land at 329px each. Two stops being
+// clamped only above ~1113px of viewport height, where its share first reaches the 420px it would have
+// drawn anyway.
 // A scroll region was the other option and is worse twice over — it hides the very thing hovering is
 // FOR, and it takes the wheel from the transcript for as long as the pointer rests on the band.
 //
