@@ -2847,8 +2847,12 @@ function SendMessageCard({ to, summary, body, type, status, durationMs }: { to?:
 //     ABOVE it (in the `pt-3` gap). Only `z-[9]` keeps it above the scrolling content, never masking it.
 //   • `pt-3` keeps the rounded bubble off the pane's top edge (flush rounded corners read as broken)
 //     and leaves a gap the transcript scrolls through above the floating bubble.
-//   • `max-h` + `overflow-y-auto`: a user message taller than the pane scrolls WITHIN the bubble instead
-//     of swallowing the whole viewport.
+//   • THE WRAPPER IMPOSES NO CEILING. It is transparent and unclipped by design (a scroller here would
+//     eat the wheel over the content to its left, and a clip cannot keep the collapsed bubble's rounded
+//     corners), so the height cap lives on the CHILD — see UserBubble's four-line collapse below. Every
+//     renderer that can hold the pin therefore has to cap itself, and the ones that ignore `sticky`
+//     must never reach this band: a delivered wake did, and the uncapped card FrizzWake falls back to
+//     covered the whole transcript (maintainer 2026-08-21). `lastAskIndex` is what keeps them out.
 //   • `flex flex-col` re-establishes the column so Message's `self-end` bubble stays right-aligned; the
 //     full-width transparent wrapper leaves the left region clear for content to show through.
 //   • `pointer-events-none` on the wrapper + `pointer-events-auto` on the bubble: the transparent
@@ -2860,8 +2864,8 @@ function SendMessageCard({ to, summary, body, type, status, durationMs }: { to?:
 // anchors off it) while data-transcript-sticky tells captureTranscriptViewportAnchor to skip it — a
 // pinned band has an invariant top and must never be chosen as the load-earlier scroll anchor.
 // The positioning wrapper only: sticks the floating bubble to the pane top. The HEIGHT/collapse (the
-// ~200px cap, the bottom text-fade, and hover-to-expand) live on the bubble itself (UserBubble, driven
-// by the `sticky` prop on Message) so the collapsed card stays fully rounded — a wrapper clip can't.
+// four-line cap, the bottom text-fade, and hover-to-expand) live on the pinned renderer itself, driven
+// by the `sticky` prop on Message, so the collapsed card stays fully rounded — a wrapper clip can't.
 export function StickyUserBand({ children, stickyTopPx, sourceId }: { children: ReactNode; stickyTopPx?: number; sourceId?: string }) {
   const offset = stickyTopPx !== undefined
   return (
@@ -2880,13 +2884,100 @@ export function StickyUserBand({ children, stickyTopPx, sourceId }: { children: 
   )
 }
 
-// The user chat bubble, right-justified. When `sticky` (the pinned most-recent ask), it COLLAPSES: a
-// fully-rounded ~200px card whose text FADES into the bubble colour near the bottom (no hard clip, no
-// ellipsis) with a soft "there's more" cue; hovering expands it to the full message (up to 85vh, then
-// it scrolls) and leaving re-collapses. Non-sticky (every historical bubble) is the plain, uncapped
-// bubble, unchanged. Its own component so the sticky hover/measure hooks stay out of memoized Message.
-function UserBubble({ text, rawText, queued, sticky, deliveryUnconfirmed, deliveryId, sourceId }: { text: string; rawText?: string; queued?: boolean; sticky?: boolean; deliveryUnconfirmed?: boolean; deliveryId?: string; sourceId?: string }) {
+// ---- THE PINNED ASK'S COLLAPSE ---------------------------------------------------------------------
+// How tall the pinned current ask is allowed to be at REST. The band floats over the transcript, so
+// every pixel it occupies is a pixel of the conversation you cannot read while scrolling — and unlike
+// the ask itself, which you wrote and remember, that transcript is the thing you are actually reading.
+//
+// FOUR LINES, expressed in `lh` so the browser resolves it (maintainer 2026-08-25: "cap it to like
+// three or four lines"). `1lh` is one line box of the RESOLVED font, so this tracks the prose/mono
+// setting and the type scale with nothing to re-measure when either moves — the same reason the icon
+// nudges prefer `1cap` to a fitted constant. Under the fade the last of the four reads as a hint, so
+// what you actually get is three crisp lines and a fourth dissolving, which is the ask restated rather
+// than reproduced.
+//
+// The caller supplies its OWN vertical padding, because `max-height` is a border-box measurement and
+// the two things that can hold the pin do not agree on it — the bubble is `py-3`, the answers card is
+// `p-4`. Baking the bubble's in would silently give the card three lines and a bit.
+//
+// It replaced a flat 200px, which was ~8 lines of a 14px font — half a drawer, and that was BEFORE the
+// attachments below it, which the cap never covered at all (see the image row).
+const collapsedAskMax = (padY: string) => `calc(4lh + ${padY})`
+
+// The pinned ask's collapse machinery, shared by the two things that can BE the current ask: the human's
+// bubble and their composed answers card. It lived inside UserBubble until the answers card turned out
+// to hold the pin too and to have no cap of its own — the same defect class as the scheduler wake that
+// started this, one renderer further along.
+//
+// `ref` goes on the element being capped; `handlers` go on whatever the POINTER should count as
+// hovering, which is deliberately not the same node — a bubble's attachments render outside it.
+function useStickyCollapse(sticky: boolean | undefined, padY: string) {
   const ref = useRef<HTMLDivElement>(null)
+  const [expanded, setExpanded] = useState(false)
+  const [overflows, setOverflows] = useState(false)
+  // Whether the FULL message is taller than the expanded cap (85vh) — the ONLY case that genuinely
+  // needs a scrollbar. Everything shorter expands to fit, so it stays `overflow-hidden` even when
+  // expanded: no scrollbar ever appears (not even transiently mid-animation), so no reflow. (A real
+  // scrollbar, in the exceeds-cap case, rides a reserved gutter — see scrollbar-gutter in styles.css.)
+  const [exceedsCap, setExceedsCap] = useState(false)
+  // Scrolling is enabled only AFTER the expand animation finishes. During the grow, the box stays
+  // `overflow-hidden` — otherwise it's a live scroll container whose content scrolls as it resizes
+  // (the reported "card contents scroll during expansion" bug). transitionend flips this on.
+  const [scrollReady, setScrollReady] = useState(false)
+  // Measure the real content height so max-height animates BOTH ways smoothly (a bare collapsed↔85vh
+  // transition visibly lags on collapse) and so the fade shows ONLY when the text actually overflows.
+  const [maxH, setMaxH] = useState<string | null>(null)
+  const measure = useCallback(() => {
+    const el = ref.current
+    if (!sticky || !el) { setMaxH(null); setOverflows(false); setExceedsCap(false); return }
+    const cap = Math.round((typeof window === "undefined" ? 800 : window.innerHeight) * 0.85)
+    setExceedsCap(el.scrollHeight > cap)
+    // THE OVERFLOW TEST IS READ OFF THE BOX, not computed from a line height. `clientHeight` while
+    // collapsed IS whatever `calc(4lh + …)` resolved to in this font at this size, so the fade appears
+    // exactly when there is something under it — with no second copy of the cap's arithmetic here to
+    // drift from the CSS. It is only meaningful while collapsed; expanded, the box is the content.
+    if (!expanded) setOverflows(el.scrollHeight > el.clientHeight + 1)
+    setMaxH(expanded ? `${Math.min(el.scrollHeight, cap)}px` : collapsedAskMax(padY))
+  }, [sticky, expanded, padY])
+  useLayoutEffect(() => { measure() })
+  // Re-measure on viewport resize so the 85vh cap / exceedsCap gate never go stale under a window resize.
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const onResize = () => measure()
+    window.addEventListener("resize", onResize)
+    return () => window.removeEventListener("resize", onResize)
+  }, [measure])
+  const collapsed = sticky === true && !expanded
+  return {
+    ref,
+    collapsed,
+    overflows: collapsed && overflows,
+    maxH,
+    // Scroll ONLY when expanded, over the cap, AND the expand animation has settled.
+    scrollable: sticky === true && expanded && exceedsCap && scrollReady,
+    // Reserve the scrollbar's width in the states that lack the gutter, so the text width is identical
+    // across every state: zero reflow even for over-cap messages.
+    reserveGutter: sticky === true && exceedsCap && !(expanded && scrollReady),
+    handlers: sticky
+      ? {
+          onMouseEnter: () => setExpanded(true),
+          onMouseLeave: () => { setExpanded(false); setScrollReady(false) },
+        }
+      : {},
+    onCapTransitionEnd: sticky
+      ? (e: { propertyName: string }) => { if (e.propertyName === "max-height" && expanded && exceedsCap) setScrollReady(true) }
+      : undefined,
+  }
+}
+
+// The user chat bubble, right-justified. When `sticky` (the pinned most-recent ask), it COLLAPSES: a
+// fully-rounded four-line card whose text FADES into the bubble colour near the bottom (no hard clip, no
+// ellipsis) with a soft "there's more" cue, and whose ATTACHMENTS drop to a row of thumbnails; hovering
+// expands it to the full message (up to 85vh, then it scrolls) with the pictures back at full size, and
+// leaving re-collapses. Non-sticky (every historical bubble) is the plain, uncapped bubble, unchanged.
+// Its own component so the sticky hover/measure hooks stay out of memoized Message.
+function UserBubble({ text, rawText, queued, sticky, deliveryUnconfirmed, deliveryId, sourceId }: { text: string; rawText?: string; queued?: boolean; sticky?: boolean; deliveryUnconfirmed?: boolean; deliveryId?: string; sourceId?: string }) {
+  const { ref, collapsed, overflows, maxH, scrollable, reserveGutter, handlers, onCapTransitionEnd } = useStickyCollapse(sticky, "1.5rem") // py-3
   // TAKE IT BACK. A still-queued send is the one bubble in the transcript that isn't history yet, so
   // it alone is clickable: the click unqueues it at the provider and hands the words back to the
   // prompt box (see lib/unqueueFollowUp.ts). Three gates, all of them load-bearing:
@@ -2923,44 +3014,16 @@ function UserBubble({ text, rawText, queued, sticky, deliveryUnconfirmed, delive
   // splitProseAttachments, the agent-prose splitter) it never swallows a ::directive or mermaid line.
   // `text` itself stays whole for the unqueue payload below — restoreDraft must hand the paths back.
   const { prose, attachments } = useMemo(() => splitComposerValue(text), [text])
-  const [expanded, setExpanded] = useState(false)
-  const [overflows, setOverflows] = useState(false)
-  // Whether the FULL message is taller than the expanded cap (85vh) — the ONLY case that genuinely
-  // needs a scrollbar. Everything shorter expands to fit, so it stays `overflow-hidden` even when
-  // expanded: no scrollbar ever appears (not even transiently mid-animation), so no reflow. (A real
-  // scrollbar, in the exceeds-cap case, rides a reserved gutter — see scrollbar-gutter in styles.css.)
-  const [exceedsCap, setExceedsCap] = useState(false)
-  // Scrolling is enabled only AFTER the expand animation finishes. During the grow, the bubble stays
-  // `overflow-hidden` — otherwise it's a live scroll container whose content scrolls as it resizes
-  // (the reported "card contents scroll during expansion" bug). transitionend flips this on.
-  const [scrollReady, setScrollReady] = useState(false)
-  // Measure the real content height so max-height animates BOTH ways smoothly (a bare 200px↔85vh
-  // transition visibly lags on collapse) and so the fade shows ONLY when the text actually overflows.
-  const [maxH, setMaxH] = useState<string | null>(null)
-  const measure = useCallback(() => {
-    const el = ref.current
-    if (!sticky || !el) { setMaxH(null); setOverflows(false); setExceedsCap(false); return }
-    const cap = Math.round((typeof window === "undefined" ? 800 : window.innerHeight) * 0.85)
-    setOverflows(el.scrollHeight > 205)
-    setExceedsCap(el.scrollHeight > cap)
-    setMaxH(expanded ? `${Math.min(el.scrollHeight, cap)}px` : "200px")
-  }, [sticky, expanded])
-  useLayoutEffect(() => { measure() }, [measure, text])
-  // Re-measure on viewport resize so the 85vh cap / exceedsCap gate never go stale under a window resize.
-  useEffect(() => {
-    if (typeof window === "undefined") return
-    const onResize = () => measure()
-    window.addEventListener("resize", onResize)
-    return () => window.removeEventListener("resize", onResize)
-  }, [measure])
-  const collapsed = sticky === true && !expanded
-  // Scroll ONLY when expanded, over the cap, AND the expand animation has settled.
-  const scrollable = sticky === true && expanded && exceedsCap && scrollReady
   return (
     // `self-end` must stay on THIS node: the parent scroll container is a flex column and the bubble's
     // right-justification depends on being its direct child (see the group-container note above the
     // queued-message stack).
-    <div data-frizz-msg={sourceId} className="self-end flex flex-col items-end gap-0.5 max-w-[85%]">
+    //
+    // THE HOVER LIVES HERE, not on the bubble, because the attachments are the bubble's SIBLINGS (they
+    // render outside it, on the dark page — see the row below). Hung on the bubble, moving the pointer
+    // onto a pinned screenshot collapsed the very thing you were reaching for, and the picture — the
+    // biggest thing in the band — could never be expanded by pointing at it.
+    <div data-frizz-msg={sourceId} {...handlers} className="self-end flex flex-col items-end gap-0.5 max-w-[85%]">
       {/* OFF-WHITE bubble, BLACK text — the human's words POP against the dark page + agent prose. bg-user-bubble
           is a tick less white than bg-fg so it reads as a card. whitespace-pre-wrap is load-bearing: user text
           is verbatim, so its line breaks must survive. Skipped entirely for an attachment-only send, so the
@@ -2986,16 +3049,14 @@ function UserBubble({ text, rawText, queued, sticky, deliveryUnconfirmed, delive
               unqueue({ deliveryId: deliveryId!, text, rawText: rawText ?? text, from: e.currentTarget })
             },
           } : {})}
-          onMouseEnter={sticky ? () => setExpanded(true) : undefined}
-          onMouseLeave={sticky ? () => { setExpanded(false); setScrollReady(false) } : undefined}
-          onTransitionEnd={sticky ? (e) => { if (e.propertyName === "max-height" && expanded && exceedsCap) setScrollReady(true) } : undefined}
+          onTransitionEnd={onCapTransitionEnd}
           // While NOT scrollable (collapsed, or expanding before it settles) the bubble is `overflow-hidden`
           // and so lacks the scrollbar-gutter the scrollable state reserves — a 7px text shift when scroll
           // turns on. Reserve the SAME width (`--sbw`, the app's scrollbar width) here so the text width is
           // identical across every state: zero reflow even for over-cap messages.
           style={{
             ...(maxH ? { maxHeight: maxH } : {}),
-            ...(sticky && exceedsCap && !scrollable ? { paddingRight: "calc(0.875rem + var(--sbw))" } : {}),
+            ...(reserveGutter ? { paddingRight: "calc(0.875rem + var(--sbw))" } : {}),
           }}
           // A retractable bubble LIFTS to FULL opacity under the pointer — so the one message in the
           // transcript that is still yours to change says so on hover instead of needing a permanent
@@ -3047,7 +3108,40 @@ function UserBubble({ text, rawText, queued, sticky, deliveryUnconfirmed, delive
           noise the human already knows, and a failed load falls back to the path text anyway. */}
       {attachments.length > 0 && (
         <div className="mt-1 flex flex-col items-end gap-1.5">
-          {attachments.filter((a) => a.kind === "image").map((a, i) => <BlockImage key={`i${i}-${a.path}`} path={a.path} hideCaption />)}
+          {/* THE PICTURES COLLAPSE TOO, and this is the half the old cap never reached: attachments are
+              the bubble's SIBLINGS, so a 420px screenshot (FRAMED_IMAGE's ceiling) hung under a capped
+              bubble and floated over the transcript at full size on every scroll — the complaint that
+              reopened this (maintainer 2026-08-25: "if there's images, we should make sure to shrink up
+              the images, so when you scroll, they don't cover the whole screen").
+              Collapsed they are THUMBNAILS ON ONE ROW THAT NEVER WRAPS. `object-contain` keeps each
+              aspect, so a height clamp alone narrows them, and `min-w-0` lets them SHRINK below their
+              intrinsic width when there are more than the band is wide — which is what makes the cost
+              of N pictures one band of height at ANY width, rather than N. Measured in a 403px-wide
+              drawer band: one thumb 96px tall, two 89px, three 57px, and the whole collapsed ask 242px
+              → 203px as pictures are added. Expanded, the clamp lifts and the column returns — the
+              pictures go back to exactly the size they render at everywhere else, which is what
+              hovering is FOR.
+              `flex-wrap` was the first attempt and it is a trap here: the max-content size of a MULTI-LINE
+              flex container is its widest ITEM, not the sum of them, so inside this shrink-to-fit column
+              the row collapsed to one thumb's width and every picture took its own line — three
+              screenshots came to 474px in a 437px pane, i.e. the defect this row exists to fix. `w-full`
+              does not rescue it either, because the parent it would fill has already collapsed the same way.
+              The thumb ceiling is a flat rem, NOT the prose cap's `4lh`: `lh` inside the frame resolves
+              against the FRAME's mono type (frizz-bash), not the bubble's prose type, so the same
+              expression means two different heights in the two halves — it measured 69px here against
+              the bubble's 108px. 6rem + the frame's 14px of border and mat lands the thumb at ~110px,
+              level with the collapsed bubble, so a collapsed ask reads as one band rather than two. */}
+          {attachments.some((a) => a.kind === "image") && (
+            <div
+              className={`flex gap-1.5 ${
+                collapsed
+                  ? "max-w-full flex-row flex-nowrap justify-end [&>*]:min-w-0 [&_img]:max-h-24"
+                  : "flex-col items-end"
+              }`}
+            >
+              {attachments.filter((a) => a.kind === "image").map((a, i) => <BlockImage key={`i${i}-${a.path}`} path={a.path} hideCaption />)}
+            </div>
+          )}
           {/* Docs share one WRAPPING row (mirroring SentFilesCard) — a column would spend a whole line
               on each pill. `justify-end` keeps the run flush with the bubble's right edge. */}
           {attachments.some((a) => a.kind === "file") && (
@@ -3127,7 +3221,7 @@ export const Message = memo(function Message({ m, answering, dense, paired, stic
     // renders as a structured answers card echoing the question component — not a flat run-on bubble.
     // Non-matching text (and a parse hiccup → null) falls back to the plain bubble; text is never lost.
     const answers = paired !== undefined ? paired : parseAnswersCard(text)
-    if (answers) return <AnswersCard answers={answers} queued={m.queued} sourceId={m.sourceId} />
+    if (answers) return <AnswersCard answers={answers} queued={m.queued} sticky={sticky} sourceId={m.sourceId} />
     // A scheduler wake is recorded as a user turn because it is pasted into the worker's composer —
     // but FRIZZ wrote it, not the human, so it must not wear the human's off-white right-justified
     // bubble. `m.wake` is the server's own tell (the delivery token it stripped), never a text guess.
@@ -3348,10 +3442,20 @@ export const Message = memo(function Message({ m, answering, dense, paired, stic
 // and a second number can only COMPETE with whatever numbering the worker used inside the question text:
 // a batch answering a BURIED ask renumbers its rows from 1 (they may span several messages), so
 // answering questions 9–11 of an earlier ask rendered "1" against a question that reads "9. …".
-function AnswersCard({ answers, queued, sourceId }: { answers: PairedAnswer[]; queued?: boolean; sourceId?: string }) {
+function AnswersCard({ answers, queued, sticky, sourceId }: { answers: PairedAnswer[]; queued?: boolean; sticky?: boolean; sourceId?: string }) {
+  // THE OTHER THING THAT CAN HOLD THE PIN. A composed multi-block answer is the human's own current ask,
+  // so unlike a scheduler wake it BELONGS in the band — but it ignored `sticky` entirely and had no
+  // ceiling, so answering four questions with pasted paragraphs floated an unbounded card over the
+  // transcript. Same collapse as the bubble beside it: four lines, a fade, hover for the rest.
+  const { ref, collapsed, overflows, maxH, scrollable, reserveGutter, handlers, onCapTransitionEnd } = useStickyCollapse(sticky, "2rem") // p-4
   return (
-    <div data-frizz-msg={sourceId} data-answers-card className={`self-end flex w-full max-w-[85%] flex-col items-end ${queued ? "opacity-50" : ""}`}>
-      <div className={`w-full min-w-0 ${BLOCK_RADIUS} rounded-br-sm border border-border-strong bg-elevated p-4`}>
+    <div data-frizz-msg={sourceId} data-answers-card {...handlers} className={`self-end flex w-full max-w-[85%] flex-col items-end ${queued ? "opacity-50" : ""}`}>
+      <div
+        ref={ref}
+        onTransitionEnd={onCapTransitionEnd}
+        style={{ ...(maxH ? { maxHeight: maxH } : {}), ...(reserveGutter ? { paddingRight: "calc(1rem + var(--sbw))" } : {}) }}
+        className={`relative w-full min-w-0 ${BLOCK_RADIUS} rounded-br-sm border border-border-strong bg-elevated p-4 ${sticky ? `transition-[max-height] duration-200 ease-out ${scrollable ? "overflow-y-auto" : "overflow-hidden"}` : ""}`}
+      >
         <CardHead icon={ListChecks} label="Answers" />
         <CardContent>
           <div className="flex flex-col gap-2.5">
@@ -3378,6 +3482,11 @@ function AnswersCard({ answers, queued, sourceId }: { answers: PairedAnswer[]; q
             ))}
           </div>
         </CardContent>
+        {/* Same soft "there's more" cue the bubble wears, in THIS card's fill rather than the bubble's —
+            a hard clip on a bordered card reads as a broken card, not as a collapsed one. */}
+        {overflows && (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-elevated to-transparent" />
+        )}
       </div>
     </div>
   )

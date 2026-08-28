@@ -13,11 +13,12 @@ test("messagePresentationText leaves ordinary messages and HTML comments untouch
   assert.equal(messagePresentationText({ text }), text)
 })
 
-test("lastAskIndex pins the human's latest landed turn, never a queued one or a sub-agent's report", () => {
+test("lastAskIndex pins the human's latest landed turn, never a queued one, a sub-agent's report or a wake", () => {
   const ask = { role: "user" as const }
   const reply = { role: "assistant" as const }
   const report = { role: "user" as const, peerFrom: "bun_project_survey" }
   const queued = { role: "user" as const, queued: true }
+  const wake = { role: "user" as const, wake: true }
 
   assert.equal(lastAskIndex([ask, reply]), 0)
   // An orchestrator's children report continuously; each is a `user` row the human never wrote, and
@@ -25,8 +26,13 @@ test("lastAskIndex pins the human's latest landed turn, never a queued one or a 
   assert.equal(lastAskIndex([ask, reply, report, report]), 0)
   // A queued follow-up pins to the bottom until it lands, so it is not the ask either.
   assert.equal(lastAskIndex([ask, report, queued]), 0)
+  // A SCHEDULER WAKE is frizz's own turn, not the human's — and unlike every bubble it renders as an
+  // uncapped card, so pinning one floats the whole delivered prompt over the transcript.
+  assert.equal(lastAskIndex([ask, reply, wake]), 0)
+  assert.equal(lastAskIndex([ask, wake, report, wake]), 0)
   // A genuine later human turn does take the pin back.
   assert.equal(lastAskIndex([ask, report, { role: "user" as const }]), 2)
   assert.equal(lastAskIndex([reply, report]), -1)
+  assert.equal(lastAskIndex([reply, wake]), -1)
   assert.equal(lastAskIndex([]), -1)
 })

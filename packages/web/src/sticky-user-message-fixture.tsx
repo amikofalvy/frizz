@@ -13,14 +13,26 @@ import "./styles.css"
 // of the scroll pane in BOTH the drawer (ChatView) and the queue card (TodosView), with top padding
 // and a max-height that gives a very tall ask its own internal scroll.
 //   ?surface=queue|drawer   which surface to render (default queue)
-//   ?size=short|tall        short one-line ask, or a very tall ask (exercise max-h + inner scroll)
+//   ?size=short|tall|wake   short one-line ask; a very tall ask (exercise max-h + inner scroll); or a
+//                           tall SCHEDULER WAKE landing after the human's ask — frizz's own turn, which
+//                           is NOT the current ask and so must never take the pin (lastAskIndex).
+//                           `?size=answers` pins the OTHER thing that can be the current ask — the
+//                           human's composed multi-block answer, which renders as AnswersCard rather
+//                           than a bubble and collapses on the same four-line rule.
+//                           QA `?size=wake` on BOTH surfaces: each pins from its own call site, and
+//                           they carried this defect independently until both were pointed at
+//                           lastAskIndex.
 //   ?sticky=on|off  the client stickyUserMessage view pref. Pinned ON by default HERE (the app's own
 //                   default is off) — this fixture exists to QA the pinned band, so it must show one.
+//   ?img=<abs path> attach that picture to the pinned ask (repeatable, comma-separated). The
+//                   attachments render OUTSIDE the bubble, so they are capped separately from the
+//                   prose — collapsed they are a row of thumbnails, hovered they return to full size.
+//                   Load through the adhoc stack, whose /local-image serves os.tmpdir().
 const params = new URLSearchParams(location.search)
 const surfaceParam = params.get("surface")
 const surface = surfaceParam === "drawer" ? "drawer" : surfaceParam === "fence" ? "fence" : surfaceParam === "sentfiles" ? "sentfiles" : "queue"
 const sizeParam = params.get("size")
-const size = sizeParam === "tall" ? "tall" : sizeParam === "medium" ? "medium" : "short"
+const size = sizeParam === "tall" ? "tall" : sizeParam === "medium" ? "medium" : sizeParam === "wake" ? "wake" : sizeParam === "answers" ? "answers" : "short"
 prefs.stickyUserMessage = params.get("sticky") !== "off"
 
 const SLUG = "sticky-demo"
@@ -35,17 +47,54 @@ const mediumAsk = Array.from({ length: 8 }, (_, i) =>
 const tallAsk = Array.from({ length: 30 }, (_, i) =>
   `Line ${i + 1}: this is a deliberately very tall user message so the pinned band exceeds the pane height and must scroll within its own max-height instead of swallowing the whole viewport.`,
 ).join("\n")
-const askFor = (s: typeof size) => (s === "tall" ? tallAsk : s === "medium" ? mediumAsk : shortAsk)
+// The wire form useLiveAnswering.sendAnswers writes for a multi-block answer, which parseAnswersCard
+// turns back into the structured card. Long free-text answers are the case that made it uncappable.
+const answersAsk = [
+  "Answers:",
+  ...Array.from({ length: 5 }, (_, i) =>
+    `${i + 1}. Option ${String.fromCharCode(65 + i)} — and a long free-text rider on top of the choice, because an answer block accepts continuation lines and pasted paragraphs, which is exactly how this card grew past the pane.`),
+].join("\n")
+const askFor = (s: typeof size) => (s === "tall" ? tallAsk : s === "medium" ? mediumAsk : s === "answers" ? answersAsk : shortAsk)
+
+// A WAKE FRIZZ DELIVERED, in the shape that broke this band: a worker's own scheduled prompt, pasted
+// back in. It is recorded as a `user` turn because frizz pastes it into the worker's composer, so
+// `wake` is the server's tell that frizz — not the human — wrote it.
+//
+// No parser in FrizzWake recognizes this text, so it takes the unstructured fallback: a full
+// TranscriptCard holding the WHOLE delivered prompt, with no height cap and no `sticky` handling.
+// Pinned, that card floated over the entire transcript. The wakes that DO parse (a fired timer with its
+// trailer, a PR poll, a shell finishing) draw a one-line divider instead — a quieter symptom of the
+// identical defect, since a hairline pinned in the ask band is still standing where the human's
+// instruction should be. Both are excluded by the same guard.
+const unparsedWake = [
+  "PRD-8179 ceiling follow-up / PR #3787 check-in. Worktree `.claude/worktrees/prd-8179-ax-mode-instrumentation`, branch `fix/prd-8179-pin-annotation-ceiling`, HEAD 9d2de14e74 (3 commits, TESTS + COMMENTS ONLY).",
+  "REVIEW LOOP IS CLOSED. The 23:15Z review was APPROVE WITH SUGGESTIONS (Risk: Low), its single Minor is fixed in the final commit, and its two other items were self-discarded as pre-existing and out of scope. DO NOT start another polish round.",
+  "1. `gh pr view 3787 --json state,mergedAt,mergeStateStatus` + queue timeline.\n   - MERGED → check for any review newer than 2026-08-21T23:15:48Z. If nothing Major landed: drop the watcher and sign off.\n   - still queued / CI pending → set a NEW ~45min timer and name the PR AND the new timer id. A fired one-shot is spent.\n   - `removed_from_merge_queue` → DO NOT REBASE; the queue is ALLGREEN/max-5, so another PR's failure dequeues the whole group.",
+  "PUSH-LOCK: dequeue via `gh api graphql`, push, then re-arm `gh pr merge 3787 --squash --auto`.",
+  "Node 24: export PATH=\"/Users/you/.local/share/fnm/node-versions/v24.18.0/installation/bin:$PATH\". Never run lint and the full test suite concurrently.",
+].join("\n\n")
 
 const longReply = Array.from({ length: 40 }, (_, i) =>
   `**Paragraph ${i + 1}.** The assistant reply is intentionally long so the pane scrolls and the pinned ask stays visible above it. Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.`,
 ).join("\n\n")
 
+// The composer parks attachments as TRAILING standalone absolute-path lines and the bubble peels them
+// back off (splitComposerValue), so a fixture attachment is spelled exactly the way a real send is.
+const askImages = (params.get("img") ?? "").split(",").map((p) => p.trim()).filter(Boolean)
+const withAttachments = (prose: string) => [prose, ...askImages].join("\n")
+
 const messages: TranscriptMessage[] = [
   { sourceId: "u0", role: "user", text: "First, an older ask that should scroll away normally.", tools: [], parts: [] },
   { sourceId: "a0", role: "assistant", text: "Sure — here is an earlier reply.", tools: [], parts: [{ kind: "text", text: "Sure — here is an earlier reply." }] },
-  { sourceId: "u1", role: "user", text: askFor(size), tools: [], parts: [] },
+  // THE PINNED ASK. Under `?size=answers` its text is the answers wire form, so it renders as
+  // AnswersCard rather than a bubble — unpaired with any question, which is all this fixture needs.
+  { sourceId: "u1", role: "user", text: withAttachments(askFor(size === "wake" ? "short" : size)), tools: [], parts: [] },
   { sourceId: "a1", role: "assistant", text: longReply, tools: [], parts: [{ kind: "text", text: longReply }] },
+  // The wake lands LAST, after the reply — exactly where a delivered wake lands. The human's ask above it
+  // must keep the pin, and this card must stay in the flow at the bottom of the transcript.
+  ...(size === "wake"
+    ? [{ sourceId: "w1", role: "user", text: unparsedWake, wake: true, tools: [], parts: [] } as TranscriptMessage]
+    : []),
 ]
 
 const thread: ThreadViewModel = {

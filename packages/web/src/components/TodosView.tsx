@@ -11,6 +11,7 @@ import { orderQueue, queued, displayTitle, lastActiveLabelAt } from "../groups.t
 import { useLiveAnswering } from "../lib/answering.ts"
 import { shouldSubmitStagedEnter } from "../lib/composerKeyboard.ts"
 import { hasQuestionBlock } from "../lib/questionBlocks.ts"
+import { lastAskIndex } from "../lib/messagePresentation.ts"
 import { collapseMiddleRuns, opensQueueSegment, queueCollapseSegments, segmentFolds, supersededAskIndices, survivesQueueCollapse } from "../lib/queueCollapse.ts"
 import { pairAllAnswers } from "../lib/answersMessage.ts"
 import { Message, PermPolicyDenialCard, PermPromptBanner, PendingAskCard, StickyUserBand, VSpace, STEP, messageTailIsMeta, messageHeadIsMeta, messageRendersNothing, messageHasRenderableText, lastAssistantIndex } from "./ChatView.tsx"
@@ -832,10 +833,23 @@ const QueueCard = memo(function QueueCard({ thread, leaving, onResolve, onUnreso
     }
     return 0
   }, [messages])
-  // Which message gets pinned to the pane top (StickyUserBand). The most recent LANDED user message —
-  // queued/optimistic follow-ups pin to the card bottom and aren't the "current ask", and are skipped
-  // by the first render pass anyway, so anchoring the band on one would drop it entirely. -1 → none.
-  const stickyUserIdx = useMemo(() => {
+  // Which message gets pinned to the pane top (StickyUserBand) — the HUMAN'S CURRENT ASK, on exactly
+  // the predicate the thread view pins on. -1 → nothing pinned.
+  //
+  // This used to be its own `role === "user" && !queued` walk, which is not the same thing: frizz writes
+  // as the user too, and `lastAskIndex` already knows it. A fired one-off timer is a `user` record, so it
+  // won the pin — and unlike a bubble (which collapses to four lines with hover-to-expand) a wake ignores
+  // `sticky` entirely, so an unparsed one took FrizzWake's uncapped fallback card and the WHOLE delivered
+  // prompt floated over the queue card and hid it (maintainer 2026-08-21: "this dialog covers the entire
+  // chat contents"). `lastAskIndex` is the shared answer, and it also drops a sub-agent's upward report,
+  // which this walk never excluded either.
+  const stickyUserIdx = useMemo(() => lastAskIndex(messages), [messages])
+  // The COLLAPSE's own anchor test, deliberately NOT the pin. It asks something weaker — "is there any
+  // landed user row above the first fold for the collapse to hang under" — and a wake row is one, in
+  // flow, whether or not it is pinned. Keeping the old walk here is what makes the pin fix change the
+  // pin and nothing else; folding the two together would silently switch collapsing off on a
+  // wake-driven card that has no rest divider above it.
+  const anchorRowIdx = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === "user" && !messages[i].queued) return i
     return -1
   }, [messages])
@@ -929,7 +943,7 @@ const QueueCard = memo(function QueueCard({ thread, leaving, onResolve, onUnreso
   // Collapse unless the reader has opted into the full log. Gated on there being something ABOVE the
   // first fold to anchor it — a pinned ask, or a rest divider a wake-driven turn opens on.
   const collapseIntermediate =
-    !intermediateExpanded && (stickyUserIdx >= 0 || restTurnStart > 0) && segments.length > 0
+    !intermediateExpanded && (anchorRowIdx >= 0 || restTurnStart > 0) && segments.length > 0
   // THE HUMAN'S LAST MESSAGE WINS, even when the agent has rested since. It used to be capped at the
   // current turn (`Math.max` with `restTurnStart`) on the reasoning that a closed turn is history the
   // drawer already holds — but with frizz driving threads across many rests, "the current turn" is a
