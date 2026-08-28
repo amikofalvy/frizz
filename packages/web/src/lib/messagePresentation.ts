@@ -35,3 +35,24 @@ export function lastAskIndex(messages: readonly Pick<TranscriptMessage, "role" |
   }
   return -1
 }
+
+// THE TURN A PROVIDER FAULT INTERRUPTED — what ProviderFaultCard's Retry re-SENDS after a sign-in, and
+// deliberately not the same question as the pin above.
+//
+// The two diverge on `wake` alone. The band asks "whose words are these", because it is a REMINDER of
+// what the human is waiting on and frizz's own scheduled turn is not that. Retry asks "what failed",
+// and a wake that the provider rejected is exactly what failed: substituting the previous human ask
+// would resend words already answered and silently drop the scheduled work the fault interrupted. A
+// signed-out provider rejecting a freshly delivered wake is a real path, and the auth-error record is
+// never written as an assistant row, so the wake genuinely is the last visible turn when it happens.
+//
+// `peerFrom` and `queued` are excluded for BOTH consumers and for the same reasons they always were: a
+// child's report must never be resent as the human's words, and a queued follow-up has not been sent
+// yet, so there is nothing to re-send.
+export function lastRetryIndex(messages: readonly Pick<TranscriptMessage, "role" | "queued" | "peerFrom">[]): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (m.role === "user" && !m.queued && !m.peerFrom) return i
+  }
+  return -1
+}

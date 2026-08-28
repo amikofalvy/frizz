@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { lastAskIndex, messagePresentationText } from "./messagePresentation.ts"
+import { lastAskIndex, lastRetryIndex, messagePresentationText } from "./messagePresentation.ts"
 
 test("messagePresentationText prefers a validated display projection without changing full text", () => {
   const message = { text: "compact\n\n<!-- boundary -->\n\nlarge machine tail", displayText: "compact" }
@@ -35,4 +35,23 @@ test("lastAskIndex pins the human's latest landed turn, never a queued one, a su
   assert.equal(lastAskIndex([reply, report]), -1)
   assert.equal(lastAskIndex([reply, wake]), -1)
   assert.equal(lastAskIndex([]), -1)
+})
+
+test("lastRetryIndex re-sends the turn that faulted, wake included, never a queued or peer turn", () => {
+  const ask = { role: "user" as const }
+  const reply = { role: "assistant" as const }
+  const report = { role: "user" as const, peerFrom: "bun_project_survey" }
+  const queued = { role: "user" as const, queued: true }
+  const wake = { role: "user" as const, wake: true }
+
+  // THE DIVERGENCE FROM lastAskIndex, and the whole reason this exists: a provider fault on a
+  // freshly delivered wake must retry THAT wake, not resend an older ask the worker already answered.
+  assert.equal(lastRetryIndex([ask, reply, wake]), 2)
+  assert.equal(lastAskIndex([ask, reply, wake]), 0)
+  // Everything else the two agree on.
+  assert.equal(lastRetryIndex([ask, reply]), 0)
+  assert.equal(lastRetryIndex([ask, wake, report]), 1)
+  assert.equal(lastRetryIndex([ask, wake, queued]), 1)
+  assert.equal(lastRetryIndex([reply, report]), -1)
+  assert.equal(lastRetryIndex([]), -1)
 })

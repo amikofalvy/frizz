@@ -37,7 +37,7 @@ import { useDeliverQueuedNow, useDeliverQueuedNowSupported } from "../lib/delive
 import { useInnerHtml } from "../lib/innerHtml.ts"
 import { useLocalFileCodeLinks } from "../lib/localFileCode.ts"
 import { shouldSubmitStagedEnter } from "../lib/composerKeyboard.ts"
-import { lastAskIndex, messagePresentationText } from "../lib/messagePresentation.ts"
+import { lastAskIndex, lastRetryIndex, messagePresentationText } from "../lib/messagePresentation.ts"
 import { snoozePresetInstant, formatSnoozeWake } from "../lib/snooze.ts"
 import { noteGithubRefs } from "../lib/githubHovercards.ts"
 import { AWAITING_FALLBACK_TITLE, AWAITING_PARK_BUTTON, awaitingForLabel, awaitingItemLabels, awaitingParkAction, awaitingPresentationLine, prWatchRefs } from "../lib/awaitingPresentation.ts"
@@ -264,6 +264,9 @@ function ChatView({ slug, virtualized }: { slug: string; virtualized: boolean })
   // why) — pinned to the top of the pane via StickyUserBand so it stays visible while the agent's reply
   // scrolls under it. -1 when the transcript has no human turn yet.
   const lastUserIdx = useMemo(() => lastAskIndex(messages), [messages])
+  // NOT the same index as the pin. Retry re-SENDS its text, so it wants the turn that actually
+  // faulted — a wake included — while the band wants the human's own words. See lastRetryIndex.
+  const lastRetryIdx = useMemo(() => lastRetryIndex(messages), [messages])
   // Client view pref: how (or whether) to pin the current ask to the pane top. `off` → no pin.
   const { stickyUserMessage } = useSnapshot(prefs)
   // Question-block interactivity in the thread view: EVERY ask stays answerable, wherever it sits —
@@ -504,7 +507,7 @@ function ChatView({ slug, virtualized }: { slug: string; virtualized: boolean })
                 slug={slug}
                 sessionId={thread.sessionId}
                 fault={thread.providerFault}
-                retryText={lastUserIdx >= 0 ? messages[lastUserIdx]?.text : undefined}
+                retryText={lastRetryIdx >= 0 ? messages[lastRetryIdx]?.text : undefined}
               />
             ) : thread?.limitPause && !thread.foreign ? (
               <LimitPauseCard slug={slug} sessionId={thread.sessionId} pause={thread.limitPause} />
@@ -693,6 +696,9 @@ function VirtualizedThreadTranscript({
     }))
   }, [activityMessages, lastAgentIdx])
   const lastUserIdx = useMemo(() => lastAskIndex(messages), [messages])
+  // NOT the same index as the pin. Retry re-SENDS its text, so it wants the turn that actually
+  // faulted — a wake included — while the band wants the human's own words. See lastRetryIndex.
+  const lastRetryIdx = useMemo(() => lastRetryIndex(messages), [messages])
   const hasRuntimeStatus = Boolean(
     (thread?.providerFault && !thread.foreign)
       || (thread?.limitPause && !thread.foreign)
@@ -1256,7 +1262,7 @@ function VirtualizedThreadTranscript({
             ) : row.kind === "runtime-status" ? (
               <div className="px-6" style={{ paddingTop: runtimeStatusGap }}>
                 {thread?.providerFault && !thread.foreign ? (
-                  <ProviderFaultCard slug={slug} sessionId={thread.sessionId} fault={thread.providerFault} retryText={lastUserIdx >= 0 ? messages[lastUserIdx]?.text : undefined} />
+                  <ProviderFaultCard slug={slug} sessionId={thread.sessionId} fault={thread.providerFault} retryText={lastRetryIdx >= 0 ? messages[lastRetryIdx]?.text : undefined} />
                 ) : thread?.limitPause && !thread.foreign ? (
                   <LimitPauseCard slug={slug} sessionId={thread.sessionId} pause={thread.limitPause} />
                 ) : (thread?.pendingInteraction ? undefined : thread?.pendingAsk) ? (
@@ -2896,9 +2902,10 @@ export function StickyUserBand({ children, stickyTopPx, sourceId }: { children: 
 // what you actually get is three crisp lines and a fourth dissolving, which is the ask restated rather
 // than reproduced.
 //
-// The caller supplies its OWN vertical padding, because `max-height` is a border-box measurement and
-// the two things that can hold the pin do not agree on it — the bubble is `py-3`, the answers card is
-// `p-4`. Baking the bubble's in would silently give the card three lines and a bit.
+// The caller supplies the vertical padding of the box it is capping, because `max-height` is a
+// border-box measurement: the bubble caps ITSELF and pays its `py-3`, while the answers card caps the
+// answer rows inside its chrome and so pays nothing. Baking the bubble's figure in would have given
+// the card a budget it then spent on its own header.
 //
 // It replaced a flat 200px, which was ~8 lines of a 14px font — half a drawer, and that was BEFORE the
 // attachments below it, which the cap never covered at all (see the image row).
@@ -2964,8 +2971,20 @@ function useStickyCollapse(sticky: boolean | undefined, padY: string) {
           onMouseLeave: () => { setExpanded(false); setScrollReady(false) },
         }
       : {},
+    // RE-MEASURE WHEN THE ANIMATION LANDS, which is the only moment the box is the size the state
+    // says it is. `measure()` on the leave RENDER reads a box still mid-transition — max-height
+    // animates length→length, so `clientHeight` is still the EXPANDED height in that task. For a
+    // message shorter than the 85vh cap, expanded clientHeight IS scrollHeight, so the overflow test
+    // read false, `Message` is memoized so nothing re-measured, and the pinned ask stayed hard-clipped
+    // mid-word with no fade for the rest of the session — the "hard cut reads as broken" this fade
+    // exists to prevent. Measured on the queue card at 1800x1000 with a 528px ask: fade present, hover,
+    // leave, fade gone forever. The scrollReady flip stays the expanded-and-over-cap special case.
     onCapTransitionEnd: sticky
-      ? (e: { propertyName: string }) => { if (e.propertyName === "max-height" && expanded && exceedsCap) setScrollReady(true) }
+      ? (e: { propertyName: string }) => {
+          if (e.propertyName !== "max-height") return
+          if (expanded && exceedsCap) setScrollReady(true)
+          measure()
+        }
       : undefined,
   }
 }
@@ -3447,18 +3466,24 @@ function AnswersCard({ answers, queued, sticky, sourceId }: { answers: PairedAns
   // so unlike a scheduler wake it BELONGS in the band — but it ignored `sticky` entirely and had no
   // ceiling, so answering four questions with pasted paragraphs floated an unbounded card over the
   // transcript. Same collapse as the bubble beside it: four lines, a fade, hover for the rest.
-  const { ref, collapsed, overflows, maxH, scrollable, reserveGutter, handlers, onCapTransitionEnd } = useStickyCollapse(sticky, "2rem") // p-4
+  //
+  // THE CAP SITS ON THE ANSWERS, NOT ON THE CARD, so `padY` is zero: the capped box is the answer rows
+  // and nothing else. Capping the card root instead spends the four-line budget on chrome — at the 13px
+  // body type `4lh` is 78px of content box, and this card's head (`text-[16px] leading-6` = 24px) plus
+  // CardContent's `mt-1` take 28px of it, leaving ~2.5 lines. A collapsed pinned card then reads as a
+  // header and half an answer, not as the human's own words, while the bubble beside it shows four.
+  const { ref, collapsed, overflows, maxH, scrollable, reserveGutter, handlers, onCapTransitionEnd } = useStickyCollapse(sticky, "0px")
   return (
     <div data-frizz-msg={sourceId} data-answers-card {...handlers} className={`self-end flex w-full max-w-[85%] flex-col items-end ${queued ? "opacity-50" : ""}`}>
-      <div
-        ref={ref}
-        onTransitionEnd={onCapTransitionEnd}
-        style={{ ...(maxH ? { maxHeight: maxH } : {}), ...(reserveGutter ? { paddingRight: "calc(1rem + var(--sbw))" } : {}) }}
-        className={`relative w-full min-w-0 ${BLOCK_RADIUS} rounded-br-sm border border-border-strong bg-elevated p-4 ${sticky ? `transition-[max-height] duration-200 ease-out ${scrollable ? "overflow-y-auto" : "overflow-hidden"}` : ""}`}
-      >
+      <div className={`relative w-full min-w-0 ${BLOCK_RADIUS} rounded-br-sm border border-border-strong bg-elevated p-4`}>
         <CardHead icon={ListChecks} label="Answers" />
         <CardContent>
-          <div className="flex flex-col gap-2.5">
+          <div
+            ref={ref}
+            onTransitionEnd={onCapTransitionEnd}
+            style={{ ...(maxH ? { maxHeight: maxH } : {}), ...(reserveGutter ? { paddingRight: "var(--sbw)" } : {}) }}
+            className={`flex flex-col gap-2.5 ${sticky ? `transition-[max-height] duration-200 ease-out ${scrollable ? "overflow-y-auto" : "overflow-hidden"}` : ""}`}
+          >
             {answers.map((a, i) => (
               <div key={i} className="flex flex-col gap-1">
                 {a.question && (

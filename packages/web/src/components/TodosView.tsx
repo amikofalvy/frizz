@@ -805,11 +805,16 @@ const QueueCard = memo(function QueueCard({ thread, leaving, onResolve, onUnreso
   // 2026-08-12: "queue cards STILL need to go all the way back to the last user message. that's
   // important context that needs to be surfaced").
   //
-  // A queued send is skipped too: it has not been delivered, so nothing after it is a reply to it.
+  // A queued send is skipped too: it has not been delivered, so nothing after it is a reply to it. And
+  // a SUB-AGENT'S REPORT for the same reason `wake` is skipped — `peerFrom` is the server's tell that a
+  // CHILD wrote the turn, so anchoring there cuts the card at a child's status line and hides the human's
+  // task exactly as a wake did. (Still not `lastAskIndex`: that answers "what is the human waiting on"
+  // and returns -1 when there is nothing, where this one asks "how far back must the window reach" and
+  // falls back to the start of the transcript.)
   const lastUserIdx = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i]
-      if (m.role === "user" && !m.wake && !m.queued) return i
+      if (m.role === "user" && !m.wake && !m.queued && !m.peerFrom) return i
     }
     return 0
   }, [messages])
