@@ -1,7 +1,44 @@
 import { execFile, spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
+import { existsSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 
 export const PRODUCTION_REEXEC_FLAG = "--_frizz-production-reexec";
+
+export interface NpmInvocation {
+  command: string;
+  /** Arguments that go BEFORE the npm subcommand (the npm-cli.js script when node runs npm directly). */
+  prefixArgs: string[];
+}
+
+/**
+ * How to start npm from this process. `execFile("npm", …)` is not enough: on Windows npm is only a
+ * `npm.cmd` shim, which a shell-less spawn cannot find (`spawn npm ENOENT`) and which Node refuses to
+ * run through a shell-less spawn anyway. npm itself sets `npm_execpath` for every bin it runs — this
+ * process, under `npx frizz` — so the reliable form is the one every shim ends in: this node binary
+ * running `npm-cli.js`. Only when no such script can be found does this fall back to the bare `npm`
+ * command, which is fine on POSIX and is the pre-existing behaviour everywhere.
+ */
+export function resolveNpmInvocation(
+  env: NodeJS.ProcessEnv = process.env,
+  execPath: string = process.execPath,
+  exists: (path: string) => boolean = existsSync
+): NpmInvocation {
+  const candidates: string[] = [];
+  if (env.npm_execpath) {
+    // `npx` may hand down npx-cli.js; the npm entry point lives beside it.
+    const script = basename(env.npm_execpath) === "npx-cli.js" ? join(dirname(env.npm_execpath), "npm-cli.js") : env.npm_execpath;
+    candidates.push(script);
+  }
+  const nodeDir = dirname(execPath);
+  // The npm that ships with node: beside node.exe on Windows, under ../lib on POSIX installs.
+  candidates.push(join(nodeDir, "node_modules", "npm", "bin", "npm-cli.js"));
+  candidates.push(join(nodeDir, "..", "lib", "node_modules", "npm", "bin", "npm-cli.js"));
+  for (const script of candidates) {
+    if (basename(script) === "npm-cli.js" && exists(script)) return { command: execPath, prefixArgs: [script] };
+  }
+  return { command: "npm", prefixArgs: [] };
+}
 
 export interface RegistryReleaseAdapter {
   latestVersion(packageName: string): Promise<string>;
@@ -89,7 +126,8 @@ export function handoffToRegistrySuccessor(
 export const npmRegistryReleaseAdapter: RegistryReleaseAdapter = {
   latestVersion(packageName) {
     return new Promise((resolveVersion, reject) => {
-      execFile("npm", ["view", `${packageName}@latest`, "version", "--json"], { encoding: "utf8" }, (error, stdout) => {
+      const npm = resolveNpmInvocation();
+      execFile(npm.command, [...npm.prefixArgs, "view", `${packageName}@latest`, "version", "--json"], { encoding: "utf8" }, (error, stdout) => {
         if (error) return reject(new Error(`could not check npm for ${packageName}: ${error.message}`));
         try {
           const parsed = JSON.parse(stdout) as unknown;
@@ -102,7 +140,8 @@ export const npmRegistryReleaseAdapter: RegistryReleaseAdapter = {
   },
   spawnNpmExec({ packageSpec, bin, args, cwd, env }) {
     // The explicit package spec forces npm to resolve/install a new cache entry before running it.
-    return spawn("npm", ["exec", "--yes", `--package=${packageSpec}`, "--", bin, ...args], {
+    const npm = resolveNpmInvocation();
+    return spawn(npm.command, [...npm.prefixArgs, "exec", "--yes", `--package=${packageSpec}`, "--", bin, ...args], {
       cwd,
       env,
       detached: true,
