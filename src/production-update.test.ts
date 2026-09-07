@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
 import { join, resolve } from "node:path";
@@ -13,6 +13,7 @@ import {
   npmRegistryReleaseAdapter,
   planRegistryUpdate,
   prepareRegistrySuccessor,
+  pruneReleases,
   resolveNpmInvocation,
   type RegistryReleaseAdapter,
   type RegistryUpdatePlan,
@@ -83,6 +84,51 @@ test("Windows installs the release into a private directory before the handoff; 
   assert.equal(installs.length, 1);
   assert.equal(await prepareRegistrySuccessor(plan, adapter, { platform: "linux", releasesDir }), plan);
   assert.equal(installs.length, 1);
+});
+
+test("a successful Windows install prunes every other release except the running one", async () => {
+  const releasesDir = mkdtempSync(join(tmpdir(), "frizz-releases-"));
+  try {
+    for (const name of ["frizz-0.9.0", "frizz-1.1.0", "frizz-1.2.3", "other-1.0.0"]) mkdirSync(join(releasesDir, name));
+    writeFileSync(join(releasesDir, "frizz-notes.txt"), "not a release");
+    const adapter: Pick<RegistryReleaseAdapter, "installRelease"> = {
+      installRelease: async ({ releaseDir }) => { mkdirSync(releaseDir, { recursive: true }); return join(releaseDir, "node_modules", "frizz", "dist", "frizz.js"); },
+    };
+    await prepareRegistrySuccessor(plan, adapter, { platform: "win32", releasesDir });
+    const kept = ["frizz-1.2.3", "frizz-1.3.0", "other-1.0.0", "frizz-notes.txt"].filter((name) => existsSync(join(releasesDir, name)));
+    assert.deepEqual(kept, ["frizz-1.2.3", "frizz-1.3.0", "other-1.0.0", "frizz-notes.txt"], "the running version, the target, and foreign names stay");
+    assert.equal(existsSync(join(releasesDir, "frizz-0.9.0")), false);
+    assert.equal(existsSync(join(releasesDir, "frizz-1.1.0")), false);
+  } finally {
+    rmSync(releasesDir, { recursive: true, force: true });
+  }
+});
+
+test("a failed install prunes nothing, and a failed prune does not fail the update", async () => {
+  const releasesDir = mkdtempSync(join(tmpdir(), "frizz-releases-"));
+  try {
+    mkdirSync(join(releasesDir, "frizz-1.1.0"));
+    await assert.rejects(() => prepareRegistrySuccessor(plan, { installRelease: async () => { throw new Error("registry down"); } }, { platform: "win32", releasesDir }), /registry down/);
+    assert.equal(existsSync(join(releasesDir, "frizz-1.1.0")), true, "the last good release survives a failed install");
+    const entry = join(releasesDir, "frizz-1.3.0", "node_modules", "frizz", "dist", "frizz.js");
+    const fs = { readdirSync, rmSync: () => { throw new Error("EBUSY: a stale release still holds a file open"); } } as unknown as Parameters<typeof pruneReleases>[3];
+    const prepared = await prepareRegistrySuccessor(plan, { installRelease: async () => entry }, { platform: "win32", releasesDir, fs });
+    assert.equal(prepared.entry, entry);
+  } finally {
+    rmSync(releasesDir, { recursive: true, force: true });
+  }
+});
+
+test("pruneReleases reports what it removed and skips files and other packages", () => {
+  const removed: string[] = [];
+  const dirent = (name: string, directory = true) => ({ name, isDirectory: () => directory });
+  const fs = {
+    readdirSync: () => [dirent("frizz-1.0.0"), dirent("frizz-1.2.3"), dirent("frizz-1.3.0"), dirent("frizz-2.0.0-beta.1"), dirent("frizz-old.log", false), dirent("frizzy-1.0.0"), dirent("other-1.0.0")],
+    rmSync: (path: string) => { removed.push(path); },
+  } as unknown as Parameters<typeof pruneReleases>[3];
+  const releasesDir = join("/", "home", "op", ".frizz", "releases");
+  assert.deepEqual(pruneReleases(releasesDir, "frizz", ["1.2.3", "1.3.0"], fs), ["frizz-1.0.0", "frizz-2.0.0-beta.1"]);
+  assert.deepEqual(removed, [join(releasesDir, "frizz-1.0.0"), join(releasesDir, "frizz-2.0.0-beta.1")]);
 });
 
 test("the bin entry comes from the installed manifest", () => {

@@ -1,6 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -130,13 +130,44 @@ export function defaultReleasesDir(home: string = homedir()): string {
 export async function prepareRegistrySuccessor(
   plan: RegistryUpdatePlan,
   adapter: Pick<RegistryReleaseAdapter, "installRelease">,
-  options: { platform?: NodeJS.Platform; releasesDir?: string } = {}
+  options: { platform?: NodeJS.Platform; releasesDir?: string; fs?: Parameters<typeof pruneReleases>[3] } = {}
 ): Promise<RegistryUpdatePlan> {
   const platform = options.platform ?? process.platform;
   if (platform !== "win32" || plan.entry) return plan;
-  const releaseDir = join(options.releasesDir ?? defaultReleasesDir(), `${plan.packageName}-${plan.latestVersion}`);
+  const releasesDir = options.releasesDir ?? defaultReleasesDir();
+  const releaseDir = join(releasesDir, `${plan.packageName}-${plan.latestVersion}`);
   const entry = await adapter.installRelease({ packageName: plan.packageName, packageSpec: plan.packageSpec, releaseDir });
+  // Only after the install succeeded: a failed install must leave the last good release in place.
+  // Cleanup can fail (a stale release still holds a file open) without endangering the healthy board.
+  try {
+    pruneReleases(releasesDir, plan.packageName, [plan.currentVersion, plan.latestVersion], options.fs);
+  } catch {
+    // Bounded disk use is best effort; the update itself does not depend on it.
+  }
   return { ...plan, entry };
+}
+
+/**
+ * Keep the releases directory bounded: every successful update installs a complete package tree, so
+ * without this the directory grows by one install per release. Removes each `<packageName>-<version>`
+ * directory except the versions named in `keep` — the one that may still be executing and the one being
+ * prepared. Other names are left alone. Returns the names it removed.
+ */
+export function pruneReleases(
+  releasesDir: string,
+  packageName: string,
+  keep: readonly string[],
+  fs: { readdirSync: typeof readdirSync; rmSync: typeof rmSync } = { readdirSync, rmSync }
+): string[] {
+  const prefix = `${packageName}-`;
+  const keepNames = new Set(keep.map((version) => `${prefix}${version}`));
+  const removed: string[] = [];
+  for (const dirent of fs.readdirSync(releasesDir, { withFileTypes: true })) {
+    if (!dirent.isDirectory() || !dirent.name.startsWith(prefix) || keepNames.has(dirent.name)) continue;
+    fs.rmSync(join(releasesDir, dirent.name), { recursive: true, force: true });
+    removed.push(dirent.name);
+  }
+  return removed;
 }
 
 /**
