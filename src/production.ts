@@ -59,7 +59,7 @@ import {
   tryAcquireProjectLaunchOwner,
 } from "@frizz/server/project-launch";
 import { createSupervisorShutdownHandler, startDevSupervisor } from "@frizz/server/dev-supervisor";
-import { handoffToRegistrySuccessor, npmRegistryReleaseAdapter, planRegistryUpdate, PRODUCTION_REEXEC_FLAG } from "./production-update.ts";
+import { handoffToRegistrySuccessor, npmRegistryReleaseAdapter, planRegistryUpdate, prepareRegistrySuccessor, PRODUCTION_REEXEC_FLAG } from "./production-update.ts";
 import {
   assertLaunchPrerequisites,
   assertRequiredExecutables,
@@ -473,23 +473,31 @@ async function runSupervisor(port: number, token: string): Promise<never> {
       try {
         const plan = await planRegistryUpdate(PACKAGE_NAME, PACKAGE_VERSION, npmRegistryReleaseAdapter);
         if (!plan) { updateAvailable = false; updateVersion = undefined; return { state: "failed" as const, message: `Frizz ${PACKAGE_VERSION} is already current` }; }
-        plannedUpdate = plan;
         updateVersion = plan.latestVersion;
-        // npm only writes its own cache. The healthy supervisor is deliberately left up until the
-        // server has drained its child and proxy immediately before durableReexec below.
-        return { state: "ready" as const, message: `Frizz ${plan.latestVersion} will start in a new npm execution cache` };
+        // The install (Windows) or the npm cache write (POSIX) happens while the board is still up.
+        // The healthy supervisor is deliberately left up until the server has drained its child and
+        // proxy immediately before durableReexec below.
+        plannedUpdate = await prepareRegistrySuccessor(plan, npmRegistryReleaseAdapter);
+        return {
+          state: "ready" as const,
+          message: plannedUpdate.entry
+            ? `Frizz ${plan.latestVersion} is installed and will start next`
+            : `Frizz ${plan.latestVersion} will start in a new npm execution cache`,
+        };
       } catch (error) {
         return { state: "failed" as const, message: error instanceof Error ? error.message : String(error) };
       }
     },
     durableReexec: async () => {
-      const plan = plannedUpdate ?? await planRegistryUpdate(PACKAGE_NAME, PACKAGE_VERSION, npmRegistryReleaseAdapter);
-      if (!plan) throw new Error("Frizz is already current");
-      handoffToRegistrySuccessor(plan, { port, projectDir: workspace.root, cwd: workspace.root, env }, npmRegistryReleaseAdapter);
-      // This exit is the ONE that has to explain itself. The successor npm resolved is detached with
-      // its stdio closed, so this terminal is not handed to it — the process simply ends, the shell
-      // prompt returns, and the board is still serving from a PID this window can no longer signal.
-      // Said plainly, that is an update; unsaid, it is indistinguishable from Frizz dying.
+      const planned = plannedUpdate ?? await planRegistryUpdate(PACKAGE_NAME, PACKAGE_VERSION, npmRegistryReleaseAdapter);
+      if (!planned) throw new Error("Frizz is already current");
+      const plan = await prepareRegistrySuccessor(planned, npmRegistryReleaseAdapter);
+      handoffToRegistrySuccessor(plan, { port, cwd: workspace.root, env }, npmRegistryReleaseAdapter);
+      // This exit is the ONE that has to explain itself. The successor is detached with its stdio
+      // closed and, on Windows, with no console window, so this terminal is not handed to it — the
+      // process simply ends, the shell prompt returns, and the board is still serving from a PID this
+      // window can no longer signal. Said plainly, that is an update; unsaid, it is indistinguishable
+      // from Frizz dying.
       readout?.notice("done", "Updated", `Frizz ${plan.latestVersion} is taking over on port ${port}`);
       readout?.note(`\n  Frizz ${plan.latestVersion} now runs in the background — ctrl-c here no longer reaches it. Stop it with ${PACKAGE_NAME} --stop.\n`);
       // The successor adopts the same tokenized project lease. SQLite and provider sessions are

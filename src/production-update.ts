@@ -1,7 +1,8 @@
 import { execFile, spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 
 export const PRODUCTION_REEXEC_FLAG = "--_frizz-production-reexec";
 
@@ -12,36 +13,51 @@ export interface NpmInvocation {
 }
 
 /**
- * How to start npm from this process. `execFile("npm", …)` is not enough: on Windows npm is only a
- * `npm.cmd` shim, which a shell-less spawn cannot find (`spawn npm ENOENT`) and which Node refuses to
- * run through a shell-less spawn anyway. npm itself sets `npm_execpath` for every bin it runs — this
- * process, under `npx frizz` — so the reliable form is the one every shim ends in: this node binary
- * running `npm-cli.js`. Only when no such script can be found does this fall back to the bare `npm`
- * command, which is fine on POSIX and is the pre-existing behaviour everywhere.
+ * How to start npm from this process. `execFile("npm", …)` is not enough on Windows. There npm is only
+ * a `npm.cmd` shim. A shell-less spawn cannot find the shim (`spawn npm ENOENT`), and Node refuses to
+ * run a `.cmd` file without a shell. The reliable form is the one every shim ends in: this node binary
+ * running `npm-cli.js`. Three places can hold that script, in this order:
+ *
+ *   1. beside `npm_execpath`, which npm sets for a bin it runs itself (`npx frizz`, `npm exec`);
+ *   2. beside node.exe (the Windows installer layout);
+ *   3. under `../lib/node_modules` (the POSIX installer layout).
+ *
+ * A global bin started from a shell has no `npm_execpath`, so it gets the npm that ships with node.
+ * On POSIX the bare `npm` command is the fallback, which is the behaviour before this helper existed.
+ * On Windows there is no working fallback: the bare name only reaches the shim, and a swallowed spawn
+ * error would end the board with a success message. So Windows throws instead.
  */
 export function resolveNpmInvocation(
   env: NodeJS.ProcessEnv = process.env,
   execPath: string = process.execPath,
-  exists: (path: string) => boolean = existsSync
+  exists: (path: string) => boolean = existsSync,
+  platform: NodeJS.Platform = process.platform
 ): NpmInvocation {
-  const candidates: string[] = [];
-  if (env.npm_execpath) {
-    // `npx` may hand down npx-cli.js; the npm entry point lives beside it.
-    const script = basename(env.npm_execpath) === "npx-cli.js" ? join(dirname(env.npm_execpath), "npm-cli.js") : env.npm_execpath;
-    candidates.push(script);
-  }
   const nodeDir = dirname(execPath);
-  // The npm that ships with node: beside node.exe on Windows, under ../lib on POSIX installs.
-  candidates.push(join(nodeDir, "node_modules", "npm", "bin", "npm-cli.js"));
-  candidates.push(join(nodeDir, "..", "lib", "node_modules", "npm", "bin", "npm-cli.js"));
-  for (const script of candidates) {
-    if (basename(script) === "npm-cli.js" && exists(script)) return { command: execPath, prefixArgs: [script] };
+  const candidates = [
+    // pnpm, yarn and bun set `npm_execpath` too, to their own entry file. Their directories hold no
+    // `npm-cli.js`, so the existence check below skips them.
+    env.npm_execpath ? join(dirname(env.npm_execpath), "npm-cli.js") : undefined,
+    join(nodeDir, "node_modules", "npm", "bin", "npm-cli.js"),
+    join(nodeDir, "..", "lib", "node_modules", "npm", "bin", "npm-cli.js"),
+  ].filter((candidate): candidate is string => candidate !== undefined);
+  const script = candidates.find((candidate) => exists(candidate));
+  if (script) return { command: execPath, prefixArgs: [script] };
+  if (platform === "win32") {
+    throw new Error(`npm-cli.js not found beside ${execPath} (searched: ${candidates.join(", ")})`);
   }
   return { command: "npm", prefixArgs: [] };
 }
 
 export interface RegistryReleaseAdapter {
   latestVersion(packageName: string): Promise<string>;
+  /**
+   * Install one immutable release into its own directory and return the absolute path of its bin
+   * script. The directory is private to that version, so a later install never touches a running one.
+   */
+  installRelease(request: { packageName: string; packageSpec: string; releaseDir: string }): Promise<string>;
+  /** Start a successor as `node <entry> …` with no console window. */
+  spawnEntry(request: { entry: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv }): ChildProcess;
   spawnNpmExec(request: {
     packageSpec: string;
     /** Bin to invoke from the resolved package. Defaults to the package name (frizz). */
@@ -57,6 +73,8 @@ export interface RegistryUpdatePlan {
   currentVersion: string;
   latestVersion: string;
   packageSpec: string;
+  /** Set once the release is installed locally: the bin script the successor starts from. */
+  entry?: string;
 }
 
 /**
@@ -96,37 +114,80 @@ export async function planRegistryUpdate(
   return { packageName, currentVersion, latestVersion, packageSpec: `${packageName}@${latestVersion}` };
 }
 
+/** Where installed releases live: one directory per version under the user's frizz home. */
+export function defaultReleasesDir(home: string = homedir()): string {
+  return join(home, ".frizz", "releases");
+}
+
 /**
- * Ask npm for a separate, immutable execution cache and start a successor from it.  This never
- * edits the package directory that npx is currently executing, which might be shared or deleted
- * by npm while the durable supervisor is still live.
+ * Make the successor startable BEFORE the running board drains. On Windows that means an install:
+ * `npm exec` runs a bin through `cmd.exe`, and a console program started from a process without a
+ * console gets a new, visible console window. The updated board would then live in that window, and
+ * closing the window would stop it. So Windows installs the release into a private directory here,
+ * while the board is still up, and later starts `node <bin>` directly. POSIX keeps `npm exec`: a
+ * detached process has no window there, and that path is the one verified on those platforms.
+ */
+export async function prepareRegistrySuccessor(
+  plan: RegistryUpdatePlan,
+  adapter: Pick<RegistryReleaseAdapter, "installRelease">,
+  options: { platform?: NodeJS.Platform; releasesDir?: string } = {}
+): Promise<RegistryUpdatePlan> {
+  const platform = options.platform ?? process.platform;
+  if (platform !== "win32" || plan.entry) return plan;
+  const releaseDir = join(options.releasesDir ?? defaultReleasesDir(), `${plan.packageName}-${plan.latestVersion}`);
+  const entry = await adapter.installRelease({ packageName: plan.packageName, packageSpec: plan.packageSpec, releaseDir });
+  return { ...plan, entry };
+}
+
+/**
+ * Start a successor and let this process go. A prepared plan (Windows) starts `node <bin>` from the
+ * installed release. Otherwise npm gets a separate, immutable execution cache and runs the bin from
+ * there. Neither form edits the package directory that npx is currently executing, which npm might
+ * share or delete while the durable supervisor is still live.
  */
 export function handoffToRegistrySuccessor(
   plan: RegistryUpdatePlan,
-  request: { port: number; projectDir: string; cwd: string; env: NodeJS.ProcessEnv },
-  adapter: Pick<RegistryReleaseAdapter, "spawnNpmExec">
+  request: { port: number; cwd: string; env: NodeJS.ProcessEnv },
+  adapter: Pick<RegistryReleaseAdapter, "spawnNpmExec" | "spawnEntry">
 ): void {
-  const child = adapter.spawnNpmExec({
-    packageSpec: plan.packageSpec,
-    // The published bin name tracks the package name (frizz). Never hardcode a stale bin here or
-    // a renamed release would resolve the new package but invoke a bin that no longer exists.
-    bin: plan.packageName,
-    args: [PRODUCTION_REEXEC_FLAG, "--port", String(request.port), request.projectDir],
-    cwd: request.cwd,
-    env: {
-      ...request.env,
-      FRIZZ_REGISTRY_PACKAGE: plan.packageName,
-      FRIZZ_REGISTRY_VERSION: plan.latestVersion,
-    },
-  });
+  // The successor learns its project from the launch environment (FRIZZ_LAUNCH_PROJECT_DIR and
+  // friends), never from an argument: the launcher rejects a positional path since bc037f17, and a
+  // successor started with one died on "unexpected argument" before it could log (found 2026-09-07).
+  const args = [PRODUCTION_REEXEC_FLAG, "--port", String(request.port)];
+  const env = {
+    ...request.env,
+    FRIZZ_REGISTRY_PACKAGE: plan.packageName,
+    FRIZZ_REGISTRY_VERSION: plan.latestVersion,
+  };
+  const child = plan.entry
+    ? adapter.spawnEntry({ entry: plan.entry, args, cwd: request.cwd, env })
+    : adapter.spawnNpmExec({
+        packageSpec: plan.packageSpec,
+        // The published bin name tracks the package name (frizz). Never hardcode a stale bin here or
+        // a renamed release would resolve the new package but invoke a bin that no longer exists.
+        bin: plan.packageName,
+        args,
+        cwd: request.cwd,
+        env,
+      });
   child.once("error", () => {});
   child.unref();
+}
+
+/** The bin script of an installed package, read from its manifest. */
+export function installedBinEntry(packageName: string, releaseDir: string, readManifest: (path: string) => string = (path) => readFileSync(path, "utf8")): string {
+  const packageDir = join(releaseDir, "node_modules", packageName);
+  const manifest = JSON.parse(readManifest(join(packageDir, "package.json"))) as { version?: string; bin?: string | Record<string, string> };
+  const bin = typeof manifest.bin === "string" ? manifest.bin : manifest.bin?.[packageName];
+  if (!bin) throw new Error(`${packageName} ${manifest.version ?? ""} has no bin named ${packageName}`);
+  return resolve(packageDir, bin);
 }
 
 export const npmRegistryReleaseAdapter: RegistryReleaseAdapter = {
   latestVersion(packageName) {
     return new Promise((resolveVersion, reject) => {
-      const npm = resolveNpmInvocation();
+      let npm: NpmInvocation;
+      try { npm = resolveNpmInvocation(); } catch (error) { return reject(error); }
       execFile(npm.command, [...npm.prefixArgs, "view", `${packageName}@latest`, "version", "--json"], { encoding: "utf8" }, (error, stdout) => {
         if (error) return reject(new Error(`could not check npm for ${packageName}: ${error.message}`));
         try {
@@ -136,6 +197,38 @@ export const npmRegistryReleaseAdapter: RegistryReleaseAdapter = {
           resolveVersion(stdout.trim().replaceAll('"', ""));
         }
       });
+    });
+  },
+  installRelease({ packageName, packageSpec, releaseDir }) {
+    return new Promise((resolveEntry, reject) => {
+      let npm: NpmInvocation;
+      try { npm = resolveNpmInvocation(); } catch (error) { return reject(error); }
+      mkdirSync(releaseDir, { recursive: true });
+      // `--prefix` puts the package under <releaseDir>/node_modules. No lockfile and no audit: this
+      // directory is an install target, not a project.
+      const args = [...npm.prefixArgs, "install", "--prefix", releaseDir, "--no-audit", "--no-fund", "--no-package-lock", "--loglevel=error", packageSpec];
+      execFile(npm.command, args, { encoding: "utf8", windowsHide: true, timeout: 15 * 60 * 1000 }, (error, _stdout, stderr) => {
+        if (error) return reject(new Error(`could not install ${packageSpec}: ${error.message}${stderr ? `\n${stderr.trim()}` : ""}`));
+        try {
+          const entry = installedBinEntry(packageName, releaseDir);
+          if (!existsSync(entry)) throw new Error(`${packageSpec} installed without its bin at ${entry}`);
+          resolveEntry(entry);
+        } catch (failure) {
+          reject(failure);
+        }
+      });
+    });
+  },
+  spawnEntry({ entry, args, cwd, env }) {
+    // `detached` gives the successor no console of its own, and `windowsHide` keeps the children it
+    // starts from opening one. Measured on Windows Server 2022: without `windowsHide` a forked child of
+    // a console-less parent gets a visible console window; with it, the child and its children get none.
+    return spawn(process.execPath, [entry, ...args], {
+      cwd,
+      env,
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
     });
   },
   spawnNpmExec({ packageSpec, bin, args, cwd, env }) {
