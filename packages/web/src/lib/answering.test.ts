@@ -57,6 +57,15 @@ test("a structured partial answer leaves only the unanswered original block open
   assert.deepEqual(open[0].openBlocks, [1])
 })
 
+test("consecutive structured partial answers can settle the same ask", () => {
+  const two = ask("q1", "First?\n- A. One\n\n```\n\n```question\nSecond?\n- A. Two")
+  assert.deepEqual(selectOpenAsks([
+    two,
+    user("Answers:\n1. A. One"),
+    user("Answers:\n2. A. Two"),
+  ]), [])
+})
+
 test("a structured answer settles only its nearest ask", () => {
   const open = selectOpenAsks([ask("q0"), user("hold"), ask("q1"), user("Answers:\n1. A. Left")])
   assert.deepEqual(open.map((a) => a.identity), ["q0"])
@@ -75,6 +84,17 @@ test("a self-describing buried answer settles its matching earlier question", ()
     user('Answers to earlier questions:\n1. “Old question?” → A. Yes'),
   ])
   assert.deepEqual(open.map((a) => a.identity), ["q1"])
+})
+
+test("a self-describing buried answer does not guess between duplicate labels", () => {
+  const duplicate = "Deploy?\n- A. Yes"
+  const open = selectOpenAsks([
+    ask("q0", duplicate),
+    user("hold"),
+    ask("q1", duplicate),
+    user('Answers to earlier questions:\n1. “Deploy?” → A. Yes'),
+  ])
+  assert.deepEqual(open.map((a) => a.identity), ["q0", "q1"])
 })
 
 test("a legacy byte-exact one-chip answer settles its question, arbitrary prose does not", () => {

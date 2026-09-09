@@ -123,7 +123,14 @@ export function selectOpenAsks(messages: readonly AskMsgLike[]): OpenAsk[] {
     for (let i = before - 1; i >= 0; i--) {
       const m = messages[i]
       if (m.kind === "event" || m.kind === "reasoning" || !m.text.trim()) continue
-      if (m.role === "user") return undefined
+      if (m.role === "user") {
+        // A multi-block ask can be answered over several sends. A preceding numbered answer is part
+        // of that same answer run, whereas arbitrary human prose is a steer and still breaks the
+        // association. Buried answers are deliberately not skipped: they can target any earlier ask.
+        const text = m.displayText ?? m.text
+        if (parseAnswersMessage(text)) continue
+        return undefined
+      }
       const ask = found.find((candidate) => candidate.idx === i)
       if (ask) return ask
     }
@@ -136,14 +143,14 @@ export function selectOpenAsks(messages: readonly AskMsgLike[]): OpenAsk[] {
     const text = m.displayText ?? m.text
     const buried = parseBuriedAnswersMessage(text)
     if (buried) {
-      // Buried answers carry the originating question text rather than a message id. The composer
-      // emits rows in transcript order, so consume the first still-open matching block for each row;
-      // repeated labels remain deterministic instead of closing every like-named question at once.
+      // Buried answers carry the originating question text rather than a message id. Settle a block
+      // only when that label identifies exactly one open predecessor; choosing either occurrence of
+      // a duplicate label would make the wrong historical card read-only.
       for (const answer of buried) {
         if (!answer.question) continue
-        const match = found.flatMap((ask) => ask.openBlocks.map((bi) => ({ ask, bi })))
-          .find(({ ask, bi }) => ask.idx < i && questionLabel(ask.blocks[bi]) === answer.question)
-        if (match) closeBlock(match.ask, match.bi)
+        const matches = found.flatMap((ask) => ask.openBlocks.map((bi) => ({ ask, bi })))
+          .filter(({ ask, bi }) => ask.idx < i && questionLabel(ask.blocks[bi]) === answer.question)
+        if (matches.length === 1) closeBlock(matches[0].ask, matches[0].bi)
       }
       continue
     }
