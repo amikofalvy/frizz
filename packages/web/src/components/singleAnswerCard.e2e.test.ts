@@ -58,6 +58,13 @@ test("answering a one-question ask renders the Answers card, not a flat bubble",
     assert.match(card, /Delete the orphaned hardlinked binaries\?/)
     assert.match(card, /A\. Yes, delete them/)
 
+    // The answered ask remains in transcript history, but it is settled: its old choices are disabled,
+    // its free-text row is gone, and it owns no second Send action. This is the stale-question regression
+    // from Codex thread 01a083c6-0111-7031-b33f-1676e9e8b802.
+    assert.equal(await page.$$eval("[data-live-thread] [data-question-option] button:not(:disabled)", (n) => n.length), 0)
+    assert.equal(await page.$$eval('[data-live-thread] [data-surface="questionAnswer"]', (n) => n.length), 0)
+    assert.equal(await page.$$eval("[data-live-thread] [data-send-answers]", (n) => n.length), 0)
+
     // The LEGACY pair: a bare answer matching an option cards up; a freeform reply keeps its bubble.
     const legacy = await page.$$eval("[data-legacy-thread] [data-answers-card]", (nodes) =>
       nodes.map((n) => ({ id: n.getAttribute("data-frizz-msg"), text: (n.textContent ?? "").replace(/\s+/g, " ").trim() })))

@@ -3,6 +3,7 @@ import { BURIED_ANSWERS_HEADER } from "@frizz/shared"
 import { type ChatMessage } from "../hooks.ts"
 import { draftKey, draftStore, useDraftValues, useProjectDir, useThreadSessionId } from "./drafts.ts"
 import { useEagerFollowUp, type EagerFollowUpCallbacks } from "./eagerComposerSubmission.ts"
+import { parseAnswersMessage, parseBuriedAnswersMessage } from "./answersMessage.ts"
 import {
   splitQuestionBlocks,
   parseQuestionBlock,
@@ -40,6 +41,7 @@ export interface OpenAsk {
   idx: number
   identity: string
   blocks: ParsedQuestion[]
+  openBlocks: number[]
   isLive: boolean
 }
 
@@ -49,6 +51,7 @@ export interface AskMsgLike {
   role: string
   kind?: string
   text: string
+  displayText?: string
   sourceId?: string
 }
 
@@ -89,14 +92,13 @@ function identityAssigner(): (m: AskMsgLike, i: number) => string {
   }
 }
 
-// EVERY answerable ask, in transcript order — the pure core of the controller, and the SAME scope on
-// both surfaces (queue card and thread view). A question is answerable wherever it sits: an ask the
-// agent buried under its own later work, an ask a newer ask stacked on top of, an ask a human turn
-// already replied past. This is the whole "answer a question that is no longer the last thing said"
-// feature, and it is best-effort by design — there is no "closing" and NOTHING tracks whether a
-// question was answered. An already-answered question stays clickable (its AnswersCard renders right
-// below it, so nobody re-answers by accident), and Send only gathers the blocks the human actually
-// filled, so untouched questions contribute nothing.
+// EVERY unanswered ask, in transcript order — the pure core of the controller, and the SAME scope on
+// both surfaces (queue card and thread view). Questions remain answerable when the agent buries one
+// under later work, stacks a newer ask on top, or the human replies with unrelated prose. Only Frizz's
+// own structured `Answers:` wire format (plus the unambiguous legacy one-chip form) settles a block.
+// The transcript is therefore the lifecycle record: no provider-specific state, and no false closing
+// merely because a human turn exists. Partially answered multi-block asks retain their original block
+// indexes so a later answer still numbers and correlates correctly.
 // `isLive` marks the last substantive assistant message so composeAnswerWire can keep the historic wire
 // format for the trailing ask and switch to the self-describing (question-quoting) form for an earlier
 // one — a purely POSITIONAL check, not answered-tracking.
@@ -111,9 +113,68 @@ export function selectOpenAsks(messages: readonly AskMsgLike[]): OpenAsk[] {
     // every surface, and the vast majority of assistant turns carry no fence at all.
     if (!m.text.includes("```question")) continue
     const blocks = parseAskBlocks(m.text)
-    if (blocks.length > 0) found.push({ idx: i, identity: identityOf(m, i), blocks, isLive: i === lastSubstantiveAssistant })
+    if (blocks.length > 0) found.push({ idx: i, identity: identityOf(m, i), blocks, openBlocks: blocks.map((_, bi) => bi), isLive: i === lastSubstantiveAssistant })
   }
-  return found
+
+  const closeBlock = (ask: OpenAsk, bi: number) => {
+    ask.openBlocks = ask.openBlocks.filter((open) => open !== bi)
+  }
+  const nearestAsk = (before: number): OpenAsk | undefined => {
+    for (let i = before - 1; i >= 0; i--) {
+      const m = messages[i]
+      if (m.kind === "event" || m.kind === "reasoning" || !m.text.trim()) continue
+      if (m.role === "user") return undefined
+      const ask = found.find((candidate) => candidate.idx === i)
+      if (ask) return ask
+    }
+    return undefined
+  }
+
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i]
+    if (m.role !== "user" || m.kind === "event") continue
+    const text = m.displayText ?? m.text
+    const buried = parseBuriedAnswersMessage(text)
+    if (buried) {
+      // Buried answers carry the originating question text rather than a message id. The composer
+      // emits rows in transcript order, so consume the first still-open matching block for each row;
+      // repeated labels remain deterministic instead of closing every like-named question at once.
+      for (const answer of buried) {
+        if (!answer.question) continue
+        const match = found.flatMap((ask) => ask.openBlocks.map((bi) => ({ ask, bi })))
+          .find(({ ask, bi }) => ask.idx < i && questionLabel(ask.blocks[bi]) === answer.question)
+        if (match) closeBlock(match.ask, match.bi)
+      }
+      continue
+    }
+
+    const ask = nearestAsk(i)
+    if (!ask) continue
+    const numbered = parseAnswersMessage(text)
+    if (numbered) {
+      // Match the Answers-card pairing contract: malformed/manual numbering renders as an unpaired
+      // card and must not silently settle whichever valid-looking subset happened to be present.
+      const sane = numbered.every((answer, ai) =>
+        Number.isInteger(answer.n)
+        && answer.n >= 1
+        && answer.n <= ask.blocks.length
+        && (ai === 0 || answer.n > numbered[ai - 1].n))
+      if (!sane) continue
+      for (const answer of numbered) {
+        const bi = answer.n - 1
+        closeBlock(ask, bi)
+      }
+      continue
+    }
+
+    // Before single-block replies were numbered, clicking a chip sent its label verbatim. Recover
+    // only that byte-exact shape; arbitrary prose after a question is a steer, not an answer.
+    if (ask.blocks.length === 1 && ask.blocks[0].options.some((option) => option.trim() === text.trim())) {
+      closeBlock(ask, 0)
+    }
+  }
+
+  return found.filter((ask) => ask.openBlocks.length > 0)
 }
 
 // The transcript index of the ask standing at the TAIL — the most-recent one after the last human turn,
@@ -160,16 +221,14 @@ export function composeAnswerWire(input: {
 }
 
 // The ONE controller for answering ```question blocks — shared by the queue card and the thread chat
-// view so their behavior can never drift. EVERY question in the transcript stays answerable, wherever
-// it sits: a question buried by a sub-agent return or the agent's own continuation, one a newer ask
-// stacked on top of, one a human turn already replied past. That scope is the SAME on both surfaces
+// view so their behavior can never drift. EVERY unanswered question in the transcript stays answerable,
+// wherever it sits: a question buried by a sub-agent return or the agent's own continuation, or one a
+// newer ask stacked on top of. That scope is the SAME on both surfaces
 // (maintainer 2026-08-03: "question fences should be answerable, even if there's been a more recent
 // message… possible in the full view, but not in the queue card view") — the queue card used to narrow
 // it to the tail ask, which is now only its chrome signal (see tailAskIdx / `answerable`).
-// Deliberately best-effort, TRACKING NOTHING: no answered/unanswered bookkeeping, no "closing" of asks.
-// An already-answered question stays clickable (its AnswersCard renders right below it), and Send only
-// gathers the blocks the human actually filled, so untouched questions contribute nothing. `onSent` runs
-// the caller's tail after a send (queue: optimistic exit + park focus; thread: nothing), and
+// Structured answer turns settle the exact blocks they name; unrelated human prose does not. `onSent`
+// runs the caller's tail after a send (queue: optimistic exit + park focus; thread: nothing), and
 // `opts.onSendFailed` is its REVERSAL — see there.
 export function useLiveAnswering(
   slug: string,
@@ -211,7 +270,7 @@ export function useLiveAnswering(
   // Every open block's freetext draft key, across ALL open asks — so a buried ask's answer text persists
   // exactly like the live one's. Legacy lines get a deterministic content identity (see messageIdentityOf).
   const textKeys = useMemo(
-    () => openAsks.flatMap((a) => a.blocks.map((_, block) => keyFor(a.identity, block))),
+    () => openAsks.flatMap((a) => a.openBlocks.map((block) => keyFor(a.identity, block))),
     [openAsks, keyFor],
   )
   const persistedText = useDraftValues(textKeys)
@@ -280,7 +339,7 @@ export function useLiveAnswering(
     [openByIdentity, keyFor],
   )
 
-  const anyAnswered = openAsks.some((a) => a.blocks.some((blk, i) => composeBlockAnswer(blk, answerFor(a.identity, i)) !== ""))
+  const anyAnswered = openAsks.some((a) => a.openBlocks.some((i) => composeBlockAnswer(a.blocks[i], answerFor(a.identity, i)) !== ""))
 
   const scrollToBottom = opts.scrollToBottom !== false
   // ONE place both send verbs go through, so the exit and its reversal are wired once: `sendAnswers`
@@ -305,8 +364,8 @@ export function useLiveAnswering(
     const scope = typeof scopeIdentity === "string" ? scopeIdentity : undefined
     const scopedAsks = scope ? openAsks.filter((a) => a.identity === scope) : openAsks
     // Only the scoped asks' draft keys are cleared/rolled back — a sibling open ask keeps its draft.
-    const scopedKeys = scope ? scopedAsks.flatMap((a) => a.blocks.map((_, block) => keyFor(a.identity, block))) : textKeys
-    const scopedStateKeys = scopedAsks.flatMap((a) => a.blocks.map((_, bi) => `${a.identity}::${bi}`))
+    const scopedKeys = scope ? scopedAsks.flatMap((a) => a.openBlocks.map((block) => keyFor(a.identity, block))) : textKeys
+    const scopedStateKeys = scopedAsks.flatMap((a) => a.openBlocks.map((bi) => `${a.identity}::${bi}`))
 
     // One block's answer. Used for BOTH the answered-collection and the live numbering below, so the
     // two can never disagree.
@@ -314,8 +373,8 @@ export function useLiveAnswering(
 
     // Collect every answered block across the scoped asks, in transcript order.
     const answered = scopedAsks.flatMap((a) =>
-      a.blocks
-        .map((blk, bi) => ({ ask: a, bi, question: questionLabel(blk), answer: answerAt(a, bi) }))
+      a.openBlocks
+        .map((bi) => ({ ask: a, bi, question: questionLabel(a.blocks[bi]), answer: answerAt(a, bi) }))
         .filter((x) => x.answer !== ""),
     )
     if (answered.length === 0) return
@@ -326,8 +385,8 @@ export function useLiveAnswering(
     const composed = composeAnswerWire({
       answered: answered.map((x) => ({ isLive: x.ask.isLive, question: x.question, answer: x.answer })),
       live: live && {
-        numbered: live.blocks
-          .map((_blk, i) => ({ n: i + 1, a: answerAt(live, i) }))
+        numbered: live.openBlocks
+          .map((i) => ({ n: i + 1, a: answerAt(live, i) }))
           .filter(({ a }) => a !== ""),
       },
     })
@@ -368,12 +427,13 @@ export function useLiveAnswering(
       const ask = openByIdentity.get(messageIdentityOf(m))
       if (!ask) return undefined
       return {
+        canAnswer: (bi: number) => ask.openBlocks.includes(bi),
         answerFor: (bi: number) => answerFor(ask.identity, bi),
         onChip: (bi: number, optIdx: number) => onChip(ask.identity, bi, optIdx),
         onText: (bi: number, text: string) => onText(ask.identity, bi, text),
         // Enter / the per-message Send button submits ONLY this message's blocks (scoped identity).
         onSubmit: () => sendAnswers(ask.identity),
-        anyAnswered: ask.blocks.some((blk, i) => composeBlockAnswer(blk, answerFor(ask.identity, i)) !== ""),
+        anyAnswered: ask.openBlocks.some((i) => composeBlockAnswer(ask.blocks[i], answerFor(ask.identity, i)) !== ""),
         sending: followUp.pending,
       }
     },

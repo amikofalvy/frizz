@@ -19,6 +19,7 @@ test("the trailing ask is answerable", () => {
   assert.equal(open.length, 1)
   assert.equal(open[0].identity, "q1")
   assert.equal(open[0].isLive, true)
+  assert.deepEqual(open[0].openBlocks, [0])
 })
 
 test("an ask the agent BURIED by continuing to work stays answerable", () => {
@@ -40,13 +41,48 @@ test("two asks with no human turn between are BOTH open; only the last is live",
   assert.deepEqual(open.map((a) => a.isLive), [false, true])
 })
 
-test("TRACKS NOTHING: a question stays answerable even after a human turn (best-effort)", () => {
-  // No 'closing' — every question in the transcript is answerable regardless of intervening human turns.
+test("unrelated human prose does not settle a question", () => {
   const open = selectOpenAsks([ask("q1"), user("actually do something else")])
   assert.deepEqual(open.map((a) => a.identity), ["q1"])
 })
 
-test("ALL question-bearing messages are answerable, across human turns", () => {
+test("a structured answer settles the question it answered", () => {
+  assert.deepEqual(selectOpenAsks([ask("q1"), user("Answers:\n1. A. Left")]), [])
+})
+
+test("a structured partial answer leaves only the unanswered original block open", () => {
+  const two = ask("q1", "First?\n- A. One\n\n```\n\n```question\nSecond?\n- A. Two")
+  const open = selectOpenAsks([two, user("Answers:\n1. A. One")])
+  assert.equal(open.length, 1)
+  assert.deepEqual(open[0].openBlocks, [1])
+})
+
+test("a structured answer settles only its nearest ask", () => {
+  const open = selectOpenAsks([ask("q0"), user("hold"), ask("q1"), user("Answers:\n1. A. Left")])
+  assert.deepEqual(open.map((a) => a.identity), ["q0"])
+})
+
+test("malformed structured numbering settles nothing", () => {
+  const open = selectOpenAsks([ask("q1"), user("Answers:\n2. impossible\n1. A. Left")])
+  assert.deepEqual(open[0].openBlocks, [0])
+})
+
+test("a self-describing buried answer settles its matching earlier question", () => {
+  const open = selectOpenAsks([
+    ask("q0", "Old question?\n- A. Yes"),
+    user("hold"),
+    ask("q1", "New question?\n- A. Yes"),
+    user('Answers to earlier questions:\n1. “Old question?” → A. Yes'),
+  ])
+  assert.deepEqual(open.map((a) => a.identity), ["q1"])
+})
+
+test("a legacy byte-exact one-chip answer settles its question, arbitrary prose does not", () => {
+  assert.deepEqual(selectOpenAsks([ask("q1"), user("A. Left")]), [])
+  assert.deepEqual(selectOpenAsks([ask("q1"), user("go ahead")]).map((a) => a.identity), ["q1"])
+})
+
+test("ALL unanswered question-bearing messages are answerable, across human turns", () => {
   const open = selectOpenAsks([ask("q0"), user("go"), ask("q1"), prose("work"), ask("q2")])
   assert.deepEqual(open.map((a) => a.identity), ["q0", "q1", "q2"]) // q0 (pre-human-turn) is answerable too
   assert.deepEqual(open.map((a) => a.isLive), [false, false, true]) // only the last substantive assistant

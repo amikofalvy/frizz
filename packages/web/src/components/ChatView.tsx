@@ -3432,10 +3432,10 @@ export const Message = memo(function Message({ m, answering, dense, paired, text
         // A LEGACY placement marker whose row is not standing here — answered, withdrawn, or a mistyped
         // id — has nothing to draw either: its body is empty by construction.
         if (seg.registeredId && seg.text.trim() === "") continue
-        if (answering) askBlocks.push({ raw: seg.text, kind: seg.questionKind, danger: seg.danger, bi })
+        if (answering?.canAnswer(bi)) askBlocks.push({ raw: seg.text, kind: seg.questionKind, danger: seg.danger, bi })
         // On a phone the card is a READING surface and the sheet is the answering one, so it renders
         // without an interactive controller even though this message has one.
-        const interactive = answering && !isMobile
+        const interactive = answering?.canAnswer(bi) && !isMobile
           ? {
               answer: answering.answerFor(bi),
               onChip: (optIdx: number, optText: string) => answering.onChip(bi, optIdx, optText),

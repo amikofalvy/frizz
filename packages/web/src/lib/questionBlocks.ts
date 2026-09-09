@@ -31,6 +31,7 @@ export type BlockAnswer = { chosen: number | null; text: string; chosenSet?: num
 // The interactivity handed to the shared Message renderer so a LIVE message's ```question blocks become
 // answerable (chips + a per-block freetext line). Absent → the blocks render read-only.
 export type MessageAnswering = {
+  canAnswer: (blockIdx: number) => boolean
   answerFor: (blockIdx: number) => BlockAnswer
   onChip: (blockIdx: number, optIdx: number, optText: string) => void
   onText: (blockIdx: number, text: string) => void
