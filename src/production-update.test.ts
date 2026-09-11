@@ -10,6 +10,7 @@ import {
   PRODUCTION_PRINT_LAUNCHER_FLAG,
   PRODUCTION_REEXEC_FLAG,
   awaitRegistrySuccessor,
+  canReexecInPlace,
   compareReleaseVersions,
   createNpmRegistryReleaseAdapter,
   handoffToRegistrySuccessor,
@@ -318,4 +319,16 @@ test("the resolved npm invocation actually starts on this platform", async () =>
   const npm = resolveNpmInvocation();
   const { stdout } = await execFileP(npm.command, [...npm.prefixArgs, "--version"], { encoding: "utf8" });
   assert.match(stdout.trim(), /^\d+\.\d+\.\d+/u);
+});
+
+// Node 24 on Windows exports process.execve and throws ERR_FEATURE_UNAVAILABLE_ON_PLATFORM when it is
+// called, so the presence of the function chose the in-place branch there and every Windows update
+// failed after tearing down the pane host and tunnel (measured 2026-09-11).
+test("in-place re-exec is a platform decision, not a typeof check", () => {
+  const fn = () => {};
+  assert.equal(canReexecInPlace("win32", fn), false);
+  assert.equal(canReexecInPlace("linux", fn), true);
+  assert.equal(canReexecInPlace("darwin", fn), true);
+  // `null`, not `undefined`: an explicit undefined would select the default (this process).
+  assert.equal(canReexecInPlace("linux", null), false);
 });

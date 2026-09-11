@@ -544,7 +544,9 @@ class Supervisor implements DevSupervisor {
     this.childLaunchProvider = opts.childLaunchProvider
     this.childArgs = opts.childArgs ?? []
     this.watchSubscribe = opts.watchSubscribe ?? ((root, callback, options) => watcher.subscribe(root, callback, options))
-    this.reexec = opts.reexec ?? (typeof process.execve === "function"
+    // Not `typeof process.execve === "function"`: Node 24 on Windows exports it and throws
+    // ERR_FEATURE_UNAVAILABLE_ON_PLATFORM on the call (measured 2026-09-11), so the platform decides.
+    this.reexec = opts.reexec ?? (process.platform !== "win32" && typeof process.execve === "function"
       ? (request) => process.execve!(request.executable, request.argv, request.env)
       : undefined)
     if (opts.stateDir && resolve(opts.stateDir) !== opts.launchTarget.stateDir) {

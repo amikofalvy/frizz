@@ -65,6 +65,7 @@ import {
   awaitRegistrySuccessor, GLOBAL_INSTALL_ENV, handoffToRegistrySuccessor, isGlobalInstall, keepUpdateHint, npmRegistryReleaseAdapter,
   planRegistryUpdate, PRODUCTION_PRINT_LAUNCHER_FLAG, PRODUCTION_REEXEC_FLAG, readLauncherStatus, reexecIntoRegistrySuccessor,
   resolveRegistrySuccessor, successorArgv, type RegistrySuccessor,
+  canReexecInPlace,
 } from "./production-update.ts";
 import {
   assertLaunchPrerequisites,
@@ -573,7 +574,7 @@ async function runSupervisor(port: number, token: string): Promise<never> {
         FRIZZ_REGISTRY_VERSION: plan.latestVersion,
         ...(globalInstall ? { [GLOBAL_INSTALL_ENV]: "1" } : {}),
       };
-      if (typeof process.execve === "function") {
+      if (canReexecInPlace()) {
         // Same as frizz-dev's handoff: execve keeps this pid, this terminal and this stdio, so the
         // updated Frizz is the FOREGROUND process the operator started — ctrl-c still stops it, the
         // readout keeps narrating, closing the window still takes it down. The maintainer asked for

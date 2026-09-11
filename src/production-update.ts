@@ -6,6 +6,21 @@ import { setTimeout as delay } from "node:timers/promises";
 import { FRIZZ_ROUTE_PREFIX } from "@frizz/shared";
 
 export const PRODUCTION_REEXEC_FLAG = "--_frizz-production-reexec";
+
+/**
+ * Whether this runtime can replace its own image with the successor. `typeof process.execve ===
+ * "function"` is NOT that test: Node 24 on Windows exports the function and throws
+ * ERR_FEATURE_UNAVAILABLE_ON_PLATFORM when it is called, so the in-place branch was taken there,
+ * the pane host and tunnel were torn down, and every update on Windows ended "durable supervisor
+ * handoff failed: The feature process.execve is unavailable on the current platform" with the old
+ * board restored (measured on Windows Server 2022, 2026-09-11). Windows takes the detached path.
+ */
+export function canReexecInPlace(
+  platform: NodeJS.Platform = process.platform,
+  execve: unknown = (process as { execve?: unknown }).execve
+): boolean {
+  return platform !== "win32" && typeof execve === "function";
+}
 /**
  * Print the absolute path of the launcher bundle that is running and exit 0. Internal: this is how
  * an OLDER launcher finds the entry of the release it resolved through npm, so it can execve into it
