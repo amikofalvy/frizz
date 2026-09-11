@@ -130,11 +130,12 @@ jobs:
         if: steps.decide.outputs.publish_shell == 'true'
         run: npm publish
 
-      # Tags and GitHub releases belong to the stable shell only. Their own existence checks keep a
-      # retry safe after npm accepts the shell but before GitHub records its release; a server-only
-      # runtime update deliberately creates neither a shell tag nor a misleading GitHub release.
+      # Tags and GitHub releases belong to the stable shell only. This reconciliation deliberately
+      # runs even when the registry check skipped publishing: a retry after npm accepted the tarball
+      # but GitHub tagging/release creation failed must repair the missing metadata. The tag target is
+      # npm's recorded gitHead, never this workflow's checkout: a later server-only release can run at
+      # a newer commit while the shell version remains unchanged.
       - name: Tag the released shell commit
-        if: steps.decide.outputs.publish_shell == 'true'
         env:
           VERSION: ${{ steps.decide.outputs.version }}
         run: |
@@ -142,13 +143,19 @@ jobs:
             echo "v$VERSION is already tagged; nothing to do"
             exit 0
           fi
+          GIT_HEAD=$(npm view "frizz@$VERSION" gitHead)
+          if ! printf '%s' "$GIT_HEAD" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "frizz@$VERSION has no valid npm gitHead; refusing to tag this workflow checkout" >&2
+            exit 1
+          fi
+          git fetch --no-tags --depth=1 origin "$GIT_HEAD"
+          git cat-file -e "$GIT_HEAD^{commit}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "v$VERSION" -m "frizz v$VERSION"
+          git tag -a "v$VERSION" "$GIT_HEAD" -m "frizz v$VERSION"
           git push origin "v$VERSION"
 
       - name: Create the GitHub shell release
-        if: steps.decide.outputs.publish_shell == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.decide.outputs.version }}
