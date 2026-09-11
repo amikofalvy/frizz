@@ -44,12 +44,14 @@ function clip(text: string, max: number): string {
 
 /** `~`-shorten a path for the prompt — putting the directory in front of the command only pays off if it
  *  stays narrow. (`src/readout.ts` has the CLI's own copy; the server package cannot import the root
- *  project without a circular project reference, and this is four lines of pure string work.) */
-function tildePath(path: string): string {
-  const home = homedir()
+ *  project without a circular project reference, and this is four lines of pure string work.)
+ *  The remainder after the home prefix may open with either separator: a Windows cwd is
+ *  `C:\Users\op\proj`, and requiring `/` left every Windows path at full length (Windows audit
+ *  2026-09-11, finding 14). Exported, with the home injectable, so both spellings are pinned. */
+export function tildePath(path: string, home: string = homedir()): string {
   if (!path.startsWith(home)) return path
   const rest = path.slice(home.length)
-  return rest === "" ? "~" : rest.startsWith("/") ? `~${rest}` : path
+  return rest === "" ? "~" : /^[\\/]/.test(rest) ? `~${rest}` : path
 }
 
 // The argument that says WHAT a tool call will do, in the order the tools that actually escalate carry
