@@ -51,6 +51,7 @@ import {
   resolveWorkspace,
   runningFrizzStatus,
   sourceWorkspaceDir,
+  resolveLaunchControlTarget,
   stopProjectLaunch,
   supervisorNeedsAttention,
   workspaceLaunchTarget,
@@ -2698,5 +2699,34 @@ test("runningFrizzStatus reports the live owner's port, pid and the version its 
     );
   } finally {
     fixture.dispose();
+  }
+});
+
+// One server serves every project, and it publishes its owner record under the project it was
+// launched from. `frizz --stop` in another project served by that board found no record there and
+// said "not running" (pullfrog on #35, 2026-09-11). The unscoped health names the host; its record
+// holds the token; the stop is the host's, token-bound, and the answer names where it was launched.
+test("--stop and --status from a project served by a board launched elsewhere resolve to that launch", async () => {
+  const host = ownedProjectFixture();
+  const otherDir = mkdtempSync(join(tmpdir(), "frizz-served-"));
+  try {
+    const other: ProjectLaunchTarget = { projectId: randomUUID(), projectDir: otherDir, stateDir: join(otherDir, "state") };
+    mkdirSync(other.stateDir, { recursive: true });
+    const fetcher = host.controlPlane({ stopStatus: 202, version: "1.3.0" });
+    const stateDirFor = (projectId: string) => (projectId === host.target.projectId ? host.target.stateDir : join(otherDir, "nowhere"));
+    const control = await resolveLaunchControlTarget({ stateDir: other.stateDir, target: other, fetcher, ports: [5091], stateDirFor });
+    assert.equal(control.host, false);
+    assert.deepEqual(control.target, host.target);
+    const status = await runningFrizzStatus({ stateDir: control.stateDir, target: control.target, adapter: host.adapter, fetcher });
+    assert.equal(status?.version, "1.3.0");
+    const result = await stopProjectLaunch({ stateDir: control.stateDir, target: control.target, adapter: host.adapter, fetcher, sleep: async () => {} });
+    assert.deepEqual(result, { kind: "stopped", stale: false });
+    assert.equal(readProjectLaunchOwner(host.target.stateDir), null);
+    // A project that holds its own record is its own host, whatever answers on the singleton ports.
+    const hostControl = await resolveLaunchControlTarget({ stateDir: other.stateDir, target: other, fetcher: (async () => { throw new Error("never asked"); }) as typeof fetch, stateDirFor });
+    assert.equal(hostControl.host, true);
+  } finally {
+    host.dispose();
+    rmSync(otherDir, { recursive: true, force: true });
   }
 });

@@ -43,6 +43,7 @@ import {
   probeFrizz,
   readPreferredPort,
   resolveLaunchIntent,
+  resolveLaunchControlTarget,
   runningFrizzStatus,
   stopProjectLaunch,
   waitForWorkspace,
@@ -227,27 +228,32 @@ if (options.stop) {
   // finding 2). The protocol is the dev launcher's (src/index.ts stopWorkspace): token-bound HTTP
   // stop, then reap only a provably stale owner — never a signal to a pid that might be recycled.
   try {
-    const result = await stopProjectLaunch({ stateDir: workspace.stateDir, target: workspaceLaunchTarget(workspace) });
+    // One server, every project: the record may belong to the project the board was launched from.
+    const control = await resolveLaunchControlTarget({ stateDir: workspace.stateDir, target: workspaceLaunchTarget(workspace) });
+    const where = control.host ? workspace.root : `${workspace.root} (the board was launched from ${control.target.projectDir})`;
+    const result = await stopProjectLaunch({ stateDir: control.stateDir, target: control.target });
     console.log(
       result.kind !== "stopped"
-        ? `Frizz is not running for ${workspace.root}`
+        ? `Frizz is not running for ${where}`
         : result.stale
           // A board that died without releasing its record (a kill, a crash) reads as "running" to
           // every later launch until someone reaps it; say what happened rather than claiming a stop.
-          ? `Frizz was not running for ${workspace.root}; cleared the record a dead board left behind`
-          : `stopped Frizz for ${workspace.root}; running agents keep going — they are detached daemons`,
+          ? `Frizz was not running for ${where}; cleared the record a dead board left behind`
+          : `stopped Frizz for ${where}; running agents keep going — they are detached daemons`,
     );
     process.exit(0);
   } catch (error) { fail(error); }
 }
 if (options.status) {
-  const running = await runningFrizzStatus({ stateDir: workspace.stateDir, target: workspaceLaunchTarget(workspace) });
+  const control = await resolveLaunchControlTarget({ stateDir: workspace.stateDir, target: workspaceLaunchTarget(workspace) });
+  const running = await runningFrizzStatus({ stateDir: control.stateDir, target: control.target });
   if (!running) {
     console.log(`Frizz is not running for ${workspace.root}`);
     process.exit(1);
   }
   console.log(`running: http://127.0.0.1:${running.port}`);
   console.log(`workspace: ${workspace.root}`);
+  if (!control.host) console.log(`launched from: ${control.target.projectDir} (one server serves every project)`);
   console.log(`supervisor pid: ${running.pid}`);
   console.log(`version: ${running.version ?? "unknown"}`);
   if (running.state && running.state !== "ready") console.log(`state: ${running.state}${running.message ? ` — ${running.message}` : ""}`);

@@ -766,6 +766,64 @@ export async function probeFrizz(
   }
 }
 
+/**
+ * The unscoped health of whatever Frizz answers on a port, with no expectation to match against:
+ * the singleton names the project it was LAUNCHED from, which is what a client in another project
+ * needs to learn before it can find that launch's owner record.
+ */
+export async function readFrizzHealth(port: number, fetcher: typeof fetch = fetch, timeoutMs = HEALTH_PROBE_TIMEOUT_MS): Promise<FrizzHealth | null> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  timeout.unref?.();
+  try {
+    const response = await fetcher(`http://127.0.0.1:${port}${FRIZZ_ROUTE_PREFIX}/health`, { signal: controller.signal });
+    if (!response.ok) return null;
+    const health = (await response.json()) as Partial<FrizzHealth>;
+    if (health.ok !== true || typeof health.projectId !== "string" || typeof health.projectDir !== "string" || typeof health.bootId !== "string") return null;
+    return health as FrizzHealth;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export interface LaunchControlTarget {
+  target: ProjectLaunchTarget;
+  stateDir: string;
+  /** False when the board serving this project was launched from ANOTHER project, named by `target`. */
+  host: boolean;
+}
+
+/**
+ * Which launch `--stop` and `--status` are about. ONE server serves every project, and it publishes
+ * its owner record under the project it was launched from — so `frizz --stop` in project B, served
+ * by a board launched in A, found no record in B and answered "not running" (pullfrog on #35,
+ * 2026-09-11). When this project holds no record, the singleton's ports are asked who they are; a
+ * board that names another project with a live record is the one to control, with that project's
+ * token. A board that names nobody, or this project, leaves the answer as it was.
+ */
+export async function resolveLaunchControlTarget(options: {
+  stateDir: string;
+  target: ProjectLaunchTarget;
+  fetcher?: typeof fetch;
+  ports?: readonly number[];
+  stateDirFor?: (projectId: string) => string;
+}): Promise<LaunchControlTarget> {
+  const own = { target: options.target, stateDir: options.stateDir, host: true };
+  if (readProjectLaunchOwner(options.stateDir)) return own;
+  const fetcher = options.fetcher ?? fetch;
+  const stateDirFor = options.stateDirFor ?? ((projectId: string) => projectStateDir(projectId));
+  for (const port of new Set(options.ports ?? [DEFAULT_PORT, fallbackPort(DEFAULT_PORT)])) {
+    const health = await readFrizzHealth(port, fetcher);
+    if (!health || health.projectId === options.target.projectId) continue;
+    const stateDir = stateDirFor(health.projectId);
+    if (!readProjectLaunchOwner(stateDir)) continue;
+    return { target: { projectId: health.projectId, projectDir: health.projectDir, stateDir }, stateDir, host: false };
+  }
+  return own;
+}
+
 export async function requestFrizzStop(
   port: number,
   expected: ExpectedFrizzHealth,
