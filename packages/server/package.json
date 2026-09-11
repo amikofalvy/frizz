@@ -33,6 +33,7 @@
     "@parcel/watcher": "^2.5",
     "hono": "^4.7",
     "node-pty": "^1.1",
+    "qrcode-generator": "^2.0.4",
     "ws": "^8.18",
     "yaml": "^2.9",
     "zod": "^3.24"

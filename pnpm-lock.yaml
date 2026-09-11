@@ -109,6 +109,9 @@ importers:
       node-pty:
         specifier: ^1.1
         version: 1.1.0
+      qrcode-generator:
+        specifier: ^2.0.4
+        version: 2.0.4
       ws:
         specifier: ^8.18
         version: 8.21.0
@@ -137,9 +140,6 @@ importers:
       node-pty:
         specifier: ^1.1
         version: 1.1.0
-      qrcode-generator:
-        specifier: ^2.0.4
-        version: 2.0.4
 
   packages/shared:
     dependencies:
