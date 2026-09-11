@@ -6,10 +6,12 @@ import { dirname, join } from "node:path";
 import { test, type TestContext } from "node:test";
 import {
   npmServerPackageInstaller, resolveNpmCli, serverGenerationLaunch, serverReleaseSpec, ServerReleaseStore,
-  validateServerGeneration, type ServerPackageInstaller, type ServerReleaseSpec,
+  validateServerGeneration, type ServerCompatibility, type ServerPackageInstaller, type ServerReleaseSpec,
 } from "./server-release.ts";
 
 const baseline: ServerReleaseSpec = { package: "frizz-server", version: "1.0.0", protocol: 1, dataEpoch: 1 };
+const epochTwo: ServerReleaseSpec = { ...baseline, version: "2.0.0", dataEpoch: 2 };
+const epochTwoCompatibility: ServerCompatibility = { protocol: 1, dataEpoch: 2 };
 const files = ["dist/dev-child.js", "web-dist/index.html", "runtime/board/index.mjs", "runtime/cc-worker/.claude-plugin/plugin.json"];
 function fixture(prefix: string, spec: ServerReleaseSpec): string {
   const root = join(prefix, "node_modules", spec.package);
@@ -78,6 +80,66 @@ test("cache eviction reinstalls exactly the committed version, never the launche
   assert.equal(restored.version, "1.2.0");
   assert.deepEqual(installs, ["1.2.0", "1.2.0"]);
   assert.notEqual(restored.id, current.id);
+});
+
+test("a newer shell stages its exact epoch generation before making its data boundary durable", async (t) => {
+  const { installer, roots, installs, store: old } = setup(t);
+  const oldGeneration = await old.load();
+  old.commit(oldGeneration);
+
+  const newer = new ServerReleaseStore(epochTwo, installer, roots, epochTwoCompatibility);
+  const candidate = await newer.load();
+  assert.equal(candidate.version, "2.0.0");
+
+  // This is the crash window: no child has become ready and the old selection remains on disk, but
+  // the candidate could have migrated data as soon as it is launched. The global marker must win.
+  assert.deepEqual(JSON.parse(readFileSync(newer.compatibilityMarker, "utf8")), epochTwoCompatibility);
+  await assert.rejects(() => old.load(), /newer launcher or a data migration/);
+  assert.deepEqual(installs, ["1.0.0", "2.0.0"]);
+});
+
+test("failed epoch preparation never advances the marker and leaves the old shell bootable", async (t) => {
+  const { installer, roots, store: old } = setup(t);
+  const oldGeneration = await old.load();
+  old.commit(oldGeneration);
+  installer.install = async (prefix, spec) => {
+    fixture(prefix, spec);
+    throw new Error("epoch-two registry interruption");
+  };
+
+  const newer = new ServerReleaseStore(epochTwo, installer, roots, epochTwoCompatibility);
+  await assert.rejects(() => newer.load(), /epoch-two registry interruption/);
+  assert.deepEqual(JSON.parse(readFileSync(newer.compatibilityMarker, "utf8")), { protocol: 1, dataEpoch: 1 });
+  assert.equal((await old.load()).id, oldGeneration.id);
+});
+
+test("an epoch-two committed selection reinstalls its exact version and never permits an epoch-one fallback", async (t) => {
+  const { installer, roots, installs, store: old } = setup(t);
+  const oldGeneration = await old.load();
+  old.commit(oldGeneration);
+  const newer = new ServerReleaseStore(epochTwo, installer, roots, epochTwoCompatibility);
+  const selected = await newer.load();
+  newer.commit(selected);
+  rmSync(join(newer.generations, selected.id), { recursive: true });
+
+  const restored = await new ServerReleaseStore(epochTwo, installer, roots, epochTwoCompatibility).load();
+  assert.equal(restored.version, "2.0.0");
+  assert.notEqual(restored.id, selected.id);
+  await assert.rejects(() => old.load(), /newer launcher or a data migration/);
+  assert.deepEqual(installs, ["1.0.0", "2.0.0", "2.0.0"]);
+});
+
+test("a malformed global compatibility marker fails closed for every package selection", async (t) => {
+  const { store, roots } = setup(t);
+  mkdirSync(dirname(store.compatibilityMarker), { recursive: true });
+  writeFileSync(store.compatibilityMarker, "{");
+  await assert.rejects(() => store.load(), /data compatibility marker/);
+
+  const override = new ServerReleaseStore({ ...baseline, package: "frizz-server-preview" }, {
+    async install(prefix, spec) { fixture(prefix, spec); },
+    async latestVersion() { return "1.0.0"; },
+  }, roots);
+  await assert.rejects(() => override.load(), /data compatibility marker/);
 });
 
 test("corrupt, escaping and incompatible saved selections fail closed", async (t) => {

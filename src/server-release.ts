@@ -18,6 +18,12 @@ export interface ServerReleaseSpec {
   dataEpoch: number;
 }
 
+/** The protocol this shell can speak and the newest durable data it may open. */
+export interface ServerCompatibility {
+  protocol: number;
+  dataEpoch: number;
+}
+
 export interface ServerGeneration extends ServerReleaseSpec {
   id: string;
   root: string;
@@ -27,11 +33,18 @@ export interface ServerGeneration extends ServerReleaseSpec {
 const VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
 const PACKAGE = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/u;
 const GENERATION = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+const CURRENT_COMPATIBILITY: ServerCompatibility = { protocol: SERVER_PROTOCOL, dataEpoch: SERVER_DATA_EPOCH };
 
-function assertSpec(spec: ServerReleaseSpec): void {
+function assertSpecShape(spec: ServerReleaseSpec): void {
   if (typeof spec.package !== "string" || typeof spec.version !== "string" || !PACKAGE.test(spec.package) || !VERSION.test(spec.version))
     throw new Error("invalid exact Frizz server package/version");
-  if (spec.protocol !== SERVER_PROTOCOL || spec.dataEpoch !== SERVER_DATA_EPOCH)
+  if (!Number.isSafeInteger(spec.protocol) || spec.protocol < 1 || !Number.isSafeInteger(spec.dataEpoch) || spec.dataEpoch < 1)
+    throw new Error("invalid Frizz server protocol/data epoch");
+}
+
+function assertSpec(spec: ServerReleaseSpec, compatibility: ServerCompatibility = CURRENT_COMPATIBILITY): void {
+  assertSpecShape(spec);
+  if (spec.protocol !== compatibility.protocol || spec.dataEpoch !== compatibility.dataEpoch)
     throw new Error("this Frizz server requires a newer launcher or a data migration; restart with a compatible Frizz release");
 }
 
@@ -67,8 +80,13 @@ function containedFile(root: string, name: string, directory = false): string {
   return path;
 }
 
-export function validateServerGeneration(root: string, spec: ServerReleaseSpec, id: string): ServerGeneration {
-  assertSpec(spec);
+export function validateServerGeneration(
+  root: string,
+  spec: ServerReleaseSpec,
+  id: string,
+  compatibility: ServerCompatibility = CURRENT_COMPATIBILITY,
+): ServerGeneration {
+  assertSpec(spec, compatibility);
   if (!GENERATION.test(id)) throw new Error("invalid Frizz server generation id");
   const manifest = record(readJson(join(root, "package.json")));
   const metadata = record(manifest.frizzServer);
@@ -166,31 +184,90 @@ function atomicJson(path: string, value: unknown): void {
 export class ServerReleaseStore {
   readonly generations: string;
   readonly selection: string;
-  constructor(readonly spec: ServerReleaseSpec, private installer: ServerPackageInstaller, roots = frizzPaths()) {
-    assertSpec(spec);
+  /** One global data marker: every package override opens the same Frizz databases. */
+  readonly compatibilityMarker: string;
+  constructor(
+    readonly spec: ServerReleaseSpec,
+    private installer: ServerPackageInstaller,
+    private roots = frizzPaths(),
+    readonly compatibility: ServerCompatibility = CURRENT_COMPATIBILITY,
+  ) {
+    assertSpec(spec, compatibility);
     const key = createHash("sha256").update(spec.package).digest("hex").slice(0, 16);
     this.generations = join(roots.cache, "server-releases", key);
     this.selection = join(roots.state, "server-releases", key, "active.json");
+    this.compatibilityMarker = join(roots.state, "server-releases", "data-compatibility.json");
   }
 
   private packageRoot(id: string): string { return join(this.generations, id, "node_modules", this.spec.package); }
 
+  private readCompatibilityMarker(): ServerCompatibility | undefined {
+    if (!existsSync(this.compatibilityMarker)) return undefined;
+    try {
+      const marker = record(readJson(this.compatibilityMarker));
+      const compatibility = { protocol: marker.protocol, dataEpoch: marker.dataEpoch } as ServerCompatibility;
+      assertSpecShape({ package: this.spec.package, version: this.spec.version, ...compatibility });
+      return compatibility;
+    } catch {
+      throw new Error("invalid saved Frizz server data compatibility marker; refusing to risk a data downgrade");
+    }
+  }
+
+  private assertMarkerIsSupported(): void {
+    const marker = this.readCompatibilityMarker();
+    if (!marker) return;
+    if (marker.protocol !== this.compatibility.protocol || marker.dataEpoch > this.compatibility.dataEpoch)
+      throw new Error("this Frizz server requires a newer launcher or a data migration; restart with a compatible Frizz release");
+  }
+
+  /**
+   * Advance the global epoch only after the exact replacement has been staged and validated, but
+   * before handing it to the caller that can launch it. A crash before first boot must never let an
+   * older shell reopen the database the candidate may already have migrated.
+   */
+  private markCompatibilityBeforeLaunch(): void {
+    const marker = this.readCompatibilityMarker();
+    if (marker?.protocol !== undefined && marker.protocol !== this.compatibility.protocol)
+      throw new Error("this Frizz server requires a newer launcher or a data migration; restart with a compatible Frizz release");
+    if ((marker?.dataEpoch ?? 0) > this.compatibility.dataEpoch)
+      throw new Error("this Frizz server requires a newer launcher or a data migration; restart with a compatible Frizz release");
+    if (marker?.dataEpoch === this.compatibility.dataEpoch) return;
+    atomicJson(this.compatibilityMarker, this.compatibility);
+  }
+
+  private async prepareInitial(version: string): Promise<ServerGeneration> {
+    const generation = await this.prepare(version);
+    this.markCompatibilityBeforeLaunch();
+    return generation;
+  }
+
   async load(): Promise<ServerGeneration> {
-    if (!existsSync(this.selection)) return this.prepare(this.spec.version);
+    this.assertMarkerIsSupported();
+    if (!existsSync(this.selection)) return this.prepareInitial(this.spec.version);
     const selected = record(readJson(this.selection));
     const spec = selected as unknown as ServerReleaseSpec;
-    assertSpec(spec);
+    assertSpecShape(spec);
     if (spec.package !== this.spec.package || typeof selected.id !== "string" || !GENERATION.test(selected.id))
       throw new Error("invalid saved Frizz server selection; refusing to fall back to an older server");
+    // A new shell knows its exact epoch-compatible default. Stage that generation before recording
+    // the data boundary; an older shell can never select this old pointer again after the marker wins.
+    if (spec.protocol !== this.compatibility.protocol)
+      throw new Error("this Frizz server requires a newer launcher or a data migration; restart with a compatible Frizz release");
+    if (spec.dataEpoch < this.compatibility.dataEpoch) return this.prepareInitial(this.spec.version);
+    if (spec.dataEpoch > this.compatibility.dataEpoch)
+      throw new Error("this Frizz server requires a newer launcher or a data migration; restart with a compatible Frizz release");
     const root = this.packageRoot(selected.id);
     // Cache eviction is recoverable, but only by reinstalling the EXACT committed release.
-    if (!existsSync(root)) return this.prepare(spec.version);
-    return validateServerGeneration(root, spec, selected.id);
+    const generation = !existsSync(root)
+      ? await this.prepare(spec.version)
+      : validateServerGeneration(root, spec, selected.id, this.compatibility);
+    this.markCompatibilityBeforeLaunch();
+    return generation;
   }
 
   async prepare(version: string): Promise<ServerGeneration> {
     const spec = { ...this.spec, version };
-    assertSpec(spec);
+    assertSpec(spec, this.compatibility);
     mkdirSync(this.generations, { recursive: true, mode: 0o700 });
     const id = randomUUID();
     const staging = join(this.generations, `${id}.staging`);
@@ -200,16 +277,16 @@ export class ServerReleaseStore {
       // An explicit private manifest keeps npm from discovering a package in an ancestor directory.
       writeFileSync(join(staging, "package.json"), '{"private":true}\n', { mode: 0o600 });
       await this.installer.install(staging, spec);
-      validateServerGeneration(join(staging, "node_modules", spec.package), spec, id);
+      validateServerGeneration(join(staging, "node_modules", spec.package), spec, id, this.compatibility);
       renameSync(staging, destination);
-      return validateServerGeneration(this.packageRoot(id), spec, id);
+      return validateServerGeneration(this.packageRoot(id), spec, id, this.compatibility);
     } finally { rmSync(staging, { recursive: true, force: true }); }
   }
 
   commit(generation: ServerGeneration): void {
     if (generation.package !== this.spec.package || generation.root !== realpathSync(this.packageRoot(generation.id)))
       throw new Error("cannot select a Frizz server outside this release store");
-    validateServerGeneration(generation.root, generation, generation.id);
+    validateServerGeneration(generation.root, generation, generation.id, this.compatibility);
     const { package: packageName, version, protocol, dataEpoch, id } = generation;
     atomicJson(this.selection, { package: packageName, version, protocol, dataEpoch, id });
     // Old generations are intentionally retained: detached workers can still execute their files.
