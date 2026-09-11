@@ -517,11 +517,12 @@ function questionSchema(depth) {
 const ASK = {
   name: "ask",
   description:
-    "ASK THE HUMAN SOMETHING YOU CANNOT DECIDE, as a ROW they still owe an answer to — not a fence in a " +
-    "message. It renders as an answerable card on the board and in the thread, and it STAYS there: it " +
-    "survives your turn ending, a compaction, a restart, and the transcript scrolling past. A fence has " +
-    "the lifetime of the message carrying it, which is why a question written into one is unanswerable " +
-    "an hour later.\n\n" +
+    "ASK THE HUMAN SOMETHING YOU CANNOT DECIDE, as a ROW they still owe an answer to. THIS IS THE ONLY " +
+    "WAY TO ASK: the free-form ```question fence is retired (2026-09-11), and a fence with a question " +
+    "written in its body is plain prose — no card, no answer, no sign-off. The row renders as an " +
+    "answerable card on the board and in the thread, and it STAYS there: it survives your turn ending, " +
+    "a compaction, a restart, and the transcript scrolling past. A fence has the lifetime of the " +
+    "message carrying it, which is why a question written into one was unanswerable an hour later.\n\n" +
     "YOUR DEFAULT IS TO DECIDE, AND THIS TOOL DOES NOT CHANGE THAT. A reversible call costs minutes to " +
     "redo; a round-trip to the human costs hours with the whole effort idle. Anything derivable from " +
     "the code, the conventions or ordinary engineering judgement is yours: make it, say which way you " +
@@ -537,9 +538,11 @@ const ASK = {
     "the question at the moment you find it rather than saving it for the end.\n\n" +
     "AND WHEN YOU DO STOP, THE OPEN QUESTION IS YOUR SIGN-OFF — rest normally. Frizz draws every open " +
     "question at the rest you stopped at whether you mention it or not, so nothing you write can hide " +
-    "one. The card draws itself at the rest the question was asked — never write the question into " +
-    "your handoff, because a fence that names or restates a registered question draws nothing (one " +
-    "question, one card).\n\n" +
+    "one. The card draws itself at the tail of the rest the question was asked — never write the " +
+    "question into your handoff (one question, one card). TO PLACE IT INSIDE YOUR PROSE instead, write " +
+    "an EMPTY fence naming the id this tool returned — ```question qst_ab12cd34 on one line, ``` on " +
+    "the next — and the card renders there. One marker per question; nothing in the body; placement is " +
+    "optional, and every answer of the rest still sends together.\n\n" +
     "SEVERAL AT ONCE IS ONE CALL. The card sends every answer as a unit, so a second `ask` for a second " +
     "question just makes the human send twice. Register them together.\n\n" +
     "The answer comes back to you as its own wake, restating what was asked. Withdraw one you no longer " +
@@ -676,7 +679,8 @@ const ACTIVITY = {
     "WHY YOU NEED IT: an ```awaiting fence names what you are waiting on BY ID, and frizz checks every " +
     "one against what is actually live. A name that matches nothing is not a park — you are bumped and " +
     "your thread queues. The same goes for the ids `unwatch` and `unask` take, and for the id you put in " +
-    "a ```question fence to PLACE a registered question in your handoff. So if you have lost one (a " +
+    "an EMPTY ```question fence to PLACE a registered question in your handoff (a marker naming no open " +
+    "question of yours draws nothing). So if you have lost one (a " +
     "compaction, a long turn, a wake you did not expect), call this rather than guessing. Guessing is " +
     "the failure this tool exists to remove — and it is the only way to read your open questions " +
     "WITHOUT registering or withdrawing one.\n\n" +
@@ -785,8 +789,9 @@ async function activity() {
     `\n\n${questions.length} question${questions.length === 1 ? "" : "s"} still owed an answer:\n\n` +
     questions.map((q) => `  question: ${q.id}\n    ${String(q?.spec?.question ?? "").replace(/\s+/g, " ").slice(0, 160)}`).join("\n") +
     "\n\nEach one blocks `done` until it is answered or withdrawn, and draws its own card at the rest " +
-    "it was asked — never write it into a handoff. `unask` the ones since decided. A question is never " +
-    "named in an ```awaiting fence."
+    "it was asked — never write it into a handoff; an EMPTY ```question fence naming its id places it " +
+    "inside your prose. `unask` the ones since decided. A question is never named in an ```awaiting " +
+    "fence."
   )
   if (!items.length) {
     if (questions.length > 0) {
@@ -799,8 +804,8 @@ async function activity() {
     return (
       "Nothing is running on this thread — no background shells, no sub-agents, no armed timers, no " +
       "registered PRs, and no open questions.\n\nSo there is nothing to wait on: an ```awaiting fence " +
-      "would have nothing to name, and a fence naming nothing is not a park. End with ```done, or with " +
-      "a ```question if you need the human." + linksBlock
+      "would have nothing to name, and a fence naming nothing is not a park. End with ```done, or " +
+      "register a question with `ask` if you need the human." + linksBlock
     )
   }
   const lines = items.map((i) => {
@@ -1238,7 +1243,7 @@ async function goal(args) {
       `it with another \`start\` if it was not:\n\n${goalReport(replaced)}\n`
     : ""
   // NO QUESTION HOLD ANY MORE (2026-08-16). Every trigger fires while you are waiting on the human, and
-  // the at-rest one fires over your own unanswered ```question fence — the delivery says so, and expects
+  // the at-rest one fires over your own unanswered registered question — the delivery says so, and expects
   // you to decide the question yourself rather than re-ask it. A ```done fence, and an ```awaiting on a
   // wait frizz itself will deliver, still stop the at-rest trigger.
   return (

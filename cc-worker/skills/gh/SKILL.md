@@ -18,7 +18,7 @@ This skill is the full playbook the injected `⟦gh available⟧` block summariz
 
 - **NEVER** comment, review, approve, request-changes, label, assign, milestone, edit, close, reopen, merge, or push — no state change of any kind on GitHub.
 - Your deliverable is your **final message** (a findings write-up, a review, a recommendation) — NOT a GitHub post. Producing the review in-session is the job; posting it is a separate action the human authorizes.
-- If posting would genuinely help, don't just do it — **ask** with a two-option ` ```question ` block ("A. Post this review to the PR / B. Keep it in-session only", Recommendation), then rest. When the destructive edge is real (a force-merge, a close), that's a ` ```question danger ` gate.
+- If posting would genuinely help, don't just do it — **ask** with a two-option `mcp__frizz__ask` question ("Post this review to the PR" / "Keep it in-session only", the recommended one first), then rest. When the destructive edge is real (a force-merge, a close), that's the same question with `danger` set. Never a ` ```question ` fence — that fence is retired (2026-09-11), and a question in a fence body is plain prose.
 - When the human HAS asked you to write, do exactly the scoped thing and report the resulting URL — nothing extra.
 
 There is no server-side enforcement of this; the boundary is yours to hold.
@@ -127,11 +127,11 @@ such as `push` and `pull_request` both contribute to the aggregate verdict.
 Both mechanisms are session-bound. If the next check deliberately belongs at a named wall-clock
 instant, set a durable timer with `mcp__frizz__timer` and park with its id in your fence's `timers:`
 list. If a specific external human reviewer/approver is the only remaining gate, that is a
-` ```question ` — waiting on a person is never a park. For a GitHub PR, register it with
+registered question (`mcp__frizz__ask`) — waiting on a person is never a park. For a GitHub PR, register it with
 `mcp__frizz__watch_pr` and name it in the fence's `prs:` list (`prs: [OWNER/REPO#NUMBER]`): frizz
 baselines current reviews/comments and wakes on ANY new activity after registration — bot or human —
 durably across restarts. The registration creates the wait; the fence only declares it. The dashboard
-operator's own go/no-go remains a ` ```question ` block.
+operator's own go/no-go remains a registered question.
 
 ## Fitting gh work into your thread type
 

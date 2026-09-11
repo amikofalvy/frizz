@@ -2157,8 +2157,8 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
           "in a sentence breaks the YAML, which is why `reason:` is gone.",
           "",
           "`mcp__frizz__activity` lists everything you have running, and prints it back as a ready-to-paste",
-          "fence. If you are not waiting on anything, you are not awaiting — end with ```done, or ask a",
-          "```question.",
+          "fence. If you are not waiting on anything, you are not awaiting — end with ```done, or register",
+          "a question with `mcp__frizz__ask`.",
         ].join("\n")
         : nameless
         ? [
@@ -2176,7 +2176,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
           "Use `mcp__frizz__activity` to read it all back as a ready-to-paste fence.",
           "",
           "AND IF YOU ARE NOT WAITING ON ANYTHING, you are not awaiting — you are done. End with ```done,",
-          "or ask a ```question if you need the human.",
+          "or register a question with `mcp__frizz__ask` if you need the human.",
         ].join("\n")
         // THESE TWO LIVE IN @frizz/shared, beside the parsers that read them back. Same rule as
         // `limitResumeSteer`: a formatter the chat cannot parse falls through FrizzWake's legacy
@@ -2192,8 +2192,8 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
           ...status,
           "",
           "Use `mcp__frizz__activity` to read back what you actually have out, with the exact id each line",
-          "needs, then re-fence naming only those — or end in ```done or a ```question if there is nothing",
-          "left to wait for.",
+          "needs, then re-fence naming only those — or end in ```done or a registered question",
+          "(`mcp__frizz__ask`) if there is nothing left to wait for.",
         ].join("\n")
 
       const cause = retired.length > 0 ? "retired" : nameless ? "nameless" : expired ? "expired" : "dead"
