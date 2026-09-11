@@ -226,7 +226,7 @@ try {
         const version = path.slice(path.lastIndexOf("/") + 1, -4)
         if (packageName === "frizz-server" && version === "0.13.9") { response.writeHead(503); response.end("INJECTED_DOWNLOAD_FAILURE"); return }
         if (packageName === "frizz-server" && version === "0.13.10") { response.writeHead(200); response.end("INJECTED_INTEGRITY_FAILURE"); return }
-        if (downloadGate?.version === version) { downloadGate.requested = true; await downloadGate.promise }
+        if (packageName === "frizz-server" && downloadGate?.version === version) { downloadGate.requested = true; await downloadGate.promise }
         const release = entry.releases.get(version)
         response.writeHead(release ? 200 : 404); response.end(release?.tarball); return
       }

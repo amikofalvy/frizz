@@ -19,7 +19,7 @@ nub scripts/build-package.mjs --server
 npm pack --json --ignore-scripts ./packages/server-release
 ```
 
-Read the JSON result and inspect the named tarball before publishing. The approved first publication command is:
+Read the JSON result and inspect the named tarball before publishing. After release authorization, the first publication command is:
 
 ```sh
 npm login
@@ -42,8 +42,14 @@ After the manual bootstrap, configure a trusted publisher for `frizz-server` on 
 
 The workflow file is `.github/workflows/release.yml` and already grants `id-token: write`. npm requires the filename only, not its path. New trusted-publisher settings allow staged publishing by default, so direct `npm publish` must be enabled for this workflow.
 
+The npm organization `frizzsh` does not change these fields: they identify the GitHub repository, and the package is the unscoped `frizz-server` selected for this release.
+
 ## Automated releases
 
 The server package must exist before `release.yml` can publish a shell version that bootstraps it. After the first package and trusted publisher are configured, move the verified commit to the `release` branch. The workflow publishes `frizz-server` before `frizz` and uses npm registry checks to make retries idempotent.
 
-References: [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/) and [npm scoped public packages](https://docs.npmjs.com/creating-and-publishing-scoped-public-packages/).
+Server/frontend/provider changes normally bump only `packages/server-release/package.json`. A shell release separately bumps root `package.json`; its `frizzServer.version` is the exact default for a machine without a selected generation, not a dependency range. Compatible server updates are selected independently after bootstrap.
+
+Before introducing data an older server cannot safely read, bump the server and shell data epochs together, including the constants in `src/server-release.ts`, and select an exact compatible bootstrap release. The old shell refuses such an in-app update. After an explicit stop/new-shell launch, the new shell records the higher epoch before the candidate can write; a failed candidate does not authorize a lower-epoch rollback. Protocol changes need a separate migration design. Never delete the compatibility marker to force a downgrade.
+
+Reference: [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/).
