@@ -4,7 +4,7 @@ import { promisify } from "node:util"
 import { basename, join } from "node:path"
 import { homedir, tmpdir } from "node:os"
 import type { AskQuestion, AwaitingHint } from "@frizz/shared"
-import { insideFence, isAllInjectedNoise, isInterruptMarker, parseAskUserQuestionInput, PermissionMode, saysAllDone, splitAwaitingFrontmatter } from "@frizz/shared"
+import { insideFence, isAllInjectedNoise, isInterruptMarker, parseAskUserQuestionInput, PermissionMode, questionFencesLive, saysAllDone, splitAwaitingFrontmatter } from "@frizz/shared"
 import type { Bus } from "./bus.ts"
 import { permMarkerPath, type Project } from "./project.ts"
 import { isBrokerClaudeRow, isHeadlessRow } from "./storage.ts"
@@ -344,7 +344,9 @@ export interface SessionTelemetry extends NormalizedTail {
   // watcher pass is the only consumer. See retiredShellViews for what it is for.
   retiredShells?: RetiredShellView[]
   pendingAsk?: PendingAskData // a pending native AskUserQuestion the session is frozen on (else absent)
-  pendingQuestion: boolean // at rest with an unanswered ```question block as the last assistant message
+  // The last assistant message carries an unanswered ```question fence AND the thread still speaks the
+  // fence (dispatched before QUESTION_FENCE_RETIRED_AT — see `get`). Always false for a new-contract thread.
+  pendingQuestion: boolean
   lastUserAt?: string // ISO8601 of the newest USER-role record (answer/steer/dispatch) — the listing sort key
   lastFence?: FenceView // done/awaiting excusal fence on the latest assistant message (else absent)
   // The pinned transcript never materialized and discovery found no drifted one either (worker likely
@@ -4911,22 +4913,29 @@ export function createTailer(deps: TailerDeps): Tailer {
     nudgeTimer.unref?.()
   }
 
-  function registeredStateIsCurrent(state: TailState): boolean {
+  // The registry row a registered state is CURRENT for — the row whose session id and runtime
+  // generation the state was folded under — or undefined when the row has moved on without it.
+  function currentRowFor(state: TailState): SessionRow | undefined {
     const current = deps.storage.getSession(state.slug)
-    return Boolean(
-      current &&
+    return current &&
       current.session_id === state.sessionId &&
-      (current.runtime_generation ?? 0) === state.runtimeGeneration,
-    )
+      (current.runtime_generation ?? 0) === state.runtimeGeneration
+      ? current
+      : undefined
+  }
+
+  function registeredStateIsCurrent(state: TailState): boolean {
+    return currentRowFor(state) !== undefined
   }
 
   return {
     get(slug) {
       // Registered states win the key; a foreign thread resolves by its session id (its thread id).
       const registered = states.get(slug)
-      const s = registered && registeredStateIsCurrent(registered)
-        ? registered
-        : registered ? undefined : foreignStates.get(slug)
+      const row = registered ? currentRowFor(registered) : undefined
+      const s = registered
+        ? row ? registered : undefined
+        : foreignStates.get(slug)
       if (!s) return undefined
       // pendingQuestion: the latest assistant message carries a ```question fence and the HUMAN has not
       // answered it. NO REST-GATE, and that is the point. It used to require `turn === "idle"` as well,
@@ -4941,7 +4950,19 @@ export function createTailer(deps: TailerDeps): Tailer {
       // of the queue (maintainer 2026-08-24: "this needs to be structurally impossible"). An unanswered
       // question is a claim on the HUMAN; whether the agent happens to be mid-turn is a fact about the
       // agent. The board reports both, and `boardRuntime` decides which one the row is allowed to draw.
-      const pendingQuestion = s.lastAssistantHasQuestion
+      //
+      // AND ONLY FOR A THREAD THAT STILL SPEAKS THE FENCE (2026-09-11). The free-form ```question fence
+      // is retired from the worker contract — a worker asks via `mcp__frizz__ask`, a registered row —
+      // so for a thread dispatched at or after the cutover a fence in its prose is prose: it must not
+      // queue the thread, degrade its runtime, excuse the sign-off nudge or turn the Goal's bump. A
+      // thread dispatched BEFORE it is a legacy worker whose fence is still its ask, and everything
+      // downstream keeps treating it as one. This is the ONE gate: `lastAssistantHasQuestion` stays
+      // the fold's plain fact about the TEXT (and the tail cache may restore it from an older build),
+      // and every consumer — board queue, `degradeIfAwaitingAnswer`, the ThreadView, both scheduler
+      // reads — sees only what leaves here. Gated on the live row rather than a value stamped into the
+      // state at creation so a (re)spawn that bumps `spawned_at` is read the moment it lands. A foreign
+      // thread has no row and reads as legacy, which is what `questionFencesLive` does with unknown.
+      const pendingQuestion = s.lastAssistantHasQuestion && questionFencesLive(row?.spawned_at)
       const nowMs = now()
       return { turn: s.turn, permPrompt: s.permPrompt, permPolicy: s.permPolicy, permDenies: s.permDenies, model: s.model, effort: s.effort, profileAt: s.profileAt, profileRevision: s.profileRevision, permissionMode: s.permissionMode, permissionModeAt: s.permissionModeAt, permissionModeRevision: s.permissionModeRevision, lastActivityAt: s.lastActivityAt, lastAssistantAt: s.lastAssistantAt, lastAssistant: s.lastAssistant, aiTitle: s.aiTitle, customTitle: s.customTitle, customTitleRevision: s.customTitleRevision, subAgents: subAgentViews(s, nowMs), droppedReports: [...s.queuedReports.values()], bgShells: [...bgShellViews(s), ...codexBgShellViews(s)], retiredShells: retiredShellViews(s), pendingAsk: s.pendingAsk, pendingQuestion, lastAssistantAllDone: s.lastAssistantAllDone, lastUserAt: s.lastUserAt, lastUserText: s.lastUserText, firstUserText: s.firstUserText, lastFence: s.lastFence, noTranscript: s.noTranscript, authFault: s.authFault, apiFault: s.apiFault, providerError: s.providerError, limitFault: s.limitFault, contextTokens: s.contextTokens, contextWindow: s.contextWindow, lastCompactionAt: s.lastCompactionAt }
     },

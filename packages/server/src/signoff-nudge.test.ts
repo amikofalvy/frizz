@@ -7,11 +7,14 @@
 // frizz itself generates).
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createStorage, type SessionRow } from "./storage.ts"
-import { applyRecord, newTailState, type SessionTelemetry, type Tailer } from "./tailer.ts"
+import { QUESTION_FENCE_RETIRED_AT } from "@frizz/shared"
+import { Bus } from "./bus.ts"
+import type { Project } from "./project.ts"
+import { applyRecord, createTailer, newTailState, type SessionTelemetry, type Tailer } from "./tailer.ts"
 import { createScheduler } from "./scheduler.ts"
 import { createCodexBackend } from "./backend/codex.ts"
 import { createWakeDeliveryStore } from "./wake-store.ts"
@@ -183,6 +186,62 @@ for (const [what, tele] of [
       await h.s.tick()
       assert.deepEqual(h.nudges(), [])
     } finally { h.close() }
+  })
+}
+
+// THE FREE-FORM FENCE IS RETIRED (2026-09-11; shared QUESTION_FENCE_RETIRED_AT). "A question fence" in
+// the table above is a sign-off only for a thread dispatched BEFORE the retirement, whose worker still
+// speaks that grammar. A thread dispatched after it asks only through `mcp__frizz__ask`, so a fence it
+// writes with no registered row behind it is prose — a bare rest — and the nudge fires. Driven through
+// the REAL tailer rather than a hand-built telemetry, because the gate lives in the tailer's `get` and a
+// fake `get` would only prove the fake.
+for (const [what, spawnedAt, nudged] of [
+  ["a legacy thread (dispatched before the retirement)", new Date(Date.parse(QUESTION_FENCE_RETIRED_AT) - 60_000).toISOString(), false],
+  ["a new-contract thread (dispatched after the retirement)", new Date(Date.parse(QUESTION_FENCE_RETIRED_AT) + 60_000).toISOString(), true],
+] as const) {
+  test(`${what} resting on a free-form \`\`\`question fence with no registered question: nudged=${nudged}`, async () => {
+    const dir = mkdtempSync(join(tmpdir(), "frizz-signoff-fence-"))
+    const logDir = join(dir, "-a-project")
+    mkdirSync(logDir, { recursive: true })
+    const storage = createStorage(join(dir, "ui.db"), "p")
+    const slug = "resting"
+    storage.upsertSession({
+      slug, session_id: "sid", thread_name: `frizz-${slug}`, spawned_at: spawnedAt,
+      last_read_at: null, unread: 0, exited: 0, archived: 0, rested_at: null, title_auto: 1,
+      title: slug, state: "open", meta: null, seen_at: null, transcript_id: null,
+    } as SessionRow)
+    writeFileSync(join(logDir, "sid.jsonl"), [
+      JSON.stringify({ type: "user", timestamp: "2026-08-12T00:00:00.000Z", message: { role: "user", content: "go" } }),
+      JSON.stringify({ type: "assistant", timestamp: "2026-08-12T00:00:01.000Z", message: { stop_reason: "end_turn", content: [{ type: "text", text: "Two ways forward.\n\n```question\nWhich store?\n\n- A. sqlite\n- B. postgres\n```" }] } }),
+    ].map((l) => l + "\n").join(""))
+    const tailer = createTailer({
+      project: { cwdSlug: "x" } as Project,
+      storage,
+      bus: new Bus(),
+      onChange: () => {},
+      now: () => Date.now(),
+      paneDead: () => false,
+      sessionLogDir: logDir,
+    })
+    tailer.tick()
+    const tele = tailer.get(slug)
+    assert.equal(tele?.turn, "idle")
+    assert.equal(tele?.pendingQuestion, !nudged, "the gate: the fence is an ask only for the legacy thread")
+    const delivered: string[] = []
+    const s = createScheduler({
+      wakeQuietWindowMs: 0,
+      storage,
+      tailer,
+      resume: async (_slug, message) => { delivered.push(message) },
+      log: () => {},
+    })
+    try {
+      await s.tick()
+      const nudges = storage.db
+        .prepare("SELECT message FROM wake_delivery WHERE thread_slug = ? AND fence_id LIKE 'signoff:%' AND state = 'delivered'")
+        .all(slug) as { message: string }[]
+      assert.equal(nudges.length, nudged ? 1 : 0)
+    } finally { void s.stop(); tailer.stop(); storage.close(); rmSync(dir, { recursive: true, force: true }) }
   })
 }
 

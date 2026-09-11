@@ -6,8 +6,9 @@ import { dirname, join } from "node:path"
 import { createStorage, type Storage, type SessionRow } from "./storage.ts"
 import { Bus } from "./bus.ts"
 import type { ServerEvent } from "@frizz/shared"
-import { AwaitingHint } from "@frizz/shared"
+import { AwaitingHint, QUESTION_FENCE_RETIRED_AT } from "@frizz/shared"
 import { permMarkerPath, type Project } from "./project.ts"
+import { degradeIfAwaitingAnswer, deriveNeedsYou } from "./board.ts"
 import { parseLine, applyRecord, applyEvent, computeTurn, newTailState, createTailer, defaultBrokerDaemonAlive, hasQuestionBlock, isClaudeAuthErrorText, isRealUserMessage, parseSignalFence, markerDecision, unwrapShellCommand, FOREIGN_FRESH_MS } from "./tailer.ts"
 import { claudeBrokerRecordPath } from "./backend/claude-broker-host.ts"
 import type { AgentBackend, NormalizedEvent } from "./backend/types.ts"
@@ -1936,6 +1937,71 @@ test("tailer: a record the chat never draws cannot answer the human's question",
   h.clock.ms = Date.parse("2026-07-01T00:00:13.000Z")
   t.tick()
   assert.equal(t.get("t")?.pendingQuestion, false, "answered — the row leaves the queue")
+})
+
+// ---- THE FENCE IS RETIRED (2026-09-11): a free-form ```question is prose for a thread dispatched at or
+// after QUESTION_FENCE_RETIRED_AT, and still an ask for one dispatched before it. ONE gate, in `get`:
+// the fold keeps recording the fact about the text; the telemetry every consumer reads is what is gated.
+const BEFORE_RETIREMENT = new Date(Date.parse(QUESTION_FENCE_RETIRED_AT) - 60_000).toISOString()
+const AFTER_RETIREMENT = new Date(Date.parse(QUESTION_FENCE_RETIRED_AT) + 60_000).toISOString()
+
+test("hasQuestionBlock: the empty placement marker (```question qst_…) has no body and never counts", () => {
+  // The two-line form the contract keeps: an opener naming a registered id, then the closer. There is
+  // no body line between them, so the fence regex — which needs the closer on a line AFTER the body —
+  // does not match. This is the shape the shadow places a registered card at, so it must never read as
+  // a free-form ask for a legacy thread either.
+  assert.equal(hasQuestionBlock("```question qst_ab12cd34\n```"), false)
+  assert.equal(hasQuestionBlock("Here is where it goes:\n\n```question qst_ab12cd34\n```\n\nand on either side."), false)
+  assert.equal(hasQuestionBlock("```question\n```"), false, "an empty fence with no id is prose too")
+  // …and the fold agrees, for a legacy-shaped state where the flag is not gated.
+  const s = newTailState("t", "s", "/x")
+  applyRecord(s, { type: "assistant", timestamp: "2026-07-01T00:00:02.000Z", message: { stop_reason: "end_turn", content: [{ type: "text", text: "Placed:\n\n```question qst_ab12cd34\n```" }] } })
+  assert.equal(s.lastAssistantHasQuestion, false)
+})
+
+test("tailer: a ```question fence queues a LEGACY thread and is prose for one dispatched after the retirement", () => {
+  const FENCE = "Verdict: duplicate.\n\n```question\nHow should PRD-8263 be dispatched?\n\n- A. Fix now\n- B. File only\n```"
+  const ASKED = JSON.stringify({ type: "assistant", timestamp: "2026-07-01T00:00:02.000Z", message: { stop_reason: "end_turn", content: [{ type: "text", text: FENCE }] } })
+  for (const [spawnedAt, live] of [[BEFORE_RETIREMENT, true], [AFTER_RETIREMENT, false]] as const) {
+    const h = harness()
+    h.storage.upsertSession(row({ spawned_at: spawnedAt }))
+    fixture(h.logDir, "sid", [IN_FLIGHT, ASKED])
+    h.clock.ms = Date.parse("2026-07-01T00:00:10.000Z")
+    const t = makeTailer(h)
+    t.tick()
+    const tele = t.get("t")
+    assert.equal(tele?.turn, "idle")
+    assert.equal(tele?.pendingQuestion, live, `spawned_at=${spawnedAt}: pendingQuestion`)
+    // The consumers inherit it, in the board's own composition (degrade, then the queue rule):
+    // a running legacy thread is degraded to turn-idle by its fence and queued as a HARD member; a
+    // running new-contract thread with the same text stays running and is not queued at all.
+    const runtime = degradeIfAwaitingAnswer("running", tele?.pendingQuestion)
+    assert.equal(runtime, live ? "turn-idle" : "running", `spawned_at=${spawnedAt}: degrade`)
+    assert.equal(deriveNeedsYou(row({ spawned_at: spawnedAt }), tele, runtime), live, `spawned_at=${spawnedAt}: queued`)
+    // And at rest the fence is no longer a hard member: a live sub-agent excuses a bare rest from the
+    // queue, which a legacy fence outranks and a new-contract fence — being prose — does not. (A bare
+    // rest with no live work still queues either way; that is the rest, not the fence.)
+    const withChild = { ...tele!, subAgents: [{ label: "c", startedAt: "2026-07-01T00:00:01.000Z", state: "running" as const, id: "a1" }] }
+    assert.equal(deriveNeedsYou(row({ spawned_at: spawnedAt, rested_at: "2026-07-01T00:00:02.000Z" }), withChild, "turn-idle"), live, `spawned_at=${spawnedAt}: hard member`)
+  }
+})
+
+test("tailer: the fence gate reads the LIVE row, so a respawn that bumps spawned_at past the retirement retires the fence", () => {
+  const ASKED = JSON.stringify({ type: "assistant", timestamp: "2026-07-01T00:00:02.000Z", message: { stop_reason: "end_turn", content: [{ type: "text", text: "```question\nWhich?\n\n- A. x\n```" }] } })
+  const h = harness()
+  h.storage.upsertSession(row({ spawned_at: BEFORE_RETIREMENT }))
+  fixture(h.logDir, "sid", [IN_FLIGHT, ASKED])
+  h.clock.ms = Date.parse("2026-07-01T00:00:10.000Z")
+  const t = makeTailer(h)
+  t.tick()
+  assert.equal(t.get("t")?.pendingQuestion, true)
+  // Same session, same generation, the dispatch instant moved (upsert keeps runtime_generation): the
+  // state is not rebuilt, and the gate still answers from the row as it stands now.
+  h.storage.upsertSession(row({ spawned_at: AFTER_RETIREMENT }))
+  assert.equal(t.get("t")?.pendingQuestion, false)
+  // A row with an unparseable instant reads as legacy — never leave an old worker's ask unanswerable.
+  h.storage.upsertSession(row({ spawned_at: "not a date" }))
+  assert.equal(t.get("t")?.pendingQuestion, true)
 })
 
 // ---- PermissionRequest marker (structured perm-blocked signal; primary over the pane regex) ----
