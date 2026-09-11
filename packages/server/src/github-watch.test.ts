@@ -75,6 +75,36 @@ test("a workflow held for approval is not a pass — it is CI that has not start
   assert.deepEqual(s.failing, [], "a pending approval is not a failure and must never be listed as one")
 })
 
+// THE `gh` FALLBACK'S CASING (2026-09-11). `gh run list --json conclusion` prints the REST shape —
+// `action_required`, `failure` — where the batched GraphQL poll concludes `ACTION_REQUIRED`. The readers
+// compared the raw string against the upper-case word, so a poll served by the fallback saw no gate and
+// no failed run at all. Below is the exact `gh run list` output for microsoft/TypeScript#64248 at head
+// 15bb626 beside its exact one-entry rollup: the reading that went out as "✅ CI PASSED — 1 check green"
+// on every tick the GraphQL batch failed, and flipped back to gated on the tick after.
+test("the `gh run list` fallback's lower-case conclusions read as the same gate, not as a pass", () => {
+  const s = githubWatchStatus(pr({
+    rollup: [check({ status: "COMPLETED", conclusion: "SUCCESS", name: "license/cla" })],
+    workflowRuns: [
+      { conclusion: "action_required", event: "pull_request", name: "CI", status: "completed", workflowName: "CI" },
+      { conclusion: "action_required", event: "pull_request", name: "CodeQL", status: "completed", workflowName: "CodeQL" },
+    ],
+  }), AT)
+  assert.equal(s.checks, "running", "the gate is visible through the fallback exactly as through the batched poll")
+  assert.deepEqual([s.gated, s.gating, s.passed], [2, ["CI", "CodeQL"], 1])
+})
+
+test("the `gh run list` fallback's lower-case failures are NAMED, as the batched poll's are", () => {
+  const s = githubWatchStatus(pr({
+    rollup: [check({ status: "COMPLETED", conclusion: "FAILURE", name: "lint" })],
+    workflowRuns: [
+      { conclusion: "failure", event: "pull_request", name: "CI", status: "completed", workflowName: "CI" },
+      { conclusion: "action_required", event: "pull_request", name: "CodeQL", status: "completed", workflowName: "CodeQL" },
+    ],
+  }), AT)
+  assert.equal(s.checks, "failing")
+  assert.deepEqual(s.failing, ["lint", "CI"], "the red run is named; the gated one is not a failure in either casing")
+})
+
 test("a rollup that only skipped has run nothing, so it is `none` rather than green", () => {
   const s = githubWatchStatus(pr({
     rollup: [

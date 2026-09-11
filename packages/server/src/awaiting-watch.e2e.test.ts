@@ -354,7 +354,9 @@ async function prHarness() {
   let reviewRequests: string[] | undefined
   // The head's check suites, where a workflow held for a maintainer's approval lives. It never reaches
   // the rollup, so a gated PR is invisible without this.
-  let checkSuites: Record<string, unknown>[] = []
+  // `undefined` is what the `gh` fallback serves — it has no check suites, only `workflowRuns`.
+  let checkSuites: Record<string, unknown>[] | undefined = []
+  let workflowRuns: Record<string, unknown>[] = []
   let clock = Date.now()
   const delivered: string[] = []
   const s = createScheduler({
@@ -364,7 +366,7 @@ async function prHarness() {
     resume: async (_slug, message) => { delivered.push(message) },
     log: () => {},
     now: () => clock,
-    fetchPr: async () => ({ state: prState, mergedAt: null, mergeable, rollup, head, workflowRuns: [], checkSuites, labels, reviewRequests } as never),
+    fetchPr: async () => ({ state: prState, mergedAt: null, mergeable, rollup, head, workflowRuns, checkSuites, labels, reviewRequests } as never),
     fetchGithubReview: async () => activity as never,
   })
   return {
@@ -376,7 +378,16 @@ async function prHarness() {
     setMergeable: (next: string) => { mergeable = next },
     setLabels: (next: string[] | undefined) => { labels = next },
     setReviewRequests: (next: string[] | undefined) => { reviewRequests = next },
-    setGated: (names: string[]) => { checkSuites = names.map((workflowName) => ({ status: "COMPLETED", conclusion: "ACTION_REQUIRED", workflowName })) },
+    setGated: (names: string[]) => {
+      workflowRuns = []
+      checkSuites = names.map((workflowName) => ({ status: "COMPLETED", conclusion: "ACTION_REQUIRED", workflowName }))
+    },
+    /** The same gate as the `gh` fallback serves it: no check suites at all, and the head's workflow runs
+     *  in `gh run list`'s own lower-case REST casing — verbatim from microsoft/TypeScript#64248. */
+    serveFromGh: (gated: string[]) => {
+      checkSuites = undefined
+      workflowRuns = gated.map((name) => ({ conclusion: "action_required", event: "pull_request", name, status: "completed", workflowName: name }))
+    },
     // Each tick steps past the per-PR poll floor, so every call really re-reads GitHub.
     tick: async () => { clock += 90_000; await s.tick() },
     /** Run the clock past the watcher's own `expiresAtMs` without eighty ticks to get there. */
@@ -769,6 +780,82 @@ test("workflows held for approval are reported as held, and never as a pass", as
     await h.tick()
     assert.equal(h.delivered.length, 1)
     assert.match(h.delivered[0], /✅ CI PASSED on acme\/app#391 — 1 check green, 1 skipped\./)
+  } finally { h.close() }
+})
+
+// A FORCE-PUSH WHILE GATED IS NOT A SECOND GATE. The stamp keys a verdict on the head so that red-again-
+// on-a-new-commit speaks; a gate is not a verdict, and the worker's one move — ask for the approval — is
+// the same on any commit. microsoft/TypeScript#64248, 2026-09-11: registered 18:21:20Z, "WAITING FOR
+// APPROVAL" at 18:21:27Z, a force-push at 18:22:47Z, and "WAITING FOR APPROVAL" again at 18:24:30Z for
+// the new SHA. The worker's reply to the second: "Same wake as before, nothing changed on #64248."
+test("a gated PR force-pushed to a new commit is not told about the same gate again", async () => {
+  const h = await prHarness()
+  try {
+    h.setChecks([{ status: "COMPLETED", conclusion: "SUCCESS", name: "license/cla" }])
+    h.setGated(["CI", "CodeQL"])
+    await h.tick()
+    assert.equal(h.delivered.length, 1, "the gate is reported once")
+    assert.match(h.delivered[0], /WAITING FOR APPROVAL — 2 workflows held: CI, CodeQL\./)
+    h.delivered.length = 0
+
+    h.push("sha-bbb")
+    await h.tick()
+    await h.tick()
+    assert.deepEqual(h.delivered, [], "a new commit behind the same shut gate is the same instruction")
+
+    // The gate opens on the new commit and the run passes: THAT is news, keyed on the new head.
+    h.setGated([])
+    h.setChecks([{ status: "COMPLETED", conclusion: "SUCCESS", name: "test" }])
+    await h.tick()
+    assert.equal(h.delivered.length, 1)
+    assert.match(h.delivered[0], /CI PASSED/)
+    h.delivered.length = 0
+
+    // …and a push that re-arms the gate AFTER a real verdict does speak: this worker pushed onto a PR
+    // whose last run was approved, and is otherwise waiting on CI it believes is running.
+    h.push("sha-ccc")
+    h.setChecks([{ status: "COMPLETED", conclusion: "SUCCESS", name: "license/cla" }])
+    h.setGated(["CI", "CodeQL"])
+    await h.tick()
+    assert.equal(h.delivered.length, 1, "gated after a real verdict is a transition")
+    assert.match(h.delivered[0], /WAITING FOR APPROVAL/)
+    h.delivered.length = 0
+
+    await h.tick()
+    assert.deepEqual(h.delivered, [], "…and then quiet again")
+  } finally { h.close() }
+})
+
+// A TICK SERVED BY THE `gh` FALLBACK READS THE SAME GATE. When the GraphQL batch fails (`fetch failed`
+// on one request sends every armed ref down the fallback in the same tick), the poll reads the head's
+// workflow runs off `gh run list`, whose conclusions are lower-case. Until 2026-09-11 that reading saw no
+// gate, so the one green `license/cla` entry went out as "✅ CI PASSED — 1 check green", and the next
+// GraphQL poll flipped it back: two wakes per blip on every gated watcher, one of them false.
+// typeorm/typeorm#12842 and Unitech/pm2#6151 flipped together at six instants over three days, and
+// microsoft/TypeScript#64172 collected four such pairs.
+test("a poll served by the `gh` fallback does not flip a gated PR to passing and back", async () => {
+  const h = await prHarness()
+  try {
+    h.setChecks([{ status: "COMPLETED", conclusion: "SUCCESS", name: "license/cla" }])
+    h.setGated(["CI", "CodeQL"])
+    await h.tick()
+    assert.equal(h.delivered.length, 1)
+    h.delivered.length = 0
+
+    h.serveFromGh(["CI", "CodeQL"])
+    await h.tick()
+    assert.deepEqual(h.delivered, [], "the fallback's reading of the same gate is not a pass")
+
+    h.setGated(["CI", "CodeQL"])
+    await h.tick()
+    assert.deepEqual(h.delivered, [], "…and the batched poll's next reading is not a change either")
+
+    // The fallback still SEES a change that is real: the gate opened and the run went red.
+    h.serveFromGh([])
+    h.setChecks([{ status: "COMPLETED", conclusion: "FAILURE", name: "lint" }])
+    await h.tick()
+    assert.equal(h.delivered.length, 1)
+    assert.match(h.delivered[0], /CI FAILED/)
   } finally { h.close() }
 })
 

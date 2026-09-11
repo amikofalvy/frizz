@@ -225,12 +225,27 @@ function rollupEntrySkipped(conclusion: string | undefined): boolean {
 // jobs, and the gated ones are in that same list. `failedCheckNames` skips them because a pending
 // approval is not a failure, which is right — but until this they were then dropped on the floor rather
 // than reported as the distinct, and very actionable, state they are.
+//
+// READ IN GRAPHQL'S CASING, WHICHEVER FETCH PRODUCED THE RUN (2026-09-11). The batched poll's check
+// suites conclude `ACTION_REQUIRED`; the `gh run list` fallback's runs conclude `action_required`,
+// because that command prints the REST shape. Both readers here compared the raw string against the
+// upper-case word, so a poll served by the fallback saw NO gated workflow and NO failed run at all — and
+// a fork PR whose one rollup entry was a green `license/cla` CheckRun read as "✅ CI PASSED — 1 check
+// green" on exactly the ticks the GraphQL batch failed. A batch fails as a unit (`fetch failed` on one
+// request sends every armed ref down the fallback at once), and the next GraphQL poll read the same PR as
+// gated again: two wakes per blip on every gated watcher, one of them false. microsoft/TypeScript#64172
+// collected four such pairs in a week; typeorm/typeorm#12842 and Unitech/pm2#6151 flipped together at
+// six instants over three days.
+function runConclusion(run: WorkflowRun): string | undefined {
+  return typeof run.conclusion === "string" ? run.conclusion.toUpperCase() : undefined
+}
+
 export function gatedWorkflowNames(runs: WorkflowRun[] = [], cap = 8): { names: string[]; total: number } {
   const names: string[] = []
   const seen = new Set<string>()
   for (const run of Array.isArray(runs) ? runs : []) {
     if (!run || typeof run !== "object") continue
-    if (run.conclusion !== "ACTION_REQUIRED") continue
+    if (runConclusion(run) !== "ACTION_REQUIRED") continue
     const name = (run.workflowName ?? run.name)?.trim()
     if (!name || seen.has(name)) continue
     seen.add(name)
@@ -260,8 +275,9 @@ export function failedCheckNames(rollup: RollupEntry[], runs: WorkflowRun[] = []
     if (!run || typeof run !== "object") continue
     // An unapproved fork run reads ACTION_REQUIRED but is a pending approval, not a failure, so it
     // must not be listed as a failed job.
-    if (run.conclusion === "ACTION_REQUIRED") continue
-    if (!rollupEntryFailed(run.conclusion ?? undefined, undefined)) continue
+    const conclusion = runConclusion(run)
+    if (conclusion === "ACTION_REQUIRED") continue
+    if (!rollupEntryFailed(conclusion, undefined)) continue
     push(run.workflowName ?? run.name)
   }
   return { names: names.slice(0, cap), omitted: Math.max(0, names.length - cap) }
@@ -2385,6 +2401,15 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     }
   }
 
+  /** The verdict word a checks stamp carries — `<head>:<verdict>:<failing jobs>` — or the bare word a
+   *  pre-stamp cursor holds. Only the gated rule in `evalPrWatches` reads it; every other verdict
+   *  compares the whole stamp, head and all. */
+  function stampVerdict(stamp: string | undefined): string | undefined {
+    if (!stamp) return undefined
+    const parts = stamp.split(":")
+    return parts.length >= 2 ? parts[1] : parts[0]
+  }
+
   async function evalPrWatches(nowMs: number): Promise<void> {
     // EXPIRY FIRST, so an expired watcher is never polled again and never fires one last time on its way
     // out. A PR nobody touches would otherwise be polled forever, and a thread parked on it would wait
@@ -2588,7 +2613,20 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       // the reported bug live on exactly the thread that reported it, until its CI happened to flip
       // colour — buying silence at the cost of the fix.
       const stamp = terminal !== undefined ? `${st?.head ?? "?"}:${terminal}:${st?.failureSig ?? ""}` : undefined
+      // EXCEPT THAT A GATE IS THE SAME GATE ON ANY COMMIT (2026-09-11). `passing` and `failing` are keyed
+      // on the head because a verdict is reached per commit, and a new commit's verdict is new news. A
+      // gated reading is not a verdict: it says the workflows have not been allowed to start, and the
+      // worker's move — ask a maintainer for the approval — is identical whatever the head is. A worker
+      // that force-pushes a fork PR moves the head while the gate stays shut, and the watcher said
+      // "WAITING FOR APPROVAL" again for the new SHA one poll after saying it for the old one
+      // (microsoft/TypeScript#64248: registered 18:21:20Z, reported 18:21:27Z, force-pushed 18:22:47Z,
+      // reported again 18:24:30Z; the worker's reply to the second: "same wake as before, nothing
+      // changed"). So gated-after-gated is quiet on any commit, while gated after a REAL verdict still
+      // speaks — that worker pushed onto a PR whose last run was approved, and is otherwise waiting on
+      // CI it believes is running. The stamp keeps its shape and the cursor still advances to the new
+      // head; only the comparison relaxes, so a cursor written before this reads exactly the same way.
       const checksChanged = stamp !== undefined && cursor.checks !== stamp
+        && !(terminal === "gated" && stampVerdict(cursor.checks) === "gated")
       // NEW review activity, against everything already reported. On the FIRST poll there is nothing
       // reported yet, so the baseline is the REGISTRATION INSTANT: a worker registers when it opens or
       // pushes a PR, so anything already there is its own news and telling it would spend a turn — while
