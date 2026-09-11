@@ -21,7 +21,7 @@ test("a release retry reconciles shell tags and GitHub metadata after npm succee
 
   assert.doesNotMatch(tag, /\n\s+if:/, "tagging must run when publish_shell is false on a retry");
   assert.doesNotMatch(release, /\n\s+if:/, "GitHub release creation must run when publish_shell is false on a retry");
-  assert.match(tag, /npm view "frizz@\$VERSION" gitHead/);
+  assert.match(tag, /node scripts\/published-git-head.mjs frizz "\$VERSION"/);
   assert.match(tag, /git fetch --no-tags --depth=1 origin "\$GIT_HEAD"/);
   assert.match(tag, /git cat-file -e "\$GIT_HEAD\^\{commit\}"/);
   assert.match(tag, /git tag -a "v\$VERSION" "\$GIT_HEAD" -m "frizz v\$VERSION"/);

@@ -143,7 +143,7 @@ jobs:
             echo "v$VERSION is already tagged; nothing to do"
             exit 0
           fi
-          GIT_HEAD=$(npm view "frizz@$VERSION" gitHead)
+          GIT_HEAD=$(node scripts/published-git-head.mjs frizz "$VERSION")
           if ! printf '%s' "$GIT_HEAD" | grep -Eq '^[0-9a-f]{40}$'; then
             echo "frizz@$VERSION has no valid npm gitHead; refusing to tag this workflow checkout" >&2
             exit 1
