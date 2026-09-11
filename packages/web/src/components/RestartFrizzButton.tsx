@@ -325,12 +325,13 @@ export function RestartFrizzButton() {
     if (updateAvailable) {
       // Raise the blocking overlay the instant the click lands — the update-restart POST can round-trip
       // slowly while the supervisor spins up the candidate build, and the user must see the block now,
-      // not a second later. `restartPending` holds it across the pre-ack window and withholds the reload
-      // destination until the supervisor has actually accepted the transition (armed below), so a stray
-      // status poll can neither drop the overlay nor reload onto the still-live old child.
+      // not a second later. The recorded attempt holds it across the pre-ack window and withholds the
+      // reload destination until the supervisor has actually accepted the transition (armed below), so a
+      // stray status poll can neither drop the overlay nor reload onto the still-live old child. Its
+      // `ackedAt` stays null until then: with no ack instant, NO answer can speak for this attempt.
       store.controlPlaneState = "restarting"
       store.controlPlaneMessage = null
-      store.controlPlaneRestartPending = true
+      store.controlPlaneRestartAttempt = { startedAt: Date.now(), ackedAt: null }
     }
     try {
       if (updateAvailable) await requestFrizzUpdateRestart()
@@ -339,12 +340,18 @@ export function RestartFrizzButton() {
       // supervisor monitor reloads this exact route only after the durable owner reports readiness.
       if (updateAvailable) {
         // Arm the reload destination now that the supervisor owns the transition, and ramp the poll.
-        // `restartPending` is deliberately NOT cleared here: it must outlive the ack until a poll
-        // OBSERVES the server-confirmed transition (a non-"ready" status), so a stale in-flight poll
-        // that captured the pre-flip "ready" can't slip past the guard and reload onto the old child.
+        // The attempt is deliberately NOT cleared here: it must outlive the ack until a poll OBSERVES
+        // the server-confirmed transition (a non-"ready" status), so a stale in-flight poll that
+        // captured the pre-flip "ready" can't slip past the guard and reload onto the old child. What
+        // IS recorded is the ack instant — and before the wake below, so the refetch it triggers is
+        // stamped at or after it: from here on only an answer requested after this moment counts, and
+        // a "failed" from a poll that was already in flight at the click (the retry-from-failed path,
+        // pullfrog on #35) can no longer settle this attempt (nextControlPlane in api/restart.ts).
         sessionStorage.setItem(RELOAD_AFTER_UPDATE_RESTART, destination)
         if (requested.current.version) sessionStorage.setItem(UPDATE_RESTART_FROM_VERSION, requested.current.version)
         else sessionStorage.removeItem(UPDATE_RESTART_FROM_VERSION)
+        const attempt = store.controlPlaneRestartAttempt
+        if (attempt) store.controlPlaneRestartAttempt = { startedAt: attempt.startedAt, ackedAt: Date.now() }
         window.dispatchEvent(new Event(FRIZZ_SUPERVISOR_STATUS_WAKE_EVENT))
         setBusy(false)
       } else {
@@ -352,7 +359,7 @@ export function RestartFrizzButton() {
       }
     } catch (caught) {
       if (updateAvailable) {
-        store.controlPlaneRestartPending = false
+        store.controlPlaneRestartAttempt = null
         store.controlPlaneState = "ready"
         store.controlPlaneMessage = null
       }

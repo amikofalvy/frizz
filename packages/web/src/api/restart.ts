@@ -31,6 +31,14 @@ export interface FrizzSupervisorStatus {
    */
   updateVersion?: string
   /**
+   * An UPDATE's prepare phase — frizz-dev's source build, the registry launcher's npm install — during
+   * which the supervisor deliberately keeps reporting "ready" (the old child is untouched and serving)
+   * and stamps it so. Additive and absent otherwise. The client reads nothing off it today: a "ready"
+   * answered after an accepted update is held whether or not it carries the stamp (see
+   * nextControlPlane), and this field exists here so a test can spell the real answer.
+   */
+  preparing?: boolean
+  /**
    * Is this Frizz a DEVELOPMENT build — launched from a source checkout by `frizz-dev` or `pnpm dev`,
    * rather than the published `frizz` bin? Sent only when true, so absent means "no".
    *
@@ -143,6 +151,62 @@ export function nextRestartHold(
   const silentSince = prev.silentSince ?? poll.at
   const silentForMs = Math.max(0, poll.at - silentSince)
   return { silentSince, silentForMs, stalled: silentForMs >= deadlineMs }
+}
+
+// ── Which poll answer may settle an optimistic update-restart (pullfrog on #35, 2026-09-11) ──────────
+// The button raises the overlay BEFORE its POST is acknowledged, and App used to drop that optimism on
+// the first non-"ready" answer from anywhere. But an answer is not a point in time: the board offers a
+// retry from "failed", so a "failed" answer whose request went on the wire BEFORE the click lands after
+// it — it passed the non-"ready" test, cleared the guard, and once the ack armed a destination the
+// very next "ready" (which an updating launcher deliberately keeps reporting, stamped `preparing`,
+// while the old child is untouched) reloaded the tab onto the OLD bundle before the handoff began.
+// So every answer now carries the instant its request STARTED, the attempt records the instant its
+// POST was acknowledged, and only an answer requested at or after the ack can speak for the transition.
+// `>=`, not `>`: the wake the ack dispatches refetches within the same millisecond.
+
+export interface StampedSupervisorStatus extends FrizzSupervisorStatus {
+  /** Client clock at the moment the request went out — stamped by the shared poll, never on the wire. */
+  requestedAt: number
+}
+
+export interface RestartAttempt {
+  /** The click: the instant the overlay rose optimistically. The record only — the verdict reads `ackedAt`. */
+  startedAt: number
+  /** The instant the supervisor accepted the transition (the POST resolved); null across the pre-ack window. */
+  ackedAt: number | null
+}
+
+/** What the board believes about the supervisor, plus the optimistic attempt (if any) it is holding against the poll. */
+export interface ControlPlane {
+  state: FrizzSupervisorStatus["state"]
+  message: string | null
+  attempt: RestartAttempt | null
+}
+
+/** Can this answer speak for the attempt at all — was its request started at or after the ack? */
+export function answerFollowsAck(attempt: RestartAttempt, answer: Pick<StampedSupervisorStatus, "requestedAt">): boolean {
+  return attempt.ackedAt !== null && answer.requestedAt >= attempt.ackedAt
+}
+
+/**
+ * One step of the board's control-plane view, per protocol answer (a null answer is the hold's business,
+ * see nextRestartHold). With no attempt pending the answer is simply believed. While one is pending it
+ * is held until an answer that FOLLOWS the ack observes the transition — a non-"ready" state — at
+ * which point the optimism is server-backed and the attempt is over. A "ready" after the ack is the
+ * prepare phase (or a stale read) and keeps the hold; anything requested before the ack, whatever it
+ * says, belongs to the world before this attempt and is ignored.
+ */
+export function nextControlPlane(prev: ControlPlane, answer: Pick<StampedSupervisorStatus, "state" | "message" | "requestedAt">): ControlPlane {
+  if (prev.attempt && !(answerFollowsAck(prev.attempt, answer) && answer.state !== "ready")) return prev
+  return { state: answer.state, message: answer.message ?? null, attempt: null }
+}
+
+/**
+ * The reload branch's gate: only a BELIEVED "ready" — never one read under a pending attempt — may
+ * consume an armed destination or chase a new build identity.
+ */
+export function readyBelieved(plane: ControlPlane, answer: Pick<FrizzSupervisorStatus, "state">): boolean {
+  return answer.state === "ready" && plane.attempt === null
 }
 
 /** Every supervisor that speaks the control protocol can restart its disposable application child. */

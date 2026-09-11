@@ -7,14 +7,18 @@ import {
   getFrizzSupervisorStatus,
   IDLE_RESTART_HOLD,
   isDevFrizzBuild,
+  nextControlPlane,
   nextRestartHold,
+  readyBelieved,
   requestFrizzRestart,
   requestFrizzUpdateRestart,
   RESTART_HOLD_DEADLINE_MS,
   restartFailureCopy,
   restartFailureOutcome,
   shouldReloadForNewBuild,
+  type ControlPlane,
   type FrizzSupervisorStatus,
+  type StampedSupervisorStatus,
 } from "./restart.ts"
 
 const response = (body: string, status = 200, contentType = "application/json") => new Response(body, { status, headers: { "content-type": contentType } })
@@ -191,4 +195,71 @@ test("a failed answer naming the version we clicked on means the old launcher ga
   assert.match(successor.detail, /npx frizz/)
   assert.doesNotMatch(successor.detail, /kept running/)
   assert.match(restartFailureCopy({ kind: "successor-failed" }).summary, /^The new version of Frizz failed to start$/)
+})
+
+// ── pullfrog on #35 (2026-09-11): only an answer requested after the ack can settle an attempt ──────
+// The button raises the overlay before its POST is acked, and App held that optimism until the first
+// non-"ready" answer — from ANY request, including one that was already on the wire when the operator
+// clicked. Every answer now carries the instant its request started, and the attempt the instant the
+// supervisor acked it; the reducer below is what App applies per answer.
+const answer = (state: StampedSupervisorStatus["state"], requestedAt: number, over: Partial<StampedSupervisorStatus> = {}): StampedSupervisorStatus =>
+  ({ protocol: 1, state, requestedAt, ...over })
+const CLICK = 1_000
+const ACK = 1_500
+
+test("a stale failed poll started before the click does not clear the pending guard", () => {
+  // The click: the overlay is up optimistically, the POST is not yet acked.
+  const clicked: ControlPlane = { state: "restarting", message: null, attempt: { startedAt: CLICK, ackedAt: null } }
+  // The "failed" this board was showing before the click answers a request that went out at t=900.
+  const stale = answer("failed", CLICK - 100, { message: "old build never came up" })
+  assert.equal(nextControlPlane(clicked, stale), clicked, "a request from before the click belongs to the world before this attempt")
+  // Nothing at all speaks for the attempt while the ack instant is unknown — not even a "restarting"
+  // requested after the click, because the supervisor may have served it before it accepted the POST.
+  assert.equal(nextControlPlane(clicked, answer("restarting", CLICK + 200)), clicked)
+  assert.equal(nextControlPlane(clicked, answer("failed", CLICK + 200)), clicked)
+})
+
+test("after the ack a ready (preparing) answer keeps the guard; restarting or failed clears it", () => {
+  const acked: ControlPlane = { state: "restarting", message: null, attempt: { startedAt: CLICK, ackedAt: ACK } }
+  // The launcher deliberately reports "ready" through the prepare phase — the old child is untouched.
+  assert.equal(nextControlPlane(acked, answer("ready", ACK + 10, { preparing: true })), acked)
+  assert.equal(nextControlPlane(acked, answer("ready", ACK + 10)), acked, "with or without the stamp")
+  // A "failed" whose request started before the ack still cannot speak, even after the ack has landed.
+  assert.equal(nextControlPlane(acked, answer("failed", ACK - 1)), acked)
+  // The same millisecond as the ack counts: the wake the ack dispatches refetches within it.
+  assert.deepEqual(nextControlPlane(acked, answer("restarting", ACK)), { state: "restarting", message: null, attempt: null })
+  assert.deepEqual(
+    nextControlPlane(acked, answer("failed", ACK + 40, { message: "build broke" })),
+    { state: "failed", message: "build broke", attempt: null },
+  )
+  // With no attempt pending, every answer is simply believed — the non-pending path is unchanged.
+  const believed: ControlPlane = { state: "ready", message: null, attempt: null }
+  assert.deepEqual(nextControlPlane(believed, answer("failed", 5, { message: "x" })), { state: "failed", message: "x", attempt: null })
+  assert.deepEqual(nextControlPlane(believed, answer("ready", 5)), believed)
+})
+
+test("retrying from failed with an old poll in flight never reloads onto the old bundle", () => {
+  // The board shows the previous attempt's failure; the operator clicks Update again.
+  let plane: ControlPlane = { state: "failed", message: "old build never came up", attempt: null }
+  plane = { state: "restarting", message: null, attempt: { startedAt: CLICK, ackedAt: null } }
+  // The pre-click "failed" poll lands first. Before: this cleared the guard for the new attempt.
+  plane = nextControlPlane(plane, answer("failed", CLICK - 100, { message: "old build never came up" }))
+  assert.notEqual(plane.attempt, null, "the stale failed must not settle the new attempt")
+  // The POST is acked and the reload destination armed.
+  plane = { ...plane, attempt: { startedAt: CLICK, ackedAt: ACK } }
+  // The launcher's prepare-phase "ready": with the guard wrongly cleared, this consumed the armed
+  // destination and reloaded the tab onto the OLD bundle before the handoff started.
+  const preparing = answer("ready", ACK, { preparing: true, version: "1.2.3" })
+  plane = nextControlPlane(plane, preparing)
+  assert.equal(readyBelieved(plane, preparing), false, "a ready read under a pending attempt may not consume the destination")
+  assert.equal(plane.state, "restarting", "and the overlay stays up")
+  // The drain begins: the first post-ack non-"ready" answer settles the attempt.
+  plane = nextControlPlane(plane, answer("restarting", ACK + 500))
+  assert.equal(plane.attempt, null)
+  assert.equal(readyBelieved(plane, answer("restarting", ACK + 500)), false, "restarting is never a reload")
+  // The successor comes up: THIS ready is believed, and the destination may be consumed.
+  const successor = answer("ready", ACK + 9_000, { version: "1.2.4" })
+  plane = nextControlPlane(plane, successor)
+  assert.equal(plane.state, "ready")
+  assert.equal(readyBelieved(plane, successor), true)
 })

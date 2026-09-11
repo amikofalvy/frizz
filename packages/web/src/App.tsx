@@ -27,7 +27,9 @@ import { useSupervisorStatus } from "./api/supervisorStatus.ts"
 import {
   frizzBuildIdentity,
   IDLE_RESTART_HOLD,
+  nextControlPlane,
   nextRestartHold,
+  readyBelieved,
   RELOAD_AFTER_UPDATE_RESTART,
   restartFailureCopy,
   restartFailureOutcome,
@@ -88,17 +90,15 @@ export function App() {
       // transition. HOLD it until a poll actually OBSERVES a server-confirmed non-"ready" status: a
       // "ready" read while pending is either the pre-flip state or a stale in-flight response, and
       // applying it would drop the overlay and (with a destination armed) reload onto the old child.
-      // The moment a poll sees "restarting"/"failed", the optimism is server-backed — clear the hold.
-      if (store.controlPlaneRestartPending) {
-        if (status.state !== "ready") {
-          store.controlPlaneRestartPending = false
-          store.controlPlaneState = status.state
-          store.controlPlaneMessage = status.message ?? null
-        }
-      } else {
-        store.controlPlaneState = status.state
-        store.controlPlaneMessage = status.message ?? null
-      }
+      // And not just any non-"ready": one whose request STARTED after the supervisor acked the POST.
+      // A "failed" that was already in flight at the click — real, because the board offers retry
+      // from "failed" — used to clear the guard for the new attempt, after which the launcher's
+      // deliberate "ready" (`preparing`) reloaded the tab onto the old bundle (pullfrog on #35,
+      // 2026-09-11). The verdict is the pure reducer's; this effect only applies it.
+      const plane = nextControlPlane({ state: store.controlPlaneState, message: store.controlPlaneMessage, attempt: store.controlPlaneRestartAttempt }, status)
+      store.controlPlaneState = plane.state
+      store.controlPlaneMessage = plane.message
+      store.controlPlaneRestartAttempt = plane.attempt
       if (seenBuild.current === null) seenBuild.current = frizzBuildIdentity(status)
     }
     // Step the hold on EVERY answer, null included — the null ones are the whole point. `restarting`
@@ -106,7 +106,7 @@ export function App() {
     setHold((prev) => nextRestartHold(prev, { restarting: store.controlPlaneState === "restarting", answered: status != null, at: Date.now() }))
     if (!status || reloading.current) return
     const destination = sessionStorage.getItem(RELOAD_AFTER_UPDATE_RESTART)
-    if (status.state === "ready" && !store.controlPlaneRestartPending) {
+    if (readyBelieved({ state: store.controlPlaneState, message: store.controlPlaneMessage, attempt: store.controlPlaneRestartAttempt }, status)) {
       if (destination) {
         sessionStorage.removeItem(RELOAD_AFTER_UPDATE_RESTART)
         sessionStorage.removeItem(UPDATE_RESTART_FROM_VERSION)
