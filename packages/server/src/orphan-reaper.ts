@@ -383,6 +383,13 @@ export interface SweepResult {
   /** distinct dead thread slugs whose aux were reaped */
   deadSlugs: string[]
   liveSlugs: string[]
+  /**
+   * Set when the enumeration cannot run on this machine AT ALL (`ps` is not on PATH), as opposed to
+   * failing this once. startOrphanReaper reads it to say so once and stop the interval, instead of
+   * swallowing the same ENOENT every minute in silence — which is what a Windows box did until
+   * 2026-09-11 (Windows audit, finding 6).
+   */
+  unavailable?: string
 }
 
 // ── Runaway detection (REPORT ONLY — nothing here kills anything) ─────────────────────────────────
@@ -487,8 +494,11 @@ export function sweepOrphansOnce(deps: SweepDeps = {}): SweepResult {
   let rows: ProcRow[]
   try {
     rows = enumerateProcs(exec, { platform: deps.platform, readEnv: deps.readEnv })
-  } catch {
-    return { reaped: 0, deadSlugs: [], liveSlugs: [] }
+  } catch (error) {
+    // ENOENT is `ps` itself missing, which no later sweep will find either; anything else (a
+    // timeout, a transient exec failure) is this sweep's problem alone and fails closed as before.
+    const code = (error as NodeJS.ErrnoException | undefined)?.code
+    return { reaped: 0, deadSlugs: [], liveSlugs: [], ...(code === "ENOENT" ? { unavailable: "`ps` is not on PATH" } : {}) }
   }
   const protectedPids = selfAndAncestors(rows, selfPid)
   const { reap, liveSlugs } = decideOrphans(rows, { minAgeMs, protectedPids })
@@ -542,17 +552,41 @@ function sweepStaleBrokerSockets(): void {
   }
 }
 
+// What the reaper says, once, on a machine where it cannot run. The reaper reads a worker's slug from
+// its process ENVIRONMENT (the header explains why never argv), and Windows exposes no other process's
+// environment to a Node program — `Get-CimInstance Win32_Process` carries pid, parent, age and the
+// command line but not the env block, and reading a foreign PEB needs a native call. So an enumerator
+// there would attribute nothing: every slug null, nothing reapable, nothing to report. Rather than run
+// that theatre once a minute, or swallow `spawn ps ENOENT` once a minute in silence as it did until
+// 2026-09-11 (Windows audit, finding 6), the reaper says this and stays off. What it implies is real:
+// the aux processes a dead thread leaves behind on Windows are collected by nobody, and a live
+// thread's runaway build is never named.
+const UNAVAILABLE_ON_WINDOWS =
+  "orphan-reaper: unavailable on Windows — a worker's FRIZZ_THREAD is read from its process environment, which Windows does not expose; " +
+  "background processes a stopped thread leaves behind are not collected here, and a live thread's runaway work is not reported"
+
 /** Start the startup + periodic sweep. Returns a stop handle. Timers are unref'd (never hold the loop open). */
 export function startOrphanReaper(deps: SweepDeps & { intervalMs?: number } = {}): () => void {
+  if ((deps.platform ?? process.platform) === "win32") {
+    deps.log?.(UNAVAILABLE_ON_WINDOWS)
+    return () => {}
+  }
   const intervalMs = deps.intervalMs ?? ORPHAN_REAP_INTERVAL_MS
+  // A POSIX box without `ps` (a stripped container) is the same silence with a different cause: say
+  // it once, on whichever sweep first sees it, and stop asking.
+  const unavailable = (result: SweepResult): boolean => {
+    if (!result.unavailable) return false
+    deps.log?.(`orphan-reaper: unavailable on this machine — ${result.unavailable}; background processes a stopped thread leaves behind are not collected here`)
+    return true
+  }
   try {
-    sweepOrphansOnce(deps)
+    if (unavailable(sweepOrphansOnce(deps))) return () => {}
   } catch {
     // startup sweep is best-effort
   }
   const timer = setInterval(() => {
     try {
-      sweepOrphansOnce(deps)
+      if (unavailable(sweepOrphansOnce(deps))) clearInterval(timer)
     } catch {
       // never let a sweep error escape the timer
     }
