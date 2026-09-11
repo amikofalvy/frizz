@@ -9,6 +9,7 @@ import {
   currentProcessGeneration,
   projectLaunchOwnerTokenFromEnvironment,
   projectLaunchTargetFromEnvironment,
+  registerProjectLaunchDelegate,
   verifyProjectLaunchDelegate,
 } from "./project-launch.ts"
 import { ShutdownTimeoutError } from "./shutdown.ts"
@@ -77,6 +78,16 @@ try {
   const launchOwnerToken = projectLaunchOwnerTokenFromEnvironment(process.env)
   if (!target || !launchOwnerToken) throw new Error("dev child is missing pinned project launch ownership")
   verifyProjectLaunchDelegate(target, launchOwnerToken)
+  // Stable launchers fence EVERY project, including the gap after a launcher crash. Register before
+  // importing/opening the server; leave this delegate until process death, not merely server.close().
+  // A successor must observe this exact generation gone before another scheduler can start.
+  if (process.env.FRIZZ_SERVER_OWNERSHIP) {
+    const ownership = JSON.parse(process.env.FRIZZ_SERVER_OWNERSHIP) as NodeJS.ProcessEnv
+    const serverTarget = projectLaunchTargetFromEnvironment(ownership)
+    const serverToken = projectLaunchOwnerTokenFromEnvironment(ownership)
+    if (!serverTarget || !serverToken) throw new Error("stable server is missing global launch ownership")
+    registerProjectLaunchDelegate(serverTarget, serverToken)
+  }
   ensureNativeHelperPermissions()
   const { startServer } = await import("./index.ts")
   const project = projectFromLaunchTarget(target)

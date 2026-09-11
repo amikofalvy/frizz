@@ -69,8 +69,8 @@ async function until(label, check, timeout = 90_000) {
   }
   throw new Error(`Timed out: ${label}${lastError ? `: ${lastError}` : ""}`)
 }
-function start(name, args) {
-  const child = spawn(runtime, args, { cwd: repo, env, stdio: ["ignore", "pipe", "pipe"] })
+function start(name, args, cwd = repo) {
+  const child = spawn(runtime, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] })
   processes.push(child)
   child.stdout.on("data", (bytes) => appendFileSync(join(out, `${name}.log`), bytes))
   child.stderr.on("data", (bytes) => appendFileSync(join(out, `${name}.log`), bytes))
@@ -174,6 +174,17 @@ async function launch(version = "0.13.0") {
   return shellPid
 }
 
+async function secondLaunch(expectedExit) {
+  const directory = join(root, "second-project")
+  if (!existsSync(directory)) { mkdirSync(directory); execFileSync("git", ["init", "-q"], { cwd: directory }) }
+  const before = children().length
+  const child = start(`second-launch-${processes.length}`, [npmCli, "exec", "--yes", "--package=frizz@0.13.0", "--", "frizz", "--no-app"], directory)
+  await until("second invocation exits without another server", () => child.exitCode !== null || child.signalCode !== null, 30_000)
+  assert.equal(child.exitCode, expectedExit)
+  assert.equal(children().slice(before).some((event) => event.event === "start"), false)
+  record("second-project-launch-coalesced", { expectedExit })
+}
+
 try {
   const serverVersion = JSON.parse(readFileSync(join(workspace, "packages/server-release/package.json"), "utf8")).version
   assert.equal(serverVersion, "0.13.0", "update fixture baseline must match shell bootstrap pin")
@@ -246,6 +257,14 @@ try {
     const started = await until("legacy successor starts managed server", () => children().find((event) => event.event === "start"), 180_000)
     shellPid = started.parent
     record("legacy-browser-handoff", { shellPid })
+  } else if (argument("singleton")) {
+    let release
+    downloadGate = { version: "0.13.0", requested: false, promise: new Promise((done) => { release = done }), release: () => release() }
+    const boot = launch()
+    await until("cold server download", () => downloadGate.requested)
+    await secondLaunch(1)
+    release(); downloadGate = undefined
+    await boot
   } else await launch()
   const initialPid = shellPid
   await healthy("0.13.0")
@@ -286,6 +305,7 @@ try {
   packages.get("frizz-server").latest = "0.13.1"
   await action()
   await until("candidate download requested", () => downloadGate.requested)
+  if (argument("singleton")) await secondLaunch(0)
   const oldPid = children().find((event) => event.event === "ready").pid
   assert.equal(alive(oldPid), true)
   await api.query("board")
@@ -361,6 +381,10 @@ try {
   for (const [version, reason] of [["0.13.2", "incompatible epoch"], ["0.13.3", "missing asset"], ["0.13.4", "boot failure"], ["0.13.5", "early crash"], ["0.13.6", "boot timeout"], ["0.13.9", "download failure"], ["0.13.10", "integrity failure"], ["0.13.11", "incompatible protocol"]]) {
     packages.get("frizz-server").latest = version
     await action()
+    if (version === "0.13.6" && argument("singleton")) {
+      await until("candidate stalled before ready", () => children().some((event) => event.event === "start" && event.version === version))
+      await secondLaunch(0)
+    }
     const failed = await until(reason, async () => { const value = await status(); return value.state === "failed" && value })
     assert.equal(failed.version, "0.13.1")
     assert.equal(selected().version, "0.13.1")

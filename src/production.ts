@@ -64,6 +64,7 @@ import {
 import { createSupervisorShutdownHandler, startDevSupervisor } from "@frizz/server/dev-supervisor";
 import { planRegistryUpdate, PRODUCTION_PRINT_LAUNCHER_FLAG, PRODUCTION_REEXEC_FLAG, reexecArgv } from "./production-update.ts";
 import { npmServerPackageInstaller, serverGenerationLaunch, serverReleaseSpec, ServerReleaseStore, type ServerGeneration } from "./server-release.ts";
+import { acquireStableServerOwner, publishStableServerAddress, releaseStableServerOwner, type ServerOwnerLease } from "./server-owner.ts";
 import { GLOBAL_INSTALL_ENV, isGlobalInstall, keepUpdateHint } from "./production-update.ts";
 import {
   assertLaunchPrerequisites,
@@ -173,6 +174,10 @@ const globalInstall = process.env[GLOBAL_INSTALL_ENV] === "1" || isGlobalInstall
 let accessPane: AccessPane | null = null;
 /** The single-use link this launch minted, read by the readout below. */
 let activeAccessLink: { url: string } | null = null;
+let serverOwner: ServerOwnerLease | undefined;
+// Cold-install errors and signals also release the lease. Live registered control-plane delegates
+// retain its draining fence until their exact process generations are gone.
+process.on("exit", () => { if (serverOwner) releaseStableServerOwner(serverOwner); });
 
 let launchIntent: LaunchIntent | undefined;
 const workspace: Workspace = (() => {
@@ -375,8 +380,8 @@ function slugPath(): string {
 async function joinRunningFrizz(): Promise<{ port: number; slug: string } | undefined> {
   const slug = ownSlug();
   if (!slug) return undefined;
-  // The well-known port, then the one the fallback jumps to. A server that had to scan past both is
-  // rare enough to be worth a second server rather than a slow probe on every cold start.
+  // Compatibility with pre-split launchers, which did not publish the global owner/address record.
+  // New launchers join that record before probing application health, even during child recovery.
   for (const port of new Set([DEFAULT_PORT, fallbackPort(DEFAULT_PORT)])) {
     if (await probeFrizz(port, { projectId: target.projectId, projectDir: target.projectDir, slug }))
       return { port, slug };
@@ -454,11 +459,13 @@ async function openOrPrint(port: number, reused: boolean, path = ""): Promise<vo
 
 async function runSupervisor(port: number, token: string, onPrepared: () => void = () => {}): Promise<never> {
   assertLaunchPrerequisites();
+  if (!serverOwner) throw new Error("stable server launch is missing global ownership");
   const owner = adoptProjectLaunchOwner(target, token, "supervisor");
   const env = projectLaunchEnvironment(
     {
       ...process.env,
       FRIZZ_PRODUCTION_SUPERVISOR: "1",
+      FRIZZ_SERVER_OWNERSHIP: JSON.stringify(projectLaunchEnvironment({}, serverOwner.target, serverOwner.token)),
       ...logEnvironment(logger, options.debug ? "debug" : "info"),
       ...(options.debug ? { FRIZZ_DEBUG: "1" } : {}),
     },
@@ -564,6 +571,7 @@ async function runSupervisor(port: number, token: string, onPrepared: () => void
       pending = undefined;
     },
   });
+  publishStableServerAddress(serverOwner, port);
   // The first single-use link, minted now that the board can redeem it. The old `?frizz_token=` this
   // replaced was a STANDING secret: it never expired and never rotated, so anything that saw it once
   // — a screenshot, scrollback, a chat log — kept working forever.
@@ -597,7 +605,7 @@ async function runSupervisor(port: number, token: string, onPrepared: () => void
   const stop = createSupervisorShutdownHandler({
     close: () => supervisor.close(),
     force: () => supervisor.forceStop(),
-    release: () => owner.release(),
+    release: () => { owner.release(); if (serverOwner) releaseStableServerOwner(serverOwner); },
     // Acknowledge the first signal on the spot; the drain that follows is bounded but not instant.
     onStop: () => {
       logger.info("launcher", "stop signal received; draining the control plane");
@@ -644,6 +652,17 @@ async function runSupervisor(port: number, token: string, onPrepared: () => void
 }
 
 try {
+  // Hold this across downloads, child handoffs and recovery. A 503 from the application is never
+  // permission to start a second scheduler, and a custom port is just as discoverable as the default.
+  const globalClaim = acquireStableServerOwner();
+  if (globalClaim.kind === "busy") throw new Error("Frizz is starting or recovering on this machine; retry shortly");
+  if (globalClaim.kind === "running") {
+    if (options.port && options.port !== globalClaim.port)
+      throw new Error(`Frizz is already running on port ${globalClaim.port}; --port cannot change a running server`);
+    await openOrPrint(globalClaim.port, true, slugPath());
+    process.exit(0);
+  }
+  serverOwner = globalClaim.lease;
   if (process.env.FRIZZ_PRODUCTION_SUPERVISOR === "1" || reexec) {
     if (!options.port) throw new Error("internal registry supervisor launch is missing --port");
     const token = projectLaunchOwnerTokenFromEnvironment(process.env);
