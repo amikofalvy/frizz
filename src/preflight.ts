@@ -15,19 +15,14 @@ export interface LaunchPrerequisiteOptions {
 /**
  * The Node releases Frizz actually runs on, MEASURED rather than derived from dependency manifests.
  *
- * Two built-ins set it, and the later one wins. Frizz's database is `node:sqlite`, unflagged in
- * v22.13.0 and v23.4.0; below those the module does not exist at all — the import fails with "No
- * such built-in module". Verified by running the driver's own suite (`sqlite.test.ts`) on 22.12,
- * 22.13, 22.14, 23.4, 23.6, 24 and 26: every release from 22.13 up passes it whole, and 22.12 is the
- * only failure. And Update Frizz reloads the launcher IN PLACE with `process.execve`, which arrived
- * in v22.15.0 and v23.11.0: measured on the nvm installs at hand (audit 2026-09-11, finding 7), it is
- * `undefined` on 22.13.0, 22.14.0, 23.4.0 and 23.10.0 and a function on 22.15.0, 23.11.0 and 24.0.0.
- * A Node without it silently took the detached fallback meant for Windows, so a Mac or Linux
- * operator got a board their terminal could no longer reach, for no reason anything said. So the
- * floor is the release that shipped execve. Anything newer than the highest line listed is assumed good.
+ * Frizz's database is `node:sqlite`, unflagged in v22.13.0 and v23.4.0. Below those the module does not
+ * exist at all — the import fails with "No such built-in module" — so the floor is simply the release
+ * that shipped it. Verified by running the driver's own suite (`sqlite.test.ts`) on 22.12, 22.13,
+ * 22.14, 23.4, 23.6, 24 and 26: every release from 22.13 up passes it whole, and 22.12 is the only
+ * failure. Anything newer than the highest line listed is assumed good.
  *
- * Hence a floor PER RELEASE LINE rather than one number: a plain `>=22.15` would also advertise
- * 23.0-23.10, where one or both are missing.
+ * Hence a floor PER RELEASE LINE rather than one number: a plain `>=22.13` would also advertise
+ * 23.0-23.3, where `node:sqlite` does not exist either.
  *
  * This was 22.14 until the database moved off better-sqlite3, whose prebuild is built with
  * `NAPI_VERSION=10` (available only from 22.14/23.6) while the package declared `engines: ">=22"`. On
@@ -41,8 +36,8 @@ export interface LaunchPrerequisiteOptions {
  * package ships COMPILED JS, so the source workflow's Node is never the consumer's Node.
  */
 export const SUPPORTED_NODE_LINES = [
-  { major: 22, minor: 15 },
-  { major: 23, minor: 11 },
+  { major: 22, minor: 13 },
+  { major: 23, minor: 4 },
 ] as const;
 
 /**
@@ -127,7 +122,7 @@ export function commandIsAvailable(command: string): boolean {
  * a workstation may use one backend while the other is unavailable.
  *
  * The Node floor here is a genuine minimum, not a proxy for the older Node-26 gate: it is the lowest
- * release that ships both `node:sqlite` and `process.execve` (see `SUPPORTED_NODE_LINES`). It is complementary
+ * release that ships `node:sqlite` (see `SUPPORTED_NODE_LINES`). It is complementary
  * to `assertArtifactHostCompatible`, which only enforces that a reused artifact's Node major equals
  * the host's — that equality check cannot catch a host whose Node is simply below what the
  * dependencies need, which is precisely what this floor reports cleanly.
@@ -140,8 +135,8 @@ export function assertLaunchPrerequisites(
   if (!nodeVersionIsSupported(major!, minor!))
     throw new Error(
       `Node.js ${supportedNodeRange()} is required (found ${version}); ` +
-        `Frizz's database is Node's built-in node:sqlite and its in-place update needs process.execve, ` +
-        `which older releases do not ship. Install a newer Node release and relaunch Frizz`
+        `Frizz's database is Node's built-in node:sqlite, which older releases do not ship. ` +
+        `Install a newer Node release and relaunch Frizz`
     );
   assertRequiredExecutables(options.command ?? commandIsAvailable);
 }
