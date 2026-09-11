@@ -49,7 +49,9 @@ import {
   waitForWorkspace,
   requestFrizzStop,
   resolveWorkspace,
+  runningFrizzStatus,
   sourceWorkspaceDir,
+  stopProjectLaunch,
   supervisorNeedsAttention,
   workspaceLaunchTarget,
   type Workspace,
@@ -2532,5 +2534,169 @@ test("--sandbox shares credentials with the real home, but no state", () => {
     process.chdir(cwd);
     cleanupSandbox(sandbox.home);
     rmSync(real, { recursive: true, force: true });
+  }
+});
+
+// ---- stopProjectLaunch / runningFrizzStatus: the registry launcher's --stop and --status ------------
+//
+// The registry launcher's farewell has said "stop it with frizz --stop" since 0.12.10 while the flag
+// fell through to the join path and opened a browser tab on the board (audit 2026-09-11, finding 2).
+// These pin the extracted protocol against a fake owner, status file, process table and control plane:
+// a live owner is asked over token-bound HTTP; one that refuses is left alone; a provably stale one
+// is reaped through the same fencing acquisition every launch uses.
+
+/** A project owned by a fake supervisor (pid 4100) whose status file names port 5091, plus the launcher that will stop it (pid 4200). */
+function ownedProjectFixture() {
+  const projectDir = mkdtempSync(join(tmpdir(), "frizz-stop-launch-"));
+  const target: ProjectLaunchTarget = { projectId: randomUUID(), projectDir, stateDir: join(projectDir, "state") };
+  const supervisor = { pid: 4100, processStart: "linux:boot:4100" };
+  const launcher = { pid: 4200, processStart: "linux:boot:4200" };
+  const processTable = new Map([[supervisor.pid, supervisor.processStart], [launcher.pid, launcher.processStart]]);
+  let self = supervisor;
+  const adapter: ProcessPlatformAdapter = {
+    current: () => self,
+    observe: (pid) => {
+      const processStart = processTable.get(pid);
+      return processStart ? { processStart, confidence: "exact" } : { confidence: "unavailable" };
+    },
+    isAlive: (pid) => processTable.has(pid),
+    now: () => Date.now(),
+    sleep: () => {},
+  };
+  const owner = acquireProjectLaunchOwner(target, "supervisor", { adapter });
+  self = launcher;
+  const status = {
+    pid: supervisor.pid,
+    processStart: supervisor.processStart,
+    publisherToken: randomUUID(),
+    ownerToken: owner.token,
+    projectId: target.projectId,
+    projectDir: target.projectDir,
+    port: 5091,
+    state: "ready",
+  };
+  writeFileSync(join(target.stateDir, "dev-supervisor.lock"), JSON.stringify(status));
+  const proof = projectLaunchTokenProof(target, owner.token);
+  const requests: string[] = [];
+  /** A control plane that answers health and status, and honours (or refuses) a token-bound stop. */
+  const controlPlane = (options: { stopStatus: number; version?: string }) =>
+    (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      requests.push(url);
+      assert.match(url, /^http:\/\/127\.0\.0\.1:5091\/_frizz\//);
+      if (url.endsWith("/_frizz/health")) {
+        return new Response(JSON.stringify({ ok: true, projectId: target.projectId, projectDir: target.projectDir, bootId: "boot", ownerProof: proof }));
+      }
+      if (url.endsWith("/_frizz/control/status")) {
+        return new Response(JSON.stringify({ protocol: 1, state: "ready", updateRestart: true, ...(options.version ? { version: options.version } : {}) }));
+      }
+      assert.ok(url.endsWith("/_frizz/control/stop"), url);
+      assert.equal(init?.method, "POST");
+      assert.equal(new Headers(init?.headers).get("x-frizz-launch-token"), owner.token);
+      // An accepted stop is what makes the supervisor's finally block release the owner record.
+      if (options.stopStatus === 202) owner.release();
+      return new Response(JSON.stringify({ accepted: options.stopStatus === 202 }), { status: options.stopStatus });
+    }) as typeof fetch;
+  const dispose = () => {
+    try { owner.release(); } catch { /* already released by the stop */ }
+    rmSync(projectDir, { recursive: true, force: true });
+  };
+  return { target, owner, adapter, processTable, supervisor, status, requests, controlPlane, dispose };
+}
+
+test("stopProjectLaunch asks a live owner to stop with its token and reports stopped once the record is gone", async () => {
+  const fixture = ownedProjectFixture();
+  try {
+    const result = await stopProjectLaunch({
+      stateDir: fixture.target.stateDir,
+      target: fixture.target,
+      adapter: fixture.adapter,
+      fetcher: fixture.controlPlane({ stopStatus: 202 }),
+      sleep: async () => {},
+    });
+    assert.deepEqual(result, { kind: "stopped" });
+    assert.deepEqual(fixture.requests.map((url) => url.slice(url.indexOf("/_frizz"))), ["/_frizz/health", "/_frizz/control/stop"]);
+    assert.equal(readProjectLaunchOwner(fixture.target.stateDir), null);
+  } finally {
+    fixture.dispose();
+  }
+});
+
+test("stopProjectLaunch reports not-running when nothing owns the project", async () => {
+  const projectDir = mkdtempSync(join(tmpdir(), "frizz-stop-nothing-"));
+  const target: ProjectLaunchTarget = { projectId: randomUUID(), projectDir, stateDir: join(projectDir, "state") };
+  try {
+    assert.deepEqual(
+      await stopProjectLaunch({ stateDir: target.stateDir, target, fetcher: (async () => assert.fail("no request without an owner")) as typeof fetch }),
+      { kind: "not-running" },
+    );
+  } finally {
+    rmSync(projectDir, { recursive: true, force: true });
+  }
+});
+
+test("stopProjectLaunch leaves a live owner that refuses the token-bound stop untouched, and never signals it", async () => {
+  const fixture = ownedProjectFixture();
+  try {
+    await assert.rejects(
+      () => stopProjectLaunch({
+        stateDir: fixture.target.stateDir,
+        target: fixture.target,
+        adapter: fixture.adapter,
+        fetcher: fixture.controlPlane({ stopStatus: 503 }),
+        sleep: async () => {},
+      }),
+      /refused to stop a live owner without authenticated token-bound control; the owner was left untouched/,
+    );
+    assert.equal(readProjectLaunchOwner(fixture.target.stateDir)?.token, fixture.owner.token);
+  } finally {
+    fixture.dispose();
+  }
+});
+
+test("stopProjectLaunch reaps a provably stale owner through the fencing acquisition rather than a signal", async () => {
+  const fixture = ownedProjectFixture();
+  try {
+    // The supervisor's pid now belongs to a different process: the owner record is stale, and the
+    // status file (which names the same generation) is ignored, so no control request is made.
+    fixture.processTable.set(fixture.supervisor.pid, "linux:boot:reused");
+    const result = await stopProjectLaunch({
+      stateDir: fixture.target.stateDir,
+      target: fixture.target,
+      adapter: fixture.adapter,
+      fetcher: (async () => assert.fail("a stale owner is never asked over HTTP")) as typeof fetch,
+      sleep: async () => {},
+    });
+    assert.deepEqual(result, { kind: "stopped" });
+    assert.equal(readProjectLaunchOwner(fixture.target.stateDir), null);
+  } finally {
+    fixture.dispose();
+  }
+});
+
+test("runningFrizzStatus reports the live owner's port, pid and the version its status route serves", async () => {
+  const fixture = ownedProjectFixture();
+  try {
+    assert.deepEqual(
+      await runningFrizzStatus({ stateDir: fixture.target.stateDir, target: fixture.target, adapter: fixture.adapter, fetcher: fixture.controlPlane({ stopStatus: 503, version: "0.13.0" }) }),
+      { port: 5091, pid: 4100, version: "0.13.0", state: "ready" },
+    );
+    // A board that answers health but not the status route (a legacy supervisor) still reports itself.
+    const healthOnly = (async (input: string | URL | Request) => {
+      if (String(input).endsWith("/_frizz/health")) return fixture.controlPlane({ stopStatus: 503 })(input);
+      throw new Error("ECONNRESET");
+    }) as typeof fetch;
+    assert.deepEqual(
+      await runningFrizzStatus({ stateDir: fixture.target.stateDir, target: fixture.target, adapter: fixture.adapter, fetcher: healthOnly }),
+      { port: 5091, pid: 4100 },
+    );
+    // Nothing live: a stale owner is null, not a broken report.
+    fixture.processTable.delete(fixture.supervisor.pid);
+    assert.equal(
+      await runningFrizzStatus({ stateDir: fixture.target.stateDir, target: fixture.target, adapter: fixture.adapter, fetcher: (async () => assert.fail("no probe without a live owner")) as typeof fetch }),
+      null,
+    );
+  } finally {
+    fixture.dispose();
   }
 });
