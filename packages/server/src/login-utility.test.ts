@@ -1,5 +1,8 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
+import { mkdtempSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { ThreadSlug } from "@frizz/shared"
 import { createLoginUtility } from "./login-utility.ts"
 
@@ -15,14 +18,16 @@ interface FakePty {
   exit(): void
 }
 
-function harness(over: { lifetimeMs?: number } = {}) {
+function harness(over: { lifetimeMs?: number; claudeBin?: string; codexBin?: string; env?: NodeJS.ProcessEnv; spawnThrows?: string } = {}) {
   const spawned: FakePty[] = []
   const utility = createLoginUtility({
-    claudeBin: "/stub/claude",
-    codexBin: "/stub/codex",
+    claudeBin: over.claudeBin ?? "/stub/claude",
+    codexBin: over.codexBin ?? "/stub/codex",
     cwd: "/project",
     lifetimeMs: over.lifetimeMs ?? 60_000,
+    ...(over.env ? { env: over.env } : {}),
     spawnPty: ((file: string, args: string[], opts: { cwd: string }) => {
+      if (over.spawnThrows) throw new Error(over.spawnThrows)
       const dataListeners: ((c: string) => void)[] = []
       const exitListeners: (() => void)[] = []
       const fake: FakePty = {
@@ -159,4 +164,51 @@ test("a viewer attached before exit is told when the CLI finishes", () => {
   viewer.onExit(() => { exited = true })
   h.spawned[0]!.exit()
   assert.equal(exited, true)
+})
+
+// A BARE name never reaches the pty. ConPTY's CreateProcessW finds `.exe` on PATH and nothing else an
+// npm install writes, so the utility resolves the name itself and hands node-pty an absolute path —
+// or, when nothing resolves, an attempt that explains itself instead of a dead pane (Windows audit
+// 2026-09-11, finding 7). The resolvers are the real ones, pointed at a directory of this test's own.
+test("a bare provider name is resolved to an absolute executable before it reaches the pty", { skip: process.platform === "win32" ? "posix resolution path" : false }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "frizz-login-bin-"))
+  for (const name of ["claude", "codex"]) writeFileSync(join(dir, name), "#!/bin/sh\n", { mode: 0o755 })
+  const h = harness({ claudeBin: "claude", codexBin: "codex", env: { PATH: dir } })
+  const claude = h.utility.start("claude")
+  const codex = h.utility.start("codex")
+  assert.equal(h.spawned[0]!.file, join(dir, "claude"))
+  assert.deepEqual(h.spawned[0]!.args, ["auth", "login"])
+  assert.equal(h.spawned[1]!.file, join(dir, "codex"))
+  assert.deepEqual(h.spawned[1]!.args, ["login"])
+  assert.deepEqual(h.utility.status(claude.attemptId), { state: "running", backend: "claude" })
+  assert.deepEqual(h.utility.status(codex.attemptId), { state: "running", backend: "codex" })
+})
+
+test("a name that resolves to nothing is the attempt's status and its replay, never a dead pane", () => {
+  const empty = mkdtempSync(join(tmpdir(), "frizz-login-empty-"))
+  const h = harness({ claudeBin: "claude", codexBin: "codex", env: { PATH: empty } })
+  const { attemptId } = h.utility.start("codex")
+  assert.match(attemptId, /^login-[0-9a-f]{16}$/, "still slug-shaped: the modal polls it like any other attempt")
+  assert.equal(h.spawned.length, 0, "nothing reached the pty")
+  const status = h.utility.status(attemptId)
+  assert.equal(status.state, "exited")
+  assert.equal(status.backend, "codex")
+  assert.match(status.error ?? "", /Could not start the Codex sign-in: .*could not resolve 'codex'/)
+  const viewer = h.utility.attach(attemptId)
+  assert.ok(viewer, "a viewer attaches and reads the reason")
+  assert.match(viewer!.replay(), /could not resolve 'codex'/)
+  let exited = 0
+  viewer!.onExit(() => exited++)
+  assert.equal(exited, 1, "a late viewer of a finished attempt is told at once")
+  // The next click starts over rather than attaching to the failure.
+  const again = h.utility.start("codex")
+  assert.notEqual(again.attemptId, attemptId)
+})
+
+test("a pty that refuses to spawn is reported the same way", () => {
+  const h = harness({ spawnThrows: "File not found: /stub/claude" })
+  const { attemptId } = h.utility.start("claude")
+  assert.deepEqual(h.utility.status(attemptId), { state: "exited", backend: "claude", error: "Could not start the Claude sign-in: File not found: /stub/claude" })
+  h.utility.cancel(attemptId)
+  assert.deepEqual(h.utility.status(attemptId), { state: "exited" }, "teardown of a never-started attempt is clean")
 })

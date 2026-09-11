@@ -78,11 +78,13 @@ export function formatDuration(ms: number): string {
   return `${Math.round(ms / 1_000)}s`
 }
 
-/** Shorten an absolute path under $HOME so the block stays narrow and scannable. */
+/** Shorten an absolute path under $HOME so the block stays narrow and scannable. The remainder may
+ *  open with either separator — `C:\Users\op\…` on Windows — or the readout showed every Windows
+ *  path in full (Windows audit 2026-09-11, finding 14). */
 export function tildePath(path: string, home: string | undefined): string {
   if (!home || !path.startsWith(home)) return path
   const rest = path.slice(home.length)
-  return rest === "" ? "~" : rest.startsWith("/") ? `~${rest}` : path
+  return rest === "" ? "~" : /^[\\/]/.test(rest) ? `~${rest}` : path
 }
 
 export class Readout {

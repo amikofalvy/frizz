@@ -7,6 +7,7 @@ import type { AccountEmails, AuthSnapshot, ProviderAuth } from "@frizz/shared"
 import { tokenFromCredentialsJson } from "./claude-quota.ts"
 import { defaultCodexHome } from "./codex.ts"
 import { resolveClaudeExecutableAbsolute } from "./claude-broker-host.ts"
+import { resolveCodexExecutable } from "./codex-executable.ts"
 
 const execFileAsync = promisify(execFile)
 
@@ -136,12 +137,21 @@ export function readCodexAccountId(codexHome = defaultCodexHome()): string | und
 // A timeout, a permission error, a non-zero exit (a broken-but-present binary) — anything short of
 // "the OS could not find it" — is "unknown", so a slow or weird environment never blocks a working
 // user. `codex --version` exits immediately; never probe with `codex app-server`, which hangs.
+//
+// The name is RESOLVED before it is spawned, inside the try, for the reason readClaudeAuthStatusCli
+// gives below: on Windows a bare `codex` reaches nothing an npm install wrote (`codex` is a sh script,
+// `codex.cmd` is EINVAL without a shell), so the OS reported ENOENT for an installed CLI and this
+// probe's own contract turned that into a hard dispatch refusal whenever the runtime pin had fallen
+// back to PATH (Windows audit 2026-09-11, finding 8). The resolver's own miss carries `code: "ENOENT"`
+// — it IS the PATH walk the OS would have done — so it classifies exactly as the spawn's did.
 export async function readCodexBinaryState(
   codexBin = "codex",
   exec: typeof execFileAsync = execFileAsync,
+  resolve: typeof resolveCodexExecutable = resolveCodexExecutable,
 ): Promise<"present" | "missing" | "unknown"> {
   try {
-    await exec(codexBin, ["--version"], { timeout: 5_000 })
+    const codex = resolve(codexBin)
+    await exec(codex.file, [...codex.args, "--version"], { timeout: 5_000 })
     return "present"
   } catch (err) {
     return (err as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "unknown"

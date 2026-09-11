@@ -3,6 +3,7 @@ import assert from "node:assert/strict"
 import { existsSync, mkdtempSync, writeFileSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
+import { CodexExecutableNotFoundError } from "./codex-executable.ts"
 import { parseClaudeAuthStatusJson, readAuthSnapshot, readClaudeAccountEmail, readClaudeAuthState, readClaudeAuthStatusCli, readClaudePreflightAuth, readCodexAccountEmail, readCodexAccountId, readCodexAuthState, readCodexBinaryState } from "./auth-status.ts"
 
 // Codex reads env keys BEFORE the file, so a file-based test must run with those keys cleared or an
@@ -287,15 +288,27 @@ test("readClaudePreflightAuth: a positive local signed-out is confirmed against 
 })
 
 test("readCodexBinaryState: present, ENOENT→missing, everything-else→unknown (fail open)", async () => {
-  // present: the exec resolves.
-  assert.equal(await readCodexBinaryState("codex", (async () => ({ stdout: "codex-cli 0.144.6\n", stderr: "" })) as never), "present")
-  // a positive ENOENT is the ONLY "missing".
+  // The resolver is injected so this pins the CLASSIFICATION, not whether this machine has a codex.
+  const found = () => ({ file: "/stub/codex", args: [] })
+  // present: the exec resolves — and it is handed the RESOLVED argv, not the bare name.
+  const seen: Array<[string, string[]]> = []
+  const exec = (async (file: string, args: string[]) => { seen.push([file, args]); return { stdout: "codex-cli 0.144.6\n", stderr: "" } }) as never
+  assert.equal(await readCodexBinaryState("codex", exec, found), "present")
+  assert.deepEqual(seen, [["/stub/codex", ["--version"]]])
+  // a resolver that hands back an argv prefix (the JS launcher under node) is spliced before --version.
+  seen.length = 0
+  assert.equal(await readCodexBinaryState("codex", exec, () => ({ file: "/usr/bin/node", args: ["/npm/codex.js"] })), "present")
+  assert.deepEqual(seen, [["/usr/bin/node", ["/npm/codex.js", "--version"]]])
+  // a positive ENOENT is the ONLY "missing" — from the spawn …
   const enoent = Object.assign(new Error("spawn codex ENOENT"), { code: "ENOENT" })
-  assert.equal(await readCodexBinaryState("codex", (async () => { throw enoent }) as never), "missing")
+  assert.equal(await readCodexBinaryState("codex", (async () => { throw enoent }) as never, found), "missing")
+  // … or from the resolver's own PATH walk, which is the same miss reported one step earlier
+  // (Windows audit 2026-09-11, finding 8: on Windows the spawn's ENOENT was a lie for an installed CLI).
+  assert.equal(await readCodexBinaryState("codex", exec, () => { throw new CodexExecutableNotFoundError("codex") }), "missing")
   // a broken-but-present binary (non-zero exit) is NOT missing — fail open.
-  assert.equal(await readCodexBinaryState("codex", (async () => { throw Object.assign(new Error("exit 1"), { code: 1 }) }) as never), "unknown")
+  assert.equal(await readCodexBinaryState("codex", (async () => { throw Object.assign(new Error("exit 1"), { code: 1 }) }) as never, found), "unknown")
   // a timeout is NOT missing — fail open, never trap a working-but-slow environment.
-  assert.equal(await readCodexBinaryState("codex", (async () => { throw Object.assign(new Error("timed out"), { code: "ETIMEDOUT" }) }) as never), "unknown")
+  assert.equal(await readCodexBinaryState("codex", (async () => { throw Object.assign(new Error("timed out"), { code: "ETIMEDOUT" }) }) as never, found), "unknown")
 })
 
 // ---- Account emails (the quota popover's "signed in as who?") ----

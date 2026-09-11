@@ -16,17 +16,28 @@ import { rpc } from "../api/rpc.ts"
 // the server says no and it stays plain code, at the cost of one batched, cached round-trip.
 const BARE_FILENAME = /^[\w.@+-]+\.[a-z][a-z0-9]{0,7}$/i
 
+// A Windows path: an optional drive (`C:\`) or UNC (`\\`) prefix, then word-ish segments joined by
+// backslashes — `C:\Users\x\a.ts`, `src\a.ts`, `~\.claude\CLAUDE.md`. That is what every file
+// reference in a Windows worker's prose looks like, and until the Windows audit (2026-09-11, finding
+// 12) none of them ever became a link because the test below asked for a `/`. The segment class is
+// deliberately narrow: inline code is full of backslashes that are NOT paths (`\n`, `\d+`, `\\`), and
+// each one this admits costs a batched round-trip the server answers with "no". A leading backslash
+// that is not a UNC pair is an escape, not a root. An editor `:line[:col]` suffix rides along, as it
+// does on a `/` path (the server strips it).
+const WINDOWS_PATH = /^(?:[A-Za-z]:\\|\\\\)?[\w.@+~-]+(?:\\[\w.@+~-]+)*(?::\d+(?::\d+)?)?$/
+
 // A path-like candidate: no whitespace, not a URL, and either home-anchored (`~`), slash-bearing
-// (absolute or repo-relative), or a bare filename with an extension — the form a worker's question
-// names a file it wrote at the project root in (`it's in \`cloudflare-ask.md\``), which reads as a
-// link and, until 2026-08-25, was the one file reference in prose that never became one. Bare words
-// and shell commands are excluded so we never stat `git status` or `useState`. Length-capped to match
-// the server input bound.
+// (absolute or repo-relative), backslash-joined in the Windows shape above, or a bare filename with an
+// extension — the form a worker's question names a file it wrote at the project root in (`it's in
+// \`cloudflare-ask.md\``), which reads as a link and, until 2026-08-25, was the one file reference in
+// prose that never became one. Bare words and shell commands are excluded so we never stat
+// `git status` or `useState`. Length-capped to match the server input bound.
 export function isPathCandidate(raw: string): boolean {
   const v = raw.trim()
   if (!v || v.length > 1024 || /\s/.test(v)) return false
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(v)) return false // http(s)://, file://, cursor://, mailto:, …
   if (v === "~" || v.startsWith("~/") || v.startsWith("/") || v.includes("/")) return true
+  if (v.includes("\\") && WINDOWS_PATH.test(v)) return true
   return BARE_FILENAME.test(v)
 }
 

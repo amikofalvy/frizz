@@ -14,6 +14,7 @@ import { stripFrontmatter } from "../lib/markdown.ts"
 import { useMarkdownHtml, useInlineMarkdownHtml } from "../lib/useMarkdown.ts"
 import { splitComposerValue, splitProseAttachments } from "../lib/imagePaths.ts"
 import { localImageUrl } from "../lib/markdownTargets.ts"
+import { basename } from "../lib/paths.ts"
 import { apiBase } from "../lib/base-path.ts"
 import { DiffBlock, PathLink } from "./DiffBlock.tsx"
 import { LinkedHtml } from "./LinkedHtml.tsx"
@@ -3617,7 +3618,7 @@ function ProseHtml({ md, wrap }: { md: string; wrap?: boolean }) {
 export function BlockImage({ path, hideCaption, altText, header }: { path: string; hideCaption?: boolean; altText?: string; header?: ReactNode }) {
   const [broken, setBroken] = useState(false)
   if (broken) return <div className="font-mono-keep text-[12px] text-muted/70 break-all">{path}</div>
-  const base = path.split("/").filter(Boolean).pop() || path
+  const base = basename(path)
   return (
     <ImageFrame
       header={header}
@@ -3641,7 +3642,7 @@ export function BlockImage({ path, hideCaption, altText, header }: { path: strin
 // markdown file link). A bordered pill rather than the underlined inline treatment because it stands
 // alone on its own line, mirroring BlockImage's block presentation.
 export function BlockFile({ path }: { path: string }) {
-  const base = path.split("/").filter(Boolean).pop() || path
+  const base = basename(path)
   return (
     <button
       type="button"

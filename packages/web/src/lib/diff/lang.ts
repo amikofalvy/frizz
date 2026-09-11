@@ -1,3 +1,4 @@
+import { basename } from "../paths.ts"
 // Filename → language id, for the highlighter. A small deliberate map: the languages frizz agents
 // actually touch, plus a plain fallback. Ported from gent's renderer, trimmed to what the tokenizer
 // (highlight.ts) understands — anything mapping to "text" renders unhighlighted.
@@ -39,7 +40,9 @@ const NAME_TO_LANG: Record<string, string> = {
 }
 
 export function detectLang(path: string): string {
-  const name = path.split("/").pop() ?? ""
+  // Both separators: a Windows worker reports `C:\repo\Makefile`, and splitting on "/" alone left
+  // the whole path as the "name", so extension-less files never matched (Windows audit 2026-09-11).
+  const name = basename(path)
   const dot = name.lastIndexOf(".")
   const ext = dot > 0 ? name.slice(dot).toLowerCase() : ""
   const lang = NAME_TO_LANG[name] ?? EXT_TO_LANG[ext] ?? "text"

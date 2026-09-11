@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events"
 import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -6,7 +7,9 @@ import { test } from "node:test"
 import type { LocalFileOpener } from "@frizz/shared"
 import {
   MARKDOWN_READ_LIMIT,
+  localFileOpenCommand,
   openLocalFile,
+  type LocalFileSpawn,
   readLocalMarkdown,
   readLocalTextFile,
   resolveLocalFile,
@@ -14,29 +17,96 @@ import {
   resolveWatchableLocalFile,
 } from "./local-file.ts"
 
-test("local opener canonicalizes a regular file inside its trusted root and uses fixed argv", () => {
+interface SpawnCall { command: string; args: readonly string[]; options: Parameters<LocalFileSpawn>[2] }
+
+// A ChildProcess stand-in that settles the way a real spawn does: asynchronously, through a `spawn`
+// or an `error` EVENT. The `error` is emitted with no listener of the fake's own, so an opener that
+// forgot to attach one would throw out of the microtask and kill the test process — which is the
+// production crash this pins, in miniature.
+function fakeSpawn(calls: SpawnCall[], fail?: NodeJS.ErrnoException): LocalFileSpawn {
+  return (command, args, options) => {
+    calls.push({ command, args, options })
+    const child = Object.assign(new EventEmitter(), { unref() {} })
+    queueMicrotask(() => { if (fail) child.emit("error", fail); else child.emit("spawn") })
+    return child
+  }
+}
+
+test("local opener canonicalizes a regular file inside its trusted root and uses fixed argv", async () => {
   const root = mkdtempSync(join(tmpdir(), "frizz-local-file-"))
   const file = join(root, "space ; $(not-a-command).md")
   writeFileSync(file, "safe")
-  const calls: Array<{ command: string; args: readonly string[]; shell: unknown }> = []
-  const result = openLocalFile(file, "system", [root], { spawn: (command, args, options) => {
-    calls.push({ command, args, shell: options.shell })
-    return { unref() {} }
-  } })
+  const calls: SpawnCall[] = []
+  const result = await openLocalFile(file, "system", [root], { spawn: fakeSpawn(calls) })
   assert.deepEqual(result, { action: "opened", path: realpathSync(file) })
   assert.equal(calls.length, 1)
   assert.equal(calls[0].args.at(-1), realpathSync(file))
-  assert.equal(calls[0].shell, false)
+  assert.equal(calls[0].options.shell, false)
+  assert.equal(calls[0].options.windowsHide, true, "a console opener never flashes a window")
 })
 
-test("each opener preference selects its own app, and an image ignores the preference entirely", () => {
+test("an opener that cannot start is the RPC's error, not an unhandled `error` event", async () => {
+  // Windows audit 2026-09-11, finding 1: `xdg-open` does not exist on Windows, so the spawn emitted
+  // ENOENT with nobody listening and the control-plane child exited. Now it is a rejection the
+  // router answers with.
+  const root = mkdtempSync(join(tmpdir(), "frizz-local-file-enoent-"))
+  const file = join(root, "README.md")
+  writeFileSync(file, "safe")
+  const enoent = Object.assign(new Error("spawn xdg-open ENOENT"), { code: "ENOENT" })
+  await assert.rejects(
+    openLocalFile(file, "system", [root], { platform: "linux", spawn: fakeSpawn([], enoent) }),
+    /^Error: xdg-open is not installed or not on PATH$/u,
+  )
+  const eacces = Object.assign(new Error("spawn cursor EACCES"), { code: "EACCES" })
+  await assert.rejects(
+    openLocalFile(file, "cursor", [root], { platform: "linux", spawn: fakeSpawn([], eacces) }),
+    /^Error: could not start cursor: spawn cursor EACCES$/u,
+  )
+})
+
+test("windows: explorer opens and reveals, an installed editor runs its exe, a missing one runs its shim through cmd.exe", () => {
+  const path = "C:\\Users\\op\\proj\\space & caret^.md"
+  const env = { LOCALAPPDATA: "C:\\Users\\op\\AppData\\Local" }
+  const cursorExe = join(env.LOCALAPPDATA, "Programs", "cursor", "Cursor.exe")
+  const exists = (candidate: string) => candidate === cursorExe
+  const opts = { platform: "win32" as const, env, exists }
+  assert.deepEqual(localFileOpenCommand(path, "system", opts), { command: "explorer.exe", args: [path] })
+  assert.deepEqual(localFileOpenCommand(path, "finder", opts), { command: "explorer.exe", args: [`/select,${path}`] })
+  assert.deepEqual(localFileOpenCommand(path, "cursor", opts), { command: cursorExe, args: [path] })
+  // No Code.exe under %LOCALAPPDATA%: the `code` shim runs through cmd.exe, in ONE verbatim argument
+  // with the path quoted, so `&` and `^` stay characters of the path.
+  assert.deepEqual(localFileOpenCommand(path, "vscode", opts), {
+    command: "cmd.exe", args: ["/d", "/s", "/c", `"code "${path}""`], verbatim: true,
+  })
+  // A `%` would be expanded by cmd.exe even inside quotes, so that path is refused rather than run.
+  assert.throws(() => localFileOpenCommand("C:\\p\\100%done.md", "vscode", opts), /cannot hand .* through cmd\.exe/u)
+  // Without LOCALAPPDATA at all the shim path is still reachable.
+  assert.equal(localFileOpenCommand(path, "cursor", { platform: "win32", env: {}, exists }).command, "cmd.exe")
+})
+
+test("windows: the cmd.exe shape reaches spawn with verbatim arguments, everything else without", async () => {
+  const root = mkdtempSync(join(tmpdir(), "frizz-local-file-win32-"))
+  const file = join(root, "app.ts")
+  writeFileSync(file, "safe")
+  const calls: SpawnCall[] = []
+  const win32 = { platform: "win32" as const, env: {}, exists: () => false, spawn: fakeSpawn(calls) }
+  await openLocalFile(file, "vscode", [root], win32)
+  await openLocalFile(file, "system", [root], win32)
+  assert.equal(calls[0].command, "cmd.exe")
+  assert.equal(calls[0].options.windowsVerbatimArguments, true)
+  assert.equal(calls[0].options.shell, false, "never shell: true — the quoting is ours, inside one argument")
+  assert.equal(calls[1].command, "explorer.exe")
+  assert.equal(calls[1].options.windowsVerbatimArguments, undefined)
+})
+
+test("each opener preference selects its own app, and an image ignores the preference entirely", async () => {
   const root = mkdtempSync(join(tmpdir(), "frizz-local-file-opener-"))
   const file = join(root, "app.ts")
   writeFileSync(file, "safe")
-  const argvFor = (opener: LocalFileOpener, forceSystem = false) => {
-    let call: { command: string; args: readonly string[] } | undefined
-    openLocalFile(file, opener, [root], { forceSystem, spawn: (command, args) => { call = { command, args }; return { unref() {} } } })
-    return [call!.command, ...call!.args.slice(0, -1)]
+  const argvFor = async (opener: LocalFileOpener, forceSystem = false) => {
+    const calls: SpawnCall[] = []
+    await openLocalFile(file, opener, [root], { forceSystem, spawn: fakeSpawn(calls) })
+    return [calls[0]!.command, ...calls[0]!.args.slice(0, -1)]
   }
   // The reported bug was upstream of here — the transcript's file links carried a `cursor://` href the
   // OS resolved, so "VS Code" never reached this function at all — but nothing pinned the mapping the
@@ -44,12 +114,12 @@ test("each opener preference selects its own app, and an image ignores the prefe
   const expected = process.platform === "darwin"
     ? { system: ["open"], cursor: ["open", "-a", "Cursor"], vscode: ["open", "-a", "Visual Studio Code"], finder: ["open", "-R"] }
     : { system: ["xdg-open"], cursor: ["cursor"], vscode: ["code"], finder: ["xdg-open"] }
-  assert.deepEqual(argvFor("system"), expected.system)
-  assert.deepEqual(argvFor("cursor"), expected.cursor)
-  assert.deepEqual(argvFor("vscode"), expected.vscode)
-  assert.deepEqual(argvFor("finder"), expected.finder)
+  assert.deepEqual(await argvFor("system"), expected.system)
+  assert.deepEqual(await argvFor("cursor"), expected.cursor)
+  assert.deepEqual(await argvFor("vscode"), expected.vscode)
+  assert.deepEqual(await argvFor("finder"), expected.finder)
   // An image has a viewer of its own, so it goes to the OS default whatever the editor preference says.
-  assert.deepEqual(argvFor("vscode", true), expected.system)
+  assert.deepEqual(await argvFor("vscode", true), expected.system)
 })
 
 test("local opener refuses relative, outside, directory, and escaping symlink paths", () => {
@@ -65,11 +135,11 @@ test("local opener refuses relative, outside, directory, and escaping symlink pa
   assert.throws(() => resolveLocalFile(link, [root]), /trusted roots/)
 })
 
-test("copy preference returns only the canonical trusted path without spawning", () => {
+test("copy preference returns only the canonical trusted path without spawning", async () => {
   const root = mkdtempSync(join(tmpdir(), "frizz-local-file-copy-"))
   const file = join(root, "artifact.txt")
   writeFileSync(file, "safe")
-  assert.deepEqual(openLocalFile(file, "copy", [root], { spawn: () => { throw new Error("must not spawn") } }), { action: "copy", path: realpathSync(file) })
+  assert.deepEqual(await openLocalFile(file, "copy", [root], { spawn: () => { throw new Error("must not spawn") } }), { action: "copy", path: realpathSync(file) })
 })
 
 test("resolveOpenableFile classifies references: home (~), project-relative, absolute, :line, and misses", () => {
@@ -82,6 +152,8 @@ test("resolveOpenableFile classifies references: home (~), project-relative, abs
 
   // ~-relative expands to the home root
   assert.equal(resolveOpenableFile("~/CLAUDE.md", project, roots, home), join(home, "CLAUDE.md"))
+  // A Windows worker spells the same reference with a backslash (2026-09-11).
+  assert.equal(resolveOpenableFile("~\\CLAUDE.md", project, roots, home), join(home, "CLAUDE.md"))
   // repo-relative resolves against the project dir
   assert.equal(resolveOpenableFile("packages/web/src/App.tsx", project, roots, home), join(project, "packages", "web", "src", "App.tsx"))
   // an absolute path is taken as-is

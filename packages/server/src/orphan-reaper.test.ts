@@ -1,5 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
+import { setTimeout as delay } from "node:timers/promises"
 import {
   firstTokenBasename,
   isSessionRoot,
@@ -14,6 +15,7 @@ import {
   summarizeRunaways,
   reapSubtrees,
   sweepOrphansOnce,
+  startOrphanReaper,
   type ProcRow,
   type Exec,
 } from "./orphan-reaper.ts"
@@ -413,4 +415,42 @@ test("summarizeRunaways reports per THREAD, summing cores, worst first", () => {
   assert.equal(lines.length, 2, "one line per thread, not per process")
   assert.match(lines[0], /thread "hot" is holding ~2\.0 core\(s\) across 2 background process\(es\), oldest 4\.0h/)
   assert.match(lines[1], /thread "warm"/)
+})
+
+// ---- Where the reaper cannot run, it says so ONCE and stays off (Windows audit 2026-09-11, finding 6) --
+
+test("startOrphanReaper on win32: one clear log line, no ps, no interval", () => {
+  const log: string[] = []
+  const stop = startOrphanReaper({ platform: "win32", intervalMs: 1, log: (m) => log.push(m), exec: () => { throw new Error("must not run ps on win32") } })
+  stop()
+  assert.equal(log.length, 1)
+  assert.match(log[0]!, /^orphan-reaper: unavailable on Windows — .*not collected here/u)
+})
+
+test("sweepOrphansOnce: `ps` missing (ENOENT) is reported as unavailable; any other failure is one closed sweep", () => {
+  const enoent: Exec = () => { throw Object.assign(new Error("spawnSync ps ENOENT"), { code: "ENOENT" }) }
+  assert.deepEqual(sweepOrphansOnce({ exec: enoent, platform: "darwin" }), { reaped: 0, deadSlugs: [], liveSlugs: [], unavailable: "`ps` is not on PATH" })
+  const timeout: Exec = () => { throw Object.assign(new Error("spawnSync ps ETIMEDOUT"), { code: "ETIMEDOUT" }) }
+  assert.deepEqual(sweepOrphansOnce({ exec: timeout, platform: "darwin" }), { reaped: 0, deadSlugs: [], liveSlugs: [] })
+})
+
+test("startOrphanReaper on a POSIX box without ps: the first sweep says so and the interval never starts", async () => {
+  // Until 2026-09-11 this was `spawn ps ENOENT` swallowed once a minute forever, with nothing in the log.
+  const log: string[] = []
+  let calls = 0
+  const enoent: Exec = () => { calls++; throw Object.assign(new Error("spawnSync ps ENOENT"), { code: "ENOENT" }) }
+  const stop = startOrphanReaper({ platform: "darwin", intervalMs: 2, log: (m) => log.push(m), exec: enoent })
+  await delay(30)
+  stop()
+  assert.equal(calls, 1, "ps was tried once, not once per interval tick")
+  assert.deepEqual(log, ["orphan-reaper: unavailable on this machine — `ps` is not on PATH; background processes a stopped thread leaves behind are not collected here"])
+
+  // Control: a ps that merely times out keeps the interval alive (the failure is this sweep's alone).
+  let ticks = 0
+  const flaky: Exec = () => { ticks++; throw Object.assign(new Error("ETIMEDOUT"), { code: "ETIMEDOUT" }) }
+  const stopFlaky = startOrphanReaper({ platform: "darwin", intervalMs: 2, exec: flaky, log: (m) => log.push(m) })
+  await delay(30)
+  stopFlaky()
+  assert.ok(ticks > 2, `the interval kept sweeping (${ticks} ticks)`)
+  assert.equal(log.length, 1, "and said nothing more")
 })

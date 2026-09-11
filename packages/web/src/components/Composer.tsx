@@ -9,6 +9,7 @@ import { queueComposerHandlesOptionEnter } from "../lib/queueComposerKeyboard.ts
 import { RAIL_ACTION_OFFSET, RAIL_PAPERCLIP_OFFSET, RAIL_PAPERCLIP_PLAIN_OFFSET, RAIL_RESERVE_PLAIN, RAIL_RESERVE_WITH_ACTION, RAIL_SEND_OFFSET } from "../lib/iconRhythm.ts"
 import { apiBase } from "../lib/base-path.ts"
 import { localImageUrl } from "../lib/markdownTargets.ts"
+import { basename } from "../lib/paths.ts"
 
 // The shared prompt composer (the pattern the user called "perfect"): ONE rounded bordered box
 // holding a borderless auto-growing textarea plus a small round accent send button hovering INSIDE
@@ -749,7 +750,7 @@ function AttachmentChip({
   onRemove: () => void
 }) {
   const [broken, setBroken] = useState(false)
-  const base = attachment.path.split("/").filter(Boolean).pop() || attachment.path
+  const base = basename(attachment.path)
   const ext = (base.includes(".") ? base.split(".").pop()! : "").toUpperCase()
   const asImage = attachment.kind === "image" && !broken
   return (

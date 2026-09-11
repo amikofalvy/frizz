@@ -10,6 +10,8 @@ import { ownedByThisPage } from "./lib/projectOwnership.ts"
 import { setGithubRepo } from "./lib/githubAutolink.ts"
 import { resetGithubCards } from "./lib/githubHovercards.ts"
 import { setLocalPathBase } from "./lib/localPathBase.ts"
+import { basename } from "./lib/paths.ts"
+import type { RestartAttempt } from "./api/restart.ts"
 
 // Where a scroll-to-card lands a card's outer border below the viewport top (px). Exported because the
 // sidebar's reading rail watches for that same landing to know a click-to-card has arrived.
@@ -93,10 +95,14 @@ export const store = proxy({
   controlPlaneState: "ready" as "ready" | "restarting" | "failed",
   controlPlaneMessage: null as string | null,
   // A user-initiated update+restart flips the overlay on OPTIMISTICALLY (before the POST is acked) so
-  // the block is instant. While this is true, the status poll must not apply a "ready" it reads in the
-  // brief pre-ack window — that would tear the overlay down and could reload onto the old child. Cleared
-  // the instant the supervisor acks the transition (at which point /status is authoritative again).
-  controlPlaneRestartPending: false,
+  // the block is instant. While an attempt is recorded here, the status poll must not apply a "ready"
+  // it reads — that would tear the overlay down and could reload onto the old child — and it must not
+  // believe ANY answer whose request started before the ack, whichever state it names: a "failed" that
+  // was already in flight when the operator clicked retry used to clear this guard for the new attempt
+  // (pullfrog on #35, 2026-09-11). `ackedAt` is set when the supervisor accepts the transition; the
+  // record is cleared by App's poll effect once an answer requested after that ack observes it
+  // (nextControlPlane in api/restart.ts), or by the button when the POST is rejected.
+  controlPlaneRestartAttempt: null as RestartAttempt | null,
   showSettings: false,
   showPalette: false,
   // The anywhere-modal behind the "New thread" pill (Gmail-compose style).
@@ -419,8 +425,7 @@ export function pushMarkdownDrawer(path: string): void {
     openFilePanel(path)
     return
   }
-  const base = path.split("/").filter(Boolean).pop() || path
-  openOrRaiseDrawer({ kind: "markdown", slug: path, path, label: base })
+  openOrRaiseDrawer({ kind: "markdown", slug: path, path, label: basename(path) })
 }
 
 // ── the /full split file viewer ──────────────────────────────────────────────────────────────────

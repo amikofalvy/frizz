@@ -19,7 +19,7 @@
 //
 // Shutdown is deliberately NOT such a caller, for either transport. Recycling frizz must leave the
 // app-server (and its in-flight turns) running, which is the whole point of the split above.
-import { spawn, spawnSync } from "node:child_process"
+import { spawn } from "node:child_process"
 import { createConnection, type Socket } from "node:net"
 import { createHash, randomUUID } from "node:crypto"
 import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs"
@@ -27,6 +27,7 @@ import { join } from "node:path"
 import { PassThrough, Writable, type Readable } from "node:stream"
 import { StringDecoder } from "node:string_decoder"
 import { resolveDetachedDaemonEntry } from "../detached-daemons.ts"
+import { endDaemonTree } from "./daemon-tree.ts"
 import { stopNativeListener } from "./codex-app-server-native.ts"
 import { frizzIpcPath } from "./ipc-path.ts"
 import { codexAppServerArgv } from "./codex-mcp.ts"
@@ -175,39 +176,6 @@ export function liveDaemonRecord(stateDir: string, projectId: string): CodexAppS
   return null
 }
 
-/**
- * End a daemon AND the `codex app-server` underneath it.
- *
- * On POSIX that is one signal and nothing more: the daemon installs SIGTERM/SIGINT/SIGHUP handlers
- * (codex-app-server-daemon.ts) that kill the app-server child, write the exit breadcrumb and exit.
- *
- * Windows has no deliverable signals. `process.kill(pid, "SIGTERM")` there is a straight
- * TerminateProcess, so the handler NEVER runs, and the app-server — ~150 MB, still able to edit the
- * filesystem — is orphaned with nobody left who could ever collect it: the daemon was forked
- * `detached`, so it is in no job object of ours, and the orphan reaper both keys on FRIZZ_THREAD
- * (which a per-PROJECT daemon does not carry) and explicitly PROTECTS any process named `codex`.
- * There are no process groups to kill either — `process.kill(-pid, …)` is rejected outright with
- * EINVAL. `taskkill /T` instead walks the live parent/child snapshot, so it reaches exactly the child
- * the signal handler would have killed; `/F` because without it `/T` only sends the polite WM_CLOSE,
- * which a console process with no window ignores. `taskkill.exe` is a real executable on PATH, so the
- * CVE-2024-27980 ban on spawning `.bat`/`.cmd` without a shell does not apply and no shell — hence no
- * interpolation of the pid — is involved.
- *
- * The cost on win32 is the breadcrumb: a force-killed daemon cannot write its `.exit` file, so an
- * explicit teardown there is attributed only by the record's disappearance. It never gated anything.
- */
-function endDaemonTree(pid: number, signal: NodeJS.Signals): void {
-  if (process.platform !== "win32") {
-    try { process.kill(pid, signal) } catch {}
-    return
-  }
-  const killed = spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true })
-  // taskkill absent (a stripped PATH) or refusing: still end the daemon itself. An orphaned
-  // app-server is bad; a live daemon still holding the named pipe and serving a stale handshake to
-  // every connect is the wedge this whole stop path exists to break.
-  if (killed.error || killed.status !== 0) { try { process.kill(pid, signal) } catch {} }
-}
-
 /** Terminate the daemon AND its app-server. Only for an explicit teardown — never for a restart.
  *  Inert when there is no record, which is exactly the case for `directChildHost` and the in-process
  *  fallback: a test bridge can never kill a daemon it does not own, or its own in-process child. */
@@ -279,6 +247,10 @@ function forkDaemon(options: CodexAppServerHostOptions): Promise<CodexAppServerD
     env: { ...process.env, FRIZZ_CODEX_APP_SERVER_DAEMON: payload },
     detached: true,
     stdio: "ignore",
+    // Belt to the daemon's own braces: a detached process owns no console on Windows, so anything
+    // console-subsystem it starts without CREATE_NO_WINDOW gets a fresh visible one (Windows audit
+    // 2026-09-11, finding 4). The daemon hides its app-server; this keeps the daemon itself hidden.
+    windowsHide: true,
   })
   child.unref()
 
@@ -442,6 +414,10 @@ function inProcessCodexAppServer(options: CodexAppServerHostOptions): CodexAppSe
     cwd: options.cwd,
     env: options.env,
     stdio: ["pipe", "pipe", "pipe"],
+    // No console window for codex.exe (Windows audit 2026-09-11, finding 4). The server child has a
+    // console of its own so this site was not the visible-window bug, but a codex.exe that inherits
+    // it dies with it, and the shape test in daemon-tree.test.ts holds every provider spawn to it.
+    windowsHide: true,
   })
   // This is the LAST-RESORT transport, so the case where codex itself cannot be spawned is a live
   // one, and on win32 the teardown of that never-started child THROWS: libuv's uv_process_kill

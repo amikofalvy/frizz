@@ -16,6 +16,7 @@
 // to a grouped tail this way).
 
 import { joinComposerValue, splitComposerValue } from "./imagePaths.ts"
+import { basename, relativeTo } from "./paths.ts"
 
 export interface ComposerContextItem {
   id: number
@@ -33,7 +34,7 @@ export interface ComposerContextItem {
 /** The chip label a context item wears everywhere: `basename:12` / `basename:3-9` / `basename`. */
 export function contextChipLabel(item: { display?: string; path?: string; startLine?: number; endLine?: number }): string {
   const source = item.display ?? item.path ?? ""
-  const base = source.split("/").filter(Boolean).pop() || source
+  const base = basename(source)
   if (item.startLine === undefined || item.endLine === undefined) return base
   return item.startLine === item.endLine ? `${base}:${item.startLine}` : `${base}:${item.startLine}-${item.endLine}`
 }
@@ -152,12 +153,13 @@ export function locateInSource(source: string, selected: string): { startLine: n
   return { startLine: lineOf[first], endLine: lineOf[first + needle.length - 1] }
 }
 
-/** `packages/web/src/App.tsx` for a file under the project; the absolute path for anything else. */
+/**
+ * `packages/web/src/App.tsx` for a file under the project; the absolute path for anything else. The
+ * remainder keeps the path's own separators (`packages\web\src\App.tsx` under a `C:\…` project), as
+ * the panel's canonical path is the server's spelling and the worker reads the same one.
+ */
 export function contextDisplayPath(path: string, projectDir?: string | null): string {
-  if (projectDir && path.startsWith(`${projectDir.replace(/\/+$/, "")}/`)) {
-    return path.slice(projectDir.replace(/\/+$/, "").length + 1)
-  }
-  return path
+  return (projectDir && relativeTo(projectDir, path)) || path
 }
 
 function lineLabel(item: { startLine?: number; endLine?: number }): string {

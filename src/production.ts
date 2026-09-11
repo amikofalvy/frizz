@@ -43,6 +43,9 @@ import {
   probeFrizz,
   readPreferredPort,
   resolveLaunchIntent,
+  resolveLaunchControlTarget,
+  runningFrizzStatus,
+  stopProjectLaunch,
   waitForWorkspace,
   workspaceFromLaunchTarget,
   workspaceLaunchTarget,
@@ -61,6 +64,7 @@ import {
 import { createSupervisorShutdownHandler, startDevSupervisor } from "@frizz/server/dev-supervisor";
 import { planRegistryUpdate, PRODUCTION_PRINT_LAUNCHER_FLAG, PRODUCTION_REEXEC_FLAG, reexecArgv } from "./production-update.ts";
 import { npmServerPackageInstaller, serverGenerationLaunch, serverReleaseSpec, ServerReleaseStore, type ServerGeneration } from "./server-release.ts";
+import { GLOBAL_INSTALL_ENV, isGlobalInstall, keepUpdateHint } from "./production-update.ts";
 import {
   assertLaunchPrerequisites,
   assertRequiredExecutables,
@@ -134,6 +138,8 @@ Options:
   --link                 print a fresh single-use access link for the running board
   --sessions             list the devices signed in to the running board
   --sign-out <id|all>    sign one device out, or every one of them
+  --status               report the board running for this project: address, pid, version
+  --stop                 stop the board running for this project (running agents keep going)
   --debug                stream the full event feed to the terminal instead of the compact readout
   -h, --help             show this help
 
@@ -157,6 +163,13 @@ if (sandbox) process.on("exit", () => cleanupSandbox(sandbox.home));
 let remote: RemoteController | null = null;
 /** The keyboard: L for a link, R for the remote-access walkthrough. Held so shutdown can restore the shell. */
 let paneHost: PaneHost | null = null;
+/**
+ * A global bin (`npm i -g frizz`) is the one launch shape a self-update does not outlive: the release
+ * lands in npm's execution cache and the bin on disk keeps pointing at this version. Decided here,
+ * from THIS bundle's path, and handed down through the environment — the successor's own path is
+ * always the cache and could never tell.
+ */
+const globalInstall = process.env[GLOBAL_INSTALL_ENV] === "1" || isGlobalInstall(import.meta.dirname);
 let accessPane: AccessPane | null = null;
 /** The single-use link this launch minted, read by the readout below. */
 let activeAccessLink: { url: string } | null = null;
@@ -198,6 +211,44 @@ const workspace: Workspace = (() => {
   } catch (error) { return fail(error); }
 })();
 process.chdir(workspace.root);
+if (options.stop) {
+  // The farewell after a detached update has said "stop it with frizz --stop" since 0.12.10, and
+  // `--help` never listed it, because nothing here handled it: the flag fell through to the join
+  // path below and OPENED A BROWSER TAB on the board it was asked to stop (audit 2026-09-11,
+  // finding 2). The protocol is the dev launcher's (src/index.ts stopWorkspace): token-bound HTTP
+  // stop, then reap only a provably stale owner — never a signal to a pid that might be recycled.
+  try {
+    // One server, every project: the record may belong to the project the board was launched from.
+    const control = await resolveLaunchControlTarget({ stateDir: workspace.stateDir, target: workspaceLaunchTarget(workspace) });
+    const where = control.host ? workspace.root : `${workspace.root} (the board was launched from ${control.target.projectDir})`;
+    const result = await stopProjectLaunch({ stateDir: control.stateDir, target: control.target });
+    console.log(
+      result.kind !== "stopped"
+        ? `Frizz is not running for ${where}`
+        : result.stale
+          // A board that died without releasing its record (a kill, a crash) reads as "running" to
+          // every later launch until someone reaps it; say what happened rather than claiming a stop.
+          ? `Frizz was not running for ${where}; cleared the record a dead board left behind`
+          : `stopped Frizz for ${where}; running agents keep going — they are detached daemons`,
+    );
+    process.exit(0);
+  } catch (error) { fail(error); }
+}
+if (options.status) {
+  const control = await resolveLaunchControlTarget({ stateDir: workspace.stateDir, target: workspaceLaunchTarget(workspace) });
+  const running = await runningFrizzStatus({ stateDir: control.stateDir, target: control.target });
+  if (!running) {
+    console.log(`Frizz is not running for ${workspace.root}`);
+    process.exit(1);
+  }
+  console.log(`running: http://127.0.0.1:${running.port}`);
+  console.log(`workspace: ${workspace.root}`);
+  if (!control.host) console.log(`launched from: ${control.target.projectDir} (one server serves every project)`);
+  console.log(`supervisor pid: ${running.pid}`);
+  console.log(`version: ${running.version ?? "unknown"}`);
+  if (running.state && running.state !== "ready") console.log(`state: ${running.state}${running.message ? ` — ${running.message}` : ""}`);
+  process.exit(0);
+}
 if (options.sessions || options.signOut !== undefined) {
   // Reads and writes the RUNNING board's session directory, so there is nothing useful to say when
   // no board is up — starting one here would create an empty directory and answer a different question.
@@ -428,13 +479,19 @@ async function runSupervisor(port: number, token: string, onPrepared: () => void
 
   // Whether the registry actually has something newer, refreshed on a timer and READ FROM CACHE.
   // The status endpoint is polled by every open tab, so it must never reach the network; and the
-  // answer only changes when someone publishes, so a slow cadence is plenty. Starts optimistic
-  // (`true`) so the button keeps its current appearance until the first probe lands — the operator
-  // never sees it flip from Restart to Update a second after load.
-  let updateAvailable = true;
+  // answer only changes when someone publishes, so a slow cadence is plenty.
+  //
+  // Seeded `false`, not `true`. It started optimistic so the button would not flip from Restart to
+  // Update a second after load — but the flip that actually happens is the other way: right after
+  // an update the successor seeded `true` again and the reloaded tab showed "Update Frizz" naming a
+  // version it already was, and a click in that window failed with "already current" presented as
+  // an error; offline, the seed never cleared at all and every click was a red failure (audit
+  // 2026-09-11, finding 5). A Restart that becomes Update once the registry answers is the cheaper
+  // mistake. Only a POSITIVE probe raises it; a probe that fails leaves the last known answer.
+  let updateAvailable = false;
   // The newer version the last successful probe saw, so the status endpoint can NAME the update it is
-  // advertising. Deliberately not seeded optimistically like the boolean above: a number we have not
-  // observed would be a lie, so until the registry answers the client gets its generic update copy.
+  // advertising. Set together with the boolean: a number we have not observed would be a lie, so
+  // until the registry answers the client gets its generic copy.
   let updateVersion: string | undefined;
   const refreshUpdateAvailable = async (): Promise<void> => {
     try {
@@ -444,7 +501,7 @@ async function runSupervisor(port: number, token: string, onPrepared: () => void
       updateAvailable = plan !== null;
       updateVersion = plan?.latestVersion;
     } catch {
-      // A registry we cannot reach is not evidence that we are current. Leave the last known answer.
+      // A registry we cannot reach is not evidence either way. Leave the last known answer.
     }
   };
   void refreshUpdateAvailable();
@@ -576,7 +633,13 @@ async function runSupervisor(port: number, token: string, onPrepared: () => void
   activityReadout?.notice("done", "Server", `${active.version} · launcher ${PACKAGE_VERSION}`);
   // The execve'd generation prints no boot block (it is not an interactive launch), so this one line
   // is the only thing that tells the operator the update finished and this terminal still owns it.
-  if (reexec) activityReadout?.notice("done", "Updated", `Frizz ${active.version} is serving on port ${port} · ctrl-c to stop`);
+  if (reexec) {
+    activityReadout?.notice(
+      "done",
+      "Updated",
+      `Frizz ${active.version} is serving on port ${port} · ctrl-c to stop${globalInstall ? ` · ${keepUpdateHint(PACKAGE_NAME, PACKAGE_VERSION)}` : ""}`,
+    );
+  }
   return await new Promise<never>(() => {});
 }
 

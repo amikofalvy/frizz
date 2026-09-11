@@ -10,9 +10,9 @@
 //
 // GATE: inert unless FRIZZ_THREAD is set (ordinary Claude sessions keep their native behavior).
 // FAIL OPEN: malformed hook input allows the command rather than wedging a worker.
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { basename } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 /** @param {unknown} obj @returns {never} */
 function emit(obj) {
@@ -215,10 +215,21 @@ export function evaluateBashBackgroundHook(input, env = process.env) {
   };
 }
 
-export function isDirectHookExecution(argv1, moduleUrl) {
-  return typeof argv1 === 'string'
-    && basename(argv1) === 'bash-background.mjs'
-    && pathToFileURL(argv1).href === moduleUrl;
+// Compared through `realpath` on BOTH sides. Node realpaths the main entry, so `import.meta.url` is
+// the long, resolved spelling, while `argv[1]` is whatever CLAUDE_PLUGIN_ROOT spelled — an 8.3 short
+// name (`C:\Users\RUNNER~1\…`, common when a profile or %LOCALAPPDATA% is one), a junction, or a
+// symlink. A plain URL comparison then fails and the hook emits NOTHING, which Claude reads as
+// "allowed": the guard silently switched off (Windows audit 2026-09-11, finding 15). The cheap URL
+// equality is kept as the first test; realpath is the tie-breaker, and a path that cannot be
+// realpath'd is not this file.
+export function isDirectHookExecution(argv1, moduleUrl, realpath = realpathSync) {
+  if (typeof argv1 !== 'string' || basename(argv1) !== 'bash-background.mjs') return false;
+  if (pathToFileURL(argv1).href === moduleUrl) return true;
+  try {
+    return realpath(argv1) === realpath(fileURLToPath(moduleUrl));
+  } catch {
+    return false;
+  }
 }
 
 // The server imports `hasEscapingBackgroundJob` and its production build bundles this module into
