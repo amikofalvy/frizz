@@ -271,6 +271,7 @@ test("status names the running and newer versions only when the launcher supplie
     childPort: () => current.port,
     restart: async () => ({ state: "ready" }),
     version: () => running,
+    launcherVersion: "0.4.0",
     updateVersion: () => observed,
   })
   const barePort = await freePort()
@@ -284,13 +285,14 @@ test("status names the running and newer versions only when the launcher supplie
     await bare.listen()
     const before = (await get(port, SUPERVISOR_STATUS_PATH)).body
     assert.match(before, /"version":"0\.4\.2"/)
+    assert.match(before, /"launcherVersion":"0\.4\.0"/)
     assert.doesNotMatch(before, /"updateVersion"/, "no observed newer version yet")
     observed = "0.5.0"
     assert.match((await get(port, SUPERVISOR_STATUS_PATH)).body, /"updateVersion":"0\.5\.0"/)
     running = "0.4.3"
     assert.match((await get(port, SUPERVISOR_STATUS_PATH)).body, /"version":"0\.4\.3"/, "a child-only commit can update the running version without replacing the listener")
     const versionless = (await get(barePort, SUPERVISOR_STATUS_PATH)).body
-    assert.doesNotMatch(versionless, /"version"|"updateVersion"/, "frizz-dev/legacy stays byte-identical")
+    assert.doesNotMatch(versionless, /"version"|"launcherVersion"|"updateVersion"/, "frizz-dev/legacy stays byte-identical")
   } finally {
     await proxy.close().catch(() => undefined)
     await bare.close().catch(() => undefined)

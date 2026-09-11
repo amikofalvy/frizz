@@ -153,8 +153,10 @@ export interface DevSupervisorOptions {
   updateStabilizeMs?: number
   /** Cheap CACHED "is a newer artifact actually available" read; see RestartSupervisorProxy. */
   updateAvailable?: () => boolean
-  /** The published package version this launcher runs. Registry launcher only; see RestartSupervisorProxy. */
+  /** The active application-server version. Registry launcher only; see RestartSupervisorProxy. */
   version?: string | (() => string | undefined)
+  /** Stable launcher package version, exposed only as a diagnostic beside the server version. */
+  launcherVersion?: string
   /** Cheap CACHED read of the newer registry version, when observed; see RestartSupervisorProxy. */
   updateVersion?: () => string | undefined
   /** Launched from a source checkout (frizz-dev / `pnpm dev`)? See RestartSupervisorProxy. */
@@ -593,6 +595,7 @@ class Supervisor implements DevSupervisor {
       updateRestart: this.updateRestart ? () => this.updateFromBrowser() : undefined,
       updateAvailable: opts.updateAvailable,
       version: opts.version,
+      launcherVersion: opts.launcherVersion,
       updateVersion: opts.updateVersion,
       dev: opts.dev,
       status: () => {

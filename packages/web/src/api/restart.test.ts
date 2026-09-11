@@ -50,6 +50,23 @@ test("update and restart requires an explicit supervisor capability and uses its
   await assert.rejects(requestFrizzUpdateRestart(failure as typeof fetch), /candidate rejected/)
 })
 
+test("supervisor status distinguishes the active server from its stable launcher", async () => {
+  const split = async () => response(JSON.stringify({
+    protocol: 1,
+    state: "ready",
+    version: "0.13.1",
+    launcherVersion: "0.13.0",
+    updateVersion: "0.13.2",
+  }))
+  assert.deepEqual(await getFrizzSupervisorStatus(split as typeof fetch), {
+    protocol: 1,
+    state: "ready",
+    version: "0.13.1",
+    launcherVersion: "0.13.0",
+    updateVersion: "0.13.2",
+  })
+})
+
 test("an accepted update transition is not misreported as a restart failure", async () => {
   const accepted = async () => response(JSON.stringify({ protocol: 1, state: "restarting" }), 202)
   assert.equal((await requestFrizzUpdateRestart(accepted as typeof fetch)).state, "restarting")

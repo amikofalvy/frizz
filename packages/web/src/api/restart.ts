@@ -19,15 +19,16 @@ export interface FrizzSupervisorStatus {
    */
   updateAvailable?: boolean
   /**
-   * The published package version this Frizz is running. Sent only by the registry launcher — a
-   * frizz-dev board runs mutable checkout source with no version a user could act on, so absence
-   * means "show no version at all".
+   * The RUNNING application-server version. It changes after a child-only update; absence on
+   * frizz-dev and old monolithic supervisors keeps their existing versionless UI unchanged.
    */
   version?: string
+  /** The stable launcher package version, displayed as a diagnostic only when the launcher sends it. */
+  launcherVersion?: string
   /**
-   * The NEWER registry version behind `updateAvailable`, once the launcher has actually observed
-   * one. Absent while the registry has not answered (the launcher starts update-optimistic) and on
-   * frizz-dev, so the popover only ever names a version it can deliver.
+   * The target application-server version behind `updateAvailable`, once the launcher has actually
+   * observed one. Absent while the registry has not answered and on frizz-dev, so the popover only
+   * ever names a version it can deliver.
    */
   updateVersion?: string
   /**

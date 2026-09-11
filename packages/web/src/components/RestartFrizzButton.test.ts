@@ -29,6 +29,27 @@ test("a registry launcher's update popover names both versions and says a newer 
   assert.equal((html.match(/<p /g) ?? []).length, 1)
 })
 
+test("a split launcher labels its server target separately and leaves monolithic rendering unchanged", () => {
+  const split = renderToStaticMarkup(createElement(UpdateRestartPopover, {
+    open: true,
+    update: true,
+    version: "0.13.1",
+    launcherVersion: "0.13.0",
+    updateVersion: "0.13.2",
+  }))
+  assert.match(split, />Server 0\.13\.1 → 0\.13\.2</)
+  assert.match(split, />Launcher 0\.13\.0</)
+
+  const monolithic = renderToStaticMarkup(createElement(UpdateRestartPopover, {
+    open: true,
+    update: true,
+    version: "0.13.1",
+    updateVersion: "0.13.2",
+  }))
+  assert.match(monolithic, />0\.13\.1 → 0\.13\.2</)
+  assert.doesNotMatch(monolithic, />Server |Launcher /)
+})
+
 test("an up-to-date registry install still shows what version it is running", () => {
   const html = renderToStaticMarkup(createElement(UpdateRestartPopover, { open: true, update: false, version: "0.4.2" }))
   assert.match(html, /Restart Frizz\. Your running threads will not be affected\./)
