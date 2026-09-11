@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useNavigate } from "react-router"
 import { useSnapshot } from "valtio"
 import { useQuery } from "@tanstack/react-query"
@@ -24,8 +24,18 @@ import { StatusListView } from "./components/StatusListView.tsx"
 import { ErrorBoundary } from "./components/ErrorBoundary.tsx"
 import { RestartOverlay } from "./components/RestartOverlay.tsx"
 import { useSupervisorStatus } from "./api/supervisorStatus.ts"
-
-const RELOAD_AFTER_UPDATE_RESTART = "frizz:reload-after-update-restart"
+import {
+  frizzBuildIdentity,
+  IDLE_RESTART_HOLD,
+  nextRestartHold,
+  RELOAD_AFTER_UPDATE_RESTART,
+  restartFailureCopy,
+  restartFailureOutcome,
+  shouldReloadForNewBuild,
+  UPDATE_RESTART_FROM_VERSION,
+  type RestartHold,
+} from "./api/restart.ts"
+import { formatCompactElapsed } from "./lib/durationLabels.ts"
 
 // The not-signed-in hint fires at most once per page load. A module-scoped flag (not React state)
 // keeps it from re-firing across re-renders, effect re-runs, or a StrictMode double-invoke.
@@ -61,40 +71,72 @@ export function App() {
   // session-backed and editable throughout.
   const { data: supervisorStatus, dataUpdatedAt: supervisorAnsweredAt } = useSupervisorStatus()
   const announcedFailure = useRef<string | null>(null)
+  // The hold's clock (finding 1, audit 2026-09-11): how long the supervisor has been silent while the
+  // board shows "restarting", and whether that has run past the deadline. Stepped once per poll by the
+  // pure reducer in api/restart.ts; a null answer used to be ignored here outright, which is how a
+  // successor that never came up left every tab behind the blocking overlay forever.
+  const [hold, setHold] = useState<RestartHold>(IDLE_RESTART_HOLD)
+  // The build this page was served by (finding 8): the first identity any answer named. A later READY
+  // answer naming a different one means a new server is up under an old bundle — reload, whichever
+  // tab clicked. Cleared by the reload itself, since the next page captures the new identity first.
+  const seenBuild = useRef<string | null>(null)
+  const reloading = useRef(false)
   useEffect(() => {
     const status = supervisorStatus
-    if (!status) return
-    // An optimistic, user-initiated restart raised the overlay before the supervisor confirmed the
-    // transition. HOLD it until a poll actually OBSERVES a server-confirmed non-"ready" status: a
-    // "ready" read while pending is either the pre-flip state or a stale in-flight response, and
-    // applying it would drop the overlay and (with a destination armed) reload onto the old child.
-    // The moment a poll sees "restarting"/"failed", the optimism is server-backed — clear the hold.
-    if (store.controlPlaneRestartPending) {
-      if (status.state !== "ready") {
-        store.controlPlaneRestartPending = false
+    if (status) {
+      // An optimistic, user-initiated restart raised the overlay before the supervisor confirmed the
+      // transition. HOLD it until a poll actually OBSERVES a server-confirmed non-"ready" status: a
+      // "ready" read while pending is either the pre-flip state or a stale in-flight response, and
+      // applying it would drop the overlay and (with a destination armed) reload onto the old child.
+      // The moment a poll sees "restarting"/"failed", the optimism is server-backed — clear the hold.
+      if (store.controlPlaneRestartPending) {
+        if (status.state !== "ready") {
+          store.controlPlaneRestartPending = false
+          store.controlPlaneState = status.state
+          store.controlPlaneMessage = status.message ?? null
+        }
+      } else {
         store.controlPlaneState = status.state
         store.controlPlaneMessage = status.message ?? null
       }
-    } else {
-      store.controlPlaneState = status.state
-      store.controlPlaneMessage = status.message ?? null
+      if (seenBuild.current === null) seenBuild.current = frizzBuildIdentity(status)
     }
+    // Step the hold on EVERY answer, null included — the null ones are the whole point. `restarting`
+    // is what the board shows after applying this poll, so silence only ever accrues under the overlay.
+    setHold((prev) => nextRestartHold(prev, { restarting: store.controlPlaneState === "restarting", answered: status != null, at: Date.now() }))
+    if (!status || reloading.current) return
     const destination = sessionStorage.getItem(RELOAD_AFTER_UPDATE_RESTART)
-    if (status.state === "ready" && destination && !store.controlPlaneRestartPending) {
-      sessionStorage.removeItem(RELOAD_AFTER_UPDATE_RESTART)
-      window.location.replace(destination)
-      return
+    if (status.state === "ready" && !store.controlPlaneRestartPending) {
+      if (destination) {
+        sessionStorage.removeItem(RELOAD_AFTER_UPDATE_RESTART)
+        sessionStorage.removeItem(UPDATE_RESTART_FROM_VERSION)
+        reloading.current = true
+        window.location.replace(destination)
+        return
+      }
+      // Every OTHER tab: no destination was armed here, but the server answering is not the one that
+      // served this bundle. `reload()` rather than `replace(href)`, which is a same-document jump when
+      // the URL carries a fragment and would load nothing.
+      if (shouldReloadForNewBuild(seenBuild.current, status)) {
+        reloading.current = true
+        window.location.reload()
+        return
+      }
     }
     if (status.state === "failed" && destination) {
+      const fromVersion = sessionStorage.getItem(UPDATE_RESTART_FROM_VERSION) ?? undefined
       sessionStorage.removeItem(RELOAD_AFTER_UPDATE_RESTART)
+      sessionStorage.removeItem(UPDATE_RESTART_FROM_VERSION)
       if (announcedFailure.current !== status.message) {
         // Announce the failure, never its REASON: the supervisor's message is raw build output —
         // a `nub run typecheck` failure arrives as several hundred characters of absolute
         // snapshot paths — and pasting that into a toast stretched a strip across the entire
         // viewport, four lines deep, saying the same thing the failure panel beside the reload
         // button was already showing properly. The panel owns the detail; this owns the attention.
+        // Which failure it was (the old version giving up, or the new one failing to start) is judged
+        // by the version the failed answer names against the one at click — finding 11.
         announcedFailure.current = status.message ?? "Update & Restart failed"
-        showToast("Update & Restart failed — Frizz kept running the previous version", { duration: 7000 })
+        showToast(`Update & Restart failed — ${restartFailureCopy(restartFailureOutcome(fromVersion, status)).summary}`, { duration: 7000 })
       }
     }
     // `supervisorAnsweredAt`, not the status alone: react-query's structural sharing hands back the SAME
@@ -237,10 +279,16 @@ export function App() {
   // branch already renders exactly the right thing for it (centered prompt box, sidebar hidden).
   return (
     <>
-    <RestartOverlay open={snap.controlPlaneState === "restarting"} message={snap.controlPlaneMessage} />
+    <RestartOverlay
+      open={snap.controlPlaneState === "restarting"}
+      message={snap.controlPlaneMessage}
+      stalled={hold.stalled}
+      silentFor={hold.silentSince === null ? undefined : formatCompactElapsed(hold.silentForMs)}
+    />
     {/* While restarting, the whole app subtree goes inert so nothing behind the scrim is focusable or
-        clickable; the overlay above is a sibling OUTSIDE it so it stays interactive. */}
-    <div inert={snap.controlPlaneState === "restarting"} className="relative min-h-screen bg-bg text-fg text-sm">
+        clickable; the overlay above is a sibling OUTSIDE it so it stays interactive. Once the hold has
+        stalled the overlay stops blocking, and so does this. */}
+    <div inert={snap.controlPlaneState === "restarting" && !hold.stalled} className="relative min-h-screen bg-bg text-fg text-sm">
       {/* NO FIXED CHROME IN EITHER TOP CORNER. Identity, settings, reload and both quota chips used to
           be a bar pinned to the upper-left, a screen's width from the column they describe; they are
           the StatusRow along the top of the prompt box now (Sidebar.tsx, and TodosView's centered

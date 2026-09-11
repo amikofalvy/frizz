@@ -1,6 +1,21 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { canRestart, canUpdateRestart, getFrizzSupervisorStatus, isDevFrizzBuild, requestFrizzRestart, requestFrizzUpdateRestart } from "./restart.ts"
+import {
+  canRestart,
+  canUpdateRestart,
+  frizzBuildIdentity,
+  getFrizzSupervisorStatus,
+  IDLE_RESTART_HOLD,
+  isDevFrizzBuild,
+  nextRestartHold,
+  requestFrizzRestart,
+  requestFrizzUpdateRestart,
+  RESTART_HOLD_DEADLINE_MS,
+  restartFailureCopy,
+  restartFailureOutcome,
+  shouldReloadForNewBuild,
+  type FrizzSupervisorStatus,
+} from "./restart.ts"
 
 const response = (body: string, status = 200, contentType = "application/json") => new Response(body, { status, headers: { "content-type": contentType } })
 
@@ -98,4 +113,82 @@ test("a development build is only ever what the supervisor explicitly reports", 
   // And it has to survive the wire, not just the predicate.
   const dev = async () => response(JSON.stringify({ protocol: 1, state: "ready", dev: true }))
   assert.equal(isDevFrizzBuild(await getFrizzSupervisorStatus(dev as typeof fetch)), true)
+})
+
+// ── Finding 1 (audit 2026-09-11): the restart hold has a deadline ────────────────────────────────────
+// After a detached handoff every poll comes back null. App used to ignore those, so a successor that
+// never came up left the blocking overlay on screen forever with nothing to say. The reducer below is
+// what the App effect steps once per poll; this pins the clock as arithmetic.
+test("the restart hold stalls after three minutes of unanswered polls, and only then", () => {
+  const t0 = 1_000_000
+  let hold = IDLE_RESTART_HOLD
+  // The supervisor is still answering "restarting" (a durable build in progress): no silence accrues.
+  hold = nextRestartHold(hold, { restarting: true, answered: true, at: t0 })
+  assert.deepEqual(hold, IDLE_RESTART_HOLD)
+  // The old process exits; the first null starts the clock.
+  hold = nextRestartHold(hold, { restarting: true, answered: false, at: t0 + 1_000 })
+  assert.equal(hold.silentSince, t0 + 1_000)
+  assert.equal(hold.stalled, false)
+  for (const at of [t0 + 30_000, t0 + 120_000, t0 + 1_000 + RESTART_HOLD_DEADLINE_MS - 1]) {
+    hold = nextRestartHold(hold, { restarting: true, answered: false, at })
+    assert.equal(hold.stalled, false, `still inside the deadline at +${at - t0}ms`)
+    assert.equal(hold.silentSince, t0 + 1_000, "the clock is measured from the FIRST silent poll, not the latest")
+  }
+  hold = nextRestartHold(hold, { restarting: true, answered: false, at: t0 + 1_000 + RESTART_HOLD_DEADLINE_MS })
+  assert.equal(hold.stalled, true)
+  assert.equal(hold.silentForMs, RESTART_HOLD_DEADLINE_MS, "the overlay reads its `3m` off this, never off a clock in render")
+  assert.equal(RESTART_HOLD_DEADLINE_MS, 3 * 60_000)
+})
+
+test("any protocol answer resets the hold's clock, and nothing accrues without an overlay to hold", () => {
+  const stalled = nextRestartHold({ silentSince: 0, silentForMs: 0, stalled: false }, { restarting: true, answered: false, at: RESTART_HOLD_DEADLINE_MS })
+  assert.equal(stalled.stalled, true)
+  // A durable supervisor that comes back mid-build and says so: a slow build is not a dead board.
+  assert.deepEqual(nextRestartHold(stalled, { restarting: true, answered: true, at: RESTART_HOLD_DEADLINE_MS + 500 }), IDLE_RESTART_HOLD)
+  // The board is ready again (whatever the poll said): the hold is over.
+  assert.deepEqual(nextRestartHold(stalled, { restarting: false, answered: true, at: RESTART_HOLD_DEADLINE_MS + 500 }), IDLE_RESTART_HOLD)
+  // Null polls against a board that is NOT restarting (server down at rest) never raise the notice.
+  assert.deepEqual(nextRestartHold(IDLE_RESTART_HOLD, { restarting: false, answered: false, at: 5 }), IDLE_RESTART_HOLD)
+  // And after a reset, silence starts a fresh clock rather than resuming the old one.
+  const again = nextRestartHold(IDLE_RESTART_HOLD, { restarting: true, answered: false, at: 9_000 })
+  assert.equal(again.silentSince, 9_000)
+  assert.equal(again.stalled, false)
+})
+
+// ── Finding 8: every tab reloads onto a new build, not just the one that clicked ─────────────────────
+test("a ready answer from a different build than this page first saw means reload", () => {
+  const ready = (over: Record<string, unknown>) => ({ protocol: 1, state: "ready", ...over }) as FrizzSupervisorStatus
+  // frizz-dev's durable owner names an artifact digest; the registry launcher names a version.
+  assert.equal(frizzBuildIdentity(ready({ artifactDigest: "a".repeat(64) })), "a".repeat(64))
+  assert.equal(frizzBuildIdentity(ready({ version: "0.4.2" })), "0.4.2")
+  assert.equal(frizzBuildIdentity(ready({ artifactDigest: "d", version: "0.4.2" })), "d", "the digest is the finer identity when both are sent")
+  assert.equal(frizzBuildIdentity(ready({})), null)
+  assert.equal(frizzBuildIdentity(null), null)
+
+  assert.equal(shouldReloadForNewBuild("0.4.2", ready({ version: "0.5.0" })), true, "the other tabs' case: same server slot, new version")
+  assert.equal(shouldReloadForNewBuild("0.4.2", ready({ version: "0.4.2" })), false, "an ordinary Restart keeps the build")
+  assert.equal(shouldReloadForNewBuild("a".repeat(64), ready({ artifactDigest: "b".repeat(64) })), true)
+  assert.equal(shouldReloadForNewBuild("0.4.2", { protocol: 1, state: "restarting", version: "0.5.0" }), false, "nothing to load until the successor is READY")
+  assert.equal(shouldReloadForNewBuild("0.4.2", { protocol: 1, state: "failed", version: "0.5.0" }), false, "a successor whose board failed serves no bundle either")
+  assert.equal(shouldReloadForNewBuild("0.4.2", ready({})), false, "a supervisor that stops naming builds cannot be told apart — never loop")
+  assert.equal(shouldReloadForNewBuild(null, ready({ version: "0.5.0" })), false, "no first identity, no comparison")
+  assert.equal(shouldReloadForNewBuild("0.4.2", null), false)
+})
+
+// ── Finding 11: "kept running the previous version" is only true when it did ────────────────────────
+test("a failed answer naming the version we clicked on means the old launcher gave up; a newer one means the successor failed", () => {
+  assert.deepEqual(restartFailureOutcome("0.4.2", { version: "0.4.2" }), { kind: "previous-kept" })
+  assert.deepEqual(restartFailureOutcome(undefined, {}), { kind: "previous-kept" }, "frizz-dev names no version and rolls back in place")
+  assert.deepEqual(restartFailureOutcome("0.4.2", { version: "0.5.0" }), { kind: "successor-failed", version: "0.5.0" })
+  assert.deepEqual(restartFailureOutcome("0.4.2", {}), { kind: "successor-failed", version: undefined }, "a different answerer that names nothing is still not the one we clicked on")
+
+  const kept = restartFailureCopy({ kind: "previous-kept" })
+  assert.equal(kept.detail, "Frizz kept running the previous version, and your threads are unaffected.")
+  assert.equal(kept.summary, "Frizz kept running the previous version")
+  const successor = restartFailureCopy({ kind: "successor-failed", version: "0.5.0" })
+  assert.equal(successor.summary, "Frizz 0.5.0 failed to start")
+  assert.match(successor.detail, /^Frizz 0\.5\.0 came up but could not start its board, and the previous version is gone\./)
+  assert.match(successor.detail, /npx frizz/)
+  assert.doesNotMatch(successor.detail, /kept running/)
+  assert.match(restartFailureCopy({ kind: "successor-failed" }).summary, /^The new version of Frizz failed to start$/)
 })
