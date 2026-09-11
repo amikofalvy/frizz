@@ -1,5 +1,20 @@
 # Server patch release verification
 
+## Popover patch 0.13.2
+
+Published `frizz-server@0.13.2` from `4fdc8d69fd350002a19fe27ff37839ecad1045ab` after explicit release authorization. The shell remains `frizz@0.13.0`; the workflow skipped shell publication and retained the original `v0.13.0` tag at `ba088812`. [Release run 34648565761](https://github.com/colinhacks/frizz/actions/runs/34648565761) and CI runs `34648565850` / `34648563193` completed successfully.
+
+- The restart popover now shows only the application version, with no launcher diagnostic line. Historical fixture values such as `0.4.2` are test inputs, not installed or published versions. The release evidence uses the actual public artifact displaying `0.13.2`.
+- The exact isolated candidate passed frozen installation, typecheck, 4,544 tests with 83 skips and zero failures, board 73/73, monitors 16/16 and monitor synchronization. A clean packed-package browser upgrade passed before publication.
+- Public npm/Chrome verification installed `frizz@0.13.0`, bootstrapped its pinned server, and clicked the real browser update to `frizz-server@0.13.2`. All downloaded package integrities matched the registry. Launcher PID `38710` and public port `50540` remained unchanged; 383 status probes succeeded.
+- Real Codex daemon PID `39785`, generation `92d36f5c-9b39-4cc7-946f-6edf8b1fb913`, survived the update during a 30s terminal command and answered a follow-up. Settings, server restart and committed selection across full launcher relaunch passed.
+- The actual published popover, desktop and narrow screenshots were inspected; no launcher label, stale fixture version, unexpected browser error or horizontal overflow. The same component's prior both-font optical pass measured a `10.33px` horizontal ink gap and `0.50px` vertical residual. Expected absent-icon 404 and explicit-handoff RPC 503/WebSocket reconnect events are separately recorded.
+- All owned browsers, npm/launcher/server/worker processes were cleaned up. Production was not restarted or modified. This published runtime check ran on macOS, not Windows.
+
+Evidence: `.frizz/threads/83fb409a-c418-422d-8173-c7fb7823d626/popover-release/`, particularly `published-server.json`, `published-shell.json`, `public-smoke/result.json`, `public-smoke/updated-popover.png`, `public-smoke/worker-transcript.json`, and `public-smoke/cleanup.json`.
+
+## Initial split release
+
 Published `frizz-server@0.13.1` and the initial stable shell `frizz@0.13.0` from `ba0888128527ffe8f5287d00844a93e96766d2b3`. The release was explicitly authorized. No production server, project registry, or settings were changed by the tests.
 
 ## Publication
