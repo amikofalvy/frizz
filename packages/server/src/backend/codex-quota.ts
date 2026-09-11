@@ -3,6 +3,7 @@ import { readdirSync, statSync, openSync, readSync, fstatSync, closeSync } from 
 import { spawn } from "node:child_process"
 import type { ProviderQuota, QuotaWindow } from "@frizz/shared"
 import { defaultCodexHome } from "./codex.ts"
+import { resolveCodexExecutable } from "./codex-executable.ts"
 // The SAME handshake identity the dispatch path uses, so the app-server sees one consistent client.
 import { CLIENT_INFO, CLIENT_CAPABILITIES } from "./codex-app-server.ts"
 
@@ -242,7 +243,13 @@ export function queryCodexRateLimits(
       // endpoint, not a worker: mounting frizz's MCP server would make every quota poll fork a
       // frizz-MCP process for tools nothing in this path can call, and drag in whatever servers the
       // operator's own codex config mounts alongside it.
-      child = spawn(codexBin, ["app-server"], {
+      //
+      // Resolved inside the try: on Windows a bare `codex` never reaches an npm-installed CLI (see
+      // codex-executable.ts), and this poll read the quota as unavailable for an installed Codex
+      // whenever the runtime pin had fallen back to PATH (Windows audit 2026-09-11, finding 8). A
+      // miss throws, which lands in the catch below exactly as a spawn failure always has.
+      const codex = resolveCodexExecutable(codexBin)
+      child = spawn(codex.file, [...codex.args, "app-server"], {
         stdio: ["pipe", "pipe", "ignore"],
         env: { ...process.env, CODEX_HOME: codexHome },
       })
