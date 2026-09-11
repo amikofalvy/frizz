@@ -72,6 +72,7 @@ function alive(pid) { try { process.kill(pid, 0); return true } catch { return f
 
 const packages = new Map([[shell.manifest.name, shell], [server.manifest.name, server]])
 let registry, launcher, browser
+const childPids = new Set()
 const errors = [], expectedBrowserEvents = []
 let restartRequested = false
 const evidence = { tarballs: { shell: { file: shellTarball, integrity: shell.integrity }, server: { file: serverTarball, integrity: server.integrity } }, browserErrors: errors, expectedBrowserEvents }
@@ -109,6 +110,7 @@ try {
   assert.equal(before.launcherVersion, shell.manifest.version)
   const owner = await until("stable launcher owner", () => ownerAddress())
   const childBefore = await until("cold control-plane generation", () => childGeneration())
+  childPids.add(childBefore.pid)
   assert.ok(alive(owner.pid), `stable launcher ${owner.pid} is alive`)
   assert.equal(owner.port, publicPort)
   evidence.cold = { ownerPid: owner.pid, npmExecPid: launcher.pid, status: before, owner, child: childBefore }
@@ -118,8 +120,8 @@ try {
   page.on("console", (message) => {
     if (message.type() !== "error") return
     const event = `console: ${message.text()} @ ${message.location().url}`
-    if (message.location().url.includes("/_frizz/project-icon?")) expectedBrowserEvents.push(event)
-    else if (restartRequested) expectedBrowserEvents.push(`restart: ${event}`)
+    if (message.location().url.includes("/_frizz/project-icon?") && message.text().includes("404")) expectedBrowserEvents.push(event)
+    else if (restartRequested && /^WebSocket connection to .*failed: (Connection closed before receiving a handshake response|Error during WebSocket handshake: Unexpected response code: 503)/u.test(message.text())) expectedBrowserEvents.push(`restart: ${event}`)
     else errors.push(event)
   })
   await page.setViewport({ width: 1280, height: 850, deviceScaleFactor: 2 })
@@ -138,10 +140,12 @@ try {
   const childAfter = await until("restarted control-plane generation", () => {
     const next = childGeneration(); return next?.bootId && next.bootId !== childBefore.bootId ? next : undefined
   })
+  childPids.add(childAfter.pid)
   const ownerAfter = ownerAddress()
   assert.equal(ownerAfter.pid, owner.pid, "restart keeps the stable launcher PID")
   assert.equal(ownerAfter.port, publicPort, "restart keeps the public listener")
   assert.ok(alive(owner.pid), "stable launcher remains alive after restart")
+  restartRequested = false
   await page.goto(base, { waitUntil: "networkidle2" }); await page.screenshot({ path: join(out, "after-restart.png") })
   assert.equal(errors.length, 0, errors.join("\n"))
   evidence.restart = { status: after, ownerPid: ownerAfter.pid, port: ownerAfter.port, child: childAfter }
@@ -150,14 +154,19 @@ try {
   writeFileSync(join(out, "result.json"), `${JSON.stringify(evidence, null, 2)}\n`)
   console.log(JSON.stringify(evidence, null, 2))
 } finally {
+  const browserPid = browser?.process()?.pid
   if (browser) await browser.close()
+  const lastChild = childGeneration()
+  if (lastChild?.pid) childPids.add(lastChild.pid)
   const owner = ownerAddress()
   if (owner?.pid && alive(owner.pid)) process.kill(owner.pid, "SIGTERM")
   if (launcher && launcher.exitCode === null) launcher.kill("SIGTERM")
   if (owner?.pid) await until("stable launcher cleanup", () => !alive(owner.pid), 30_000)
   if (launcher?.pid) await until("npm exec cleanup", () => !alive(launcher.pid), 30_000)
+  await until("server child cleanup", () => [...childPids].every((pid) => !alive(pid)), 30_000)
+  if (browserPid) await until("browser cleanup", () => !alive(browserPid), 30_000)
   if (registry) await new Promise((done) => registry.close(done))
-  evidence.cleanup = { npmExecAlive: launcher?.pid ? alive(launcher.pid) : false, stableLauncherAlive: owner?.pid ? alive(owner.pid) : false }
+  evidence.cleanup = { npmExecAlive: launcher?.pid ? alive(launcher.pid) : false, stableLauncherAlive: owner?.pid ? alive(owner.pid) : false, browserAlive: browserPid ? alive(browserPid) : false, remainingChildren: [...childPids].filter(alive) }
   writeFileSync(join(out, "cleanup.json"), `${JSON.stringify(evidence.cleanup, null, 2)}\n`)
   rmSync(root, { recursive: true, force: true })
 }

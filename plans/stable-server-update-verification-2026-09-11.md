@@ -39,6 +39,19 @@ The final singleton matrix used launcher PID `31041` throughout ordinary updates
 
 Two test-instrument errors were corrected rather than misreported as product defects: a cold-download gate initially held both package names sharing version `0.13.0`, and a requested minimum-Node run initially left a newer Node first on PATH for npm's bin shebang. The final harness gates only `frizz-server` and asserts the actual child Node version.
 
+After the frozen pnpm install and final package build, the combined singleton/failure/worker matrix passed again in `server-ci-workers`, using actual Node `22.13.0`. Launcher PID `73417` stayed fixed through ordinary updates. Codex PID `76381` and Claude PID `77858` retained their generations and answered follow-ups. The earlier `server-main-workers` run additionally repeated the legacy `0.12.10` browser handoff on the merged source with both providers active.
+
+## Unmodified release candidates
+
+The final artifacts were produced through the real root `npm pack` lifecycle and standalone server pack after `CI=1 pnpm install --frozen-lockfile`; typecheck passed on that installed dependency graph. Unlike the failure fixtures, these tarballs contain no test instrumentation. [`scripts/verify-server-package.mjs`](../scripts/verify-server-package.mjs) then served their exact bytes through a private registry and exercised npm execution, cold browser boot and server restart. Both reported versions were `0.13.0`; the launcher PID/public port persisted while the child PID and boot ID changed. Unexpected browser errors were absent; the empty project's icon 404 and the bounded restart WebSocket disconnect are recorded separately. Final cleanup explicitly confirmed browser, npm process, launcher and observed children were gone.
+
+The final smoke is in `release-candidate/final-smoke/`; the retained tarballs are in `release-candidate/`, under this thread's evidence directory. Their package manifests do not contain `gitHead`, so source provenance is this report and the local commit history, not npm provenance. The build source was `89cd604d`; subsequent commits only add verification scripts and this report. No public release is implied.
+
+| Tarball | SHA-512 |
+| --- | --- |
+| `frizz-0.13.0.tgz` | `d53754813f9236ab30684689048f0c0d8a6e6a59bcea6b2e44e6bb1ff4ceb1d1112e19b96b34b1473003d869fa2eb04dfafe1121eecafd644fc0c8bbe6f6a6cd` |
+| `frizz-server-0.13.0.tgz` | `6c182f8841cbdda3f080cdbb6df064c1a9932712566270c2b6db30b40cd162933d99682f155f6cb4b278904c199d9d9e82973ea81c5f4002d199b00bf4491ef0` |
+
 ## Browser and optical verification
 
 The version popover distinguishes the selected server from the stable launcher. Desktop and narrow boards were inspected after real updates, with no clipping or page errors. Both actual font settings were exercised through the settings API and page reload, not a transient DOM override. The panel deliberately uses sans text and monospace version identifiers under either setting.
@@ -47,7 +60,7 @@ The ink instrument measured a `10.5px` horizontal gap for the `10px` CSS box gap
 
 ## Review and gates
 
-Independent review found and fixed the cross-epoch bootstrap/crash barrier, release retry tagging, and ambiguous launcher/server version display. Lifecycle tests additionally cover rollback failure, close races and child death during an asynchronous commit. The complete post-integration suite passed: **4,616 tests, 4,533 passed, 83 skipped, zero failures** (`full-tests-land.log`). Typecheck passed. CI-equivalent board tests passed `73/73`; portable-monitor synchronization passed; monitor tests passed `16/16`.
+Independent review found and fixed the cross-epoch bootstrap/crash barrier, release retry tagging, and ambiguous launcher/server version display. Lifecycle tests additionally cover rollback failure, close races and child death during an asynchronous commit. After merging local main through `f0a15f67`, the complete suite passed: **4,620 tests, 4,535 passed, 85 skipped, zero failures** (`full-tests-main.log`). Typecheck passed. CI-equivalent board tests passed `73/73`; portable-monitor synchronization passed; monitor tests passed `16/16`.
 
 The Windows VM experiment did not reach an initialized guest or working SSH connection, so **the new packed update path was not exercised on Windows**. The owned Windows Server 2022 VM and temporary firewall rule were deleted. Windows-sensitive behavior was reviewed against the existing process-generation protocol, npm-JavaScript resolution, IPC-first shutdown, path-containment and atomic-replacement tests; this is not a substitute claim of a Windows E2E pass.
 
