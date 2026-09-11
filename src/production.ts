@@ -61,7 +61,7 @@ import {
 import { createSupervisorShutdownHandler, startDevSupervisor } from "@frizz/server/dev-supervisor";
 import {
   handoffToRegistrySuccessor, npmRegistryReleaseAdapter, planRegistryUpdate, PRODUCTION_PRINT_LAUNCHER_FLAG, PRODUCTION_REEXEC_FLAG,
-  reexecIntoRegistrySuccessor, resolveRegistrySuccessor, type RegistrySuccessor,
+  reexecIntoRegistrySuccessor, resolveRegistrySuccessor, successorArgv, type RegistrySuccessor,
 } from "./production-update.ts";
 import {
   assertLaunchPrerequisites,
@@ -111,7 +111,7 @@ if (rawArgs.includes(PRODUCTION_PRINT_LAUNCHER_FLAG)) {
   console.log(fileURLToPath(import.meta.url));
   process.exit(0);
 }
-const args = rawArgs.filter((arg) => arg !== PRODUCTION_REEXEC_FLAG);
+const args = successorArgv(rawArgs);
 const fail = (error: unknown): never => {
   console.error(`frizz: ${error instanceof Error ? error.message : error}`);
   process.exit(1);

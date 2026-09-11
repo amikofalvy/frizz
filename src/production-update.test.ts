@@ -15,6 +15,7 @@ import {
   resolveNpmInvocation,
   resolveRegistrySuccessor,
   successorArgs,
+  successorArgv,
   type RegistryReleaseAdapter,
   type RegistrySuccessor,
 } from "./production-update.ts";
@@ -52,6 +53,21 @@ test("the successor's argv is one parseCliArgs accepts: the re-exec flag, the po
   assert.deepEqual(args, [PRODUCTION_REEXEC_FLAG, "--port", "4917"]);
   const parsed = parseCliArgs(args.filter((arg) => arg !== PRODUCTION_REEXEC_FLAG));
   assert.equal(parsed.port, 4917);
+});
+
+// The other half of the same failure. The update code that RUNS is the old release's, so 0.12.10's
+// handoff — `--_frizz-production-reexec --port N <projectDir>` — is what every board on 0.12.10 hands
+// this release. Refusing the positional there would keep the 2026-09-10 dead board alive for one more
+// release; in re-exec mode it is dropped, and the project still comes from the launch environment.
+test("a successor forgives the trailing project directory an older launcher hands it, and only then", () => {
+  const legacy = [PRODUCTION_REEXEC_FLAG, "--port", "4917", "/Users/someone/repo"];
+  assert.deepEqual(successorArgv(legacy), ["--port", "4917"]);
+  assert.equal(parseCliArgs(successorArgv(legacy)).port, 4917);
+  assert.deepEqual(successorArgv([PRODUCTION_REEXEC_FLAG, "--port", "4917", "C:\\Users\\someone\\repo"]), ["--port", "4917"]);
+  assert.deepEqual(successorArgv(successorArgs(4917)), ["--port", "4917"]);
+  // A real launch keeps its guard: no re-exec flag, no forgiveness.
+  assert.deepEqual(successorArgv(["--port", "4917", "/Users/someone/repo"]), ["--port", "4917", "/Users/someone/repo"]);
+  assert.throws(() => parseCliArgs(successorArgv(["/Users/someone/repo"])), /takes no repository path/);
 });
 
 test("resolving the successor installs it through npm exec and reads its launcher entry off stdout", async () => {

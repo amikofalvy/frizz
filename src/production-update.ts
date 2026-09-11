@@ -139,6 +139,33 @@ export function successorArgs(port: number): string[] {
 }
 
 /**
+ * The argv this release was handed, with the re-exec flag removed and an OLDER launcher's handoff
+ * tolerated. Every launcher up to 0.12.10 started its successor with the project directory as a
+ * trailing positional (`--_frizz-production-reexec --port N <projectDir>`), which `parseCliArgs`
+ * refuses. The update code that runs is always the OLD release's, so the new release is the only
+ * place that mistake can be forgiven: in re-exec mode a trailing bare argument is dropped rather
+ * than fatal, and the project still comes from the launch environment as it always did. Outside
+ * re-exec mode nothing changes — `frizz /some/repo` is still refused with the explanation.
+ */
+export function successorArgv(rawArgs: readonly string[]): string[] {
+  const reexec = rawArgs.includes(PRODUCTION_REEXEC_FLAG);
+  const args = rawArgs.filter((arg) => arg !== PRODUCTION_REEXEC_FLAG);
+  if (!reexec) return args;
+  const kept: string[] = [];
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index]!;
+    if (arg === "--port") {
+      kept.push(arg);
+      if (index + 1 < args.length) kept.push(args[++index]!);
+      continue;
+    }
+    if (!arg.startsWith("-")) continue;
+    kept.push(arg);
+  }
+  return kept;
+}
+
+/**
  * Ask npm for a separate, immutable execution cache holding the planned release, and locate its
  * launcher bundle. This never edits the package directory npx is currently executing, which might be
  * shared or deleted by npm while the durable supervisor is still live.
