@@ -1,7 +1,7 @@
 import { execFile, spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
-import { isAbsolute } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 
 export const PRODUCTION_REEXEC_FLAG = "--_frizz-production-reexec";
 /**
@@ -10,6 +10,49 @@ export const PRODUCTION_REEXEC_FLAG = "--_frizz-production-reexec";
  * (keeping this pid and this terminal) instead of guessing where npm put the execution cache.
  */
 export const PRODUCTION_PRINT_LAUNCHER_FLAG = "--_frizz-print-launcher";
+
+export interface NpmInvocation {
+  command: string;
+  /** Arguments that go BEFORE the npm subcommand (the npm-cli.js script when node runs npm directly). */
+  prefixArgs: string[];
+}
+
+/**
+ * How to start npm from this process. `execFile("npm", …)` is not enough on Windows. There npm is only
+ * a `npm.cmd` shim. A shell-less spawn cannot find the shim (`spawn npm ENOENT`), and Node refuses to
+ * run a `.cmd` file without a shell. The reliable form is the one every shim ends in: this node binary
+ * running `npm-cli.js`. Three places can hold that script, in this order:
+ *
+ *   1. beside `npm_execpath`, which npm sets for a bin it runs itself (`npx frizz`, `npm exec`);
+ *   2. beside node.exe (the Windows installer layout);
+ *   3. under `../lib/node_modules` (the POSIX installer layout).
+ *
+ * A global bin started from a shell has no `npm_execpath`, so it gets the npm that ships with node.
+ * On POSIX the bare `npm` command is the fallback, which is the behaviour before this helper existed.
+ * On Windows there is no working fallback: the bare name only reaches the shim, and a swallowed spawn
+ * error would end the board with a success message. So Windows throws instead. (8r4x, #32.)
+ */
+export function resolveNpmInvocation(
+  env: NodeJS.ProcessEnv = process.env,
+  execPath: string = process.execPath,
+  exists: (path: string) => boolean = existsSync,
+  platform: NodeJS.Platform = process.platform
+): NpmInvocation {
+  const nodeDir = dirname(execPath);
+  const candidates = [
+    // pnpm, yarn and bun set `npm_execpath` too, to their own entry file. Their directories hold no
+    // `npm-cli.js`, so the existence check below skips them.
+    env.npm_execpath ? join(dirname(env.npm_execpath), "npm-cli.js") : undefined,
+    join(nodeDir, "node_modules", "npm", "bin", "npm-cli.js"),
+    join(nodeDir, "..", "lib", "node_modules", "npm", "bin", "npm-cli.js"),
+  ].filter((candidate): candidate is string => candidate !== undefined);
+  const script = candidates.find((candidate) => exists(candidate));
+  if (script) return { command: execPath, prefixArgs: [script] };
+  if (platform === "win32") {
+    throw new Error(`npm-cli.js not found beside ${execPath} (searched: ${candidates.join(", ")})`);
+  }
+  return { command: "npm", prefixArgs: [] };
+}
 
 export interface RegistryReleaseAdapter {
   latestVersion(packageName: string): Promise<string>;
@@ -174,7 +217,9 @@ export function handoffToRegistrySuccessor(
 export const npmRegistryReleaseAdapter: RegistryReleaseAdapter = {
   latestVersion(packageName) {
     return new Promise((resolveVersion, reject) => {
-      execFile("npm", ["view", `${packageName}@latest`, "version", "--json"], { encoding: "utf8" }, (error, stdout) => {
+      let npm: NpmInvocation;
+      try { npm = resolveNpmInvocation(); } catch (error) { return reject(error); }
+      execFile(npm.command, [...npm.prefixArgs, "view", `${packageName}@latest`, "version", "--json"], { encoding: "utf8", windowsHide: true }, (error, stdout) => {
         if (error) return reject(new Error(`could not check npm for ${packageName}: ${error.message}`));
         try {
           const parsed = JSON.parse(stdout) as unknown;
@@ -187,11 +232,18 @@ export const npmRegistryReleaseAdapter: RegistryReleaseAdapter = {
   },
   npmExec({ packageSpec, bin, args, cwd, env }) {
     return new Promise((settle) => {
+      let npm: NpmInvocation;
+      try { npm = resolveNpmInvocation(); } catch (error) {
+        return settle({ code: null, signal: null, stdout: "", stderr: error instanceof Error ? error.message : String(error) });
+      }
       // The explicit package spec forces npm to resolve/install a new cache entry before running it.
-      const child = spawn("npm", ["exec", "--yes", `--package=${packageSpec}`, "--", bin, ...args], {
+      // Runs to completion with its output captured, so on Windows the console window `cmd.exe` would
+      // open for the bin shim is hidden and nothing of it is left behind.
+      const child = spawn(npm.command, [...npm.prefixArgs, "exec", "--yes", `--package=${packageSpec}`, "--", bin, ...args], {
         cwd,
         env,
         stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
       });
       let stdout = "";
       let stderr = "";
@@ -202,6 +254,10 @@ export const npmRegistryReleaseAdapter: RegistryReleaseAdapter = {
     });
   },
   spawnDetached({ entry, args, cwd, env }) {
-    return spawn(process.execPath, [entry, ...args], { cwd, env, detached: true, stdio: "ignore" });
+    // `detached` gives the successor no console of its own, and `windowsHide` keeps the children it
+    // starts from opening one. Measured on Windows Server 2022 (8r4x, #32): without `windowsHide` a
+    // forked child of a console-less parent gets a visible console window, and closing that window
+    // sends CTRL_CLOSE_EVENT, which Node maps to SIGHUP — the board stops. With it, nothing opens.
+    return spawn(process.execPath, [entry, ...args], { cwd, env, detached: true, stdio: "ignore", windowsHide: true });
   },
 };

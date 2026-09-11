@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { parseCliArgs } from "./launcher.ts";
 import {
   PRODUCTION_PRINT_LAUNCHER_FLAG,
@@ -9,11 +12,14 @@ import {
   handoffToRegistrySuccessor,
   planRegistryUpdate,
   reexecIntoRegistrySuccessor,
+  resolveNpmInvocation,
   resolveRegistrySuccessor,
   successorArgs,
   type RegistryReleaseAdapter,
   type RegistrySuccessor,
 } from "./production-update.ts";
+
+const execFileP = promisify(execFile);
 
 const plan = { packageName: "frizz", currentVersion: "1.2.3", latestVersion: "1.3.0", packageSpec: "frizz@1.3.0" };
 // A file that exists, standing in for the successor's launcher bundle.
@@ -116,4 +122,32 @@ test("the detached fallback starts the resolved entry, not another npm exec, and
   assert.equal(captured?.env.FRIZZ_LAUNCH_OWNER_TOKEN, "lease");
   assert.equal(captured?.env.FRIZZ_REGISTRY_VERSION, "1.3.0");
   assert.equal(child.unrefCalls, 1);
+});
+
+test("npm runs as node + npm-cli.js — the bare `npm` name is only a `.cmd` shim on Windows", () => {
+  const node = join("/", "opt", "node", "bin", "node");
+  const cli = join("/", "opt", "node", "lib", "node_modules", "npm", "bin", "npm-cli.js");
+  const exists = (path: string) => path === cli;
+  const rows: Array<{ name: string; env: NodeJS.ProcessEnv; execPath: string; exists: (path: string) => boolean; expected: ReturnType<typeof resolveNpmInvocation> }> = [
+    { name: "npm_execpath names npm-cli.js", env: { npm_execpath: cli }, execPath: node, exists, expected: { command: node, prefixArgs: [cli] } },
+    { name: "an npx-cli.js hint resolves to the sibling npm-cli.js", env: { npm_execpath: join("/", "opt", "node", "lib", "node_modules", "npm", "bin", "npx-cli.js") }, execPath: node, exists, expected: { command: node, prefixArgs: [cli] } },
+    { name: "a pnpm hint has no npm-cli.js beside it", env: { npm_execpath: join("/", "opt", "pnpm", "bin", "pnpm.cjs") }, execPath: node, exists, expected: { command: node, prefixArgs: [cli] } },
+    { name: "no hint: the npm that ships with node (POSIX layout)", env: {}, execPath: node, exists, expected: { command: node, prefixArgs: [cli] } },
+    { name: "a stale hint that points nowhere is skipped", env: { npm_execpath: join("/", "gone", "npm-cli.js") }, execPath: node, exists, expected: { command: node, prefixArgs: [cli] } },
+  ];
+  const windowsNode = join("C:", "Program Files", "nodejs", "node.exe");
+  const windowsCli = join("C:", "Program Files", "nodejs", "node_modules", "npm", "bin", "npm-cli.js");
+  rows.push({ name: "no hint: the npm beside node.exe (Windows layout)", env: {}, execPath: windowsNode, exists: (path) => path === windowsCli, expected: { command: windowsNode, prefixArgs: [windowsCli] } });
+  for (const row of rows) assert.deepEqual(resolveNpmInvocation(row.env, row.execPath, row.exists, "linux"), row.expected, row.name);
+  // No script at all: POSIX keeps the bare command, Windows refuses (the bare name is a dead spawn there).
+  assert.deepEqual(resolveNpmInvocation({}, node, () => false, "linux"), { command: "npm", prefixArgs: [] });
+  assert.throws(() => resolveNpmInvocation({}, windowsNode, () => false, "win32"), /npm-cli\.js not found beside/);
+});
+
+test("the resolved npm invocation actually starts on this platform", async () => {
+  // Pins the spawn, not the registry: before this, Windows failed with `spawn npm ENOENT` because the
+  // bare name only reaches a `.cmd` shim there. `--version` is the cheapest thing npm answers offline.
+  const npm = resolveNpmInvocation();
+  const { stdout } = await execFileP(npm.command, [...npm.prefixArgs, "--version"], { encoding: "utf8" });
+  assert.match(stdout.trim(), /^\d+\.\d+\.\d+/u);
 });
