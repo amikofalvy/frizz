@@ -1053,7 +1053,8 @@ export interface StopProjectLaunchOptions {
   timeoutMs?: number;
 }
 
-export type StopProjectLaunchResult = { kind: "not-running" } | { kind: "stopped" };
+/** `stale`: no board answered; a dead owner's record was reaped, which is not the same as stopping one. */
+export type StopProjectLaunchResult = { kind: "not-running" } | { kind: "stopped"; stale: boolean };
 
 /**
  * Stop the board that owns a project, the way the dev launcher's `--stop` has always done it
@@ -1096,13 +1097,13 @@ export async function stopProjectLaunch(options: StopProjectLaunchOptions): Prom
   };
   const deadline = adapter.now() + (options.timeoutMs ?? 10_000);
   while (adapter.now() < deadline) {
-    if (reap()) return { kind: "stopped" };
+    if (reap()) return { kind: "stopped", stale: !controlled };
     await sleep(100);
   }
   // The last poll can race a supervisor's finally block by a few milliseconds. One more
   // generation-safe observation before calling this a timeout.
   await sleep(100);
-  if (reap()) return { kind: "stopped" };
+  if (reap()) return { kind: "stopped", stale: !controlled };
   throw new Error(`supervisor pid ${owner.pid} did not stop within ${Math.round((options.timeoutMs ?? 10_000) / 1000)}s`);
 }
 

@@ -2614,7 +2614,7 @@ test("stopProjectLaunch asks a live owner to stop with its token and reports sto
       fetcher: fixture.controlPlane({ stopStatus: 202 }),
       sleep: async () => {},
     });
-    assert.deepEqual(result, { kind: "stopped" });
+    assert.deepEqual(result, { kind: "stopped", stale: false });
     assert.deepEqual(fixture.requests.map((url) => url.slice(url.indexOf("/_frizz"))), ["/_frizz/health", "/_frizz/control/stop"]);
     assert.equal(readProjectLaunchOwner(fixture.target.stateDir), null);
   } finally {
@@ -2667,7 +2667,7 @@ test("stopProjectLaunch reaps a provably stale owner through the fencing acquisi
       fetcher: (async () => assert.fail("a stale owner is never asked over HTTP")) as typeof fetch,
       sleep: async () => {},
     });
-    assert.deepEqual(result, { kind: "stopped" });
+    assert.deepEqual(result, { kind: "stopped", stale: true });
     assert.equal(readProjectLaunchOwner(fixture.target.stateDir), null);
   } finally {
     fixture.dispose();

@@ -228,9 +228,13 @@ if (options.stop) {
   try {
     const result = await stopProjectLaunch({ stateDir: workspace.stateDir, target: workspaceLaunchTarget(workspace) });
     console.log(
-      result.kind === "stopped"
-        ? `stopped Frizz for ${workspace.root}; running agents keep going — they are detached daemons`
-        : `Frizz is not running for ${workspace.root}`,
+      result.kind !== "stopped"
+        ? `Frizz is not running for ${workspace.root}`
+        : result.stale
+          // A board that died without releasing its record (a kill, a crash) reads as "running" to
+          // every later launch until someone reaps it; say what happened rather than claiming a stop.
+          ? `Frizz was not running for ${workspace.root}; cleared the record a dead board left behind`
+          : `stopped Frizz for ${workspace.root}; running agents keep going — they are detached daemons`,
     );
     process.exit(0);
   } catch (error) { fail(error); }
