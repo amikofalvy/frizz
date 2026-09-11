@@ -872,7 +872,9 @@ class Supervisor implements DevSupervisor {
       }
       // `close()` can race a synchronous store commit. Restore the prior selection rather than
       // leaving a dead launcher pointing at an update it never got to serve.
-      if (this.closed) return this.failChildUpdate("Frizz supervisor stopped while committing the update", true)
+      if (this.closed || this.child !== candidate || candidate.exitCode !== null || candidate.signalCode !== null) {
+        return this.failChildUpdate("the update candidate stopped while committing the update", true)
+      }
       this.updateCandidate = null
       this.lastRestartFailure = undefined
       return { state: "ready" }
@@ -915,21 +917,27 @@ class Supervisor implements DevSupervisor {
     const candidate = this.updateCandidate
     if (candidate && this.child === candidate) await this.stopChild()
     this.updateCandidate = null
+    let rolledBack = false
     if (!this.rollbackUpdate) failures.push("rollback callback is unavailable")
     else {
       try {
         await this.rollbackUpdate()
+        rolledBack = true
       } catch (error) {
         failures.push(`rollback failed: ${error instanceof Error ? error.message : error}`)
       }
     }
-    if (restoreChild && !this.closed) {
+    // The provider resolves from its current mutable selection. If rollback did not put that
+    // selection back, spawning here could resurrect the very candidate we just rejected.
+    if (restoreChild && rolledBack && !this.closed) {
       try {
         const restored = await this.spawnChild()
         if (!restored) failures.push(`control plane recovery failed: ${this.lastRestartFailure ?? "the previous child did not become ready"}`)
       } catch (error) {
         failures.push(`control plane recovery failed: ${error instanceof Error ? error.message : error}`)
       }
+    } else if (restoreChild && !rolledBack) {
+      failures.push("control plane was not restarted because rollback did not restore a known-good selection")
     }
     const detail = failures.length > 0 ? `${message}; ${failures.join("; ")}` : message
     this.errorLine(`[frizz] ${detail}`)

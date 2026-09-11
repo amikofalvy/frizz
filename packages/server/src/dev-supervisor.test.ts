@@ -778,7 +778,7 @@ test("child-only Update & Restart commits one stable child without replacing its
 })
 
 test("child-only update rolls back failed candidates and a close race without retrying them", { timeout: 30_000 }, async () => {
-  for (const failure of ["hang", "crash", "commit", "close"] as const) {
+  for (const failure of ["hang", "crash", "commit", "rollback", "close"] as const) {
     const workspace = mkdtempSync(join(tmpdir(), `frizz-child-update-${failure}-`))
     const stateDir = join(workspace, ".state")
     const childEntry = join(workspace, "child.mjs")
@@ -812,12 +812,16 @@ test("child-only update rolls back failed candidates and a close race without re
         port, cwd: workspace, stateDir, launchTarget: target, launchOwnerToken: owner.token, watch: false,
         childLaunchProvider: () => { launchSelections.push(selected); return { entry: childEntry, environment: { FRIZZ_STABLE_ARTIFACT: selected, EVENTS: events } } },
         updateMode: "child", updateReadyTimeoutMs: 500, updateStabilizeMs: 60,
-        updateRestart: async () => { selected = failure === "commit" ? "new" : failure === "close" ? "hang" : failure; return { state: "ready" } },
+        updateRestart: async () => { selected = failure === "commit" || failure === "rollback" ? "new" : failure === "close" ? "hang" : failure; return { state: "ready" } },
         commitUpdate: () => {
-          if (failure === "commit") throw new Error("commit fixture failed")
+          if (failure === "commit" || failure === "rollback") throw new Error("commit fixture failed")
           active = selected
         },
-        rollbackUpdate: () => { rollbacks++; selected = active },
+        rollbackUpdate: () => {
+          rollbacks++
+          if (failure === "rollback") throw new Error("rollback fixture failed")
+          selected = active
+        },
         log: () => {}, error: () => {},
       })
       await supervisor.firstBoot
@@ -828,6 +832,17 @@ test("child-only update rolls back failed candidates and a close race without re
         await eventually(() => rollbacks === 1 && selected === "old" ? true : undefined, "close-race selection rollback")
         assert.equal(supervisor.currentBoot(), null, "close leaves no candidate child behind")
         assert.equal(existsSync(join(stateDir, "dev-supervisor.lock")), false, "late update completion does not recreate owner status")
+        continue
+      }
+      if (failure === "rollback") {
+        const status = await eventually(async () => {
+          const body = await (await fetch(`http://127.0.0.1:${port}/_frizz/control/status`, { headers: { origin: `http://127.0.0.1:${port}` } })).json() as { state: string; message?: string }
+          return body.state === "failed" && /rollback failed/.test(body.message ?? "") ? body : undefined
+        }, "rollback failure")
+        assert.match(status.message ?? "", /not restarted because rollback did not restore/, failure)
+        assert.equal(selected, "new", failure)
+        assert.equal(rollbacks, 1, failure)
+        assert.deepEqual(launchSelections, ["old", "new"], "a failed rollback never launches the candidate again")
         continue
       }
       const status = await eventually(async () => {
@@ -846,6 +861,64 @@ test("child-only update rolls back failed candidates and a close race without re
       owner.release()
       rmSync(workspace, { recursive: true, force: true })
     }
+  }
+})
+
+test("child-only update rejects a candidate that exits during an async commit", { timeout: 15_000 }, async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "frizz-child-update-commit-exit-"))
+  const stateDir = join(workspace, ".state")
+  const childEntry = join(workspace, "child.mjs")
+  mkdirSync(stateDir, { recursive: true })
+  writeFileSync(childEntry, `
+    import { registerProjectLaunchDelegate, projectLaunchOwnerTokenFromEnvironment, projectLaunchTargetFromEnvironment } from ${JSON.stringify(projectLaunchUrl)}
+    const target = projectLaunchTargetFromEnvironment(process.env); const token = projectLaunchOwnerTokenFromEnvironment(process.env)
+    const delegate = registerProjectLaunchDelegate(target, token)
+    process.send?.({ type: "frizz-ready", pid: delegate.pid, processStart: delegate.processStart, port: Number(process.env.FRIZZ_DEV_PORT), bootId: \`\${process.env.FRIZZ_STABLE_ARTIFACT}-\${process.pid}\` })
+    const stop = () => { delegate.release(); process.exit(0) }
+    process.once("SIGTERM", stop); process.once("disconnect", stop); setInterval(() => {}, 1000)
+  `)
+  const target = { projectId: randomUUID(), projectDir: workspace, stateDir }
+  const owner = acquireProjectLaunchOwner(target, "supervisor")
+  const port = await freeSupervisorPort()
+  let selected = "old"
+  let active = "old"
+  let rollbacks = 0
+  let startCommit!: () => void
+  const committing = new Promise<void>((resolve) => { startCommit = resolve })
+  let finishCommit!: () => void
+  const commitGate = new Promise<void>((resolve) => { finishCommit = resolve })
+  let supervisor: DevSupervisor | undefined
+  try {
+    supervisor = await startDevSupervisor({
+      port, cwd: workspace, stateDir, launchTarget: target, launchOwnerToken: owner.token, watch: false,
+      childLaunchProvider: () => ({ entry: childEntry, environment: { FRIZZ_STABLE_ARTIFACT: selected } }),
+      updateMode: "child", updateReadyTimeoutMs: 500, updateStabilizeMs: 20,
+      updateRestart: async () => { selected = "new"; return { state: "ready" } },
+      commitUpdate: async () => { startCommit(); await commitGate; active = selected },
+      rollbackUpdate: () => { rollbacks++; active = "old"; selected = active },
+      log: () => {}, error: () => {},
+    })
+    const first = await supervisor.firstBoot
+    const response = await fetch(`http://127.0.0.1:${port}/_frizz/control/update-restart`, { method: "POST", headers: { origin: `http://127.0.0.1:${port}` } })
+    assert.equal(response.status, 202)
+    await committing
+    const candidate = supervisor.currentBoot()
+    assert.ok(candidate && candidate.pid !== first.pid, "commit is gated with the candidate as current child")
+    process.kill(candidate.pid, "SIGTERM")
+    await eventually(() => supervisor?.currentBoot() === null ? true : undefined, "candidate exit during commit")
+    finishCommit()
+    const status = await eventually(async () => {
+      const body = await (await fetch(`http://127.0.0.1:${port}/_frizz/control/status`, { headers: { origin: `http://127.0.0.1:${port}` } })).json() as { state: string; artifactDigest?: string; message?: string }
+      return body.state === "failed" && body.artifactDigest === "old" ? body : undefined
+    }, "dead committed candidate rollback")
+    assert.match(status.message ?? "", /stopped while committing/)
+    assert.equal(selected, "old")
+    assert.equal(active, "old", "the rollback callback reverses a commit that completed before liveness was rechecked")
+    assert.equal(rollbacks, 1)
+  } finally {
+    await supervisor?.close()
+    owner.release()
+    rmSync(workspace, { recursive: true, force: true })
   }
 })
 
