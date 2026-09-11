@@ -69,3 +69,7 @@ The Windows VM experiment did not reach an initialized guest or working SSH conn
 The package name is `frizz-server`, not `@frizzsh/server`, following the explicit selection. Initial publication and npm Trusted Publisher setup are documented in [`stable-server-publishing.md`](stable-server-publishing.md): GitHub owner `colinhacks`, repository `frizz`, workflow filename `release.yml`, no environment. Ordinary server releases leave the launcher package version alone.
 
 The friend's `cd`/permission failure was not attributed to Frizz, FNM or macOS permissions by this work. The diagnostic question was cancelled; no speculative permissions, shell configuration or TCC changes were made. The new installer avoids invoking interactive shell hooks, but that is a design property, not a diagnosis of the reported machine.
+
+## Local landing
+
+The implementation and verification scripts landed on local `main` at `8c1199b0`. A post-landing typecheck passed. A full run against the concurrently edited shared working tree briefly encountered an unrelated incomplete `ChildOpRow` import edit (17 failures); after that edit finished, all 20 tests in the two affected files passed (`main-concurrent-recheck.log`). No changes to those files were made by this effort. The complete isolated-tree and packed-artifact results above remain the evidence for the landed implementation. All delegated work was collected; the owned development worktree and test processes were removed. No remote push or publication occurred.
