@@ -207,16 +207,19 @@ Two browser-level checks live in `packages/web/src/lib/projectSwitch.e2e.test.ts
 
 Two entry points, deliberately distinct:
 
-- **`npx frizz`** (published package) runs directly from what it ships. `prepare-package.mjs`
-  stages the full runtime closure at prepack: `web-dist/` (built client), `runtime/board/` (the board
-  parser the server shells out to), and `runtime/cc-worker/` (the worker plugin dispatch loads).
-  `production.ts` points `FRIZZ_SCRIPTS_DIR` / `FRIZZ_WORKER_PLUGIN_DIR` at those. `runtime/` MUST
-  mirror the repo root, because cc-worker's shims reach back relatively (`../../board`) — and it is a
-  COPY rather than a `files` entry naming `board/` and `cc-worker/` directly, so that every published
-  path stays build output and the allowlist can never name repository content. `prepare-package.mjs
-  --clean` sweeps both staged trees at postpack, so a checkout never carries a frozen duplicate of the
-  worker plugin for agents to grep. Both build paths assert the same closure
-  (`src/worker-plugin-closure.ts`); widening it is one edit.
+- **`npx frizz`** installs a stable, small `frizz` shell that resolves a compatible `frizz-server`
+  generation into an immutable managed directory. The shell package contains only `dist/frizz.js`;
+  its `frizzServer` manifest field names the default server package/version and compatibility epoch.
+  `prepare-package.mjs --server` stages the public server's runtime closure at
+  `packages/server-release/`: `web-dist/` (built client), `runtime/board/` (the board parser the
+  server shells out to), and `runtime/cc-worker/` (the worker plugin dispatch loads), while
+  `build-package.mjs --server` emits `dist/dev-child.js` plus every detached daemon sibling. The
+  runtime tree MUST keep board and cc-worker as siblings because the worker shims reach back
+  relatively (`../../board`); it is a COPY rather than a `files` entry naming source directories, so
+  every public server path remains build output. Root prepack intentionally leaves this staging in
+  place: `npm pack --ignore-scripts packages/server-release` is the reproducible standalone server
+  pack after a root build. Both build paths assert the same closure (`src/worker-plugin-closure.ts`);
+  widening it is one edit.
 - **`frizz-dev`** (`nub run frizz-dev:install`) is source-backed at launch only: the shim holds an
   absolute pointer to this checkout's CLI entrypoint. On each fresh launch it selects a
   verified immutable artifact matching the current source fingerprint, reuses an identical global one,

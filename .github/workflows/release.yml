@@ -90,36 +90,51 @@ jobs:
       - name: Typecheck
         run: pnpm run typecheck
 
-      - name: Resolve version and decide whether to publish
+      - name: Resolve versions and decide what to publish
         id: decide
         run: |
-          VERSION=$(node -p "require('./package.json').version")
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          # Ask the registry rather than diffing commits: idempotent, so a re-run, a revert-and-reland,
-          # or a workflow_dispatch can never double-publish or fail on an already-released version.
-          if npm view "frizz@$VERSION" version > /dev/null 2>&1; then
-            echo "frizz@$VERSION is already published; nothing to do"
-            echo "publish=false" >> "$GITHUB_OUTPUT"
+          SHELL_VERSION=$(node -p "require('./package.json').version")
+          SERVER_VERSION=$(node -p "require('./packages/server-release/package.json').version")
+          echo "version=$SHELL_VERSION" >> "$GITHUB_OUTPUT"
+          echo "server_version=$SERVER_VERSION" >> "$GITHUB_OUTPUT"
+          # Registry checks, rather than commit diffs, make retries idempotent. Server releases are
+          # intentionally independent: a compatible runtime fix can publish without moving the shell.
+          if npm view "frizz-server@$SERVER_VERSION" version > /dev/null 2>&1; then
+            echo "frizz-server@$SERVER_VERSION is already published"
+            echo "publish_server=false" >> "$GITHUB_OUTPUT"
           else
-            echo "frizz@$VERSION is not on the registry; publishing"
-            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "frizz-server@$SERVER_VERSION is not on the registry; publishing"
+            echo "publish_server=true" >> "$GITHUB_OUTPUT"
+          fi
+          if npm view "frizz@$SHELL_VERSION" version > /dev/null 2>&1; then
+            echo "frizz@$SHELL_VERSION is already published"
+            echo "publish_shell=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "frizz@$SHELL_VERSION is not on the registry; publishing"
+            echo "publish_shell=true" >> "$GITHUB_OUTPUT"
           fi
 
-      # prepack builds web-dist, the esbuild bundles and the runtime closure, then strips pnpm's
-      # workspace: specifiers from the manifest; postpack restores the checked-in file.
-      - name: Publish to npm
-        if: steps.decide.outputs.publish == 'true'
+      # Root prepack stages this package before either pack operation. `--ignore-scripts` makes the
+      # server tarball exactly the staging that the shell's local artifact tests consume; it avoids a
+      # second, package-directory lifecycle that cannot see the source workspace.
+      - name: Build and publish frizz-server to npm
+        if: steps.decide.outputs.publish_server == 'true'
+        run: |
+          node ./scripts/prepare-package.mjs --server
+          node ./scripts/build-package.mjs --server
+          npm publish --ignore-scripts ./packages/server-release
+
+      # Shell prepack creates its launcher bundle, leaves server staging intact for future standalone
+      # packs, and strips workspace-only development links from the root manifest.
+      - name: Publish frizz shell to npm
+        if: steps.decide.outputs.publish_shell == 'true'
         run: npm publish
 
-      # The two steps below are deliberately NOT gated on `publish`, and each checks for its own
-      # artifact instead. Publishing is only the first of three things a release does, and the moment
-      # npm accepts the tarball `publish` is false forever after — so gating these on it meant the
-      # workflow_dispatch retry promised above could never repair a release that died AFTER the
-      # publish. That is not hypothetical: v0.4.0 reached npm and was tagged, then `gh release create`
-      # got a 503 from the API, and re-running the workflow would have skipped straight past the one
-      # step that had failed. Checking for the tag and the release makes a retry finish the job and
-      # makes a re-run on an already-complete release a no-op.
-      - name: Tag the released commit
+      # Tags and GitHub releases belong to the stable shell only. Their own existence checks keep a
+      # retry safe after npm accepts the shell but before GitHub records its release; a server-only
+      # runtime update deliberately creates neither a shell tag nor a misleading GitHub release.
+      - name: Tag the released shell commit
+        if: steps.decide.outputs.publish_shell == 'true'
         env:
           VERSION: ${{ steps.decide.outputs.version }}
         run: |
@@ -132,7 +147,8 @@ jobs:
           git tag -a "v$VERSION" -m "frizz v$VERSION"
           git push origin "v$VERSION"
 
-      - name: Create the GitHub release
+      - name: Create the GitHub shell release
+        if: steps.decide.outputs.publish_shell == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.decide.outputs.version }}

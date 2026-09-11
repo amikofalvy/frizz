@@ -1,6 +1,6 @@
 {
   "name": "frizz",
-  "version": "0.12.11",
+  "version": "0.13.0",
   "private": false,
   "description": "A local web UI for running many coding agents at once",
   "keywords": [
@@ -27,9 +27,7 @@
     "frizz": "./dist/frizz.js"
   },
   "files": [
-    "dist",
-    "web-dist",
-    "runtime"
+    "dist"
   ],
   "scripts": {
     "dev": "nub packages/server/src/dev.ts",
@@ -40,13 +38,11 @@
     "typecheck": "tsc -b packages/shared packages/rpc packages/server packages/registrar packages/relay . packages/web",
     "test": "nub scripts/run-tests.mjs",
     "test:e2e": "nub scripts/e2e-web.mjs",
-    "prepack": "node ./scripts/prepare-package.mjs && node ./scripts/build-package.mjs && node ./scripts/publish-manifest.mjs --strip",
-    "postpack": "node ./scripts/publish-manifest.mjs --restore && node ./scripts/prepare-package.mjs --clean"
+    "prepack": "node ./scripts/prepare-package.mjs --server && node ./scripts/build-package.mjs --server && node ./scripts/build-package.mjs --shell && node ./scripts/publish-manifest.mjs --strip",
+    "postpack": "node ./scripts/publish-manifest.mjs --restore"
   },
   "dependencies": {
-    "@parcel/watcher": "^2.5",
-    "node-pty": "^1.1",
-    "qrcode-generator": "^2.0.4"
+    "@parcel/watcher": "^2.5"
   },
   "devDependencies": {
     "@frizz/server": "workspace:*",
@@ -65,10 +61,14 @@
       "react-dom": "19.2.7"
     },
     "onlyBuiltDependencies": [
-      "node-pty",
       "@parcel/watcher",
-      "esbuild",
-      "@frizz/server"
+      "esbuild"
     ]
+  },
+  "frizzServer": {
+    "package": "frizz-server",
+    "version": "0.13.0",
+    "protocol": 1,
+    "dataEpoch": 1
   }
 }
