@@ -105,6 +105,13 @@ function main(): void {
     cwd: config.cwd,
     env: config.env,
     stdio: ["pipe", "pipe", "pipe"],
+    // This daemon is forked `detached`, which on Windows is DETACHED_PROCESS: it owns NO console. A
+    // console-less parent starting a console-subsystem exe (codex.exe) without CREATE_NO_WINDOW gets
+    // a fresh, VISIBLE console allocated for it — a black `codex.exe` window on every Codex dispatch,
+    // and closing it killed the app-server and every Codex thread in the project (Windows audit
+    // 2026-09-11, finding 4; the same mechanism PR #32 found for the update successor). The Claude
+    // side was safe only because the SDK passes windowsHide in its own spawn.
+    windowsHide: true,
   }) as ReturnType<typeof spawn> & { stdin: NodeJS.WritableStream; stdout: NodeJS.ReadableStream; stderr: NodeJS.ReadableStream }
 
   let client: Socket | null = null

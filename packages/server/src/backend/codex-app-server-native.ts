@@ -303,6 +303,9 @@ async function startListener(options: CodexAppServerHostOptions): Promise<Native
     env: options.env,
     detached: true,
     stdio: "ignore",
+    // No console window for codex.exe on Windows (Windows audit 2026-09-11, finding 4; the story is on
+    // the daemon's spawn in codex-app-server-daemon.ts).
+    windowsHide: true,
   })
   child.unref()
 
@@ -401,7 +404,7 @@ export const nativeListenCodexAppServerHost: CodexAppServerHost = async (options
       }
     }
     frizzLog.error("codex", `codex app-server native listener unavailable (${(error as Error).message}); falling back to an in-process app-server — turns will NOT survive a frizz restart`)
-    const child = spawn(options.codexBin, codexAppServerArgv(["--stdio"], options.frizzMcp), { cwd: options.cwd, env: options.env, stdio: ["pipe", "pipe", "pipe"] })
+    const child = spawn(options.codexBin, codexAppServerArgv(["--stdio"], options.frizzMcp), { cwd: options.cwd, env: options.env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true })
     return { process: child as unknown as CodexAppServerProcess, generation: randomUUID(), reattached: false, daemonPid: process.pid, droppedWhileDetached: 0, authAccountId: options.authAccountId }
   }
 }

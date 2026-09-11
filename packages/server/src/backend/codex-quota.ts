@@ -252,6 +252,8 @@ export function queryCodexRateLimits(
       child = spawn(codex.file, [...codex.args, "app-server"], {
         stdio: ["pipe", "pipe", "ignore"],
         env: { ...process.env, CODEX_HOME: codexHome },
+        // No console window for codex.exe (Windows audit 2026-09-11, finding 4).
+        windowsHide: true,
       })
     } catch {
       resolve(undefined)
