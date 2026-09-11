@@ -3,4 +3,4 @@ export function evaluateBashBackgroundHook(
   input: unknown,
   env?: Record<string, string | undefined>,
 ): Record<string, unknown>
-export function isDirectHookExecution(argv1: unknown, moduleUrl: string): boolean
+export function isDirectHookExecution(argv1: unknown, moduleUrl: string, realpath?: (path: string) => string): boolean

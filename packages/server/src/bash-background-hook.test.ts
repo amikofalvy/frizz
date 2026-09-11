@@ -1,6 +1,8 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
+import { mkdtempSync, symlinkSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { isDirectHookExecution } from "../../../cc-worker/hooks/bash-background.mjs"
@@ -123,4 +125,30 @@ test("bundling the detector into Frizz cannot turn the server entry into the hoo
   const serverEntry = "/artifact/runtime/src/index.js"
   assert.equal(isDirectHookExecution(serverEntry, "file:///artifact/runtime/src/index.js"), false)
   assert.equal(isDirectHookExecution(hook, pathToFileURL(hook).href), true)
+})
+
+// Node realpaths the main entry, so `import.meta.url` is the resolved spelling while `argv[1]` is
+// whatever CLAUDE_PLUGIN_ROOT spelled. Under an 8.3 short name or a junction the two differ, the
+// URL comparison fails, and the hook silently allowed everything (Windows audit 2026-09-11,
+// finding 15). A symlink is the same divergence this machine can produce.
+test("an aliased plugin path (symlink, junction, 8.3 short name) still recognizes the hook as itself", () => {
+  const alias = join(mkdtempSync(join(tmpdir(), "frizz-hook-alias-")), "hooks")
+  symlinkSync(dirname(hook), alias, "dir")
+  const viaAlias = join(alias, "bash-background.mjs")
+  assert.notEqual(pathToFileURL(viaAlias).href, pathToFileURL(hook).href, "the control: the spellings really differ")
+  assert.equal(isDirectHookExecution(viaAlias, pathToFileURL(hook).href), true)
+  // A different file that merely shares the basename is still not this hook …
+  const impostor = join(mkdtempSync(join(tmpdir(), "frizz-hook-impostor-")), "bash-background.mjs")
+  writeFileSync(impostor, "")
+  assert.equal(isDirectHookExecution(impostor, pathToFileURL(hook).href), false)
+  // … and a path that does not exist cannot be it either.
+  assert.equal(isDirectHookExecution(join(alias, "missing", "bash-background.mjs"), pathToFileURL(hook).href), false)
+  // The whole hook, executed THROUGH the alias, still denies: the end-to-end proof of the self-check.
+  const result = spawnSync(process.execPath, [viaAlias], {
+    input: JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "cargo test > /tmp/t.log 2>&1 &" } }),
+    encoding: "utf8",
+    env: { ...process.env, FRIZZ_THREAD: "thread-under-test" },
+  })
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(JSON.parse(result.stdout).hookSpecificOutput?.permissionDecision, "deny")
 })
