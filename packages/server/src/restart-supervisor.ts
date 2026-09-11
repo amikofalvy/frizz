@@ -89,7 +89,7 @@ export interface RestartSupervisorProxyOptions {
    * frizz-dev runs mutable checkout source, which has no version a user could act on, so it omits
    * this and the client shows no version line at all.
    */
-  version?: string
+  version?: string | (() => string | undefined)
   /**
    * The NEWER registry version `updateAvailable` is reporting, when the launcher has actually
    * observed one. Same contract as `updateAvailable`: a cheap CACHED read, refreshed off the status
@@ -346,6 +346,7 @@ export class RestartSupervisorProxy {
   private status(): { state: RestartControlState; message?: string; artifactDigest?: string; updateRestart: boolean; updateAvailable?: boolean; version?: string; updateVersion?: string; dev?: boolean } {
     const delegated = this.options.status?.()
     const updateVersion = this.options.updateVersion?.()
+    const version = typeof this.options.version === "function" ? this.options.version() : this.options.version
     // The disposable child can quite correctly still report ready while the durable owner is building
     // a successor. The owner is the authority for that transition; never leak the old child's ready
     // state during it, or clients will send writes to a server that is about to disappear.
@@ -363,7 +364,7 @@ export class RestartSupervisorProxy {
       ...(this.options.updateAvailable ? { updateAvailable: this.options.updateAvailable() === true } : {}),
       // Version numbers ride the same launcher-only contract: absent for frizz-dev and legacy
       // supervisors, so their clients render exactly what they render today.
-      ...(this.options.version ? { version: this.options.version } : {}),
+      ...(version ? { version } : {}),
       ...(updateVersion ? { updateVersion } : {}),
       // Sent only when TRUE, so a published Frizz's payload is byte-identical to what it sends today
       // and an older client is unaffected. Absent therefore means "not a development build".

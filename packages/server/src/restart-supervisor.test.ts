@@ -265,11 +265,12 @@ test("status names the running and newer versions only when the launcher supplie
   const current = await child("versioned")
   const port = await freePort()
   let observed: string | undefined
+  let running = "0.4.2"
   const proxy = new RestartSupervisorProxy({
     port,
     childPort: () => current.port,
     restart: async () => ({ state: "ready" }),
-    version: "0.4.2",
+    version: () => running,
     updateVersion: () => observed,
   })
   const barePort = await freePort()
@@ -286,6 +287,8 @@ test("status names the running and newer versions only when the launcher supplie
     assert.doesNotMatch(before, /"updateVersion"/, "no observed newer version yet")
     observed = "0.5.0"
     assert.match((await get(port, SUPERVISOR_STATUS_PATH)).body, /"updateVersion":"0\.5\.0"/)
+    running = "0.4.3"
+    assert.match((await get(port, SUPERVISOR_STATUS_PATH)).body, /"version":"0\.4\.3"/, "a child-only commit can update the running version without replacing the listener")
     const versionless = (await get(barePort, SUPERVISOR_STATUS_PATH)).body
     assert.doesNotMatch(versionless, /"version"|"updateVersion"/, "frizz-dev/legacy stays byte-identical")
   } finally {
