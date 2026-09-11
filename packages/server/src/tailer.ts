@@ -1,7 +1,7 @@
 import { statSync, openSync, readSync, closeSync, readdirSync, realpathSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
-import { basename, join } from "node:path"
+import { basename, join, win32 } from "node:path"
 import { homedir, tmpdir } from "node:os"
 import type { AskQuestion, AwaitingHint } from "@frizz/shared"
 import { insideFence, isAllInjectedNoise, isInterruptMarker, parseAskUserQuestionInput, PermissionMode, saysAllDone, splitAwaitingFrontmatter } from "@frizz/shared"
@@ -140,7 +140,23 @@ const SUBAGENT_STALE_MS = 15 * 60_000
 // `until <cond>; do sleep 5; done`, a healthy shell that prints nothing for hours by design.
 //
 // UNDEFINED means "cannot tell" and is never treated as dead: no probe, no path, or a platform without
-// `lsof` all leave the shell exactly as it was.
+// a probe all leave the shell exactly as it was.
+//
+// WINDOWS has no `lsof`, and until 2026-09-11 the ENOENT from spawning it was the "cannot tell" above —
+// every finished shell stayed "running" forever, the exact 43-hour phantom the probe exists to retire
+// (Windows audit 2026-09-11, finding 9). The question is the same one — who holds `<taskId>.output`
+// open? — asked the way Windows can answer it: open the file with FileShare.None. That succeeds only
+// when NO other handle is open on it, and fails with ERROR_SHARING_VIOLATION (32) when any is, so the
+// verdict is the OS's own handle table, not a heuristic. It runs through PowerShell because that is
+// the only spawnable thing present on every supported Windows (see process-generation.ts for the
+// measurements); one process answers the whole batch. A pid probe (`process.kill(pid, 0)`) would be
+// cheaper, but nothing records a shell's pid anywhere frizz can read — the launch result carries a
+// task id and an output path and nothing else — so there is no pid to ask about.
+//
+// The failure directions are the same as lsof's. A sharing violation is "held" (alive) — a Frizz
+// reader with the file open for the drawer momentarily reads as alive, which costs a TTL, never a
+// verdict; any other outcome is "unknown", which is never dead; and only a clean exclusive open of an
+// existing file is "free", i.e. gone. That last one is the only thing that ever demotes a shell.
 const SHELL_PROBE_TTL_MS = 30_000
 const SHELL_PROBE_GRACE_MS = 60_000 // a just-launched shell is alive by construction; do not pay for it
 
@@ -157,8 +173,34 @@ const execFileAsync = promisify(execFile)
 // therefore lands on the NEXT tick rather than this one — at most a second later, and the surrounding
 // contract was already built for exactly that: an unknown answer leaves the shell running, so a
 // not-yet-probed shell is treated the same as an unprobeable one.
-async function probeShellsAlive(outputFiles: readonly string[]): Promise<Map<string, boolean | undefined>> {
+export async function probeShellsAlive(
+  outputFiles: readonly string[],
+  opts: { platform?: NodeJS.Platform; exec?: typeof execFileAsync; env?: NodeJS.ProcessEnv } = {},
+): Promise<Map<string, boolean | undefined>> {
+  const platform = opts.platform ?? process.platform
+  const exec = opts.exec ?? execFileAsync
   const verdicts = new Map<string, boolean | undefined>()
+  if (platform === "win32") {
+    // No realpath dance: the exclusive open is by path, and Windows resolves it. Only existence is
+    // checked first, for the same reason as below — an absent file is no verdict at all.
+    const present = outputFiles.filter((file) => {
+      if (existsSync(file)) return true
+      verdicts.set(file, undefined)
+      return false
+    })
+    if (present.length === 0) return verdicts
+    const [shell, args] = windowsShellHolderCommand(present, opts.env ?? process.env)
+    let report: string
+    try {
+      report = (await exec(shell, args, { encoding: "utf8", timeout: 8000, windowsHide: true })).stdout
+    } catch {
+      // No PowerShell, a wedged spawn, a non-zero exit: unknown for the batch, never dead.
+      for (const file of present) verdicts.set(file, undefined)
+      return verdicts
+    }
+    for (const [file, alive] of parseWindowsShellHolderReport(String(report), present)) verdicts.set(file, alive)
+    return verdicts
+  }
   // NO FILE, NO VERDICT. `lsof` exits 1 both for "nobody holds this" and for "this path does not exist",
   // so without this check a shell whose output file has not been created yet — or was rotated or cleaned
   // away underneath it — reads as DEAD while it is running. Absence of evidence, not evidence of death.
@@ -183,7 +225,7 @@ async function probeShellsAlive(outputFiles: readonly string[]): Promise<Map<str
     // fd it holds. A path that appears is held by somebody; a path absent from the output is held by
     // nobody. That per-path attribution is why this is `-F pn` and not `-t`, which prints bare pids and
     // could not say WHICH of a batch of paths they belong to.
-    stdout = (await execFileAsync("lsof", ["-F", "pn", "--", ...live.map((f) => f.real)], { encoding: "utf8", timeout: 8000 })).stdout
+    stdout = (await exec("lsof", ["-F", "pn", "--", ...live.map((f) => f.real)], { encoding: "utf8", timeout: 8000 })).stdout
   } catch (err) {
     // `code` is the EXIT STATUS when lsof actually ran, and a string errno when it could not be
     // spawned. Telling those apart is the whole correctness of this catch, and getting it wrong is
@@ -204,6 +246,42 @@ async function probeShellsAlive(outputFiles: readonly string[]): Promise<Map<str
   const held = new Set<string>()
   for (const line of stdout.split("\n")) if (line.startsWith("n")) held.add(line.slice(1))
   for (const f of live) verdicts.set(f.requested, held.has(f.real))
+  return verdicts
+}
+
+/** The win32 probe: one PowerShell invocation that tries an exclusive open of every path and prints one
+ *  word per path, in order — `held`, `free`, or `unknown`. Anchored to %SystemRoot% rather than resolved
+ *  through PATH, because Windows searches the CURRENT DIRECTORY first and that is a project checkout
+ *  frizz does not own (the same rule process-generation.ts follows). Exported for the test that pins
+ *  the shape on the machines that cannot run it. */
+export function windowsShellHolderCommand(paths: readonly string[], env: NodeJS.ProcessEnv = process.env): [string, string[]] {
+  // path.win32 explicitly, so the shape this builds is the same one the test on a POSIX machine sees.
+  const shell = win32.join(env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+  // A PowerShell single-quoted string is literal; the quote itself is the only escape, doubled.
+  const list = paths.map((p) => `'${p.replace(/'/g, "''")}'`).join(",")
+  // HResult 0x80070020 is ERROR_SHARING_VIOLATION (32) and 0x80070021 ERROR_LOCK_VIOLATION (33); the
+  // low 16 bits carry the Win32 code. Anything else that throws is not an answer to the question.
+  const script =
+    `foreach($p in @(${list})){` +
+    `try{$f=[System.IO.File]::Open($p,[System.IO.FileMode]::Open,[System.IO.FileAccess]::Read,[System.IO.FileShare]::None);$f.Close();'free'}` +
+    `catch [System.IO.IOException]{if((($_.Exception.HResult) -band 0xFFFF) -in 32,33){'held'}else{'unknown'}}` +
+    `catch{'unknown'}}`
+  return [shell, ["-NoProfile", "-NonInteractive", "-NoLogo", "-Command", script]]
+}
+
+/** Read the probe's report back into per-path verdicts. One line per path, in the order asked; a
+ *  report of any other length answers for none of them, because nothing says which line is whose. */
+export function parseWindowsShellHolderReport(report: string, paths: readonly string[]): Map<string, boolean | undefined> {
+  const verdicts = new Map<string, boolean | undefined>()
+  const lines = report.split("\n").map((line) => line.trim()).filter((line) => line.length > 0)
+  if (lines.length !== paths.length) {
+    for (const file of paths) verdicts.set(file, undefined)
+    return verdicts
+  }
+  paths.forEach((file, i) => {
+    const word = lines[i]
+    verdicts.set(file, word === "held" ? true : word === "free" ? false : undefined)
+  })
   return verdicts
 }
 // The minute bucket of an ISO instant, for the board signature: a child's "N min ago" reading only
