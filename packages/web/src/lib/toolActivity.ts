@@ -1,5 +1,7 @@
 import type { TranscriptMessage, TranscriptToolCall } from "@frizz/shared"
 import type { ChatMessage } from "../hooks.ts"
+import { localPathBase } from "./localPathBase.ts"
+import { abbreviateHome, isRooted, pathPrefixPattern } from "./paths.ts"
 
 export interface ToolActivityMessage {
   message: ChatMessage
@@ -623,24 +625,38 @@ function gerundDescription(description: string | undefined, fallback: string): s
  * slash is part of the needle, so a sibling checkout (`…/frizz-old/a.ts`) never matches.
  *
  * A path outside the project still gets its home prefix collapsed to `~` — `~/.claude/CLAUDE.md` says
- * the same thing in a quarter of the width. The browser can't read $HOME, so it comes from the project
- * root's own leading `/Users/<user>` or `/home/<user>`; any other shape (a repo under `/opt`, `/srv`, a
- * volume) yields no home and those paths stay absolute rather than being cut at a guess.
+ * the same thing in a quarter of the width. The browser can't read $HOME, but the board snapshot
+ * carries the server's own `homeDir` (board.ts), and that is `homeDir` here. Without one (a caller
+ * that never had a board, a pre-2026-08 server) the guess stands: the project root's own leading
+ * `/Users/<user>`, `/home/<user>` or `C:\Users\<user>`; any other shape (a repo under `/opt`, `/srv`,
+ * a volume) yields no home and those paths stay absolute rather than being cut at a guess.
+ *
+ * The root and the paths may be Windows paths — `C:\Users\x\proj` is what the board's `projectDir`
+ * IS when the server runs there — and until the Windows audit (2026-09-11, finding 12) a root that
+ * did not start with `/` bailed, so every label read the full absolute path. pathPrefixPattern
+ * matches the root in either separator and either drive-letter case, and abbreviateHome keeps the
+ * separator that followed the home (`~\.claude\CLAUDE.md`).
  */
-export function relativeToolPaths(label: string, projectDir: string | undefined): string {
-  const root = projectDir?.trim().replace(/\/+$/, "")
-  if (!root || root === "/" || !root.startsWith("/")) return label
-  const withinProject = label.replaceAll(`${root}/`, "")
-  const home = /^(\/(?:Users|home)\/[^/]+)(?:\/|$)/.exec(root)?.[1]
-  return home ? withinProject.replaceAll(`${home}/`, "~/") : withinProject
+export function relativeToolPaths(label: string, projectDir: string | undefined, homeDir?: string): string {
+  const root = projectDir?.trim().replace(/[\\/]+$/, "")
+  if (!root || !isRooted(root)) return label
+  const prefix = pathPrefixPattern(root)
+  if (!prefix) return label // a degenerate root (`/`, `C:\`) would eat every leading separator
+  const withinProject = label.replace(prefix, "")
+  const home = homeDir?.trim().replace(/[\\/]+$/, "") || /^([A-Za-z]:[\\/]Users[\\/][^\\/]+|\/(?:Users|home)\/[^/]+)(?=[\\/]|$)/.exec(root)?.[1]
+  return abbreviateHome(withinProject, home)
 }
 
-/** A concise, sentence-case gerund for the latest visible activity. */
+/**
+ * A concise, sentence-case gerund for the latest visible activity. `homeDir` defaults to the board's
+ * (localPathBase, set from the same snapshot that carries `projectDir`); a test passes its own.
+ */
 export function toolActivityLabel(
   tool: Pick<TranscriptToolCall, "name" | "detail" | "desc">,
   projectDir?: string,
+  homeDir: string = localPathBase().home,
 ): string {
-  return relativeToolPaths(rawToolActivityLabel(tool), projectDir)
+  return relativeToolPaths(rawToolActivityLabel(tool), projectDir, homeDir)
 }
 
 function rawToolActivityLabel(tool: Pick<TranscriptToolCall, "name" | "detail" | "desc">): string {

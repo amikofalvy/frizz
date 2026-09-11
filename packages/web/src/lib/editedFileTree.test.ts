@@ -69,3 +69,24 @@ test("the file node carries the edited file, diffstat and all", () => {
   assert.equal(node.kind, "file")
   if (node.kind === "file") assert.deepEqual(node.file, edited)
 })
+
+test("a Windows project nests the same tree: either separator, drive letter case-insensitive (Windows audit 2026-09-11, finding 12)", () => {
+  // Before the audit each of these was one flat node carrying the whole `C:\…` path.
+  const project = "C:\\Users\\x\\proj"
+  assert.deepEqual(
+    rows([
+      file("C:\\Users\\x\\proj\\src\\components\\ChatView.tsx"),
+      file("c:/Users/x/proj/src/components/Sidebar.tsx"),
+      file("C:\\Users\\x\\proj\\src\\index.ts"),
+    ], project),
+    ["0d src", "1d components", "2f ChatView.tsx", "2f Sidebar.tsx", "1f index.ts"],
+  )
+  // Outside the project the drive is the first segment, and the chain collapses with `/` as every
+  // chain does — `C:/Users/x/.claude` is a spelling Windows accepts.
+  assert.deepEqual(rows([file("C:\\Users\\x\\.claude\\CLAUDE.md")], project), ["0d C:/Users/x/.claude", "1f CLAUDE.md"])
+  assert.deepEqual(editedFileSegments("C:\\Users\\x\\proj\\src\\a.ts\\", "C:\\Users\\x\\proj\\"), ["src", "a.ts"])
+  assert.deepEqual(editedFileSegments("C:\\Users\\x\\proj", project), ["C:", "Users", "x", "proj"])
+  assert.deepEqual(editedFileSegments("C:\\Users\\x\\proj-other\\a.ts", project), ["C:", "Users", "x", "proj-other", "a.ts"])
+  assert.deepEqual(editedFileSegments("D:\\Users\\x\\proj\\a.ts", project), ["D:", "Users", "x", "proj", "a.ts"])
+  assert.deepEqual(editedFileSegments("C:\\Users\\x/proj\\src/a.ts", "C:/Users/x/proj"), ["src", "a.ts"])
+})

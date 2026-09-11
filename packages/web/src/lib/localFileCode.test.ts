@@ -42,3 +42,24 @@ test("isPathCandidate rejects non-paths: commands, bare words, URLs, whitespace,
     `/${"x".repeat(2000)}`, // over the length cap
   ]) assert.equal(isPathCandidate(v), false, v)
 })
+
+test("isPathCandidate accepts a Windows path and rejects a backslash escape (Windows audit 2026-09-11, finding 12)", () => {
+  for (const v of [
+    "C:\\Users\\me\\proj\\src\\a.ts",
+    "c:\\a.ts",
+    "C:/Users/me/proj/src/a.ts",
+    "src\\a.ts",
+    "~\\.claude\\CLAUDE.md",
+    "\\\\server\\share\\a.md",
+    "packages\\web\\src\\App.tsx:42:7",
+  ]) assert.equal(isPathCandidate(v), true, v)
+  for (const v of [
+    "\\n", // an escape, not a root
+    "\\d+",
+    "^\\s+$",
+    "\\\\",
+    "\\",
+    "C:", // a bare drive names nothing
+    "a\\\\b", // a doubled separator mid-path is an escaped backslash, not a directory
+  ]) assert.equal(isPathCandidate(v), false, v)
+})

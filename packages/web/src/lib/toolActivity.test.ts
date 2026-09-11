@@ -784,3 +784,31 @@ test("a retired background op never becomes the live gerund", () => {
   assert.equal(compact.length, 2, "and it never folds into the run above it")
   assert.equal(liveToolActivityTail(compact), undefined)
 })
+
+test("a Windows project root shortens labels the same way, and the board's homeDir collapses to ~ (Windows audit 2026-09-11, finding 12)", () => {
+  // Before the audit a root that did not start with `/` bailed, so every label read the whole path.
+  const root = "C:\\Users\\me\\proj"
+  assert.equal(toolActivityLabel(tool("Edit", { detail: `${root}\\src\\a.ts` }), root), "Editing src\\a.ts")
+  assert.equal(toolActivityLabel(tool("Edit", { detail: `${root}\\src\\a.ts` }), `${root}\\`), "Editing src\\a.ts")
+  // The drive letter is case-insensitive and either separator matches; the remainder keeps its own.
+  assert.equal(toolActivityLabel(tool("Edit", { detail: "c:/Users/me/proj/src/a.ts" }), root), "Editing src/a.ts")
+  assert.equal(
+    toolActivityLabel(tool("Bash", { desc: `Compare ${root}\\ui\\a.ts against ${root}/ui/b.ts` }), root),
+    "Comparing ui\\a.ts against ui/b.ts",
+  )
+  // A sibling checkout is not in the project; it collapses to the home guessed from `C:\Users\<name>`.
+  assert.equal(toolActivityLabel(tool("Read", { detail: "C:\\Users\\me\\proj-old\\a.ts" }), root), "Reading ~\\proj-old\\a.ts")
+  assert.equal(toolActivityLabel(tool("Read", { detail: "C:\\Users\\me\\.claude\\CLAUDE.md" }), root), "Reading ~\\.claude\\CLAUDE.md")
+  // The board's own homeDir beats the guess: a repo under `D:\` or `/opt` still collapses the home.
+  assert.equal(
+    toolActivityLabel(tool("Read", { detail: "C:\\Users\\me\\.claude\\CLAUDE.md" }), "D:\\src\\proj", "C:\\Users\\me"),
+    "Reading ~\\.claude\\CLAUDE.md",
+  )
+  assert.equal(
+    toolActivityLabel(tool("Read", { detail: "/Users/me/.claude/CLAUDE.md" }), "/opt/checkouts/frizz", "/Users/me"),
+    "Reading ~/.claude/CLAUDE.md",
+  )
+  // Another drive and a degenerate root stay as they are.
+  assert.equal(toolActivityLabel(tool("Read", { detail: "D:\\other\\a.ts" }), root), "Reading D:\\other\\a.ts")
+  assert.equal(toolActivityLabel(tool("Read", { detail: "C:\\Windows\\hosts" }), "C:\\"), "Reading C:\\Windows\\hosts")
+})

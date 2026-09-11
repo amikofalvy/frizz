@@ -1,4 +1,5 @@
 import type { EditedFile } from "@frizz/shared"
+import { isRooted, relativeTo, splitPath } from "./paths.ts"
 
 // THE RAIL'S EDITED FILES AS A TREE (maintainer 2026-09-03: "maybe we could do a file tree here
 // instead. with a tiny indent per-level. would help organize this and show more context … you can
@@ -14,7 +15,11 @@ import type { EditedFile } from "@frizz/shared"
 // file as well as one subdirectory does branch — the file is a sibling — so it keeps its own row.
 //
 // Paths under the project directory are shown relative to it; anything else (a file under `~`, a
-// scratch file in /tmp) keeps its absolute path, rooted at `/`, and collapses the same way.
+// scratch file in /tmp) keeps its absolute path, rooted at `/`, and collapses the same way. A Windows
+// path (`C:\Users\x\proj\src\a.ts`, which is how Claude Code and Codex report every file there) splits
+// on either separator, so it nests instead of standing as one flat node carrying the whole path
+// (Windows audit 2026-09-11, finding 12); outside the project its drive is the first segment, so the
+// collapsed row reads `C:/Users/x/.claude` — the tree joins with `/` and Windows accepts it.
 //
 // Order is GitHub's: directories before files, each set alphabetical, case-insensitive — not the
 // list's most-recently-edited-first, because a tree that reorders itself on every save cannot be
@@ -31,15 +36,16 @@ function newDir(): Dir {
 }
 
 // The path's segments as the tree should show them: project-relative when under the project
-// directory (never for the directory itself), else absolute with `/` as the first segment.
+// directory (never for the directory itself), else absolute with `/` as the first segment — or the
+// drive (`C:`) as the first segment, which splitPath already yields for a drive-rooted path.
 export function editedFileSegments(path: string, projectDir?: string): string[] {
-  const clean = path.replace(/\/+$/, "")
+  const clean = path.replace(/[\\/]+$/, "")
   if (projectDir) {
-    const root = projectDir.replace(/\/+$/, "")
-    if (clean.startsWith(root + "/")) return clean.slice(root.length + 1).split("/").filter(Boolean)
+    const rel = relativeTo(projectDir, clean)
+    if (rel !== null) return splitPath(rel)
   }
-  const parts = clean.split("/").filter(Boolean)
-  return clean.startsWith("/") ? ["/", ...parts] : parts
+  const parts = splitPath(clean)
+  return /^[\\/]/.test(clean) ? ["/", ...parts] : parts
 }
 
 const byName = (a: string, b: string) => a.localeCompare(b, undefined, { sensitivity: "base", numeric: true })

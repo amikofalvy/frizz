@@ -4,6 +4,7 @@ import type { TranscriptEdit } from "@frizz/shared"
 import { renderDiff, type DiffHunk } from "../lib/diff/index.ts"
 import "../lib/diff/diff.css"
 import { openLocalPath } from "../lib/local-file-links.ts"
+import { basename } from "../lib/paths.ts"
 import { prefs } from "../lib/prefs.ts"
 import { ToolDisclosureHeader } from "./ToolDisclosureHeader.ts"
 
@@ -34,11 +35,7 @@ export function PathLink({ path, className = "", children }: { path: string; cla
   )
 }
 
-// A basename for the header (last path segment), full path stays in the link title.
-function basename(p: string): string {
-  const segs = p.split("/").filter(Boolean)
-  return segs.length ? segs[segs.length - 1] : p
-}
+// The header shows the basename (lib/paths.ts — either separator); the full path stays in the link title.
 
 // A gent-style rendered diff for a group of Edit/Write/MultiEdit calls that all touch ONE file
 // (consecutive same-file edits merge upstream in collapseTools): a bordered block with a header row

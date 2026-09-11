@@ -10,6 +10,7 @@ import { ownedByThisPage } from "./lib/projectOwnership.ts"
 import { setGithubRepo } from "./lib/githubAutolink.ts"
 import { resetGithubCards } from "./lib/githubHovercards.ts"
 import { setLocalPathBase } from "./lib/localPathBase.ts"
+import { basename } from "./lib/paths.ts"
 
 // Where a scroll-to-card lands a card's outer border below the viewport top (px). Exported because the
 // sidebar's reading rail watches for that same landing to know a click-to-card has arrived.
@@ -419,8 +420,7 @@ export function pushMarkdownDrawer(path: string): void {
     openFilePanel(path)
     return
   }
-  const base = path.split("/").filter(Boolean).pop() || path
-  openOrRaiseDrawer({ kind: "markdown", slug: path, path, label: base })
+  openOrRaiseDrawer({ kind: "markdown", slug: path, path, label: basename(path) })
 }
 
 // ── the /full split file viewer ──────────────────────────────────────────────────────────────────
