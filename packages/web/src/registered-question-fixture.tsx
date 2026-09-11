@@ -27,6 +27,10 @@ import "./styles.css"
 //   ?table=1    — an option whose body carries a TABLE, a blockquote and a code fence: the blocks whose
 //                 opaque panel fills clashed with a selected chip's accent tint (screenshot 2026-09-02).
 //   ?wide=1     — a `multi` over THIRTY options: no count cap (2026-09-03), and lettering past `Z.`.
+//   ?placed=1   — PER-QUESTION PLACEMENT (2026-09-11): two questions open at one rest; the handoff carries
+//                 an empty ```question qst_… marker for ONE of them, mid-prose. That card must render in
+//                 the marker's slot, its sibling at the tail, and ONE "Send answers" at the tail must send
+//                 both — the marker's card carries no Send of its own.
 //   ?font=sans  — the other of the two fonts this app renders in; mono is the default and the wider.
 const params = new URLSearchParams(location.search)
 document.documentElement.dataset.font = params.get("font") === "sans" ? "sans" : "mono"
@@ -158,7 +162,9 @@ const TABLE: RegisteredQuestionView = {
   },
 }
 
+const placed = params.get("placed") === "1"
 const questions = params.get("danger") === "1" ? [GATE]
+  : placed ? [SETTINGS, GATES]
   : params.get("wide") === "1" ? [WIDE]
   : params.get("tree") === "1" ? [TREE]
   : params.get("many") === "1" ? [SETTINGS, TREE, GATES]
@@ -168,7 +174,13 @@ const questions = params.get("danger") === "1" ? [GATE]
 const tail = "Both stores work. The choice is yours because it is the one thing here that is hard to reverse once there is data in it."
 const past = params.get("past") === "1"
 const marker = `**Fixed** — nothing further to do on the store: \`c6c292e8\` is on local \`main\`.\n\nThe one card still on the board is yours to decide, and it is the reason this thread does not file itself away as done:\n\n\`\`\`question ${SETTINGS.id}\n\`\`\`\n\nAnswer it either way and this thread is finished.`
-const messages: TranscriptMessage[] = past
+const placedHandoff = `**Fixed** — the store is in and \`c6c292e8\` is on local \`main\`.\n\nOne call is yours, because it is the one thing here that is hard to reverse once there is data in it:\n\n\`\`\`question ${SETTINGS.id}\n\`\`\`\n\nEither store passes every gate today. The gates themselves are the other open card, below.`
+const messages: TranscriptMessage[] = placed
+  ? [
+      { role: "user", at: ago(12), text: "Add a settings store.", tools: [], parts: [{ kind: "text", text: "Add a settings store." }] },
+      { role: "assistant", at: ago(1), text: placedHandoff, tools: [], parts: [{ kind: "text", text: placedHandoff }] },
+    ]
+  : past
   ? [
       // The window opens at the human's reply; the rest the question was asked at is above it.
       { role: "user", at: ago(2), text: "Well done, you did it.", tools: [], parts: [{ kind: "text", text: "Well done, you did it." }] },

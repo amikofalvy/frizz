@@ -29,6 +29,30 @@ test("a folded fence leaves no Send button behind it", () => {
   // Message's own bottom button needs a block that actually rendered…
   assert.match(chat, /else if \(showSendButton && answering && askBlocks\.length > 0\)/)
   // …and the queue card's card-level button stands down for a standing ask folded whole.
-  assert.match(queue, /const showSendAnswers = \(answerable && !tailAskShadowed\) \|\| anyAnswered/)
+  // (Gated on `fencesLive` since 2026-09-11: a thread dispatched after the free-form fence was retired
+  // has no fence chrome at all — shared QUESTION_FENCE_RETIRED_AT.)
+  assert.match(queue, /const showSendAnswers = fencesLive && \(\(answerable && !tailAskShadowed\) \|\| anyAnswered\)/)
   assert.match(queue, /allFencesShadowed\(messages\[idx\]\.text, shadowedByMessage\.get\(idx\) \?\? \[\]\)/)
+})
+
+// ---- PER-QUESTION PLACEMENT (2026-09-11) ----
+
+test("every Message site hands the message its placed questions, and the tail stack carries the Send for them", () => {
+  assert.equal((chat.match(/placed=\{placement\.placed\.get\(messageIndex\)\}/g) ?? []).length, 1, "plain transcript path")
+  assert.equal((chat.match(/placed=\{placement\.placed\.get\(row\.messageIndex\)\}/g) ?? []).length, 1, "virtualized transcript path")
+  assert.equal((queue.match(/placed=\{placement\.placed\.get\(globalIdx\)\}/g) ?? []).length, 2, "both queue-card message sites")
+  assert.equal((chat.match(/showSend=\{placement\.placedIds\.size > 0\}/g) ?? []).length, 1, "the thread page's tail stack")
+  assert.equal((queue.match(/showSend=\{placement\.placedIds\.size > 0\}/g) ?? []).length, 1, "the queue card's tail stack")
+})
+
+test("a placed question leaves its anchor group on both surfaces, and each surface mounts ONE answering provider", () => {
+  assert.match(chat, /filter\(\(q\) => !placement\.placedIds\.has\(q\.id\)\)/)
+  assert.match(queue, /filter\(\(q\) => !placement\.placedIds\.has\(q\.id\)\)/)
+  assert.equal((chat.match(/<RegisteredAnsweringProvider thread=\{thread\}>/g) ?? []).length, 1)
+  assert.equal((queue.match(/<RegisteredAnsweringProvider thread=\{thread\}>/g) ?? []).length, 1)
+})
+
+test("a free-form fence in a post-retirement thread gets no answering controller on any site", () => {
+  assert.equal((chat.match(/answering=\{fencesLive \? answeringForMessage\((m|row\.message)\) : undefined\}/g) ?? []).length, 2)
+  assert.equal((queue.match(/answering=\{fencesLive \? answeringForMessage\(m\) : undefined\}/g) ?? []).length, 2)
 })

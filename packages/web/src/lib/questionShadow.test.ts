@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { allFencesShadowed, fenceRestatesRegistered, fenceStandsFor, registeredStandingAt } from "./questionShadow.ts"
+import { allFencesShadowed, fenceRestatesRegistered, fenceStandsFor, markerIdsIn, placeQuestions, registeredStandingAt } from "./questionShadow.ts"
 import { type MessageSegment, splitQuestionBlocks } from "./questionBlocks.ts"
 
 // The pair from the 2026-08-28 report, verbatim: the registration (a plain string — the `ask` schema
@@ -106,3 +106,66 @@ test("fenceStandsFor falls back to the prose when the worker wrote no id", () =>
   assert.equal(fenceStandsFor(questionSeg("Which npm dist-tag?\n\n- A. latest\n- B. next"), [QUESTION]), undefined)
 })
 
+
+// ---- PER-QUESTION PLACEMENT (2026-09-11) ----
+// An EMPTY marker naming a registered id places THAT question in its slot. Nothing else places.
+
+const MARKER = (id: string) => `**Fixed** — nothing further to do.\n\nThe one card still open is yours to decide:\n\n${fenced("", id)}\n\nAnswer it either way and this thread is finished.`
+const SECOND = { ...QUESTION, id: "qst_2222bbbb2222", askedAt: at(10) }
+
+test("markerIdsIn reads only the EMPTY id-bearing fences, lowercased, in order", () => {
+  const text = `${fenced("", "QST_AAAA")}\n\n${fenced("A real body?\n\n- A. Yes", "qst_bbbb")}\n\n${fenced("", "qst_cccc")}`
+  assert.deepEqual(markerIdsIn(text), ["qst_aaaa", "qst_cccc"])
+  assert.deepEqual(markerIdsIn("no fence"), [])
+  assert.deepEqual(markerIdsIn(fenced(FENCE)), [], "a legacy free-form fence is not a marker")
+})
+
+test("placeQuestions puts a question in the message whose marker names it, and only that question", () => {
+  const messages = MESSAGES.map((m, i) => ({ ...m, text: i === 4 ? MARKER(QUESTION.id) : "prose" }))
+  const { placed, placedIds } = placeQuestions(messages, [QUESTION, SECOND])
+  assert.deepEqual([...placed.keys()], [4])
+  assert.deepEqual(placed.get(4), [QUESTION])
+  assert.deepEqual([...placedIds], [QUESTION.id], "the unnamed sibling stays at the anchor")
+})
+
+test("two markers in one message place two questions there, in registration order", () => {
+  const both = `${MARKER(SECOND.id)}\n\n${fenced("", QUESTION.id)}`
+  const messages = MESSAGES.map((m, i) => ({ ...m, text: i === 4 ? both : "prose" }))
+  const { placed } = placeQuestions(messages, [QUESTION, SECOND])
+  assert.deepEqual(placed.get(4), [QUESTION, SECOND])
+})
+
+test("a handoff that names none of its registrations places nothing — the anchor still draws them", () => {
+  const messages = MESSAGES.map((m) => ({ ...m, text: "Landed it. Nothing else to say." }))
+  const { placed, placedIds } = placeQuestions(messages, [QUESTION])
+  assert.equal(placed.size, 0)
+  assert.equal(placedIds.size, 0)
+})
+
+test("a fence that RESTATES the question in prose folds but never places — placement is by id only", () => {
+  const messages = MESSAGES.map((m, i) => ({ ...m, text: i === 4 ? `Prose.\n\n${fenced(FENCE)}` : "prose" }))
+  assert.equal(placeQuestions(messages, [QUESTION]).placed.size, 0)
+})
+
+test("a marker one rest ABOVE the registration never places it", () => {
+  const messages = MESSAGES.map((m, i) => ({ ...m, text: i === 1 ? MARKER(QUESTION.id) : "prose" }))
+  assert.equal(placeQuestions(messages, [QUESTION]).placed.size, 0)
+})
+
+test("a marker in a LATER rest places the question there — the newest handoff is the one the human reads", () => {
+  const later = [...MESSAGES, { role: "user", at: at(15) }, { role: "assistant", at: at(16), text: MARKER(QUESTION.id) }]
+    .map((m, i) => ("text" in m ? m : { ...m, text: i === 4 ? MARKER(QUESTION.id) : "prose" }))
+  const { placed } = placeQuestions(later, [QUESTION])
+  assert.deepEqual([...placed.keys()], [6])
+})
+
+test("a registration whose rest is above the loaded window is placed by a marker inside the window", () => {
+  const windowed = [{ role: "user", at: at(15), text: "Well done" }, { role: "assistant", at: at(16), text: MARKER(QUESTION.id) }]
+  const { placed } = placeQuestions(windowed, [{ ...QUESTION, askedAt: at(10) }])
+  assert.deepEqual([...placed.keys()], [1])
+})
+
+test("a marker in a HUMAN turn places nothing", () => {
+  const messages = MESSAGES.map((m, i) => ({ ...m, text: i === 2 ? MARKER(QUESTION.id) : "prose" }))
+  assert.equal(placeQuestions(messages, [QUESTION]).placed.size, 0)
+})

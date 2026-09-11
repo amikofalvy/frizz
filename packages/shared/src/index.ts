@@ -512,7 +512,7 @@ export function retiredAwaitingKindsIn(body: string): RetiredAwaitingKind[] {
 export const RETIRED_AWAITING_REPLACEMENT: Record<RetiredAwaitingKind, string> = {
   "watch": "`shells: [<the id your runtime gave you>]` (or `agents: [<id>]`) — the same id, in the current sequence",
   "pr-watch": "register the PR with `mcp__frizz__watch_pr`, then name it `prs: [owner/repo#123]`",
-  "human": "there is no human gate any more — if you need a person, ask a ```question instead of parking",
+  "human": "there is no human gate any more — if you need a person, register a question with `mcp__frizz__ask` instead of parking",
   "ci": "CI is not a wait of its own: register the PR with `mcp__frizz__watch_pr` and you are woken when its checks settle",
   "session": "there is no cross-session wait — name the sub-agent you dispatched with `agents: [<id>]`",
   // THE 2026-08-24 CUTOVER. The frontmatter is YAML now, and YAML has no repeated keys — so the four
@@ -971,7 +971,7 @@ export function restPromptMessage(prompt: string, opts: { overQuestion?: boolean
 // Maintainer, on dropping the switch: "If somebody enables the stop hook goal, then that kind of implies
 // to me that they don't really want to answer any more questions."
 const OVER_QUESTION_NOTE =
-  "Your ```question is still unanswered, and a Goal armed at rest means the operator is not waiting" +
+  "Your registered question is still unanswered, and a Goal armed at rest means the operator is not waiting" +
   " to answer it: decide it yourself, say in one line which way you went and what would reverse it," +
   " and carry on. Do NOT re-ask it."
 
@@ -1359,14 +1359,16 @@ export const SIGNOFF_NUDGE_MESSAGE = [
   "the write-up.",
   "",
   "**DECIDE RATHER THAN ASK.** Stop only for a decision that is genuinely the human's AND that blocks you",
-  "right now: ask that one in a question fence. Every other open choice INSIDE the task — a name, a",
+  "right now: register that one with `mcp__frizz__ask`. Every other open choice INSIDE the task — a name, a",
   "default, a reversible design call — is yours to make: decide it, say in one line which way you went and",
   "what would reverse it, and carry on. A choice that would ENLARGE the task is not one of those: an",
   "unanswered question is not permission to go build the answer.",
   "",
-  "Otherwise, add a fence at the END of your next message:",
+  "Otherwise, sign off — a registration, or a fence at the END of your next message:",
   "",
-  "- `` ```question `` — you need the human. One question per fence, lettered options, one recommended.",
+  "- `mcp__frizz__ask` — you need the human. NOT a fence: the ```question fence is retired, and a fence",
+  "  with a question in its body is plain prose. Register it (options with one-line trade-offs, the",
+  "  recommended one first), then rest normally — an open registered question is the sign-off.",
   "- `` ```done `` — genuinely FINISHED. A DISMISSAL: the card is filed away and nobody looks again, so",
   "  if anything is still owed, it is not done. Body: 1-3 sentences, then bullets, each opening with a",
   "  **bolded verb phrase**.",
@@ -1548,8 +1550,8 @@ export function parkExpiredWakeMessage(status: readonly string[]): string {
     ...status,
     "",
     "Re-park if they are genuinely still going — there is no limit on that, and a long job is not a",
-    "failure. If something is finished, read its result. If nothing is left, end in ```done or ask a",
-    "```question.",
+    "failure. If something is finished, read its result. If nothing is left, end in ```done or register",
+    "a question with `mcp__frizz__ask`.",
   ].join("\n")
 }
 
@@ -1563,7 +1565,7 @@ export function parkFinishedWakeMessage(status: readonly string[], several: bool
     "READ ITS OUTPUT AND CARRY ON. This is not a broken fence and there is nothing to fix: the wait",
     "you declared simply ended. Do NOT relaunch the same work — its result is already on disk.",
     "",
-    "Then park on whatever comes next, or end in ```done or a ```question if nothing is left.",
+    "Then park on whatever comes next, or end in ```done or a registered question (`mcp__frizz__ask`) if nothing is left.",
   ].join("\n")
 }
 
@@ -1899,6 +1901,37 @@ export const OWN_WATCH_MAX_ARMED = 24
 // ---- THE WORKER'S REGISTERED QUESTIONS (2026-08-26) ------------------------------------------------
 // `mcp__frizz__ask` / `mcp__frizz__unask`. See plans/rest-by-registration.md.
 //
+// THE FREE-FORM ```question FENCE IS RETIRED (2026-09-11). A fence with a question in its body was the
+// original way a worker asked, and the `ask` tool landed beside it on 2026-08-26 as the "better" form
+// rather than the only one — so the contract went on teaching both, workers went on writing fences on
+// most days, and an answered fence stayed answerable because nothing tracks a fence's answer (a fence
+// is bytes in a message; the row is the only lifecycle). PR #33 proposed settling fences by matching
+// the human's later Answers: turns against them, and the maintainer declined it for what it is: guessing
+// which historical fences are done (2026-09-11: "I don't like the idea of guessing at which question
+// fences should be considered marked as complete or not"). So the fence stops being a question at all.
+// A thread dispatched at or after this instant reads under the new contract: `ask` is the ONLY way to
+// ask, and the one fence left is the empty PLACEMENT marker (```question qst_ab12cd34) that says where
+// a registered card renders — see questionFencesLive and web/lib/questionShadow.
+//
+// THE CUTOVER IS BY DISPATCH INSTANT, not by a version stamp, because the worker prompt is injected at
+// dispatch and a running thread keeps the contract it started with: a thread that was spawned under the
+// old prompt may still fence, and its fence must still queue the thread and still render answerable —
+// exactly as it always did — or a human would be left with a worker waiting on a card nobody can click.
+// The tailer, the board, the scheduler and the web all read the same predicate, so they cannot disagree
+// about which threads still speak the old grammar.
+export const QUESTION_FENCE_RETIRED_AT = "2026-09-11T17:30:00Z"
+
+/** Does this thread's worker still speak the free-form ```question fence — was it dispatched before the
+ *  fence was retired? An unknown dispatch instant reads as LEGACY: the cost of treating an old thread's
+ *  fence as prose (an unanswerable ask) is worse than the cost of the reverse (a stray fence from a new
+ *  worker still queues the thread). */
+export function questionFencesLive(spawnedAt: string | number | undefined | null): boolean {
+  if (spawnedAt === undefined || spawnedAt === null) return true
+  const at = typeof spawnedAt === "number" ? spawnedAt : Date.parse(spawnedAt)
+  if (!Number.isFinite(at)) return true
+  return at < Date.parse(QUESTION_FENCE_RETIRED_AT)
+}
+
 // WHY A ROW AND NOT A FENCE. A ```question block has the lifetime of the MESSAGE carrying it: the
 // tailer recomputes `pendingQuestion` from the latest assistant text on every assistant record
 // (`lastAssistantHasQuestion = hasQuestionBlock(raw)`, an assignment and not an OR), and clears it on
