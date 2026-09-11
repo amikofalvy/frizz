@@ -59,6 +59,16 @@ const thread = {
     { id: "shell-b", label: "Poll panes for near-miss perm markers", startedAt: "2026-07-18T09:07:00.000Z", state: "running" },
     { id: "shell-c", label: "Record 5min of frizz board SSE", startedAt: "2026-07-18T09:09:00.000Z", state: "running" },
   ],
+  // ?links=1 appends the saved-reference rows (ThreadLinks) under the live ones — the one adjacency
+  // in which a File/Link row's box can be read against an AGENT/SHELL row's. Their rows shipped
+  // with `py-0.5 leading-5` on top of the ops rows' bare inherited line box, 24px against 17.25px
+  // (maintainer 2026-09-11: "It should be the exact same spacing and padding"); this is where that
+  // is measured.
+  links: new URLSearchParams(location.search).get("links") === "1" ? [
+    { id: "lnk_file_a", kind: "file", label: "Structured restriction report", target: "/tmp/reports/structured-restriction.md" },
+    { id: "lnk_file_b", kind: "file", label: "HKS pair-merge report", target: "/tmp/reports/hks-pair-merge.md" },
+    { id: "lnk_url", kind: "link", label: "Dev server", target: "http://127.0.0.1:5173/" },
+  ] : [],
   lastActivityAt: "2026-07-18T09:11:00.000Z",
 } as unknown as ThreadViewModel
 
