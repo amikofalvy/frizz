@@ -129,15 +129,12 @@ export function UpdateRestartPopover({
   open,
   update,
   version,
-  launcherVersion,
   updateVersion,
 }: {
   open: boolean
   update: boolean
   /** The running application-server version. Absent keeps legacy/monolithic versionless UI unchanged. */
   version?: string
-  /** The durable launcher's package version, a diagnostic distinct from the server update target. */
-  launcherVersion?: string
   /** The newer application-server version, once the launcher has observed one. */
   updateVersion?: string
 }) {
@@ -163,10 +160,7 @@ export function UpdateRestartPopover({
           <span className="text-[13px] font-semibold tracking-[-0.01em] text-fg">{action}</span>
           {version && (
             // Always mono, whatever the board font: version numbers are identifiers, not prose.
-            <span className="font-mono text-[11px] leading-snug text-muted">{launcherVersion ? `Server ${newer ? `${version} → ${newer}` : version}` : newer ? `${version} → ${newer}` : version}</span>
-          )}
-          {launcherVersion && (
-            <span className="font-mono text-[11px] leading-snug text-muted">{`Launcher ${launcherVersion}`}</span>
+            <span className="font-mono text-[11px] leading-snug text-muted">{newer ? `${version} → ${newer}` : version}</span>
           )}
         </div>
       </div>
@@ -300,7 +294,7 @@ export function RestartFrizzButton() {
   // the first answer, and the frozen mount snapshot could never show it.
   const status = useSupervisorStatus().data ?? null
   const updateAvailable = canUpdateRestart(status)
-  const versions = { version: status?.version, launcherVersion: status?.launcherVersion, updateVersion: status?.updateVersion }
+  const versions = { version: status?.version, updateVersion: status?.updateVersion }
 
   // Nothing to offer until a supervisor has affirmatively answered — an unreachable one and a poll that
   // has not landed yet read the same, which is the correct bias for a global recovery verb.
@@ -390,7 +384,7 @@ export function RestartFrizzButton() {
         onClick={() => void updateAndRestart()}
       />
       {shownError && <RestartFailureNotice update={updateAvailable} message={shownError} outcome={outcome} onDismiss={() => setDismissed(shownError)} />}
-      <UpdateRestartPopover open={open && !shownError} update={updateAvailable} version={versions.version} launcherVersion={versions.launcherVersion} updateVersion={versions.updateVersion} />
+      <UpdateRestartPopover open={open && !shownError} update={updateAvailable} version={versions.version} updateVersion={versions.updateVersion} />
     </div>
   )
 }

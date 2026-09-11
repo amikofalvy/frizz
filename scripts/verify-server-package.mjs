@@ -253,7 +253,7 @@ try {
     await page.reload({ waitUntil: "networkidle2" })
     await page.hover('button[aria-label="Restart Frizz"]')
     await page.waitForSelector("#update-restart-popover", { visible: true })
-    await until("updated version in browser", () => page.$eval("#update-restart-popover", (el, version) => el.textContent.includes(`Server ${version}`), currentVersion))
+    await until("updated version in browser", () => page.$eval("#update-restart-popover .font-mono", (el, version) => el.textContent.replace(/^Server /, "") === version, currentVersion))
     await page.screenshot({ path: join(out, "updated-desktop.png") })
     await page.setViewport({ width: 420, height: 880, deviceScaleFactor: 2 })
     await page.screenshot({ path: join(out, "updated-narrow.png") })
