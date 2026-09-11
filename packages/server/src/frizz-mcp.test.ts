@@ -1304,7 +1304,7 @@ test("`activity` with nothing running says so, and names the terminal states tha
     assert.equal(got.result.isError, undefined)
     assert.match(got.result.content[0].text, /Nothing is running on this thread/)
     assert.match(got.result.content[0].text, /```done/)
-    assert.match(got.result.content[0].text, /```question/)
+    assert.match(got.result.content[0].text, /register a question with `ask`/)
   } finally {
     rpc.kill()
     http.close()
