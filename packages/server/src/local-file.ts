@@ -54,7 +54,8 @@ export function resolveOpenableFile(
   const trimmed = raw.trim().replace(/:\d+(?::\d+)?$/, "")
   if (!trimmed) return null
   const abs = trimmed === "~" ? home
-    : trimmed.startsWith("~/") ? join(home, trimmed.slice(2))
+    // Either separator after the tilde: a Windows worker writes `~\.claude\CLAUDE.md` (2026-09-11).
+    : /^~[\/\\]/.test(trimmed) ? join(home, trimmed.slice(2))
       : isAbsolute(trimmed) ? trimmed
         : resolve(projectDir, trimmed)
   try {

@@ -152,6 +152,8 @@ test("resolveOpenableFile classifies references: home (~), project-relative, abs
 
   // ~-relative expands to the home root
   assert.equal(resolveOpenableFile("~/CLAUDE.md", project, roots, home), join(home, "CLAUDE.md"))
+  // A Windows worker spells the same reference with a backslash (2026-09-11).
+  assert.equal(resolveOpenableFile("~\\CLAUDE.md", project, roots, home), join(home, "CLAUDE.md"))
   // repo-relative resolves against the project dir
   assert.equal(resolveOpenableFile("packages/web/src/App.tsx", project, roots, home), join(project, "packages", "web", "src", "App.tsx"))
   // an absolute path is taken as-is
