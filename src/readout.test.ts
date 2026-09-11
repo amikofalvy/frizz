@@ -60,6 +60,10 @@ test("formatDuration reads naturally at every magnitude", () => {
 test("paths under home are shortened so the block stays narrow", () => {
   assert.equal(tildePath("/Users/x/code/frizz", "/Users/x"), "~/code/frizz");
   assert.equal(tildePath("/Users/x", "/Users/x"), "~");
+  // The remainder opens with `\` on Windows; that collapses too (Windows audit 2026-09-11, finding 14).
+  assert.equal(tildePath("C:\\Users\\x\\code\\frizz", "C:\\Users\\x"), "~\\code\\frizz");
+  assert.equal(tildePath("C:\\Users\\x", "C:\\Users\\x"), "~");
+  assert.equal(tildePath("C:\\Users\\xavier\\code", "C:\\Users\\x"), "C:\\Users\\xavier\\code");
   assert.equal(tildePath("/opt/other", "/Users/x"), "/opt/other");
   assert.equal(tildePath("/Users/xanadu/thing", "/Users/x"), "/Users/xanadu/thing");
 });

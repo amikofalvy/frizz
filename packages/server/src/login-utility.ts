@@ -1,6 +1,8 @@
 import { randomBytes } from "node:crypto"
 import pty from "node-pty"
 import type { Backend } from "@frizz/shared"
+import { resolveClaudeExecutableAbsolute } from "./backend/claude-broker-host.ts"
+import { resolveCodexExecutable } from "./backend/codex-executable.ts"
 
 // A restricted, short-lived provider ACCOUNT utility — the terminal behind the sign-in modal's
 // primary "Sign in" action. This is NOT the agent-thread terminal: it never resumes or mutates a
@@ -41,6 +43,10 @@ export interface LoginAttemptStatus {
   state: "running" | "exited"
   // The provider this attempt signs into; undefined once the attempt is gone/never existed.
   backend?: Backend
+  // Set when the CLI never started: the name did not resolve to an executable, or the pty refused to
+  // spawn it. The attempt is born "exited" and the same text is its whole replay, so the pane shows
+  // WHY instead of a blank terminal (Windows audit 2026-09-11, finding 7).
+  error?: string
 }
 
 /** A live viewer of one attempt's pty. Returned by `attach`; `close()` detaches only this viewer. */
@@ -72,12 +78,14 @@ export interface LoginUtility {
 interface LiveAttempt {
   id: string
   backend: Backend
-  term: pty.IPty
+  /** Absent when the CLI never started — see LoginAttemptStatus.error. */
+  term?: pty.IPty
   timer: NodeJS.Timeout
   /** Bounded, memory-only replay so a late viewer sees the OAuth URL. Dropped on teardown. */
   buffer: string
   bufferBytes: number
   exited: boolean
+  error?: string
   dataListeners: Set<(chunk: string) => void>
   exitListeners: Set<() => void>
 }
@@ -90,8 +98,12 @@ export function createLoginUtility(deps: {
   lifetimeMs?: number
   /** Injectable so tests never spawn a real provider CLI. */
   spawnPty?: typeof pty.spawn
+  /** The environment the CLI runs in AND the PATH a bare name is resolved against. Defaults to this
+   *  process's; injectable so a test can point the resolvers at a directory of its own. */
+  env?: NodeJS.ProcessEnv
 }): LoginUtility {
   const spawnPty = deps.spawnPty ?? pty.spawn
+  const env = deps.env ?? process.env
   const lifetimeMs = deps.lifetimeMs ?? ATTEMPT_LIFETIME_MS
   const attempts = new Map<string, LiveAttempt>()
 
@@ -99,10 +111,31 @@ export function createLoginUtility(deps: {
   // process, so a crash takes it with us — there is no equivalent of a `remain-on-exit` pane surviving
   // in a detached tmux server with OAuth bytes in its scrollback. That whole class of leak is gone.
 
+  // RESOLVED to an absolute executable before it reaches the pty, never handed over as a bare name.
+  // node-pty on Windows passes the command line to CreateProcessW inside ConPTY, whose PATH search
+  // finds `claude.exe`/`codex.exe` but never the `.cmd`/`.ps1`/sh shims an npm install writes — so with
+  // the runtime pin fallen back to PATH (`source: "path"`: an offline first boot, FRIZZ_RUNTIMES=path,
+  // a degraded sweep) the pane spawned nothing and showed a dead terminal. Every other reader of the
+  // bare name moved to the resolvers in 517e9c8e; this one had not (Windows audit 2026-09-11,
+  // finding 7). Both resolvers THROW on a miss, and start() turns that into the attempt's status.
   function loginArgv(backend: Backend): { file: string; args: string[] } {
-    return backend === "codex"
-      ? { file: deps.codexBin ?? "codex", args: ["login"] }
-      : { file: deps.claudeBin ?? "claude", args: ["auth", "login"] }
+    if (backend === "codex") {
+      const codex = resolveCodexExecutable(deps.codexBin, { env })
+      return { file: codex.file, args: [...codex.args, "login"] }
+    }
+    return { file: resolveClaudeExecutableAbsolute(deps.claudeBin, env), args: ["auth", "login"] }
+  }
+
+  /** An attempt whose CLI never started: born exited, its replay is the reason, and the next Sign in
+   *  click replaces it exactly as it replaces any other finished attempt. */
+  function failedAttempt(id: string, backend: Backend, cause: unknown): LiveAttempt {
+    const reason = cause instanceof Error ? cause.message : String(cause)
+    const error = `Could not start the ${backend === "codex" ? "Codex" : "Claude"} sign-in: ${reason}`
+    return {
+      id, backend, timer: setTimeout(() => teardown(id), lifetimeMs),
+      buffer: `${error}\r\n`, bufferBytes: Buffer.byteLength(error) + 2, exited: true, error,
+      dataListeners: new Set(), exitListeners: new Set(),
+    }
   }
 
   function teardown(id: string): void {
@@ -117,7 +150,7 @@ export function createLoginUtility(deps: {
     for (const listener of attempt.exitListeners) { try { listener() } catch { /* a viewer's teardown must not block ours */ } }
     attempt.exitListeners.clear()
     try {
-      attempt.term.kill()
+      attempt.term?.kill()
     } catch {
       // Already gone — teardown is idempotent.
     }
@@ -133,14 +166,25 @@ export function createLoginUtility(deps: {
         teardown(attempt.id)
       }
       const id = `login-${randomBytes(8).toString("hex")}`
-      const { file, args } = loginArgv(backend)
-      const term = spawnPty(file, args, {
-        name: process.platform === "win32" ? "xterm-color" : "xterm-256color",
-        cwd: deps.cwd,
-        env: process.env as Record<string, string>,
-        cols: 120,
-        rows: 30,
-      })
+      let term: pty.IPty
+      try {
+        const { file, args } = loginArgv(backend)
+        term = spawnPty(file, args, {
+          name: process.platform === "win32" ? "xterm-color" : "xterm-256color",
+          cwd: deps.cwd,
+          env: env as Record<string, string>,
+          cols: 120,
+          rows: 30,
+        })
+      } catch (cause) {
+        // No executable, or the pty refused it (ConPTY throws synchronously on a spawn failure). The
+        // attempt still exists so the modal's status poll reads a definite "exited" with the reason,
+        // and a viewer that attaches sees it in the pane rather than nothing at all.
+        const failed = failedAttempt(id, backend, cause)
+        failed.timer.unref?.()
+        attempts.set(id, failed)
+        return { attemptId: id }
+      }
       const attempt: LiveAttempt = {
         id, backend, term,
         timer: setTimeout(() => teardown(id), lifetimeMs),
@@ -175,8 +219,8 @@ export function createLoginUtility(deps: {
           attempt.dataListeners.add(listener)
           return () => attempt.dataListeners.delete(listener)
         },
-        write: (data) => { if (!attempt.exited) { try { attempt.term.write(data) } catch { /* the pty died mid-write */ } } },
-        resize: (cols, rows) => { if (!attempt.exited) { try { attempt.term.resize(cols, rows) } catch { /* ignore */ } } },
+        write: (data) => { if (!attempt.exited) { try { attempt.term?.write(data) } catch { /* the pty died mid-write */ } } },
+        resize: (cols, rows) => { if (!attempt.exited) { try { attempt.term?.resize(cols, rows) } catch { /* ignore */ } } },
         onExit: (listener) => {
           if (attempt.exited) { listener(); return () => {} }
           attempt.exitListeners.add(listener)
@@ -188,7 +232,7 @@ export function createLoginUtility(deps: {
     status(attemptId) {
       const attempt = attempts.get(attemptId)
       if (!attempt) return { state: "exited" }
-      return { state: attempt.exited ? "exited" : "running", backend: attempt.backend }
+      return { state: attempt.exited ? "exited" : "running", backend: attempt.backend, ...(attempt.error ? { error: attempt.error } : {}) }
     },
     cancel(attemptId) {
       teardown(attemptId)

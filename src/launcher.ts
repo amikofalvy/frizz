@@ -17,6 +17,7 @@ import {
   projectLaunchRecordHasGeneration,
   projectLaunchTokenProof,
   readProjectLaunchOwner,
+  tryAcquireProjectLaunchOwner,
   type ProjectLaunchOwnerRecord,
   type ProjectLaunchTarget,
   type ProcessPlatformAdapter,
@@ -765,6 +766,64 @@ export async function probeFrizz(
   }
 }
 
+/**
+ * The unscoped health of whatever Frizz answers on a port, with no expectation to match against:
+ * the singleton names the project it was LAUNCHED from, which is what a client in another project
+ * needs to learn before it can find that launch's owner record.
+ */
+export async function readFrizzHealth(port: number, fetcher: typeof fetch = fetch, timeoutMs = HEALTH_PROBE_TIMEOUT_MS): Promise<FrizzHealth | null> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  timeout.unref?.();
+  try {
+    const response = await fetcher(`http://127.0.0.1:${port}${FRIZZ_ROUTE_PREFIX}/health`, { signal: controller.signal });
+    if (!response.ok) return null;
+    const health = (await response.json()) as Partial<FrizzHealth>;
+    if (health.ok !== true || typeof health.projectId !== "string" || typeof health.projectDir !== "string" || typeof health.bootId !== "string") return null;
+    return health as FrizzHealth;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export interface LaunchControlTarget {
+  target: ProjectLaunchTarget;
+  stateDir: string;
+  /** False when the board serving this project was launched from ANOTHER project, named by `target`. */
+  host: boolean;
+}
+
+/**
+ * Which launch `--stop` and `--status` are about. ONE server serves every project, and it publishes
+ * its owner record under the project it was launched from — so `frizz --stop` in project B, served
+ * by a board launched in A, found no record in B and answered "not running" (pullfrog on #35,
+ * 2026-09-11). When this project holds no record, the singleton's ports are asked who they are; a
+ * board that names another project with a live record is the one to control, with that project's
+ * token. A board that names nobody, or this project, leaves the answer as it was.
+ */
+export async function resolveLaunchControlTarget(options: {
+  stateDir: string;
+  target: ProjectLaunchTarget;
+  fetcher?: typeof fetch;
+  ports?: readonly number[];
+  stateDirFor?: (projectId: string) => string;
+}): Promise<LaunchControlTarget> {
+  const own = { target: options.target, stateDir: options.stateDir, host: true };
+  if (readProjectLaunchOwner(options.stateDir)) return own;
+  const fetcher = options.fetcher ?? fetch;
+  const stateDirFor = options.stateDirFor ?? ((projectId: string) => projectStateDir(projectId));
+  for (const port of new Set(options.ports ?? [DEFAULT_PORT, fallbackPort(DEFAULT_PORT)])) {
+    const health = await readFrizzHealth(port, fetcher);
+    if (!health || health.projectId === options.target.projectId) continue;
+    const stateDir = stateDirFor(health.projectId);
+    if (!readProjectLaunchOwner(stateDir)) continue;
+    return { target: { projectId: health.projectId, projectDir: health.projectDir, stateDir }, stateDir, host: false };
+  }
+  return own;
+}
+
 export async function requestFrizzStop(
   port: number,
   expected: ExpectedFrizzHealth,
@@ -1038,4 +1097,121 @@ export function logTail(stateDir: string, maxChars = 4000): string {
   } catch {
     return "";
   }
+}
+
+export interface StopProjectLaunchOptions {
+  stateDir: string;
+  target: ProjectLaunchTarget;
+  /** A port to try when no live status file names one — the dev launcher probes its preferred port. */
+  fallbackPort?: () => Promise<number | undefined>;
+  fetcher?: typeof fetch;
+  adapter?: ProcessPlatformAdapter;
+  sleep?: (ms: number) => Promise<void>;
+  /** How long to wait for the owner record to disappear after the stop was accepted. */
+  timeoutMs?: number;
+}
+
+/** `stale`: no board answered; a dead owner's record was reaped, which is not the same as stopping one. */
+export type StopProjectLaunchResult = { kind: "not-running" } | { kind: "stopped"; stale: boolean };
+
+/**
+ * Stop the board that owns a project, the way the dev launcher's `--stop` has always done it
+ * (src/index.ts stopWorkspace), extracted so the registry launcher can offer the same flag —
+ * which it advertised in its own farewell for a release without handling it at all (audit
+ * 2026-09-11, finding 2).
+ *
+ * The protocol, and why every step is what it is: the owner record names the pid and the token; a
+ * live owner is asked to stop over HTTP with that token, which is the only cross-process proof a
+ * launcher holds. A live owner that refuses is LEFT ALONE — never turn a process-generation
+ * observation into a later `kill`, because the pid can be recycled in the gap. An owner that is
+ * provably stale (dead, or a different process wearing its pid) is reaped through the same
+ * delegate-fencing acquisition every launch uses, never by unlinking its record.
+ */
+export async function stopProjectLaunch(options: StopProjectLaunchOptions): Promise<StopProjectLaunchResult> {
+  const { stateDir, target } = options;
+  const adapter = options.adapter ?? defaultProcessPlatformAdapter;
+  const fetcher = options.fetcher ?? fetch;
+  const sleep = options.sleep ?? ((ms: number) => delay(ms));
+  const owner = readProjectLaunchOwner(stateDir);
+  if (!owner) return { kind: "not-running" };
+  const status = liveWorkspaceOwner(stateDir, target, adapter);
+  const controlPort = status?.port ?? (status ? undefined : await options.fallbackPort?.());
+  const controlled = controlPort
+    ? await requestFrizzStop(controlPort, expectedOwnerHealth(target, owner), owner.token, fetcher)
+    : false;
+  if (!controlled && !processGenerationIsStale(owner, adapter)) {
+    throw new Error(
+      "Frizz refused to stop a live owner without authenticated token-bound control; the owner was left untouched"
+    );
+  }
+  const reap = (): boolean => {
+    if (!readProjectLaunchOwner(stateDir)) return true;
+    // A process can exit after accepting the stop but before its finally block removes ownership.
+    // Reap through the same delegate-fencing protocol; never unlink the record directly.
+    const reaped = tryAcquireProjectLaunchOwner(target, "launcher", { delegateDrainTimeoutMs: 250, adapter });
+    if (reaped.kind !== "acquired") return false;
+    reaped.lease.release();
+    return true;
+  };
+  const deadline = adapter.now() + (options.timeoutMs ?? 10_000);
+  while (adapter.now() < deadline) {
+    if (reap()) return { kind: "stopped", stale: !controlled };
+    await sleep(100);
+  }
+  // The last poll can race a supervisor's finally block by a few milliseconds. One more
+  // generation-safe observation before calling this a timeout.
+  await sleep(100);
+  if (reap()) return { kind: "stopped", stale: !controlled };
+  throw new Error(`supervisor pid ${owner.pid} did not stop within ${Math.round((options.timeoutMs ?? 10_000) / 1000)}s`);
+}
+
+export interface RunningFrizzStatus {
+  port: number;
+  pid: number;
+  version?: string;
+  state?: string;
+  message?: string;
+}
+
+/**
+ * The board serving a project right now — its port, the supervisor's pid, and the version it
+ * reports on its status route — or null when nothing live owns the project. Read-only, and the
+ * answer behind the registry launcher's `--status`.
+ */
+export async function runningFrizzStatus(options: {
+  stateDir: string;
+  target: ProjectLaunchTarget;
+  fetcher?: typeof fetch;
+  adapter?: ProcessPlatformAdapter;
+}): Promise<RunningFrizzStatus | null> {
+  const fetcher = options.fetcher ?? fetch;
+  const owner = liveWorkspaceOwner(options.stateDir, options.target, options.adapter ?? defaultProcessPlatformAdapter);
+  if (!owner?.port) return null;
+  const expected = expectedOwnerHealth(options.target, readProjectLaunchOwner(options.stateDir));
+  if (!(await probeFrizz(owner.port, expected, fetcher))) return null;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), HEALTH_PROBE_TIMEOUT_MS);
+  timeout.unref?.();
+  let control: { version?: string; state?: string; message?: string } = {};
+  try {
+    // Same-origin gated, and Node's fetch carries no Origin: without this every read was a 403 and
+    // `--status` printed "version: unknown" for a healthy board (measured on Windows 2026-09-11).
+    const response = await fetcher(`http://127.0.0.1:${owner.port}${FRIZZ_ROUTE_PREFIX}/control/status`, {
+      signal: controller.signal,
+      headers: { origin: `http://127.0.0.1:${owner.port}`, "cache-control": "no-store" },
+    });
+    if (response.ok) {
+      const body = (await response.json()) as { version?: unknown; state?: unknown; message?: unknown };
+      control = {
+        ...(typeof body.version === "string" ? { version: body.version } : {}),
+        ...(typeof body.state === "string" ? { state: body.state } : {}),
+        ...(typeof body.message === "string" ? { message: body.message } : {}),
+      };
+    }
+  } catch {
+    // The status route is the supervisor's; a legacy or mid-restart board answers health without it.
+  } finally {
+    clearTimeout(timeout);
+  }
+  return { port: owner.port, pid: owner.pid, ...control };
 }

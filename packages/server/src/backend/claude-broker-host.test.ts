@@ -1,9 +1,9 @@
 import assert from "node:assert/strict"
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { delimiter, join } from "node:path"
 import { test } from "node:test"
-import { forkBroker, resolveClaudeExecutableAbsolute } from "./claude-broker-host.ts"
+import { claudeBrokerRecordPath, forkBroker, killBroker, resolveClaudeExecutableAbsolute } from "./claude-broker-host.ts"
 
 // The npm `.cmd` stub, verbatim from a real `npm i -g @anthropic-ai/claude-code` on Windows Server
 // 2022 (claude 2.1.220). Its whole job is to call the native exe that ships inside the package.
@@ -175,4 +175,42 @@ test("forkBroker: control — a daemon that publishes its record and stays up re
     if (daemonPid) { try { process.kill(daemonPid, "SIGKILL") } catch {} }
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+// --- killBroker: the daemon TREE ends on Windows, one signal on POSIX -----------------------------------
+
+test("killBroker: win32 routes through taskkill /T /F and drops the record; posix signals the daemon", (t) => {
+  // Windows audit 2026-09-11, finding 5: process.kill(pid, "SIGTERM") on win32 is TerminateProcess of
+  // the daemon alone, and claude.exe under it kept running its turn.
+  const dir = mkdtempSync(join(tmpdir(), "frizz-kill-broker-"))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const sessionId = "11111111-2222-4333-8444-555555555555"
+  const recordPath = claudeBrokerRecordPath(dir, sessionId)
+  const publish = () => {
+    mkdirSync(join(recordPath, ".."), { recursive: true })
+    // This process stands in for the daemon: liveBrokerRecord only keeps a record whose pid is alive.
+    writeFileSync(recordPath, JSON.stringify({ daemonPid: process.pid, socketPath: join(dir, "s"), sessionId, generation: "g1", createdAt: new Date().toISOString() }))
+  }
+  const kills: Array<[number, NodeJS.Signals]> = []
+  const spawns: string[][] = []
+  const deps = {
+    kill: (pid: number, signal: NodeJS.Signals) => { kills.push([pid, signal]) },
+    spawnSync: (file: string, args: string[]) => { spawns.push([file, ...args]); return { status: 0 } },
+  }
+
+  publish()
+  assert.equal(killBroker(dir, sessionId, undefined, { ...deps, platform: "win32" }), true)
+  assert.deepEqual(spawns, [["taskkill", "/PID", String(process.pid), "/T", "/F"]])
+  assert.deepEqual(kills, [], "the tree kill replaced the signal; nothing else was sent")
+  assert.equal(existsSync(recordPath), false, "the record is dropped")
+
+  publish()
+  assert.equal(killBroker(dir, sessionId, "retire", { ...deps, platform: "linux" }), true)
+  assert.deepEqual(kills, [[process.pid, "SIGTERM"]])
+  assert.equal(spawns.length, 1, "posix never runs taskkill")
+
+  // Nothing to stop: no record, no kill, and the verdict says so.
+  assert.equal(killBroker(dir, sessionId, undefined, { ...deps, platform: "win32" }), false)
+  assert.equal(spawns.length, 1)
+  assert.equal(kills.length, 1)
 })

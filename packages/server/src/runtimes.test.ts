@@ -4,7 +4,7 @@
 // itself and the vendors' actual tarballs; `nub scripts/provision-runtimes.mjs` does that, on demand.
 import assert from "node:assert/strict"
 import { createHash } from "node:crypto"
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs"
 import { createServer, type Server } from "node:http"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -257,6 +257,44 @@ test("sweep: retires the other versions and a stale partial, keeps the pin and a
   rmSync(root, { recursive: true, force: true })
 })
 
+test("provision: the final rename survives a transient EPERM (Windows audit 2026-09-11, finding 3)", async () => {
+  // Defender's real-time scan briefly holds a handle on a new executable; MoveFileEx on the directory
+  // then fails EPERM once. That is a retry, not "someone else finished first".
+  const root = scratch()
+  registry.set(claudeCoords.pkg, claudeCoords.packageVersion, claudeTgz)
+  let attempts = 0
+  const flaky = (from: string, to: string) => {
+    attempts++
+    if (attempts === 1) throw Object.assign(new Error("EPERM: operation not permitted, rename"), { code: "EPERM" })
+    renameSync(from, to)
+  }
+  const got = await provisionRuntime("claude", { root, coordinates: claudeCoords, registry: registry.url, rename: flaky, retryDelayMs: 1 })
+  assert.equal(attempts, 2)
+  assert.equal(got.fetched, true)
+  assert.equal(got.bin, join(root, "claude", CLAUDE_CODE_VERSION, "claude"))
+  assert.ok(existsSync(got.bin))
+  assert.deepEqual(readdirSync(join(root, "claude")), [CLAUDE_CODE_VERSION], "no partial left behind")
+
+  // Control: a handle that never lets go, with no pin to fall back on, is still the error — and
+  // EEXIST (the genuine race) is not retried at all.
+  const stuck = scratch()
+  let stuckAttempts = 0
+  await assert.rejects(
+    provisionRuntime("claude", { root: stuck, coordinates: claudeCoords, registry: registry.url, retryDelayMs: 1, rename: () => { stuckAttempts++; throw Object.assign(new Error("EPERM"), { code: "EPERM" }) } }),
+    /EPERM/u,
+  )
+  assert.equal(stuckAttempts, 5)
+  assert.deepEqual(readdirSync(join(stuck, "claude")), [], "the partial is discarded with the error")
+  let eexist = 0
+  await assert.rejects(
+    provisionRuntime("claude", { root: stuck, coordinates: claudeCoords, registry: registry.url, retryDelayMs: 1, rename: () => { eexist++; throw Object.assign(new Error("EEXIST"), { code: "EEXIST" }) } }),
+    /EEXIST/u,
+  )
+  assert.equal(eexist, 1)
+  rmSync(root, { recursive: true, force: true })
+  rmSync(stuck, { recursive: true, force: true })
+})
+
 // A provisioned version directory as provisionRuntime leaves it: the marker plus the binary it names.
 function provisionedDir(root: string, backend: "claude" | "codex", label: string, binary: string): string {
   const dir = join(root, backend, label)
@@ -312,6 +350,30 @@ test("lease: the version directory is found from either layout, and a PATH bin g
   rmSync(root, { recursive: true, force: true })
 })
 
+test("sweep: a version the OS refuses to remove is kept and named, and the sweep goes on", () => {
+  // Windows cannot delete a claude.exe some daemon still runs (EBUSY/EPERM), lease or no lease —
+  // a daemon from before the leases existed writes none. Windows audit 2026-09-11, finding 2.
+  const root = scratch()
+  const busy = provisionedDir(root, "claude", "2.1.267", "claude")
+  const stale = provisionedDir(root, "claude", "2.1.180", "claude")
+  provisionedDir(root, "claude", CLAUDE_CODE_VERSION, "claude")
+  const asked: string[] = []
+  const rm = (path: string) => {
+    asked.push(path)
+    if (path === busy) throw Object.assign(new Error("EBUSY: resource busy or locked, rmdir"), { code: "EBUSY" })
+    rmSync(path, { recursive: true, force: true })
+  }
+  const sweep = sweepRuntimes("claude", root, CLAUDE_CODE_VERSION, Date.now(), { rm })
+  assert.deepEqual(sweep.removed, [stale])
+  assert.deepEqual(sweep.kept, [{ dir: busy, leases: [], reason: "in use (EBUSY)" }])
+  assert.deepEqual(asked.sort(), [stale, busy].sort(), "the refusal did not stop the other entry's removal")
+  assert.ok(existsSync(join(busy, "claude")))
+  // Any other refusal is kept too, with the message rather than the code.
+  const odd = sweepRuntimes("claude", root, CLAUDE_CODE_VERSION, Date.now(), { rm: () => { throw new Error("disk on fire") } })
+  assert.deepEqual(odd.kept, [{ dir: busy, leases: [], reason: "could not remove: disk on fire" }])
+  rmSync(root, { recursive: true, force: true })
+})
+
 // --- resolution -------------------------------------------------------------------------------------
 
 test("resolve: an explicit executable wins and provisions nothing; FRIZZ_RUNTIMES=path skips it too", async () => {
@@ -351,5 +413,26 @@ test("resolve: provisions both in parallel, and a backend the registry cannot se
   assert.ok(log.some((line) => line.startsWith("info: runtimes: provisioned claude")), log.join("\n"))
   assert.ok(log.some((line) => line.startsWith("warn: runtimes: could not provision codex")), log.join("\n"))
   assert.equal(describeRuntime("claude", got.claude), `claude: ${claude.label} (provisioned) ${got.claude.bin}`)
+  rmSync(root, { recursive: true, force: true })
+})
+
+test("resolve: a sweep the OS refuses never discards the provisioned pin (Windows audit 2026-09-11, finding 2)", async () => {
+  // Until 2026-09-11 the sweep shared the pin's `try`: an EBUSY on a mapped claude.exe fell through to
+  // `{ bin: "claude", source: "path" }`, and the boot then depended on an npm claude that may not exist.
+  const root = scratch()
+  const claude = runtimeCoordinates("claude")!
+  registry.set(claude.pkg, claude.packageVersion, tarball([{ name: `package/${claude.binary}`, data: Buffer.from("claude"), mode: 0o755 }]))
+  registry.remove(runtimeCoordinates("codex")!.pkg, runtimeCoordinates("codex")!.packageVersion)
+  const old = provisionedDir(root, "claude", "2.1.267", claude.binary)
+  const log: string[] = []
+  const got = await resolveRuntimes({
+    env: {}, root, registry: registry.url, log: (level, message) => log.push(`${level}: ${message}`),
+    rm: () => { throw Object.assign(new Error("EBUSY: resource busy or locked"), { code: "EBUSY" }) },
+  })
+  assert.equal(got.claude.source, "provisioned")
+  assert.equal(got.claude.bin, join(root, "claude", claude.label, claude.binary))
+  assert.ok(existsSync(old), "the refused directory is still there")
+  assert.ok(log.includes(`info: runtimes: kept ${old} — in use (EBUSY)`), log.join("\n"))
+  assert.ok(!log.some((line) => line.includes("could not provision claude")), log.join("\n"))
   rmSync(root, { recursive: true, force: true })
 })

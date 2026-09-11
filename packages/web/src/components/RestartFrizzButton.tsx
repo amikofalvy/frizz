@@ -1,7 +1,19 @@
 import React, { useRef, useState } from "react"
 import { useSnapshot } from "valtio"
 import { AlertTriangle, RefreshCw, X } from "lucide-react"
-import { canRestart, canUpdateRestart, FRIZZ_SUPERVISOR_STATUS_WAKE_EVENT, requestFrizzRestart, requestFrizzUpdateRestart } from "../api/restart.ts"
+import {
+  canRestart,
+  canUpdateRestart,
+  FRIZZ_SUPERVISOR_STATUS_WAKE_EVENT,
+  RELOAD_AFTER_UPDATE_RESTART,
+  requestFrizzRestart,
+  requestFrizzUpdateRestart,
+  restartFailureCopy,
+  restartFailureOutcome,
+  UPDATE_RESTART_FROM_VERSION,
+  type RestartFailureOutcome,
+  frizzBuildIdentity,
+} from "../api/restart.ts"
 import { useSupervisorStatus } from "../api/supervisorStatus.ts"
 import { showToast, store } from "../store.ts"
 import { STATUS_ROW_ACTION, STATUS_ROW_ICON } from "../lib/statusRow.ts"
@@ -157,11 +169,16 @@ export function UpdateRestartPopover({
   )
 }
 
-const failureCopy = "Frizz kept running the previous version, and your threads are unaffected."
+const PREVIOUS_KEPT: RestartFailureOutcome = { kind: "previous-kept" }
 
 /**
  * The failure panel, built on the SAME opaque card as the popover it replaces — an error is the one
  * message that has to stay readable, so it is the last thing that should be see-through.
+ *
+ * `outcome` decides the sentence under the title (finding 11, audit 2026-09-11). The default is the
+ * old one — the previous version kept running — which is true for a request the supervisor rejected
+ * and for a durable frizz-dev rollback, but NOT for a successor that came up and then failed to
+ * start its board: by then the previous version is gone, and saying it kept running was a lie.
  *
  * The supervisor's `message` is raw build output: a `nub run typecheck` failure arrives as several
  * hundred characters of absolute snapshot paths wrapped around the one `error TS…` line that actually
@@ -172,10 +189,13 @@ const failureCopy = "Frizz kept running the previous version, and your threads a
 export function RestartFailureNotice({
   update,
   message,
+  outcome = PREVIOUS_KEPT,
   onDismiss,
 }: {
   update: boolean
   message: string
+  /** Judged from the failed status's version against the version at click — api/restart.ts. */
+  outcome?: RestartFailureOutcome
   onDismiss: () => void
 }) {
   return (
@@ -195,7 +215,7 @@ export function RestartFailureNotice({
           <X aria-hidden="true" size={14} strokeWidth={2.25} />
         </button>
       </div>
-      <p className="relative mt-2.5 text-[12px] leading-relaxed text-muted">{failureCopy}</p>
+      <p className="relative mt-2.5 text-[12px] leading-relaxed text-muted">{restartFailureCopy(outcome).detail}</p>
       {/* The cap comes from the CARD's ceiling, not from any one log: ~360px is as tall as a transient
           notice hanging off a status-row button should ever get, and the chrome above takes ~100px of
           that. Chrome reserves this block's scrollbar gutter but paints no thumb at rest, so a fold
@@ -261,7 +281,9 @@ export function RestartFrizzButton() {
   // boolean would either re-open the panel one poll after the close or swallow the NEXT, different
   // failure. Keyed on the text, a repeat of the same reason stays closed and a new reason re-opens.
   const [dismissed, setDismissed] = useState<string | undefined>()
-  const requested = useRef(false)
+  // Set at click, with the version that was running THEN: a later "failed" is read against it to
+  // tell "the old launcher gave up" from "the new version came up and failed" (finding 11).
+  const requested = useRef<{ version?: string } | null>(null)
   const controlRef = useRef<HTMLDivElement>(null)
 
   // Read straight off the shared supervisor poll (api/supervisorStatus.ts) rather than a private probe
@@ -283,15 +305,19 @@ export function RestartFrizzButton() {
   // when a poll observes "failed". Its only trace was a 7-second toast, which is why a broken update
   // read as "the modal flashed and nothing happened". Once this session has asked for an update,
   // keep the supervisor's own reason on screen. It clears itself when the state leaves "failed".
-  const reportedFailure = requested.current && snap.controlPlaneState === "failed"
-    ? snap.controlPlaneMessage ?? "Frizz did not become ready"
-    : undefined
+  const reported = requested.current !== null && snap.controlPlaneState === "failed"
+  const reportedFailure = reported ? snap.controlPlaneMessage ?? "Frizz did not become ready" : undefined
   const failure = error ?? reportedFailure
   const shownError = failure && failure !== dismissed ? failure : undefined
+  // A rejected POST (`error`) came from the server we clicked on, so the previous version is by
+  // definition still running; only a failure the POLL reports can be the successor's.
+  const outcome: RestartFailureOutcome = !error && reported && requested.current
+    ? restartFailureOutcome(requested.current.version, { version: status?.version })
+    : PREVIOUS_KEPT
 
   const updateAndRestart = async () => {
     if (busy) return
-    requested.current = true
+    requested.current = { version: status?.version }
     setOpen(false)
     setBusy(true)
     setError(undefined)
@@ -300,12 +326,13 @@ export function RestartFrizzButton() {
     if (updateAvailable) {
       // Raise the blocking overlay the instant the click lands — the update-restart POST can round-trip
       // slowly while the supervisor spins up the candidate build, and the user must see the block now,
-      // not a second later. `restartPending` holds it across the pre-ack window and withholds the reload
-      // destination until the supervisor has actually accepted the transition (armed below), so a stray
-      // status poll can neither drop the overlay nor reload onto the still-live old child.
+      // not a second later. The recorded attempt holds it across the pre-ack window and withholds the
+      // reload destination until the supervisor has actually accepted the transition (armed below), so a
+      // stray status poll can neither drop the overlay nor reload onto the still-live old child. Its
+      // `ackedAt` stays null until then: with no ack instant, NO answer can speak for this attempt.
       store.controlPlaneState = "restarting"
       store.controlPlaneMessage = null
-      store.controlPlaneRestartPending = true
+      store.controlPlaneRestartAttempt = { startedAt: Date.now(), ackedAt: null, build: frizzBuildIdentity(status) }
     }
     try {
       if (updateAvailable) await requestFrizzUpdateRestart()
@@ -314,10 +341,18 @@ export function RestartFrizzButton() {
       // supervisor monitor reloads this exact route only after the durable owner reports readiness.
       if (updateAvailable) {
         // Arm the reload destination now that the supervisor owns the transition, and ramp the poll.
-        // `restartPending` is deliberately NOT cleared here: it must outlive the ack until a poll
-        // OBSERVES the server-confirmed transition (a non-"ready" status), so a stale in-flight poll
-        // that captured the pre-flip "ready" can't slip past the guard and reload onto the old child.
-        sessionStorage.setItem("frizz:reload-after-update-restart", destination)
+        // The attempt is deliberately NOT cleared here: it must outlive the ack until a poll OBSERVES
+        // the server-confirmed transition (a non-"ready" status), so a stale in-flight poll that
+        // captured the pre-flip "ready" can't slip past the guard and reload onto the old child. What
+        // IS recorded is the ack instant — and before the wake below, so the refetch it triggers is
+        // stamped at or after it: from here on only an answer requested after this moment counts, and
+        // a "failed" from a poll that was already in flight at the click (the retry-from-failed path,
+        // pullfrog on #35) can no longer settle this attempt (nextControlPlane in api/restart.ts).
+        sessionStorage.setItem(RELOAD_AFTER_UPDATE_RESTART, destination)
+        if (requested.current.version) sessionStorage.setItem(UPDATE_RESTART_FROM_VERSION, requested.current.version)
+        else sessionStorage.removeItem(UPDATE_RESTART_FROM_VERSION)
+        const attempt = store.controlPlaneRestartAttempt
+        if (attempt) store.controlPlaneRestartAttempt = { ...attempt, ackedAt: Date.now() }
         window.dispatchEvent(new Event(FRIZZ_SUPERVISOR_STATUS_WAKE_EVENT))
         setBusy(false)
       } else {
@@ -325,7 +360,7 @@ export function RestartFrizzButton() {
       }
     } catch (caught) {
       if (updateAvailable) {
-        store.controlPlaneRestartPending = false
+        store.controlPlaneRestartAttempt = null
         store.controlPlaneState = "ready"
         store.controlPlaneMessage = null
       }
@@ -348,7 +383,7 @@ export function RestartFrizzButton() {
         onBlur={() => setOpen(false)}
         onClick={() => void updateAndRestart()}
       />
-      {shownError && <RestartFailureNotice update={updateAvailable} message={shownError} onDismiss={() => setDismissed(shownError)} />}
+      {shownError && <RestartFailureNotice update={updateAvailable} message={shownError} outcome={outcome} onDismiss={() => setDismissed(shownError)} />}
       <UpdateRestartPopover open={open && !shownError} update={updateAvailable} version={versions.version} updateVersion={versions.updateVersion} />
     </div>
   )

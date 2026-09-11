@@ -9,7 +9,7 @@ import type { ServerEvent } from "@frizz/shared"
 import { AwaitingHint, QUESTION_FENCE_RETIRED_AT } from "@frizz/shared"
 import { permMarkerPath, type Project } from "./project.ts"
 import { degradeIfAwaitingAnswer, deriveNeedsYou } from "./board.ts"
-import { parseLine, applyRecord, applyEvent, computeTurn, newTailState, createTailer, defaultBrokerDaemonAlive, hasQuestionBlock, isClaudeAuthErrorText, isRealUserMessage, parseSignalFence, markerDecision, unwrapShellCommand, FOREIGN_FRESH_MS } from "./tailer.ts"
+import { parseLine, applyRecord, applyEvent, computeTurn, newTailState, createTailer, defaultBrokerDaemonAlive, hasQuestionBlock, isClaudeAuthErrorText, isRealUserMessage, parseSignalFence, markerDecision, unwrapShellCommand, FOREIGN_FRESH_MS, parseWindowsShellHolderReport, probeShellsAlive, windowsShellHolderCommand } from "./tailer.ts"
 import { claudeBrokerRecordPath } from "./backend/claude-broker-host.ts"
 import type { AgentBackend, NormalizedEvent } from "./backend/types.ts"
 import { createClaudeBackend } from "./backend/claude.ts"
@@ -4125,6 +4125,61 @@ test("tailer: a shell the OS says nobody is running goes stale; alive and unknow
   assert.equal(run(undefined, 48 * 60 * 60_000), "running", "an unavailable probe must not invent a verdict")
   // INSIDE THE GRACE WINDOW a just-launched shell is alive by construction and is not probed at all.
   assert.equal(run(false, 5_000), "running", "a shell launched seconds ago is not interrogated")
+})
+
+// WINDOWS has no lsof, so the same question is asked as an exclusive open through PowerShell (Windows
+// audit 2026-09-11, finding 9). This pins the win32 wiring on the machines that run this suite: which
+// executable is asked, how its answer maps to verdicts, and that every failure is "unknown", never
+// "dead". The real PowerShell run is the win32-gated case after it.
+test("tailer: the win32 shell probe asks PowerShell for an exclusive open, and reads held/free/unknown per path", async () => {
+  const dir = tmp("frizz-shell-probe-win-")
+  const a = join(dir, "a.output")
+  const b = join(dir, "b.output")
+  const c = join(dir, "c.output")
+  for (const f of [a, b, c]) writeFileSync(f, "")
+  const missing = join(dir, "never-created.output")
+  const calls: Array<[string, string[]]> = []
+  const exec = (async (file: string, args: string[]) => { calls.push([file, args]); return { stdout: "held\r\nfree\r\nunknown\r\n", stderr: "" } }) as never
+  const verdicts = await probeShellsAlive([a, missing, b, c], { platform: "win32", exec, env: { SystemRoot: "C:\\Windows" } })
+  assert.deepEqual([...verdicts], [[missing, undefined], [a, true], [b, false], [c, undefined]], "held ⇒ alive, free ⇒ gone, unknown ⇒ no verdict; an absent file is never asked about")
+  assert.equal(calls.length, 1, "one process answers the whole batch")
+  assert.equal(calls[0]![0], "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "anchored to %SystemRoot%, never resolved through PATH")
+  const [shell, args] = windowsShellHolderCommand([a, "C:\\it's here\\x.output"], { SystemRoot: "D:\\Win" })
+  assert.equal(shell, "D:\\Win\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")
+  assert.deepEqual(args.slice(0, 4), ["-NoProfile", "-NonInteractive", "-NoLogo", "-Command"])
+  assert.match(args[4]!, /\[System\.IO\.FileShare\]::None/, "the exclusive open IS the question")
+  assert.match(args[4]!, /'C:\\it''s here\\x\.output'/, "a quote in a path is doubled, the PowerShell escape")
+  assert.match(args[4]!, /-in 32,33/, "only a sharing/lock violation reads as held")
+
+  // No PowerShell (or a wedged one): unknown for the batch, and nothing is demoted.
+  const enoent = (async () => { throw Object.assign(new Error("spawn ENOENT"), { code: "ENOENT" }) }) as never
+  assert.deepEqual([...(await probeShellsAlive([a, b], { platform: "win32", exec: enoent }))], [[a, undefined], [b, undefined]])
+  // A report of the wrong length answers for nobody — nothing says which line is whose.
+  assert.deepEqual([...parseWindowsShellHolderReport("held\r\n", [a, b])], [[a, undefined], [b, undefined]])
+  assert.deepEqual([...parseWindowsShellHolderReport("free\nheld\n", [a, b])], [[a, false], [b, true]])
+  // The gate: any other platform still asks lsof, exactly as before.
+  const posixCalls: string[] = []
+  const lsof = (async (file: string) => { posixCalls.push(file); return { stdout: "", stderr: "" } }) as never
+  await probeShellsAlive([a], { platform: "linux", exec: lsof })
+  assert.deepEqual(posixCalls, ["lsof"])
+})
+
+// The real thing, on the one platform that has it: a file this process holds open must read as held,
+// and a file nobody holds as free. Mirrors the lsof case below.
+test("tailer: the real win32 probe reads a held file as alive and an unheld one as gone", { skip: process.platform !== "win32" ? "PowerShell exclusive-open probe is win32-only" : false }, async () => {
+  const dir = tmp("frizz-shell-probe-real-win-")
+  const dead = join(dir, "dead.output")
+  const alive = join(dir, "alive.output")
+  writeFileSync(dead, "")
+  writeFileSync(alive, "")
+  const held = openSync(alive, "r")
+  try {
+    const verdicts = await probeShellsAlive([dead, alive], { platform: "win32" })
+    assert.equal(verdicts.get(dead), false, "nobody holds it ⇒ gone")
+    assert.equal(verdicts.get(alive), true, "this process holds it ⇒ alive")
+  } finally {
+    closeSync(held)
+  }
 })
 
 // The case above injects `shellAlive`, which is answered inline — so it pins the VERDICT MAPPING and

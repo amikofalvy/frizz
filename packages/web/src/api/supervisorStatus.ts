@@ -1,5 +1,5 @@
 import { queryOptions, useQuery, type QueryClient, type UseQueryResult } from "@tanstack/react-query"
-import { FRIZZ_SUPERVISOR_STATUS_WAKE_EVENT, getFrizzSupervisorStatus, type FrizzSupervisorStatus } from "./restart.ts"
+import { FRIZZ_SUPERVISOR_STATUS_WAKE_EVENT, getFrizzSupervisorStatus, type FrizzSupervisorStatus, type StampedSupervisorStatus } from "./restart.ts"
 import { store } from "../store.ts"
 
 // ── ONE reader of /_frizz/control/status, for every consumer ───────────────────────────────────────────
@@ -33,22 +33,31 @@ export function supervisorPollMs(state: FrizzSupervisorStatus["state"] | undefin
 
 export const supervisorStatusQueryOptions = queryOptions({
   queryKey: SUPERVISOR_STATUS_KEY,
-  queryFn: () => getFrizzSupervisorStatus(),
+  // Every answer is stamped with the instant its request STARTED (pullfrog on #35, 2026-09-11): an
+  // answer is not a point in time, and App's optimistic-restart guard has to tell a poll that was
+  // already in flight when the operator clicked from one that can actually speak for the accepted
+  // transition. The stamp is client-side only — never on the wire — and it also means no two answers
+  // are structurally equal, so react-query hands App a fresh object per poll.
+  queryFn: async (): Promise<StampedSupervisorStatus | null> => {
+    const requestedAt = Date.now()
+    const status = await getFrizzSupervisorStatus()
+    return status ? { ...status, requestedAt } : null
+  },
   // `null` is a legitimate ANSWER here, never an error: getFrizzSupervisorStatus folds an unreachable
   // supervisor, a non-protocol reply and the SPA HTML fallback all into it and never rejects. So there is
   // nothing to retry, and — unlike the module-level promise this replaces — nothing caches that window
   // for the life of the page either. The next poll is the retry, which is how a dev-only verb reappears
   // once a supervisor that was mid-restart at page load comes back.
-  refetchInterval: (query) => supervisorPollMs(query.state.data?.state, store.controlPlaneRestartPending),
+  refetchInterval: (query) => supervisorPollMs(query.state.data?.state, store.controlPlaneRestartAttempt !== null),
   // Freshness tracks the poll's own period, which is what makes sharing the key actually share the READ.
   // Without it, react-query treats the entry as stale the instant it lands, so every observer arriving
   // LATER than the last answer refetches on mount — and the dev-build verb's observer is a thread-footer
   // one, one per queue card. That rebuilds the same fan-out one mount at a time. A mount inside the
   // period has nothing to add: the poll is already asking on schedule.
-  staleTime: (query) => supervisorPollMs(query.state.data?.state, store.controlPlaneRestartPending),
+  staleTime: (query) => supervisorPollMs(query.state.data?.state, store.controlPlaneRestartAttempt !== null),
 })
 
-export function useSupervisorStatus(): UseQueryResult<FrizzSupervisorStatus | null> {
+export function useSupervisorStatus(): UseQueryResult<StampedSupervisorStatus | null> {
   return useQuery(supervisorStatusQueryOptions)
 }
 

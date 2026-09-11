@@ -8,6 +8,7 @@ import { delimiter, dirname, isAbsolute, join } from "node:path"
 import { resolveDetachedDaemonEntry } from "../detached-daemons.ts"
 import type { BrokerRecord, ClaudeBrokerConfig } from "./claude-agent-broker.ts"
 import { claudeBrokerDiagnosticLogPath, describeClaudeBrokerExit, readClaudeBrokerExit } from "./claude-broker-diagnostics.ts"
+import { endDaemonTree, type EndDaemonTreeDeps } from "./daemon-tree.ts"
 import { frizzIpcPath } from "./ipc-path.ts"
 import type { WorkerMcpServers } from "./project-mcp-servers.ts"
 
@@ -250,6 +251,9 @@ export function forkBroker(options: ForkBrokerOptions): Promise<BrokerRecord> {
     env: { ...process.env, FRIZZ_CLAUDE_BROKER: JSON.stringify(config) },
     detached: true,
     stdio: "ignore",
+    // A detached process owns no console on Windows; keep the daemon from ever being handed a
+    // visible one (Windows audit 2026-09-11, finding 4 — the Codex daemon's spawn tells the story).
+    windowsHide: true,
   })
   child.unref()
 
@@ -321,13 +325,19 @@ export async function adoptOrForkBroker(options: ForkBrokerOptions): Promise<{ r
  *  teardown that ends the session itself (a stop, a completion, a replaced session): there is no later
  *  resume to explain, and no death to suppress — and any mark an EARLIER retirement left is void, so
  *  this clears it rather than leaving a promise of a resume that is never coming. The mark is written
- *  BEFORE the signal so a frizz that dies mid-teardown still leaves the truth on disk. */
-export function killBroker(stateDir: string, sessionId: string, retireReason?: BrokerRetirementReason): boolean {
+ *  BEFORE the signal so a frizz that dies mid-teardown still leaves the truth on disk.
+ *
+ *  The signal goes through endDaemonTree (daemon-tree.ts): SIGTERM on POSIX, where the daemon's own
+ *  handler and the SDK's exit cleanup end `claude` under it, and `taskkill /T /F` on Windows, where a
+ *  signal is TerminateProcess of the daemon ALONE and `claude.exe` kept running its turn — tools
+ *  executing, files changing — behind a card that read stopped (Windows audit 2026-09-11, finding 5).
+ *  `deps` is the seam a test routes through. */
+export function killBroker(stateDir: string, sessionId: string, retireReason?: BrokerRetirementReason, deps: EndDaemonTreeDeps = {}): boolean {
   const recordPath = claudeBrokerRecordPath(stateDir, sessionId)
   const record = liveBrokerRecord(recordPath)
   if (retireReason) { if (record) markBrokerRetired(stateDir, sessionId, retireReason, record.generation) }
   else takeBrokerRetirement(stateDir, sessionId)
-  if (record) { rememberBrokerIdentity(recordPath, record); try { process.kill(record.daemonPid, "SIGTERM") } catch {} }
+  if (record) { rememberBrokerIdentity(recordPath, record); endDaemonTree(record.daemonPid, "SIGTERM", deps) }
   try { unlinkSync(recordPath) } catch {}
   return record !== null
 }

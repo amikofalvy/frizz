@@ -13,6 +13,7 @@ import {
   buildClaudeQuestionInteraction,
   claudeQuestionDecisionFor,
   parseClaudeAskUserQuestion,
+  tildePath,
 } from "./claude-permission-interactions.ts"
 import type { ClaudePermissionRequest } from "./claude-agent-sdk-protocol.ts"
 
@@ -244,4 +245,17 @@ test("an oversized option preview degrades to a minimal echo instead of failing 
   assert.equal(questions.length, 1)
   assert.deepEqual(questions[0].options, [{ label: "Grid", description: "Cards" }, { label: "List", description: "Rows" }])
   assert.equal(JSON.stringify(updated).includes("x".repeat(100)), false, "the oversized preview is gone")
+})
+
+// The permission card leads with the cwd, `~`-shortened so it stays narrow. The remainder after the
+// home prefix opens with `\` on Windows, and the old `/`-only check showed those in full (Windows
+// audit 2026-09-11, finding 14).
+test("tildePath collapses the home prefix under either separator, and never a sibling that merely shares the prefix", () => {
+  assert.equal(tildePath("/Users/op/code/frizz", "/Users/op"), "~/code/frizz")
+  assert.equal(tildePath("/Users/op", "/Users/op"), "~")
+  assert.equal(tildePath("/Users/operator/x", "/Users/op"), "/Users/operator/x", "a longer sibling is not under home")
+  assert.equal(tildePath("C:\\Users\\op\\code\\frizz", "C:\\Users\\op"), "~\\code\\frizz")
+  assert.equal(tildePath("C:\\Users\\op", "C:\\Users\\op"), "~")
+  assert.equal(tildePath("C:\\Users\\operator\\x", "C:\\Users\\op"), "C:\\Users\\operator\\x")
+  assert.equal(tildePath("/elsewhere/op", "/Users/op"), "/elsewhere/op")
 })

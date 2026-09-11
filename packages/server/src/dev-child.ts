@@ -49,6 +49,27 @@ function notifySupervisor(message: Record<string, unknown>): void {
   }
 }
 
+// The supervisor's stop is a CLOSED IPC CHANNEL, not a signal: `stopChild` calls `child.disconnect()`
+// and waits for this process to exit on its own, signalling only if it does not. It has to be, because
+// on Windows every signal Node can send is a TerminateProcess, so the shutdown below never ran there
+// and every Restart or update cut the board off mid-request (audit 2026-09-11, finding 3). A crashed
+// supervisor leaves the same event behind, and both mean the same thing: go.
+//
+// Installed from the first line rather than after the server is up, for two reasons. A stop that
+// lands mid-boot used to be a SIGTERM that Node's default handler answered at once; waiting for the
+// boot to finish and then draining would turn a Ctrl-C during startup into a wait of many seconds.
+// And a listener added only after `startServer` resolved never sees an event that already fired,
+// which left a control plane orphaned whenever the supervisor died during the boot.
+let shutdown: (() => Promise<void>) | undefined
+process.once("disconnect", () => {
+  if (shutdown) {
+    void shutdown()
+    return
+  }
+  frizzLog.info("dev-child", "supervisor disconnected before the server was up; exiting")
+  process.exit(0)
+})
+
 try {
   const target = projectLaunchTargetFromEnvironment(process.env)
   const launchOwnerToken = projectLaunchOwnerTokenFromEnvironment(process.env)
@@ -89,7 +110,7 @@ try {
   })
 
   let shuttingDown = false
-  const shutdown = async () => {
+  const stop = async () => {
     if (shuttingDown) return
     shuttingDown = true
     const force = setTimeout(() => process.exit(1), 15_000)
@@ -116,12 +137,14 @@ try {
     }
   }
 
+  // From here the supervisor's ask (the 'disconnect' listener installed above) drains the server
+  // instead of exiting outright.
+  shutdown = stop
   // Keep the guard installed for repeated same-kind signals so they cannot restore Node's default
-  // immediate termination while the server's bounded shutdown barrier is draining.
-  process.on("SIGINT", () => void shutdown())
-  process.on("SIGTERM", () => void shutdown())
-  // A crashed/killed supervisor must not leave an unsupervised control plane behind.
-  process.once("disconnect", () => void shutdown())
+  // immediate termination while the server's bounded shutdown barrier is draining. On POSIX these
+  // are the supervisor's ESCALATION after the ask went unanswered, and an operator's own Ctrl-C.
+  process.on("SIGINT", () => void stop())
+  process.on("SIGTERM", () => void stop())
 } catch (err) {
   frizzLog.error("dev-child", `failed to start: ${err instanceof Error ? err.stack ?? err.message : err}`)
   process.exit(1)
