@@ -263,3 +263,22 @@ test("retrying from failed with an old poll in flight never reloads onto the old
   assert.equal(plane.state, "ready")
   assert.equal(readyBelieved(plane, successor), true)
 })
+
+// The old launcher's drain window can be shorter than one poll, so "restarting" may never be observed
+// after the ack; the successor's own "ready", naming a different build, is then the first post-ack
+// answer, and it must settle the attempt or the tab waits out the whole hold under an overlay while
+// the new build serves (seen on the Windows run, 2026-09-11).
+test("a post-ack ready naming a different build settles the attempt; the same build's ready does not", () => {
+  const attempt = { startedAt: 1_000, ackedAt: 1_500, build: "npm:frizz@0.12.12" }
+  const pending = { state: "restarting" as const, message: null, attempt }
+  const same = { state: "ready" as const, message: undefined, requestedAt: 1_600, artifactDigest: "npm:frizz@0.12.12", version: "0.12.12" }
+  const successor = { state: "ready" as const, message: undefined, requestedAt: 1_700, artifactDigest: "npm:frizz@0.12.13", version: "0.12.13" }
+  assert.equal(nextControlPlane(pending, same), pending)
+  assert.deepEqual(nextControlPlane(pending, successor), { state: "ready", message: null, attempt: null })
+  // Before the ack even the successor's answer cannot speak for the attempt.
+  const unacked = { ...pending, attempt: { ...attempt, ackedAt: null } }
+  assert.equal(nextControlPlane(unacked, successor), unacked)
+  // No identity recorded at the click: only a non-ready settles, as before.
+  const blind = { ...pending, attempt: { startedAt: 1_000, ackedAt: 1_500 } }
+  assert.equal(nextControlPlane(blind, successor), blind)
+})

@@ -174,6 +174,14 @@ export interface RestartAttempt {
   startedAt: number
   /** The instant the supervisor accepted the transition (the POST resolved); null across the pre-ack window. */
   ackedAt: number | null
+  /**
+   * The build identity the board showed at the click. A post-ack "ready" naming a DIFFERENT one is the
+   * successor itself answering, which settles the attempt as surely as a "restarting" would: the old
+   * launcher's drain window can be shorter than one poll, so "restarting" is not guaranteed to be
+   * observed at all, and without this the tab waited out the whole hold under an overlay while the
+   * new build served (2026-09-11). Absent means no identity was known, so only a non-"ready" settles.
+   */
+  build?: string | null
 }
 
 /** What the board believes about the supervisor, plus the optimistic attempt (if any) it is holding against the poll. */
@@ -196,9 +204,16 @@ export function answerFollowsAck(attempt: RestartAttempt, answer: Pick<StampedSu
  * prepare phase (or a stale read) and keeps the hold; anything requested before the ack, whatever it
  * says, belongs to the world before this attempt and is ignored.
  */
-export function nextControlPlane(prev: ControlPlane, answer: Pick<StampedSupervisorStatus, "state" | "message" | "requestedAt">): ControlPlane {
-  if (prev.attempt && !(answerFollowsAck(prev.attempt, answer) && answer.state !== "ready")) return prev
+export function nextControlPlane(prev: ControlPlane, answer: Pick<StampedSupervisorStatus, "state" | "message" | "requestedAt" | "artifactDigest" | "version">): ControlPlane {
+  if (prev.attempt && !(answerFollowsAck(prev.attempt, answer) && answerSettles(prev.attempt, answer))) return prev
   return { state: answer.state, message: answer.message ?? null, attempt: null }
+}
+
+/** A post-ack answer speaks for the attempt when it is not "ready", or when it is a different build's "ready". */
+function answerSettles(attempt: RestartAttempt, answer: Pick<StampedSupervisorStatus, "state" | "artifactDigest" | "version">): boolean {
+  if (answer.state !== "ready") return true
+  const build = answer.artifactDigest ?? answer.version ?? null
+  return attempt.build != null && build !== null && build !== attempt.build
 }
 
 /**

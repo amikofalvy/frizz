@@ -12,6 +12,7 @@ import {
   restartFailureOutcome,
   UPDATE_RESTART_FROM_VERSION,
   type RestartFailureOutcome,
+  frizzBuildIdentity,
 } from "../api/restart.ts"
 import { useSupervisorStatus } from "../api/supervisorStatus.ts"
 import { showToast, store } from "../store.ts"
@@ -331,7 +332,7 @@ export function RestartFrizzButton() {
       // `ackedAt` stays null until then: with no ack instant, NO answer can speak for this attempt.
       store.controlPlaneState = "restarting"
       store.controlPlaneMessage = null
-      store.controlPlaneRestartAttempt = { startedAt: Date.now(), ackedAt: null }
+      store.controlPlaneRestartAttempt = { startedAt: Date.now(), ackedAt: null, build: frizzBuildIdentity(status) }
     }
     try {
       if (updateAvailable) await requestFrizzUpdateRestart()
@@ -351,7 +352,7 @@ export function RestartFrizzButton() {
         if (requested.current.version) sessionStorage.setItem(UPDATE_RESTART_FROM_VERSION, requested.current.version)
         else sessionStorage.removeItem(UPDATE_RESTART_FROM_VERSION)
         const attempt = store.controlPlaneRestartAttempt
-        if (attempt) store.controlPlaneRestartAttempt = { startedAt: attempt.startedAt, ackedAt: Date.now() }
+        if (attempt) store.controlPlaneRestartAttempt = { ...attempt, ackedAt: Date.now() }
         window.dispatchEvent(new Event(FRIZZ_SUPERVISOR_STATUS_WAKE_EVENT))
         setBusy(false)
       } else {
