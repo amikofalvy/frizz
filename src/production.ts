@@ -429,6 +429,7 @@ async function runSupervisor(port: number, token: string, onPrepared: () => void
   activityReadout?.notice("progress", "Starting", "loading the selected Frizz server release");
   let active = await store.load();
   let pending: ServerGeneration | undefined;
+  let previous = active;
   onPrepared();
 
   // Whether the registry actually has something newer, refreshed on a timer and READ FROM CACHE.
@@ -483,9 +484,11 @@ async function runSupervisor(port: number, token: string, onPrepared: () => void
     // the last place to learn what happened to it.
     onActivity: (event) => renderSupervisorActivity(activityReadout, event),
     updateRestart: async () => {
+      previous = active;
       try {
         const plan = await planRegistryUpdate(spec.package, active.version, installer);
         if (!plan) { updateAvailable = false; updateVersion = undefined; return { state: "failed" as const, message: `Frizz ${active.version} is already current` }; }
+        updateAvailable = true;
         updateVersion = plan.latestVersion;
         // Install while the current server serves. Selection remains provisional until the new
         // child is ready; the durable launcher, listener, terminal and tunnels never move.
@@ -503,7 +506,11 @@ async function runSupervisor(port: number, token: string, onPrepared: () => void
       updateAvailable = false;
       updateVersion = undefined;
     },
-    rollbackUpdate: () => { pending = undefined; },
+    rollbackUpdate: () => {
+      if (active.id !== previous.id) store.commit(previous);
+      active = previous;
+      pending = undefined;
+    },
   });
   // The first single-use link, minted now that the board can redeem it. The old `?frizz_token=` this
   // replaced was a STANDING secret: it never expired and never rotated, so anything that saw it once
