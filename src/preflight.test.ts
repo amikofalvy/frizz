@@ -41,7 +41,7 @@ function ptyInstall(mode: number, platform: NodeJS.Platform = "darwin") {
 
 test("core launch preflight accepts a supported Node host with git", () => {
   assert.doesNotThrow(() =>
-    assertLaunchPrerequisites({ nodeVersion: "22.13.0", command: () => true })
+    assertLaunchPrerequisites({ nodeVersion: "22.15.0", command: () => true })
   );
 });
 
@@ -54,21 +54,21 @@ test("core launch preflight accepts newer Node majors", () => {
 test("core launch preflight rejects a Node host below the dependency floor", () => {
   assert.throws(
     () => assertLaunchPrerequisites({ nodeVersion: "18.20.0", command: () => true }),
-    /Node\.js \^22\.13\.0 \|\| >=23\.4\.0 is required \(found 18\.20\.0\)/
+    /Node\.js \^22\.15\.0 \|\| >=23\.11\.0 is required \(found 18\.20\.0\)/
   );
 });
 
 test("core launch preflight rejects Node 20, which predates node:sqlite entirely", () => {
   assert.throws(
     () => assertLaunchPrerequisites({ nodeVersion: "20.19.0", command: () => true }),
-    /Node\.js \^22\.13\.0 \|\| >=23\.4\.0 is required \(found 20\.19\.0\)/
+    /Node\.js \^22\.15\.0 \|\| >=23\.11\.0 is required \(found 20\.19\.0\)/
   );
 });
 
 test("core launch preflight rejects an old 22.x minor below the floor", () => {
   assert.throws(
     () => assertLaunchPrerequisites({ nodeVersion: "22.11.0", command: () => true }),
-    /Node\.js \^22\.13\.0 \|\| >=23\.4\.0 is required \(found 22\.11\.0\)/
+    /Node\.js \^22\.15\.0 \|\| >=23\.11\.0 is required \(found 22\.11\.0\)/
   );
 });
 
@@ -76,7 +76,7 @@ test("core launch preflight rejects an old 22.x minor below the floor", () => {
 // A project is now a directory (project-root.ts), so a machine with no git launches fine.
 test("a missing git no longer blocks a launch", () => {
   assert.doesNotThrow(() =>
-    assertLaunchPrerequisites({ nodeVersion: "22.13.0", command: (name) => name !== "git" })
+    assertLaunchPrerequisites({ nodeVersion: "22.15.0", command: (name) => name !== "git" })
   );
 });
 
@@ -95,7 +95,7 @@ test("the eager executable probe leaves the Node floor to the full prerequisite 
   assert.doesNotThrow(() => assertRequiredExecutables(() => true));
   assert.throws(
     () => assertLaunchPrerequisites({ nodeVersion: "20.19.0", command: () => true }),
-    /Node\.js \^22\.13\.0 \|\| >=23\.4\.0 is required/
+    /Node\.js \^22\.15\.0 \|\| >=23\.11\.0 is required/
   );
 });
 
@@ -116,25 +116,37 @@ test("the published engines floor is exactly the floor the launcher enforces", (
 // Measured, not derived. `node:sqlite` was unflagged in 22.13 and 23.4; below that the import fails
 // outright with "No such built-in module". Confirmed by running the driver's own suite (sqlite.test.ts)
 // on 22.12, 22.13, 22.14, 23.4, 23.6, 24 and 26 — every release from 22.13 up passes it whole, and
-// 22.12 is the only one that fails, at import. A floor written as plain `>=22.13` would wrongly
-// advertise 23.0-23.3, where the module does not exist either, hence a floor per release line.
-test("the Node floor tracks the releases node:sqlite actually ships in", () => {
-  for (const version of ["22.13.0", "22.14.0", "22.23.1", "23.4.0", "23.6.0", "23.11.0", "24.17.0", "25.9.0", "26.5.0"]) {
+// 22.12 is the only one that fails, at import. `process.execve`, which Update Frizz needs to reload
+// the launcher in place, came later: `undefined` on 22.13.0, 22.14.0, 23.4.0 and 23.10.0, a function
+// on 22.15.0, 23.11.0 and 24.0.0 (audit 2026-09-11, finding 7), and a Node without it silently took
+// the detached fallback meant for Windows. A floor written as plain `>=22.15` would wrongly advertise
+// 23.0-23.10, hence a floor per release line.
+test("the Node floor tracks the releases that ship both node:sqlite and process.execve", () => {
+  for (const version of ["22.15.0", "22.16.0", "22.23.1", "23.11.0", "24.0.0", "24.17.0", "25.9.0", "26.5.0"]) {
     assert.doesNotThrow(
       () => assertLaunchPrerequisites({ nodeVersion: version, command: () => true }),
-      `${version} ships node:sqlite and was measured to run the driver suite`
+      `${version} ships node:sqlite and process.execve`
     );
   }
-  for (const version of ["20.11.0", "21.7.0", "22.0.0", "22.11.0", "22.12.0", "23.0.0", "23.3.0"]) {
+  for (const version of ["20.11.0", "21.7.0", "22.0.0", "22.11.0", "22.12.0", "22.13.0", "22.14.0", "23.0.0", "23.3.0", "23.4.0", "23.10.0"]) {
     assert.throws(
       () => assertLaunchPrerequisites({ nodeVersion: version, command: () => true }),
       /is required/,
-      `${version} has no node:sqlite and must be refused`
+      `${version} lacks node:sqlite or process.execve and must be refused`
     );
   }
-  assert.equal(supportedNodeRange(), "^22.13.0 || >=23.4.0");
+  assert.equal(supportedNodeRange(), "^22.15.0 || >=23.11.0");
   // MINIMUM_NODE stays the lowest supported release, for callers that want a single number.
-  assert.deepEqual({ ...MINIMUM_NODE }, { major: 22, minor: 13 });
+  assert.deepEqual({ ...MINIMUM_NODE }, { major: 22, minor: 15 });
+});
+
+// The refusal has to say WHY the floor sits where it does, or an operator on 22.14 — where the
+// database works — reads it as wrong and works around it.
+test("the Node floor message names the in-place update as a reason", () => {
+  assert.throws(
+    () => assertLaunchPrerequisites({ nodeVersion: "22.14.0", command: () => true }),
+    /in-place update needs process\.execve/
+  );
 });
 
 // The floor has drifted TWICE, and both times a hand-maintained number went stale against a native
@@ -194,7 +206,7 @@ test("provider readiness disables only the unavailable backend and never require
   assert.deepEqual(seen, ["claude", "codex"]);
   assert.doesNotThrow(() =>
     assertLaunchPrerequisites({
-      nodeVersion: "22.13.0",
+      nodeVersion: "22.15.0",
       command: (name) => name === "git",
     })
   );
