@@ -1136,7 +1136,12 @@ export async function runningFrizzStatus(options: {
   timeout.unref?.();
   let control: { version?: string; state?: string; message?: string } = {};
   try {
-    const response = await fetcher(`http://127.0.0.1:${owner.port}${FRIZZ_ROUTE_PREFIX}/control/status`, { signal: controller.signal });
+    // Same-origin gated, and Node's fetch carries no Origin: without this every read was a 403 and
+    // `--status` printed "version: unknown" for a healthy board (measured on Windows 2026-09-11).
+    const response = await fetcher(`http://127.0.0.1:${owner.port}${FRIZZ_ROUTE_PREFIX}/control/status`, {
+      signal: controller.signal,
+      headers: { origin: `http://127.0.0.1:${owner.port}`, "cache-control": "no-store" },
+    });
     if (response.ok) {
       const body = (await response.json()) as { version?: unknown; state?: unknown; message?: unknown };
       control = {

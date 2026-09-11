@@ -371,6 +371,11 @@ function describeExit(code: number | null, signal: NodeJS.Signals | null): strin
 }
 
 /** One read of a launcher's status route, for the successor watch: undefined when nothing answers. */
+/** The headers a launcher-side read of the supervisor's control routes needs to be answered at all. */
+export function launcherControlHeaders(port: number): Record<string, string> {
+  return { origin: `http://127.0.0.1:${port}`, "cache-control": "no-store" };
+}
+
 export async function readLauncherStatus(
   port: number,
   fetcher: typeof fetch = fetch
@@ -379,7 +384,13 @@ export async function readLauncherStatus(
   const timeout = setTimeout(() => controller.abort(), 1_000);
   timeout.unref?.();
   try {
-    const response = await fetcher(`http://127.0.0.1:${port}${FRIZZ_ROUTE_PREFIX}/control/status`, { signal: controller.signal });
+    // The status route is same-origin gated: a request carrying neither Origin nor fetch metadata is
+    // refused, and Node's fetch sends neither, so every read answered 403 and the successor wait ran
+    // to its deadline on Windows (measured 2026-09-11). Say who is asking, the way a tab would.
+    const response = await fetcher(`http://127.0.0.1:${port}${FRIZZ_ROUTE_PREFIX}/control/status`, {
+      signal: controller.signal,
+      headers: launcherControlHeaders(port),
+    });
     if (!response.ok) return undefined;
     const body = (await response.json()) as { version?: unknown; state?: unknown };
     return {

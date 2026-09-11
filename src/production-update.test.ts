@@ -245,7 +245,13 @@ test("a successor that exits before answering fails the handoff with its exit an
 });
 
 test("the status read used by the wait yields the version, and undefined for anything that is not a launcher answering", async () => {
-  const answering = (async () => new Response(JSON.stringify({ protocol: 1, state: "starting", version: "1.3.0" }))) as typeof fetch;
+  // The route is same-origin gated and refuses a bare Node fetch with 403; the read must say who is
+  // asking or it never sees a version (measured on Windows 2026-09-11).
+  const answering = (async (_url: unknown, init?: RequestInit) => {
+    const origin = new Headers(init?.headers).get("origin");
+    if (origin !== "http://127.0.0.1:4917") return new Response("Forbidden", { status: 403 });
+    return new Response(JSON.stringify({ protocol: 1, state: "starting", version: "1.3.0" }));
+  }) as typeof fetch;
   assert.deepEqual(await readLauncherStatus(4917, answering), { version: "1.3.0", state: "starting" });
   const refused = (async () => { throw new Error("ECONNREFUSED"); }) as typeof fetch;
   assert.equal(await readLauncherStatus(4917, refused), undefined);
