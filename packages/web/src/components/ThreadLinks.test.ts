@@ -3,7 +3,7 @@ import test from "node:test"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 import { ThreadLinks } from "./ThreadLinks.tsx"
-import { CHILD_ARROW } from "../lib/childOps.ts"
+import { CHILD_ARROW, CHILD_KIND_TAG_CLASS, CHILD_MARK_SLOT_CLASS } from "../lib/childOps.ts"
 
 test("registered destinations keep the selected row grammar without advertising live work", () => {
   const html = renderToStaticMarkup(createElement(ThreadLinks, { links: [
@@ -38,6 +38,20 @@ test("a saved-reference row carries no vertical padding or line-height of its ow
     assert.doesNotMatch(cls, /(^|\s)leading-/, `row line-height leaked in: ${cls}`)
     assert.match(cls, /(^|\s)items-baseline(\s|$)/, "the icon's cap-band correction needs a baseline row")
   }
+})
+
+// The label starts where every other label on the strip starts: the mark slot and the kind tag are the
+// child-op row's own (lib/childOps.ts), not a wider slot and a 33px column of this row's making
+// (maintainer 2026-09-11: "The label is further to the right. Why? There's no reason for that at all").
+test("a saved-reference row shares the child-op row's mark slot and tag column", () => {
+  const html = renderToStaticMarkup(createElement(ThreadLinks, { links: [
+    { id: "lnk_url", kind: "link", label: "Open dev server", target: "http://localhost:5173/" },
+    { id: "lnk_file", kind: "file", label: "Working plan", target: "/tmp/plan.md" },
+  ] }))
+  const tagClasses = [...html.matchAll(/data-link-kind="[^"]*" class="([^"]*)"/g)].map((m) => m[1])
+  assert.deepEqual(tagClasses, [CHILD_KIND_TAG_CLASS, CHILD_KIND_TAG_CLASS])
+  assert.equal(html.split(`<span class="${CHILD_MARK_SLOT_CLASS} -mt-[1em] self-baseline"><svg `).length - 1, 2, "each icon sits in the 9px mark slot")
+  assert.doesNotMatch(html, /w-\[33px\]|text-\[9px\]/)
 })
 
 test("no registrations means no divider or empty heading", () => {

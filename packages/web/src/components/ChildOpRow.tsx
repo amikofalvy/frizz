@@ -11,6 +11,8 @@ import {
   CHILD_DISMISS_NOUN,
   CHILD_DISMISS_TITLE,
   CHILD_DISMISS_VERB,
+  CHILD_KIND_TAG_CLASS,
+  CHILD_MARK_SLOT_CLASS,
   CHILD_OPEN_TITLE,
   CHILD_QUIET_SHELL_TITLE,
   CHILD_RESTED_DOT_CLASS,
@@ -122,16 +124,16 @@ export function ChildOpRow({
   // ONE HUE PER RUNTIME CONCERN, and the row is the only place they are named. A sub-agent pulses the
   // accent-yellow, a background shell the azure blue, a PR watcher the green.
   const LIVE_DOT_HUE = { AGENT: "frizz-live-dot--agent", SHELL: "frizz-live-dot--shell", GITHUB: "frizz-live-dot--github" } as const
-  // THE TAG IS FIVE CHARACTERS ON EVERY KIND, and that is a LAYOUT constraint rather than a naming
-  // preference. There is no shared track behind this column — each row is its own flex line — so the
-  // labels line up only while the tags measure the same. `GITHUB` is six, and under the mono stack
-  // (where five-letter tags are pixel-identical at 21.39px) it pushed its own label 4.3px right of every
-  // other row. `WATCH` is also the more accurate word: the row is a watch on a PR, and the green dot
-  // beside it already says which service.
+  // THE TAG IS FIVE CHARACTERS ON EVERY KIND. `GITHUB` is six, and before this column had a track of
+  // its own it pushed that row's label 4.3px right of every other row under the mono stack (where
+  // five-letter tags are pixel-identical at 21.39px). `WATCH` is also the more accurate word: the row is
+  // a watch on a PR, and the green dot beside it already says which service.
   //
-  // The SANS stack is a different story and is NOT fixed here: AGENT measures 30.33px against SHELL's
-  // 28.33px, so that column has always been ~2px ragged there. Closing it needs a grid track shared
-  // across rows, which is a real refactor of this component; this only declines to make it worse.
+  // The column IS a shared track now: CHILD_KIND_TAG_CLASS carries `.frizz-kind-tag` (styles.css), a
+  // fixed per-font width, so the labels line up whatever a tag measures — on these rows and on the
+  // File/Link rows that share the strip beneath them. That is what closed the ~2px AGENT-vs-SHELL
+  // raggedness the sans stack used to carry. Keep the words five letters anyway: the mono track is
+  // sized to exactly that width.
   const KIND_TAG = { AGENT: "AGENT", SHELL: "SHELL", GITHUB: "WATCH" } as const
   const clickable = !!onOpen
   const rail = density === "rail"
@@ -165,7 +167,7 @@ export function ChildOpRow({
     // THE DOT IS LIFTED OFF THE FLEX CENTRE — see `.frizz-op-dot-slot` in styles.css for the readings
     // and for why the correction is font-scoped. `items-center` centres the dot's BOX on the line; the
     // eye reads it against the CAP BAND of the label beside it, and the two are not the same place.
-    <span className="frizz-op-dot-slot flex w-[9px] shrink-0 justify-center">
+    <span className={`frizz-op-dot-slot ${CHILD_MARK_SLOT_CLASS}`}>
       {running ? (
         // A running SHELL pulses blue, a running sub-AGENT pulses the accent-yellow.
         <span
@@ -201,7 +203,7 @@ export function ChildOpRow({
     <>
       <span aria-hidden className={CHILD_ARROW_CLASS}>{CHILD_ARROW}</span>
       {indicator}
-      {sheet && <span className="petite-caps shrink-0 text-[9.5px] text-muted/45">{KIND_TAG[kind]}</span>}
+      {sheet && <span className={CHILD_KIND_TAG_CLASS}>{KIND_TAG[kind]}</span>}
       <span className={`min-w-0 truncate text-muted/70 ${rail ? "leading-[16px]" : clickable ? "group-hover:text-fg/80 group-hover:underline" : ""}`}>{label}</span>
     </>
   )
