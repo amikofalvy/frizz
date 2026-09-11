@@ -61,7 +61,7 @@ import {
 import { createSupervisorShutdownHandler, startDevSupervisor } from "@frizz/server/dev-supervisor";
 import {
   handoffToRegistrySuccessor, npmRegistryReleaseAdapter, planRegistryUpdate, PRODUCTION_PRINT_LAUNCHER_FLAG, PRODUCTION_REEXEC_FLAG,
-  reexecIntoRegistrySuccessor, resolveRegistrySuccessor, type RegistrySuccessor,
+  reexecArgv, reexecIntoRegistrySuccessor, resolveRegistrySuccessor, type RegistrySuccessor,
 } from "./production-update.ts";
 import {
   assertLaunchPrerequisites,
@@ -111,7 +111,9 @@ if (rawArgs.includes(PRODUCTION_PRINT_LAUNCHER_FLAG)) {
   console.log(fileURLToPath(import.meta.url));
   process.exit(0);
 }
-const args = rawArgs.filter((arg) => arg !== PRODUCTION_REEXEC_FLAG);
+// A re-exec'd launch was started by the PREVIOUS release, whose argv may carry a project directory this
+// release refuses (0.7.0–0.12.10 all append one); see reexecArgv. A human's argv is parsed as written.
+const args = reexec ? reexecArgv(rawArgs) : rawArgs;
 const fail = (error: unknown): never => {
   console.error(`frizz: ${error instanceof Error ? error.message : error}`);
   process.exit(1);

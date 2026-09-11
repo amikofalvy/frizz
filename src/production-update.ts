@@ -96,6 +96,39 @@ export function successorArgs(port: number): string[] {
 }
 
 /**
+ * The argv a re-exec'd launcher hands to parseCliArgs: its own raw argv with the re-exec flag removed,
+ * and with the project directory an OLDER launcher still appends dropped rather than refused.
+ *
+ * The launcher that starts a successor is the PREVIOUS release, so the argv arriving here was chosen
+ * by code that already shipped. Every registry launcher from 0.7.0 — bc037f17, the commit that made
+ * parseCliArgs refuse a positional — through 0.12.10 hands its successor
+ * `--_frizz-production-reexec --port <n> <projectDir>`, and by the time the successor reads it the old
+ * launcher has drained its board and quit. A successor that refuses the path is therefore one no
+ * install in the field can update INTO: measured 2026-09-11 against the published 0.12.10 updating to
+ * 0.12.11 — "Frizz 0.12.11 is taking over on port 47110", ECONNREFUSED one second later, never back.
+ * That is the failure users report as "the update button kills Frizz and I have to run npx again".
+ *
+ * The directory carries nothing the successor needs: a re-exec'd launch reads its pinned project out
+ * of the environment (projectLaunchTargetFromEnvironment), which every one of those releases sets the
+ * same way. So it is dropped here, never honoured — the refusal in parseCliArgs still guards a human's
+ * `frizz /some/repo`. Flags and the value after `--port` pass through untouched.
+ */
+export function reexecArgv(rawArgs: readonly string[]): string[] {
+  const kept: string[] = [];
+  for (let index = 0; index < rawArgs.length; index++) {
+    const arg = rawArgs[index]!;
+    if (arg === PRODUCTION_REEXEC_FLAG) continue;
+    if (arg === "--port" || arg === "--sign-out") {
+      kept.push(arg);
+      if (index + 1 < rawArgs.length) kept.push(rawArgs[++index]!);
+      continue;
+    }
+    if (arg.startsWith("-")) kept.push(arg);
+  }
+  return kept;
+}
+
+/**
  * Ask npm for a separate, immutable execution cache holding the planned release, and locate its
  * launcher bundle. This never edits the package directory npx is currently executing, which might be
  * shared or deleted by npm while the durable supervisor is still live.

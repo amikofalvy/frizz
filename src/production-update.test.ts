@@ -10,6 +10,7 @@ import {
   planRegistryUpdate,
   reexecIntoRegistrySuccessor,
   resolveRegistrySuccessor,
+  reexecArgv,
   successorArgs,
   type RegistryReleaseAdapter,
   type RegistrySuccessor,
@@ -46,6 +47,20 @@ test("the successor's argv is one parseCliArgs accepts: the re-exec flag, the po
   assert.deepEqual(args, [PRODUCTION_REEXEC_FLAG, "--port", "4917"]);
   const parsed = parseCliArgs(args.filter((arg) => arg !== PRODUCTION_REEXEC_FLAG));
   assert.equal(parsed.port, 4917);
+});
+
+// The other half of that failure, seen from the SUCCESSOR: the launcher that starts it is the previous
+// release, and every release from 0.7.0 to 0.12.10 still appends the project directory. A successor that
+// refuses it is one no install in the field can update into (measured 2026-09-11: 0.12.10 -> 0.12.11
+// printed "taking over", then ECONNREFUSED for good). The directory is dropped; the port survives.
+test("a re-exec'd launcher drops the project directory an older launcher appends, and keeps its port", () => {
+  const legacy = [PRODUCTION_REEXEC_FLAG, "--port", "4917", "/Users/someone/code/app"];
+  assert.deepEqual(reexecArgv(legacy), ["--port", "4917"]);
+  assert.equal(parseCliArgs(reexecArgv(legacy)).port, 4917);
+  // The current successor argv is unchanged by the same pass.
+  assert.deepEqual(reexecArgv(successorArgs(4917)), ["--port", "4917"]);
+  // Flags survive in place, and a directory before the flags is dropped too.
+  assert.deepEqual(reexecArgv(["/repo", PRODUCTION_REEXEC_FLAG, "--no-app", "--port=4918"]), ["--no-app", "--port=4918"]);
 });
 
 test("resolving the successor installs it through npm exec and reads its launcher entry off stdout", async () => {
