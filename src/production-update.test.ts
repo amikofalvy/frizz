@@ -7,6 +7,7 @@ import {
   PRODUCTION_PRINT_LAUNCHER_FLAG,
   PRODUCTION_REEXEC_FLAG,
   handoffToRegistrySuccessor,
+  compareReleaseVersions,
   planRegistryUpdate,
   reexecIntoRegistrySuccessor,
   resolveRegistrySuccessor,
@@ -19,6 +20,16 @@ import {
 const plan = { packageName: "frizz", currentVersion: "1.2.3", latestVersion: "1.3.0", packageSpec: "frizz@1.3.0" };
 // A file that exists, standing in for the successor's launcher bundle.
 const thisFile = fileURLToPath(import.meta.url);
+
+test("release ordering follows numeric prerelease identifiers rather than lexical order", () => {
+  const ascending = ["1.0.0-alpha", "1.0.0-alpha.1", "1.0.0-alpha.2", "1.0.0-alpha.10", "1.0.0-alpha.beta", "1.0.0-beta", "1.0.0", "1.0.1"];
+  for (let index = 1; index < ascending.length; index++) {
+    assert.equal(compareReleaseVersions(ascending[index - 1]!, ascending[index]!), -1);
+    assert.equal(compareReleaseVersions(ascending[index]!, ascending[index - 1]!), 1);
+  }
+  assert.equal(compareReleaseVersions("1.2.3+build.1", "1.2.3+build.2"), 0);
+  assert.equal(compareReleaseVersions("1.0.0-01", "1.0.0"), null);
+});
 
 function fakeChild() {
   const child = new EventEmitter() as EventEmitter & { unrefCalls: number; unref(): void };

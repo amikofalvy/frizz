@@ -51,9 +51,11 @@ export interface RegistrySuccessor {
  */
 export function compareReleaseVersions(a: string, b: string): number | null {
   const parse = (value: string) => {
-    const match = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/u.exec(value);
+    const match = /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u.exec(value);
     if (!match) return null;
-    return { numeric: [Number(match[1]), Number(match[2]), Number(match[3])], prerelease: match[4] };
+    const prerelease = match[4]?.split(".");
+    if (prerelease?.some((part) => /^0\d+$/u.test(part))) return null;
+    return { numeric: [BigInt(match[1]!), BigInt(match[2]!), BigInt(match[3]!)], prerelease };
   };
   const left = parse(a);
   const right = parse(b);
@@ -62,10 +64,22 @@ export function compareReleaseVersions(a: string, b: string): number | null {
     const delta = left.numeric[index]! - right.numeric[index]!;
     if (delta) return delta < 0 ? -1 : 1;
   }
-  if (left.prerelease === right.prerelease) return 0;
+  if (!left.prerelease && !right.prerelease) return 0;
   if (!left.prerelease) return 1;
   if (!right.prerelease) return -1;
-  return left.prerelease < right.prerelease ? -1 : 1;
+  for (let index = 0; index < Math.max(left.prerelease.length, right.prerelease.length); index++) {
+    const a = left.prerelease[index];
+    const b = right.prerelease[index];
+    if (a === b) continue;
+    if (a === undefined) return -1;
+    if (b === undefined) return 1;
+    const aNumeric = /^\d+$/u.test(a);
+    const bNumeric = /^\d+$/u.test(b);
+    if (aNumeric && bNumeric) return BigInt(a) < BigInt(b) ? -1 : 1;
+    if (aNumeric !== bNumeric) return aNumeric ? -1 : 1;
+    return a < b ? -1 : 1;
+  }
+  return 0;
 }
 
 export async function planRegistryUpdate(

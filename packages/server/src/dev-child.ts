@@ -13,6 +13,13 @@ import {
 } from "./project-launch.ts"
 import { ShutdownTimeoutError } from "./shutdown.ts"
 import { log as frizzLog } from "./logging.ts"
+import { ensureNativeHelperPermissions } from "./native-helper.ts"
+
+// Install before ANY async boot work. A supervisor killed while startServer opens its databases
+// must not leave an orphan that later starts schedulers. Once ready, use the full graceful drain.
+let onOwnerDisconnect: () => void = () => process.exit(1)
+process.once("disconnect", () => onOwnerDisconnect())
+if (typeof process.send === "function" && !process.connected) process.exit(1)
 
 // A control-plane child that dies must leave its reason in the run log, not only on a terminal the
 // launcher may have already repainted past. Its stdio is still inherited, so an uncaught stack would
@@ -54,6 +61,7 @@ try {
   const launchOwnerToken = projectLaunchOwnerTokenFromEnvironment(process.env)
   if (!target || !launchOwnerToken) throw new Error("dev child is missing pinned project launch ownership")
   verifyProjectLaunchDelegate(target, launchOwnerToken)
+  ensureNativeHelperPermissions()
   const { startServer } = await import("./index.ts")
   const project = projectFromLaunchTarget(target)
   const stableWebDist = process.env.FRIZZ_STABLE_WEB_DIST
@@ -121,7 +129,7 @@ try {
   process.on("SIGINT", () => void shutdown())
   process.on("SIGTERM", () => void shutdown())
   // A crashed/killed supervisor must not leave an unsupervised control plane behind.
-  process.once("disconnect", () => void shutdown())
+  onOwnerDisconnect = () => void shutdown()
 } catch (err) {
   frizzLog.error("dev-child", `failed to start: ${err instanceof Error ? err.stack ?? err.message : err}`)
   process.exit(1)

@@ -1,0 +1,218 @@
+import { execFile } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, realpathSync,
+  renameSync, rmSync, statSync, writeFileSync,
+} from "node:fs";
+import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { frizzPaths } from "@frizz/server/frizz-paths";
+
+/** Bump the data epoch BEFORE introducing writes an older server cannot safely read. */
+export const SERVER_PROTOCOL = 1;
+export const SERVER_DATA_EPOCH = 1;
+
+export interface ServerReleaseSpec {
+  package: string;
+  version: string;
+  protocol: number;
+  dataEpoch: number;
+}
+
+export interface ServerGeneration extends ServerReleaseSpec {
+  id: string;
+  root: string;
+  entry: string;
+}
+
+const VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
+const PACKAGE = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/u;
+const GENERATION = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+
+function assertSpec(spec: ServerReleaseSpec): void {
+  if (typeof spec.package !== "string" || typeof spec.version !== "string" || !PACKAGE.test(spec.package) || !VERSION.test(spec.version))
+    throw new Error("invalid exact Frizz server package/version");
+  if (spec.protocol !== SERVER_PROTOCOL || spec.dataEpoch !== SERVER_DATA_EPOCH)
+    throw new Error("this Frizz server requires a newer launcher or a data migration; restart with a compatible Frizz release");
+}
+
+/** Fail closed: a missing/corrupt selection must never silently downgrade a migrated database. */
+function readJson(path: string): unknown {
+  return JSON.parse(readFileSync(path, "utf8"));
+}
+
+function record(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid Frizz server manifest");
+  return value as Record<string, unknown>;
+}
+
+export function serverReleaseSpec(manifest: unknown, packageOverride?: string): ServerReleaseSpec {
+  const metadata = record(record(manifest).frizzServer);
+  const spec = {
+    package: packageOverride ?? metadata.package,
+    version: metadata.version,
+    protocol: metadata.protocol,
+    dataEpoch: metadata.dataEpoch,
+  } as ServerReleaseSpec;
+  assertSpec(spec);
+  return spec;
+}
+
+function containedFile(root: string, name: string, directory = false): string {
+  const path = realpathSync(join(root, name));
+  const rel = relative(realpathSync(root), path);
+  if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel))
+    throw new Error(`Frizz server artifact escapes its package: ${name}`);
+  const stat = statSync(path);
+  if (directory ? !stat.isDirectory() : !stat.isFile()) throw new Error(`invalid Frizz server artifact: ${name}`);
+  return path;
+}
+
+export function validateServerGeneration(root: string, spec: ServerReleaseSpec, id: string): ServerGeneration {
+  assertSpec(spec);
+  if (!GENERATION.test(id)) throw new Error("invalid Frizz server generation id");
+  const manifest = record(readJson(join(root, "package.json")));
+  const metadata = record(manifest.frizzServer);
+  if (manifest.name !== spec.package || manifest.version !== spec.version)
+    throw new Error(`Frizz server install did not contain ${spec.package}@${spec.version}`);
+  if (metadata.protocol !== spec.protocol || metadata.dataEpoch !== spec.dataEpoch)
+    throw new Error("Frizz server protocol/data epoch is incompatible; the current server has not been stopped");
+  const entry = containedFile(root, "dist/dev-child.js");
+  containedFile(root, "web-dist/index.html");
+  containedFile(root, "runtime/board/index.mjs");
+  containedFile(root, "runtime/cc-worker/.claude-plugin/plugin.json");
+  return { ...spec, id, root: realpathSync(root), entry };
+}
+
+export function serverGenerationLaunch(generation: ServerGeneration): { entry: string; environment: NodeJS.ProcessEnv } {
+  return {
+    entry: generation.entry,
+    environment: {
+      FRIZZ_STABLE_ARTIFACT: `npm:${generation.package}@${generation.version}`,
+      FRIZZ_STABLE_WEB_DIST: join(generation.root, "web-dist"),
+      FRIZZ_SCRIPTS_DIR: join(generation.root, "runtime/board"),
+      FRIZZ_WORKER_PLUGIN_DIR: join(generation.root, "runtime/cc-worker"),
+    },
+  };
+}
+
+/** Resolve npm's JS entry, not npm.cmd: execFile must not invoke a shell (or its cd hooks). */
+export function resolveNpmCli(env: NodeJS.ProcessEnv = process.env, executable = process.execPath): string {
+  const candidates: string[] = [];
+  if (env.npm_execpath?.endsWith("npm-cli.js")) candidates.push(env.npm_execpath);
+  for (const directory of [dirname(executable), ...(env.PATH ?? env.Path ?? "").split(delimiter).filter(Boolean)]) {
+    candidates.push(join(directory, "node_modules/npm/bin/npm-cli.js"), join(directory, "../lib/node_modules/npm/bin/npm-cli.js"));
+    try {
+      const path = realpathSync(join(directory, "npm"));
+      if (path.endsWith("npm-cli.js")) candidates.push(path);
+    } catch { /* Not every PATH entry contains npm. */ }
+  }
+  const found = candidates.find((path) => existsSync(path) && statSync(path).isFile());
+  if (!found) throw new Error("npm was not found beside Node or on PATH; install Node with npm to install Frizz server releases");
+  return resolve(found);
+}
+
+export interface ServerPackageInstaller {
+  install(prefix: string, spec: ServerReleaseSpec): Promise<void>;
+  latestVersion(packageName: string): Promise<string>;
+}
+
+export function npmServerPackageInstaller(env: NodeJS.ProcessEnv = process.env): ServerPackageInstaller {
+  const run = (args: string[], cwd?: string): Promise<string> => new Promise((resolveOutput, reject) => {
+    let cli: string;
+    try { cli = resolveNpmCli(env); } catch (error) { reject(error); return; }
+    execFile(process.execPath, [cli, ...args], {
+      env, cwd, encoding: "utf8", windowsHide: true, timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 4 * 1024 * 1024,
+    }, (error, stdout, stderr) => {
+      if (error) {
+        const tail = stderr.trim().split("\n").slice(-8).join("\n");
+        reject(new Error(`Frizz server npm operation failed: ${tail || error.message}`));
+      } else resolveOutput(stdout);
+    });
+  });
+  return {
+    async install(prefix, spec) {
+      assertSpec(spec);
+      // Never execute dependency lifecycle scripts, read the user's project manifest, or mutate a
+      // global installation. node-pty's shipped helper is repaired inside the server generation.
+      await run([
+        "install", "--prefix", prefix, "--global=false", "--ignore-scripts", "--no-audit", "--no-fund",
+        "--engine-strict", "--install-strategy=hoisted", "--include=optional", "--omit=dev", "--save-exact", `${spec.package}@${spec.version}`,
+      ], prefix);
+    },
+    async latestVersion(packageName) {
+      if (!PACKAGE.test(packageName)) throw new Error("invalid Frizz server package name");
+      const version: unknown = JSON.parse(await run(["view", `${packageName}@latest`, "version", "--json"]));
+      if (typeof version !== "string" || !VERSION.test(version)) throw new Error("npm returned an invalid Frizz server version");
+      return version;
+    },
+  };
+}
+
+function atomicJson(path: string, value: unknown): void {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const temp = `${path}.${randomUUID()}.tmp`;
+  try {
+    const fd = openSync(temp, "wx", 0o600);
+    try { writeFileSync(fd, `${JSON.stringify(value)}\n`); fsyncSync(fd); } finally { closeSync(fd); }
+    renameSync(temp, path);
+    // Windows cannot open a directory for fsync. The replacement itself is still atomic there.
+    try {
+      const directory = openSync(dirname(path), "r");
+      try { fsyncSync(directory); } finally { closeSync(directory); }
+    } catch { /* Best effort directory durability on filesystems without directory fsync. */ }
+  } finally { rmSync(temp, { force: true }); }
+}
+
+export class ServerReleaseStore {
+  readonly generations: string;
+  readonly selection: string;
+  constructor(readonly spec: ServerReleaseSpec, private installer: ServerPackageInstaller, roots = frizzPaths()) {
+    assertSpec(spec);
+    const key = createHash("sha256").update(spec.package).digest("hex").slice(0, 16);
+    this.generations = join(roots.cache, "server-releases", key);
+    this.selection = join(roots.state, "server-releases", key, "active.json");
+  }
+
+  private packageRoot(id: string): string { return join(this.generations, id, "node_modules", this.spec.package); }
+
+  async load(): Promise<ServerGeneration> {
+    if (!existsSync(this.selection)) return this.prepare(this.spec.version);
+    const selected = record(readJson(this.selection));
+    const spec = selected as unknown as ServerReleaseSpec;
+    assertSpec(spec);
+    if (spec.package !== this.spec.package || typeof selected.id !== "string" || !GENERATION.test(selected.id))
+      throw new Error("invalid saved Frizz server selection; refusing to fall back to an older server");
+    const root = this.packageRoot(selected.id);
+    // Cache eviction is recoverable, but only by reinstalling the EXACT committed release.
+    if (!existsSync(root)) return this.prepare(spec.version);
+    return validateServerGeneration(root, spec, selected.id);
+  }
+
+  async prepare(version: string): Promise<ServerGeneration> {
+    const spec = { ...this.spec, version };
+    assertSpec(spec);
+    mkdirSync(this.generations, { recursive: true, mode: 0o700 });
+    const id = randomUUID();
+    const staging = join(this.generations, `${id}.staging`);
+    const destination = join(this.generations, id);
+    mkdirSync(staging, { mode: 0o700 });
+    try {
+      // An explicit private manifest keeps npm from discovering a package in an ancestor directory.
+      writeFileSync(join(staging, "package.json"), '{"private":true}\n', { mode: 0o600 });
+      await this.installer.install(staging, spec);
+      validateServerGeneration(join(staging, "node_modules", spec.package), spec, id);
+      renameSync(staging, destination);
+      return validateServerGeneration(this.packageRoot(id), spec, id);
+    } finally { rmSync(staging, { recursive: true, force: true }); }
+  }
+
+  commit(generation: ServerGeneration): void {
+    if (generation.package !== this.spec.package || generation.root !== realpathSync(this.packageRoot(generation.id)))
+      throw new Error("cannot select a Frizz server outside this release store");
+    validateServerGeneration(generation.root, generation, generation.id);
+    const { package: packageName, version, protocol, dataEpoch, id } = generation;
+    atomicJson(this.selection, { package: packageName, version, protocol, dataEpoch, id });
+    // Old generations are intentionally retained: detached workers can still execute their files.
+    // Neither npm cache cleanup nor a later update may remove a live worker's runtime closure.
+  }
+}
