@@ -80,13 +80,8 @@ const PACKAGE_NAME = process.env.FRIZZ_REGISTRY_PACKAGE ?? "frizz";
  * package: a genuine 0.1.1 install served `artifactDigest: "npm:frizz@0.0.1"`, and still served
  * `0.0.1` after updating itself to 0.1.2.
  *
- * That is not cosmetic. `planRegistryUpdate(PACKAGE_NAME, PACKAGE_VERSION, …)` compares this against
- * the registry's latest, so a permanent `0.0.1` makes every version look newer: the "already current"
- * branch below is unreachable, and Update Frizz reinstalls-and-restarts even when nothing is stale.
- *
- * `import.meta.dirname` is the bundle's own directory (`<package>/dist`), the same base `webDist` and
- * `runtimeDir` resolve from below — so this reads the package.json that was published alongside it.
- * The env var stays as a fallback for anyone launching through a lifecycle script.
+ * This is now the stable launcher's diagnostic version, not the separately selected server version
+ * used for update comparisons. Read the manifest beside this bundle, never npm's invocation env.
  */
 function resolvePackageVersion(): string {
   try {
@@ -169,12 +164,11 @@ let activeAccessLink: { url: string } | null = null;
 let launchIntent: LaunchIntent | undefined;
 const workspace: Workspace = (() => {
   try {
-  // BEFORE the workspace is resolved, because resolving it opens this project's database — so a
-  // machine running a Node the database cannot survive learns it here by name instead of from whichever
-  // internal step tripped over it first. The Node floor is effectively the whole check now: on an
+  // BEFORE workspace preparation, so a machine running a Node the server's database cannot survive
+  // learns it here by name instead of from whichever internal step tripped over it first. On an
   // unsupported release SQLite does not misbehave, it SEGFAULTS, and a segfault mid-boot is
-  // indistinguishable from Frizz being broken. The executables list beside it is empty — nothing shells
-  // out to `git` or `tmux` any more (see preflight.ts).
+  // indistinguishable from Frizz being broken. The required executables list beside it is empty:
+  // repository discovery can fall back to project markers when Git is absent (see preflight.ts).
   //
   // `--stop` and `--status` skip the Node floor deliberately: they only read a status file and signal
   // a process, both of which work on any runtime, and they are how someone shuts down a board after
@@ -248,7 +242,7 @@ const logger: Logger = setAmbientLogger(
 );
 const readout = reexec || process.env.FRIZZ_PRODUCTION_SUPERVISOR === "1"
   ? undefined
-  : new Readout({ debug: options.debug, version: PACKAGE_VERSION });
+  : new Readout({ debug: options.debug });
 /**
  * Where supervisor lifecycle beats print. Normally the boot readout — but a launcher that execve'd
  * itself into this release through Update Frizz has no boot to narrate and still owns the operator's
@@ -256,14 +250,14 @@ const readout = reexec || process.env.FRIZZ_PRODUCTION_SUPERVISOR === "1"
  * detached fallback successor has no terminal at all (stdio ignored) and stays quiet, as before.
  */
 const activityReadout =
-  readout ?? (reexec && process.stdout.isTTY ? noticeOnlyReadout({ version: PACKAGE_VERSION }) : undefined);
+  readout ?? (reexec && process.stdout.isTTY ? noticeOnlyReadout({}) : undefined);
 attachTerminalMirror(logger, options.debug || process.env.FRIZZ_DEBUG === "1");
 readout?.plan([
   { key: "server", label: "Server" },
   { key: "browser", label: options.noApp ? "Address" : "Browser" },
 ]);
 readout?.begin("server", "starting");
-logger.info("launcher", `frizz ${PACKAGE_VERSION} starting for ${workspace.root}`);
+logger.info("launcher", `Frizz launcher ${PACKAGE_VERSION} starting for ${workspace.root}`);
 const target = workspaceLaunchTarget(workspace);
 const expected = expectedOwnerHealth(target, readProjectLaunchOwner(workspace.stateDir));
 
@@ -377,7 +371,7 @@ async function openOrPrint(port: number, reused: boolean, path = ""): Promise<vo
   const warnings: string[] = [];
   if (sandbox) warnings.push(`Sandbox: everything here is throwaway (${sandbox.home}) and is deleted when this terminal closes.`);
   if (!readout) {
-    console.log(`${reused ? "reusing" : "started"} Frizz ${PACKAGE_VERSION} for ${workspace.root}`);
+    console.log(`${reused ? "reusing" : "started"} Frizz for ${workspace.root}`);
     console.log(url);
     if (publicOrigin) console.log(activeAccessLink?.url ?? `${publicOrigin}/`);
     for (const warning of warnings) console.log(warning);
@@ -478,6 +472,7 @@ async function runSupervisor(port: number, token: string, onPrepared: () => void
     updateMode: "child",
     updateAvailable: () => updateAvailable,
     version: () => active.version,
+    launcherVersion: PACKAGE_VERSION,
     updateVersion: () => updateVersion,
     // The terminal that owns the board says so when the board goes down and comes back. Everything
     // here is triggered from a browser tab or by a crash, so without this the foreground process is
@@ -578,6 +573,7 @@ async function runSupervisor(port: number, token: string, onPrepared: () => void
   void supervisor.stopRequested.then(stop);
   await supervisor.firstBoot;
   store.commit(active);
+  activityReadout?.notice("done", "Server", `${active.version} · launcher ${PACKAGE_VERSION}`);
   // The execve'd generation prints no boot block (it is not an interactive launch), so this one line
   // is the only thing that tells the operator the update finished and this terminal still owns it.
   if (reexec) activityReadout?.notice("done", "Updated", `Frizz ${active.version} is serving on port ${port} · ctrl-c to stop`);

@@ -12,7 +12,7 @@ import {
 const baseline: ServerReleaseSpec = { package: "frizz-server", version: "1.0.0", protocol: 1, dataEpoch: 1 };
 const epochTwo: ServerReleaseSpec = { ...baseline, version: "2.0.0", dataEpoch: 2 };
 const epochTwoCompatibility: ServerCompatibility = { protocol: 1, dataEpoch: 2 };
-const files = ["dist/dev-child.js", "web-dist/index.html", "runtime/board/index.mjs", "runtime/cc-worker/.claude-plugin/plugin.json"];
+const files = ["dist/dev-child.js", "dist/codex-app-server-daemon.js", "dist/claude-agent-broker.js", "web-dist/index.html", "runtime/board/index.mjs", "runtime/cc-worker/.claude-plugin/plugin.json"];
 function fixture(prefix: string, spec: ServerReleaseSpec): string {
   const root = join(prefix, "node_modules", spec.package);
   for (const name of files) {
@@ -39,6 +39,16 @@ test("boot metadata rejects unknown protocol, data epoch and non-exact package v
   assert.deepEqual(serverReleaseSpec({ frizzServer: baseline }), baseline);
   for (const patch of [{ protocol: 2 }, { dataEpoch: 2 }, { version: "latest" }, { package: "file:../../repo" }])
     assert.throws(() => serverReleaseSpec({ frizzServer: { ...baseline, ...patch } }));
+});
+
+test("a server that can boot but cannot dispatch either provider is rejected before selection", async (t) => {
+  const { store } = setup(t);
+  for (const file of ["dist/codex-app-server-daemon.js", "dist/claude-agent-broker.js"]) {
+    const generation = await store.prepare("1.1.0");
+    rmSync(join(generation.root, file));
+    assert.throws(() => store.commit(generation), /ENOENT/);
+    assert.equal(existsSync(store.selection), false);
+  }
 });
 
 test("preparation is immutable and does not commit until the server is ready", async (t) => {

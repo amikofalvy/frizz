@@ -95,6 +95,9 @@ export function validateServerGeneration(
   if (metadata.protocol !== spec.protocol || metadata.dataEpoch !== spec.dataEpoch)
     throw new Error("Frizz server protocol/data epoch is incompatible; the current server has not been stopped");
   const entry = containedFile(root, "dist/dev-child.js");
+  // Protocol 1 includes both detached provider entries. Readiness alone does not exercise dispatch.
+  containedFile(root, "dist/codex-app-server-daemon.js");
+  containedFile(root, "dist/claude-agent-broker.js");
   containedFile(root, "web-dist/index.html");
   containedFile(root, "runtime/board/index.mjs");
   containedFile(root, "runtime/cc-worker/.claude-plugin/plugin.json");
