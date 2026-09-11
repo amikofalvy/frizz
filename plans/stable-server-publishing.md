@@ -1,6 +1,6 @@
 # Initial `frizz-server` publication
 
-This procedure publishes the first public `frizz-server` package. It is a manual bootstrap for the stable `frizz` launcher. Do not run it until the exact release commit and tarball have been approved. This document authorizes no publish by itself.
+The initial `frizz-server@0.13.0` publication completed on 2026-09-11. Trusted publishing subsequently published `frizz-server@0.13.1` and `frizz@0.13.0`; see the [release verification](server-patch-release-verification-2026-09-11.md). The bootstrap procedure below is retained as a record. This document authorizes no publish by itself.
 
 ## Preconditions
 
@@ -26,7 +26,7 @@ npm login
 npm publish --access public /absolute/path/to/frizz-server-0.13.0.tgz
 ```
 
-The explicit tarball path prevents a later build or current working directory from changing the published bytes. The command is intentionally manual for this first package. No public publish has occurred yet.
+The explicit tarball path prevents a later build or current working directory from changing the published bytes. The command is intentionally manual for the first package only.
 
 ## Trusted publishing
 
@@ -53,3 +53,20 @@ Server/frontend/provider changes normally bump only `packages/server-release/pac
 Before introducing data an older server cannot safely read, bump the server and shell data epochs together, including the constants in `src/server-release.ts`, and select an exact compatible bootstrap release. The old shell refuses such an in-app update. After an explicit stop/new-shell launch, the new shell records the higher epoch before the candidate can write; a failed candidate does not authorize a lower-epoch rollback. Protocol changes need a separate migration design. Never delete the compatibility marker to force a downgrade.
 
 Reference: [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/).
+
+## Recovery after publication
+
+The workflow waits up to 2m for the exact shell version's registry metadata before tagging. npm can acknowledge a publication before its read replicas expose it. A missing or invalid `gitHead` still fails closed; the workflow never substitutes its current checkout.
+
+GitHub can reject a historical tag when that commit's workflow differs from the current run: its workflow token does not have permission to introduce that workflow revision. No additional CI credential is needed. After confirming the release is authorized, create the tag from a maintainer checkout with workflow permission, then rerun the failed workflow:
+
+```sh
+VERSION=0.13.0 # the shell version being reconciled
+GIT_HEAD=$(nub scripts/published-git-head.mjs frizz "$VERSION")
+git cat-file -e "$GIT_HEAD^{commit}"
+git tag -a "v$VERSION" "$GIT_HEAD" -m "frizz v$VERSION"
+git push origin "v$VERSION"
+gh workflow run release.yml --ref release
+```
+
+This procedure applies when the tag is absent. Never overwrite an existing tag or move it to the newer workflow commit. The rerun skips published versions and creates missing GitHub release metadata.
