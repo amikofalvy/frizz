@@ -48,7 +48,7 @@ export function OpenAction({ path }: { path: string }) {
       type="button"
       onClick={open}
       onMouseDown={(e) => e.preventDefault()}
-      className="flex items-center gap-1.5 rounded-md border border-border-strong bg-panel-2/60 px-2.5 py-1 text-[12px] font-medium text-fg/80 outline-none transition-colors hover:bg-panel-2 hover:text-fg focus-visible:ring-1 focus-visible:ring-fg/60"
+      className="flex items-center gap-1.5 rounded-md border border-border-strong bg-panel-2/60 px-2.5 py-1 text-[12px] font-medium text-fg/80 outline-none transition-colors hover:bg-panel-2 hover:text-fg focus-visible:ring-1 focus-visible:ring-focus-ink-60"
       title={`Open ${path} outside Frizz`}
       aria-label="Open"
     >

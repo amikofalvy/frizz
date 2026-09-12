@@ -277,4 +277,4 @@ export const CARD_PRIMARY_BUTTON = "bg-fg px-2.5 py-1 text-bg hover:opacity-90"
 export const CARD_ACTION_RADIUS = "rounded-md"
 // The same verb with the icon+label layout every card action uses. Cards differ only in what they pass
 // beyond this (shrink-0, a disabled treatment), never in the fill.
-export const CARD_PRIMARY_ACTION = `flex shrink-0 items-center gap-1 ${CARD_ACTION_RADIUS} text-[11px] font-medium outline-none transition-colors focus-visible:ring-1 focus-visible:ring-fg/60 ${CARD_PRIMARY_BUTTON}`
+export const CARD_PRIMARY_ACTION = `flex shrink-0 items-center gap-1 ${CARD_ACTION_RADIUS} text-[11px] font-medium outline-none transition-colors focus-visible:ring-1 focus-visible:ring-focus-ink-60 ${CARD_PRIMARY_BUTTON}`

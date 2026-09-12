@@ -1,11 +1,11 @@
-/** GITHUB'S OWN STATE PALETTE — Primer dark, for every mark in this app that stands for a GitHub
+/** GITHUB'S OWN STATE PALETTE — Primer, for every mark in this app that stands for a GitHub
  *  thing: a PR's state, a CI verdict, a diffstat's two sides.
  *
  *  WHY IT IS NOT THIS APP'S PALETTE, and must never drift into it. Green/purple/red on an issue is a
  *  vocabulary the reader arrives already fluent in — they have just come from github.com, and the same
  *  mark for the same fact is one less thing to translate. Re-spelling a merged PR in accent-yellow
- *  would make a familiar object unreadable. So these are LITERALS, deliberately outside the theme
- *  tokens: a merged PR is Primer purple wherever it is drawn, whatever this app's own colours do.
+ *  would make a familiar object unreadable. These references resolve through theme.css's dedicated
+ *  Primer palettes: a merged PR stays purple in either appearance, never Frizz accent-yellow.
  *
  *  WHY IT IS ONE MODULE AND NOT A LITERAL PER CALL SITE. Because it was the latter, and it drifted —
  *  which is the whole bug this file was written for. The hovercard spelled its greens in Primer while
@@ -24,7 +24,7 @@
  *  and a `#3fb950` "+316". (The amber row is history: that mark moved to Primer on 2026-08-29 for the
  *  same reason, one glyph at a time. This module is that fix finished.)
  *
- *  THE VALUES ARE MEASURED, NOT RECALLED — read off github.com in dark mode on 2026-08-31, both as the
+ *  THE ORIGINAL DARK VALUES WERE MEASURED — read off github.com on 2026-08-31, both as the
  *  CSS custom properties on `<html>` and as the resolved `color` of the real octicons, which is the
  *  reading that actually settles which of the two families a mark takes:
  *

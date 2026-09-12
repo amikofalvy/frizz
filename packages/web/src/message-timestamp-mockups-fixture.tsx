@@ -320,7 +320,7 @@ function FontSwitch() {
           key={f}
           type="button"
           onClick={() => pick(f)}
-          className={`rounded px-2 py-0.5 outline-none transition-colors focus-visible:ring-1 focus-visible:ring-fg/60 ${font === f ? "bg-panel-2 text-fg" : "hover:text-fg"}`}
+          className={`rounded px-2 py-0.5 outline-none transition-colors focus-visible:ring-1 focus-visible:ring-focus-ink-60 ${font === f ? "bg-panel-2 text-fg" : "hover:text-fg"}`}
         >
           {f}
         </button>

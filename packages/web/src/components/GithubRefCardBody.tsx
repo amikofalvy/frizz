@@ -111,7 +111,7 @@ const BLOCK_STYLE = {
   add: { backgroundColor: PRIMER.bgSuccessEmphasis, borderColor: PRIMER.bgSuccessEmphasis },
   del: { backgroundColor: PRIMER.bgDangerEmphasis, borderColor: PRIMER.bgDangerEmphasis },
   // The empty block is neutral at 0x33, over Primer's own `--borderColor-default` hairline.
-  none: { backgroundColor: "color-mix(in srgb, var(--gh-bg-neutral-emphasis) 20%, transparent)", borderColor: "var(--color-border-strong)" },
+  none: { backgroundColor: "color-mix(in srgb, var(--gh-bg-neutral-emphasis) 20%, transparent)", borderColor: "var(--gh-neutral-border)" },
 } as const
 
 function Diffstat({ additions, deletions }: { additions: number; deletions: number }) {

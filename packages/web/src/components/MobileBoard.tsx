@@ -280,7 +280,7 @@ function MobileThreadRow({
   const gloss = t.lastFence?.kind === "awaiting" ? hintGloss(t.lastFence.hints) : null
   const subs = visibleChildOps(t.subAgents ?? [], "rail")
   return (
-    <div className={kind === "snoozed" ? "opacity-60" : undefined}>
+    <div className={kind === "snoozed" ? "mobile-row-dim" : undefined}>
       <SwipeRow
         open={openSwipe}
         onOpenChange={onOpenSwipe}
@@ -397,7 +397,7 @@ function TabButton({
       onClick={onClick}
       className="flex flex-1 flex-col items-center justify-center gap-[3px] pt-[3px]"
     >
-      <span className={`relative ${active ? "opacity-100" : "opacity-55"}`}>
+      <span className={`relative ${active ? "opacity-100" : "mobile-tab-inactive"}`}>
         {icon}
         {count > 0 ? (
           // The badge is the ASK count in accent when there is one, and the band count in muted
@@ -443,7 +443,7 @@ function MoreSheet({ connection, onClose }: { connection: ConnectionState; onClo
     <div data-mobile-more-sheet className="fixed inset-0 z-[70] flex flex-col justify-end">
       <button aria-label="Close" onClick={onClose} className={`absolute inset-0 bg-scrim-50 transition-opacity duration-200 ${shown ? "opacity-100" : "opacity-0"}`} />
       <div
-        className={`relative flex max-h-[80%] flex-col overflow-hidden rounded-t-[14px] border-t border-border-strong bg-panel pb-[calc(24px+env(safe-area-inset-bottom))] shadow-[0_-20px_60px_-10px_rgba(0,0,0,0.8)] transition-transform duration-200 ease-out motion-reduce:transition-none ${
+        className={`relative flex max-h-[80%] flex-col overflow-hidden rounded-t-[14px] border-t border-border-strong bg-panel pb-[calc(24px+env(safe-area-inset-bottom))] shadow-[0_-20px_60px_-10px_var(--sheet-shadow)] transition-transform duration-200 ease-out motion-reduce:transition-none ${
           shown ? "translate-y-0" : "translate-y-full"
         }`}
       >
@@ -537,7 +537,7 @@ export function MobileBoard() {
             aria-label="Board actions"
             data-mobile-more
             onClick={() => setMoreOpen(true)}
-            className="ml-auto flex size-[44px] items-center justify-center rounded-full text-fg/85 active:bg-hover"
+            className="ml-auto flex size-[44px] items-center justify-center rounded-full text-fg/85 active:bg-hover-strong"
           >
             <Ellipsis size={20} />
           </button>

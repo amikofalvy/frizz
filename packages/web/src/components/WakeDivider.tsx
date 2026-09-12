@@ -69,7 +69,7 @@ export function WakeDivider({ icon: Icon, children, sourceId, ariaLabel, marker,
         aria-label={ariaLabel}
         aria-expanded={ariaExpanded}
         aria-controls={ariaControls}
-        className="group/wake my-1 flex w-full items-center gap-3 rounded-sm text-left outline-none focus-visible:ring-1 focus-visible:ring-fg/60"
+        className="group/wake my-1 flex w-full items-center gap-3 rounded-sm text-left outline-none focus-visible:ring-1 focus-visible:ring-focus-ink-60"
       >
         {chrome}
       </button>

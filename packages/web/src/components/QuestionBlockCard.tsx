@@ -424,7 +424,7 @@ function Chip({
         <span
           aria-hidden
           className={`mt-px flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[3px] border ${
-            selected ? "border-accent bg-accent-fill text-on-accent" : settledPick ? "border-border-strong text-fg" : "border-border-strong"
+            selected ? "border-accent bg-accent-fill text-on-accent" : settledPick ? "border-control-strong text-fg" : "border-control-strong"
           }`}
         >
           {(selected || settledPick) && <Check size={10} strokeWidth={3} />}

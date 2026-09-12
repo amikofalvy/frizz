@@ -514,7 +514,7 @@ function InteractionApprovalCard({
       data-interaction-id={record.id}
       data-interaction-kind={record.payload.kind}
       data-delivery-effect={record.delivery?.effect}
-      className={`min-w-0 ${BLOCK_RADIUS} border border-accent/45 bg-accent/[0.065] shadow-sm shadow-black/15 outline-none focus-visible:ring-2 focus-visible:ring-accent/60`}
+      className={`min-w-0 ${BLOCK_RADIUS} border border-accent/45 bg-accent/[0.065] shadow-sm shadow-black/15 outline-none focus-visible:ring-2 focus-visible:ring-focus-accent-60`}
     >
       {/* No eyebrow. "PERMISSION APPROVAL · NEEDS YOU" in uppercase amber above "Approve Bash?" said
           the same thing twice in a louder font, and the delivery states it also carried (sending,
@@ -652,7 +652,7 @@ function InteractionApprovalCard({
 }
 
 function decisionButtonClass(decision: CanonicalInteractionDecision): string {
-  const base = "rounded-md border px-2.5 py-1.5 text-[11px] font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-fg/50 disabled:opacity-40"
+  const base = "rounded-md border px-2.5 py-1.5 text-[11px] font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-focus-ink-50 disabled:opacity-40"
   if (decision.tone === "primary") return `${base} border-accent/55 bg-accent/15 text-fg hover:bg-accent/25`
   if (decision.tone === "danger") return `${base} border-danger/35 bg-danger-fill/[0.07] text-danger-faint hover:bg-danger-fill/15`
   return `${base} border-border bg-panel text-muted hover:bg-panel-2 hover:text-fg`
@@ -711,7 +711,7 @@ function BoundedPlainText({ text }: { text: string }) {
   if (!long) return <div className="whitespace-pre-wrap break-words text-[12px] leading-relaxed text-fg/80">{text}</div>
   return (
     <details className="rounded-md border border-border/70 bg-panel/60">
-      <summary className="cursor-pointer px-2.5 py-2 text-[11px] text-muted outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-fg/50">Request message</summary>
+      <summary className="cursor-pointer px-2.5 py-2 text-[11px] text-muted outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-focus-ink-50">Request message</summary>
       <div className="max-h-52 overflow-auto border-t border-border/60 px-2.5 py-2 whitespace-pre-wrap break-words text-[12px] leading-relaxed text-fg/80">{text}</div>
     </details>
   )
@@ -745,7 +745,7 @@ function UrlElicitation({ url }: { url: string }) {
 function RequestMetadata({ record }: { record: InteractionRecord }) {
   return (
     <details className="mt-3 border-t border-border/50 pt-2 text-[10.5px] text-muted-70">
-      <summary className="cursor-pointer w-fit outline-none hover:text-muted focus-visible:ring-1 focus-visible:ring-fg/50">Request details</summary>
+      <summary className="cursor-pointer w-fit outline-none hover:text-muted focus-visible:ring-1 focus-visible:ring-focus-ink-50">Request details</summary>
       <dl className="mt-2 grid min-w-0 grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1">
         <dt>Provider</dt><dd className="min-w-0 break-all text-fg/65">{interactionProviderLabel(record.provider.kind)}</dd>
         {record.provider.name && <><dt>Reported name</dt><dd className="min-w-0 break-all text-fg/65">{record.provider.name}</dd></>}
@@ -817,7 +817,7 @@ function InteractionFieldControl({
   const errorId = error ? `${baseId}-error` : undefined
   const describedBy = [descriptionId, errorId].filter(Boolean).join(" ") || undefined
   const label = <>{field.label}{field.required && <span aria-hidden="true" className="ml-0.5 text-accent">*</span>}</>
-  const commonClass = "mt-1 w-full min-w-0 rounded-md border border-border bg-bg/45 px-2.5 py-2 text-[12px] text-fg outline-none focus:border-accent focus:ring-1 focus:ring-accent/40"
+  const commonClass = "mt-1 w-full min-w-0 rounded-md border border-border bg-bg/45 px-2.5 py-2 text-[12px] text-fg outline-none focus:border-accent focus:ring-1 focus:ring-focus-accent-40"
   let control: ReactNode
   if (field.secret) {
     control = <div className="mt-1 text-[11px] text-attention-soft-70">Use the secure fallback below.</div>

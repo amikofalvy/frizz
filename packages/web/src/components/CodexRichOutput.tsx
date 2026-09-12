@@ -182,7 +182,7 @@ function mermaidColors() {
   const root = getComputedStyle(document.documentElement)
   const color = (name: string) => root.getPropertyValue(name).trim()
   return {
-    background: color("--color-panel-2"), primaryColor: color("--color-panel-2"), primaryTextColor: color("--color-fg"), primaryBorderColor: color("--color-border-strong"), lineColor: color("--color-muted"), secondaryColor: color("--color-border"), tertiaryColor: color("--color-bg"), fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+    background: color("--color-panel-2"), primaryColor: color("--color-panel-2"), primaryTextColor: color("--color-fg"), primaryBorderColor: color("--color-control-strong"), lineColor: color("--color-muted"), secondaryColor: color("--color-border"), tertiaryColor: color("--color-bg"), fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
   }
 }
 

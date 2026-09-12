@@ -60,11 +60,32 @@ test("both palettes are complete, including OS fallback and recovery subset pari
   const recoveryDark = declarations(recovery.split(":root{")[1]!.split("}")[0]!)
   const recoveryLight = declarations(recovery.split(":root[data-theme=light]{")[1]!.split("}")[0]!)
   const normalize = (color: string) => color === "#fff" ? "#ffffff" : color
-  for (const name of ["bg", "panel", "panel-2", "border", "border-strong", "fg", "muted", "accent"]) {
+  for (const name of ["bg", "panel", "panel-2", "border", "border-strong", "control-border", "control-strong", "fg", "muted", "accent"]) {
     assert.equal(normalize(recoveryDark[`--${name}`]!), dark[`--frizz-${name}`], `dark ${name}`)
     assert.equal(normalize(recoveryLight[`--${name}`]!), light[`--frizz-${name}`], `light ${name}`)
   }
   assert.doesNotMatch(unauthorizedPage(), /frizz|board|agent/i)
+})
+
+test("dark palette preserves existing canvases, code, marks and indexed terminal colors", () => {
+  const css = readFileSync(new URL("../theme.css", import.meta.url), "utf8")
+  const dark = declarations(css.split(':root, :root[data-theme="dark"] {')[1]!.split("}")[0]!)
+  const expected = {
+    "--frizz-bg": "#0d0e10", "--frizz-panel": "#131519", "--frizz-panel-2": "#181b20", "--frizz-elevated": "#1c1f25", "--frizz-inset": "#090b10",
+    "--frizz-fg": "#e6e7e9", "--frizz-muted": "#8b8f96", "--frizz-accent": "#e8b923", "--frizz-user-bubble": "#d5d7da", "--frizz-user-bubble-fg": "#0d0e10",
+    "--frizz-control-border": "#26282d", "--frizz-control-strong": "#33363c", "--code-kw": "#f47067", "--code-com": "#768390", "--code-gutter": "#4b4f57",
+    "--gh-fg-success": "#3fb950", "--gh-fg-danger": "#f85149", "--gh-fg-done": "#ab7df8", "--gh-neutral-border": "#3d444d", "--gh-label-fg-mix": "0%",
+    "--sidebar-dim-opacity": ".65", "--mobile-dim-opacity": ".6", "--row-dim-hover-opacity": ".9", "--viz-destructive": "#ef6461",
+    "--terminal-cursor": "#ffffff", "--terminal-cursor-accent": "#000000",
+  }
+  for (const [name, value] of Object.entries(expected)) assert.equal(dark[name], value, name)
+  const ansi = ["2e3436", "cc0000", "4e9a06", "c4a000", "3465a4", "75507b", "06989a", "d3d7cf"]
+  const bright = ["555753", "ef2929", "8ae234", "fce94f", "729fcf", "ad7fa8", "34e2e2", "eeeeec"]
+  for (const [index, name] of ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"].entries()) {
+    assert.equal(dark[`--terminal-${name}`], `#${ansi[index]}`)
+    assert.equal(dark[`--terminal-bright-${name}`], `#${bright[index]}`)
+  }
+  assert.match(css, /\.95;/, "light dimming remains readable instead of multiplying the old dark alpha")
 })
 
 test("actual startup scripts and runtime agree for the complete preference matrix", () => {

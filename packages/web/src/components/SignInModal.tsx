@@ -185,7 +185,7 @@ export function SignInModal({
                   type="button"
                   onClick={() => start.mutate()}
                   disabled={start.isPending}
-              className="flex items-center gap-1.5 rounded-md bg-accent-fill px-3 py-1.5 text-[12.5px] font-medium text-accent-fg outline-none transition-opacity hover:opacity-90 disabled:opacity-60"
+                  className="flex items-center gap-1.5 rounded-md bg-accent-fill px-3 py-1.5 text-[12.5px] font-medium text-accent-fg outline-none transition-opacity hover:opacity-90 disabled:opacity-60"
                 >
                   {start.isPending && <Loader2 size={13} className="animate-spin" />}
                   Sign in here

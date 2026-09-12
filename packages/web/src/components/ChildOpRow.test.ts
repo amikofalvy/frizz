@@ -243,7 +243,7 @@ test("the rail's hover highlight moved to the wrapper; its 26px indent stayed on
   // identity element, still as padding (a margin would carve the highlight back on every nested row).
   const html = render({ density: "rail", onOpen: () => {}, onDismiss: () => {}, depth: 2, startedAt: TWELVE_MIN_AGO })
   const wrapper = html.slice(0, html.indexOf("<button"))
-  assert.match(wrapper, /hover:bg-white\/\[0\.04\]/, "the highlight is on the wrapper, so it spans the whole rail row")
+  assert.match(wrapper, /hover:bg-hover/, "the highlight is on the wrapper, so it spans the whole rail row")
   assert.doesNotMatch(wrapper, /pl-\[26px\]/, "the indent is not the wrapper's")
   assert.doesNotMatch(wrapper, /margin-left/)
   const identity = html.slice(html.indexOf("<button"))

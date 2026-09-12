@@ -71,7 +71,7 @@ export function MobileAnswerSheet({
         className={`absolute inset-0 bg-scrim-50 transition-opacity duration-200 ${shown ? "opacity-100" : "opacity-0"}`}
       />
       <div
-        className={`relative flex max-h-[86%] flex-col overflow-hidden rounded-t-[14px] border-t border-border-strong bg-panel pb-[env(safe-area-inset-bottom)] shadow-[0_-20px_60px_-10px_rgba(0,0,0,0.8)] transition-transform duration-200 ease-out motion-reduce:transition-none ${
+        className={`relative flex max-h-[86%] flex-col overflow-hidden rounded-t-[14px] border-t border-border-strong bg-panel pb-[env(safe-area-inset-bottom)] shadow-[0_-20px_60px_-10px_var(--sheet-shadow)] transition-transform duration-200 ease-out motion-reduce:transition-none ${
           shown ? "translate-y-0" : "translate-y-full"
         }`}
       >

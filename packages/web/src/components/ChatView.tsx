@@ -387,7 +387,7 @@ function ChatView({ slug, virtualized }: { slug: string; virtualized: boolean })
         // py-5, so putting it here is the one place both paths end up with the same gap to the
         // non-scrolling composer footer. 20px of trailing space read as the last row crowding the
         // prompt box; 32px reads as an ending.
-        className="relative min-h-0 flex-1 overflow-y-auto pb-3 outline-none [overflow-anchor:none] focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-fg/60"
+        className="relative min-h-0 flex-1 overflow-y-auto pb-3 outline-none [overflow-anchor:none] focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-focus-ink-60"
       >
       {virtualized && count > 0 ? (
         <VirtualizedThreadTranscript
@@ -1394,7 +1394,7 @@ function VirtualizedThreadTranscript({
                 ) : loadingEarlier ? (
                   <span className="flex items-center gap-2"><Loader2 size={12} className="animate-spin" /> Loading earlier messages…</span>
                 ) : (
-                  <button type="button" onClick={requestEarlier} className="rounded-md px-2 py-1 outline-none hover:bg-panel-2 hover:text-fg focus-visible:ring-1 focus-visible:ring-fg/60">
+                  <button type="button" onClick={requestEarlier} className="rounded-md px-2 py-1 outline-none hover:bg-panel-2 hover:text-fg focus-visible:ring-1 focus-visible:ring-focus-ink-60">
                     Load earlier messages
                   </button>
                 )}
@@ -1587,7 +1587,7 @@ export function ThreadHeader({ slug, onStatusApplied, onClose, showReturnToQueue
                   setTitleDraft(manualThreadTitleSeed(shownTitle, thread.id))
                   setEditingTitle(true)
                 }}
-                className="min-w-0 max-w-full shrink truncate rounded px-0.5 -mx-0.5 font-semibold text-[15px] text-left outline-none transition-colors hover:bg-panel-2 focus-visible:ring-1 focus-visible:ring-fg/60 disabled:cursor-not-allowed disabled:opacity-40"
+                className="min-w-0 max-w-full shrink truncate rounded px-0.5 -mx-0.5 font-semibold text-[15px] text-left outline-none transition-colors hover:bg-panel-2 focus-visible:ring-1 focus-visible:ring-focus-ink-60 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {shownTitle}
               </button>
@@ -2099,7 +2099,7 @@ function MinimalToolActivity({ tools, at }: { tools: CollapsedTool[]; at?: strin
         // Shares TRANSCRIPT_META_LABEL_CLASS rather than restating its type scale — this row and
         // the reasoning label alternate in one column, and the two drifted apart while the size was
         // copied here by hand.
-        className={`group flex w-full min-w-0 items-baseline gap-1.5 rounded py-0.5 text-left outline-none transition-colors hover:text-fg focus-visible:ring-1 focus-visible:ring-fg/60 ${TRANSCRIPT_META_LABEL_CLASS}`}
+        className={`group flex w-full min-w-0 items-baseline gap-1.5 rounded py-0.5 text-left outline-none transition-colors hover:text-fg focus-visible:ring-1 focus-visible:ring-focus-ink-60 ${TRANSCRIPT_META_LABEL_CLASS}`}
       >
         <span
           data-tool-activity-label
@@ -2486,7 +2486,7 @@ function SentFilesCard({ images, files, caption, status, durationMs }: { images:
         aria-controls={bodyId}
         aria-expanded={open}
         aria-label={`${open ? "Collapse" : "Expand"} files sent to you${summary ? `: ${summary}` : ""}`}
-        className="frizz-bash-header w-full text-left outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-fg/60"
+        className="frizz-bash-header w-full text-left outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-focus-ink-60"
       >
         <span className="flex min-w-0 items-center gap-2">
           <span className="petite-caps frizz-bash-label shrink-0">Sent to you</span>
@@ -2570,7 +2570,7 @@ function BashBlock({
         aria-controls={expandable ? bodyId : undefined}
         aria-expanded={expandable ? open : undefined}
         aria-label={`${expandable ? `${open ? "Collapse" : "Expand"} ` : ""}${prettyToolName(name)}${shownDesc ? `: ${shownDesc}` : ""}`}
-        className="frizz-bash-header w-full text-left outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-fg/60"
+        className="frizz-bash-header w-full text-left outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-focus-ink-60"
       >
         <span className="flex min-w-0 items-center gap-2">
           <ToolLiveMark status={status} backgroundState={backgroundState} liveBackgroundState={liveBackgroundState} startedAt={startedAt} />
@@ -3005,7 +3005,7 @@ function SendMessageCard({ to, summary, body, type, status, durationMs }: { to?:
         aria-controls={hasBody ? bodyId : undefined}
         aria-expanded={hasBody ? open : undefined}
         aria-label={`${hasBody ? `${open ? "Collapse" : "Expand"} ` : ""}${label}${to ? ` to ${to}` : ""}`}
-        className="frizz-bash-header w-full text-left outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-fg/60"
+        className="frizz-bash-header w-full text-left outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-focus-ink-60"
         disabled={!hasBody}
       >
         <span className="flex min-w-0 items-center gap-2">
@@ -3640,9 +3640,9 @@ const VIS_THEME_VARIABLES: Record<string, string> = {
   "--accent": "--color-border-strong",
   "--accent-foreground": "--color-fg",
   "--border": "--color-border-strong",
-  "--input": "--color-border-strong",
+  "--input": "--color-control-strong",
   "--ring": "--color-accent",
-  "--destructive": "--gh-fg-danger",
+  "--destructive": "--viz-destructive",
   "--viz-series-1": "--viz-series-1",
   "--viz-series-2": "--viz-series-2",
   "--viz-series-3": "--viz-series-3",
@@ -4262,7 +4262,7 @@ function AgentCompletionLine({ call, sourceId, at }: { call: TranscriptToolCall;
             aria-label={`${CHILD_OPEN_TITLE.AGENT}: ${title}`}
             onClick={() => pushSubAgentDrawer(slug!, call.agentId!, { label: title, subagentType: call.subagentType })}
             onMouseDown={(e) => e.preventDefault()}
-            className="min-w-0 truncate rounded-sm underline decoration-muted/30 underline-offset-2 outline-none transition-colors hover:text-fg hover:decoration-fg/60 focus-visible:text-fg focus-visible:ring-1 focus-visible:ring-fg/60"
+            className="min-w-0 truncate rounded-sm underline decoration-muted/30 underline-offset-2 outline-none transition-colors hover:text-fg hover:decoration-fg/60 focus-visible:text-fg focus-visible:ring-1 focus-visible:ring-focus-ink-60"
           >
             {title}
           </button>
@@ -4326,7 +4326,7 @@ function SubAgentReportLine({ from, unnamed, dispatchId, sourceId, at }: { from:
             aria-label={`${CHILD_OPEN_TITLE.AGENT}${from ? `: ${from}` : ""}`}
             onClick={() => pushSubAgentDrawer(slug!, dispatchId!, { label: "Sub-agent", subagentType: from })}
             onMouseDown={(e) => e.preventDefault()}
-            className="shrink-0 rounded-sm underline decoration-muted/30 underline-offset-2 outline-none transition-colors hover:text-fg hover:decoration-fg/60 focus-visible:text-fg focus-visible:ring-1 focus-visible:ring-fg/60"
+            className="shrink-0 rounded-sm underline decoration-muted/30 underline-offset-2 outline-none transition-colors hover:text-fg hover:decoration-fg/60 focus-visible:text-fg focus-visible:ring-1 focus-visible:ring-focus-ink-60"
           >
             Sub-agent reported
           </button>
@@ -4357,7 +4357,7 @@ function SubAgentReportLine({ from, unnamed, dispatchId, sourceId, at }: { from:
             aria-label={`${CHILD_OPEN_TITLE.AGENT}: ${label}`}
             onClick={() => pushSubAgentDrawer(slug!, dispatchId!, { label, subagentType: from })}
             onMouseDown={(e) => e.preventDefault()}
-            className="min-w-0 truncate rounded-sm underline decoration-muted/30 underline-offset-2 outline-none transition-colors hover:text-fg hover:decoration-fg/60 focus-visible:text-fg focus-visible:ring-1 focus-visible:ring-fg/60"
+            className="min-w-0 truncate rounded-sm underline decoration-muted/30 underline-offset-2 outline-none transition-colors hover:text-fg hover:decoration-fg/60 focus-visible:text-fg focus-visible:ring-1 focus-visible:ring-focus-ink-60"
           >
             {label}
           </button>
@@ -4415,7 +4415,7 @@ function SendMessageLine({ to, type, dispatchId, targetLabel, sourceId, at }: { 
               aria-label={`${CHILD_OPEN_TITLE.AGENT}: ${title}`}
               onClick={() => pushSubAgentDrawer(slug!, dispatchId!, { label: title })}
               onMouseDown={(e) => e.preventDefault()}
-              className="min-w-0 truncate rounded-sm underline decoration-muted/30 underline-offset-2 outline-none transition-colors hover:text-fg hover:decoration-fg/60 focus-visible:text-fg focus-visible:ring-1 focus-visible:ring-fg/60"
+              className="min-w-0 truncate rounded-sm underline decoration-muted/30 underline-offset-2 outline-none transition-colors hover:text-fg hover:decoration-fg/60 focus-visible:text-fg focus-visible:ring-1 focus-visible:ring-focus-ink-60"
             >
               {title}
             </button>
@@ -4500,7 +4500,7 @@ function ReasoningBlock({ text, sourceId }: { text: string; sourceId?: string })
         aria-controls={bodyId}
         aria-expanded={open}
         aria-label={`${open ? "Collapse" : "Expand"} model reasoning`}
-        className={`${TRANSCRIPT_META_LABEL_CLASS} flex items-baseline gap-1.5 self-start rounded outline-none transition-colors hover:text-fg focus-visible:ring-1 focus-visible:ring-fg/60`}
+        className={`${TRANSCRIPT_META_LABEL_CLASS} flex items-baseline gap-1.5 self-start rounded outline-none transition-colors hover:text-fg focus-visible:ring-1 focus-visible:ring-focus-ink-60`}
       >
         <span>Reasoning</span>
         {/* One column, one chevron treatment — vertical correction, ink trim and tone all live in
@@ -4588,7 +4588,7 @@ export function WorkingIndicator({ since, startedAt, activityLabel, run }: { sin
   // `gap-1.5` INSIDE the label group stays what it was: the chevron is the label's handle, travels with
   // it, and reads as one cluster at ~6.4px of ink. See transcriptMetaChevronClass for why that number
   // is an ink distance and not the CSS one.
-  const rowClass = `group flex min-w-0 items-baseline justify-between gap-3 rounded text-left outline-none focus-visible:ring-1 focus-visible:ring-fg/60 ${TRANSCRIPT_META_LABEL_CLASS}`
+  const rowClass = `group flex min-w-0 items-baseline justify-between gap-3 rounded text-left outline-none focus-visible:ring-1 focus-visible:ring-focus-ink-60 ${TRANSCRIPT_META_LABEL_CLASS}`
   // ONE LINE, always — the row is a live status reading, and a status reading that changes height
   // as a path gets longer makes the whole tail jump. The label TRUNCATES (maintainer 2026-07-31:
   // "prevent the actual gerund from ever breaking onto two lines. It should get truncated

@@ -249,7 +249,7 @@ function RailLink({
           }`}
         />
         <span
-          className={`rounded-[30%] transition-[transform,opacity,box-shadow] duration-150 group-focus-visible:ring-1 group-focus-visible:ring-fg/60 ${
+          className={`rounded-[30%] transition-[transform,opacity,box-shadow] duration-150 group-focus-visible:ring-1 group-focus-visible:ring-focus-ink-60 ${
             held
               ? "scale-[1.12] opacity-100 shadow-lg shadow-black/50"
               : `group-hover:scale-[1.06] ${current ? "" : "opacity-75 group-hover:opacity-100"}`
@@ -602,7 +602,7 @@ export function ProjectRail() {
           to="/"
           aria-label="All projects"
           aria-current={current ? undefined : "page"}
-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted-70 outline-none transition-colors hover:bg-elevated hover:text-fg focus-visible:ring-1 focus-visible:ring-fg/60"
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted-70 outline-none transition-colors hover:bg-elevated hover:text-fg focus-visible:ring-1 focus-visible:ring-focus-ink-60"
         >
           <House size={17} />
         </Link>
@@ -646,7 +646,7 @@ export function ProjectRail() {
           // slot in the same list rather than a control bolted under it. Dotted and not dashed: at 40px
           // a dashed border resolves into four long strokes that read as a frame, where dots read as
           // "nothing here yet" — which is what it is.
-          className="mt-3 flex h-10 w-10 shrink-0 items-center justify-center rounded-[30%] border-[1.5px] border-dotted border-border-strong text-muted-80 outline-none transition-colors hover:border-accent hover:text-fg focus-visible:ring-1 focus-visible:ring-fg/60 disabled:opacity-50"
+          className="mt-3 flex h-10 w-10 shrink-0 items-center justify-center rounded-[30%] border-[1.5px] border-dotted border-border-strong text-muted-80 outline-none transition-colors hover:border-accent hover:text-fg focus-visible:ring-1 focus-visible:ring-focus-ink-60 disabled:opacity-50"
         >
           <Plus size={16} />
         </button>

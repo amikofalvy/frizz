@@ -38,7 +38,7 @@ function shortPath(path: string, home: string | undefined): string {
 }
 
 const CARD_BASE =
-  "flex flex-col gap-1 rounded-lg border px-4 py-3 outline-none transition-colors focus-visible:ring-1 focus-visible:ring-fg/60"
+  "flex flex-col gap-1 rounded-lg border px-4 py-3 outline-none transition-colors focus-visible:ring-1 focus-visible:ring-focus-ink-60"
 
 // On a phone the same rows go FULL WIDTH: no card border, no radius, no grid gutter — a hairline
 // between rows instead, and the whole row is the target. The grid above the breakpoint is untouched.
@@ -112,7 +112,7 @@ function Card({ project, home }: { project: ProjectCard; home: string | undefine
           type="button"
           aria-label={`Change the icon for ${project.name}`}
           style={{ width: CARD_ICON, height: CARD_ICON }}
-          className="absolute left-[17px] top-1/2 flex -translate-y-1/2 items-center justify-center rounded-[30%] bg-black/75 text-fg opacity-0 outline-none transition-opacity hover:opacity-100 focus-visible:opacity-100 focus-visible:ring-1 focus-visible:ring-fg/60 data-[state=open]:opacity-100 max-[700px]:left-4 max-[700px]:top-[calc(50%-0.5px)]"
+          className="absolute left-[17px] top-1/2 flex -translate-y-1/2 items-center justify-center rounded-[30%] bg-black/75 text-on-overlay opacity-0 outline-none transition-opacity hover:opacity-100 focus-visible:opacity-100 focus-visible:ring-1 focus-visible:ring-focus-ink-60 data-[state=open]:opacity-100 max-[700px]:left-4 max-[700px]:top-[calc(50%-0.5px)]"
         >
           <ImagePlus size={16} strokeWidth={1.75} />
         </button>
@@ -132,7 +132,7 @@ function Card({ project, home }: { project: ProjectCard; home: string | undefine
         <button
           type="button"
           aria-label={`More actions for ${project.name}`}
-          className="absolute right-[8px] top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-muted opacity-0 outline-none transition-opacity hover:bg-panel-2 hover:text-fg focus-visible:opacity-100 focus-visible:ring-1 focus-visible:ring-fg/60 group-hover/card:opacity-100 data-[state=open]:opacity-100 max-[700px]:right-[7px] max-[700px]:opacity-100"
+          className="absolute right-[8px] top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-muted opacity-0 outline-none transition-opacity hover:bg-panel-2 hover:text-fg focus-visible:opacity-100 focus-visible:ring-1 focus-visible:ring-focus-ink-60 group-hover/card:opacity-100 data-[state=open]:opacity-100 max-[700px]:right-[7px] max-[700px]:opacity-100"
         >
           <Ellipsis size={15} />
         </button>
@@ -369,7 +369,7 @@ function AddProjectDialog({
               onChange={(event) => setPath(event.target.value)}
               placeholder="~/code/my-project"
               spellCheck={false}
-              className={`w-full rounded-md border bg-bg px-2.5 py-2 font-mono text-[12px] text-fg outline-none placeholder:text-muted-50 focus-visible:ring-1 focus-visible:ring-fg/60 ${
+              className={`w-full rounded-md border bg-bg px-2.5 py-2 font-mono text-[12px] text-fg outline-none placeholder:text-muted-50 focus-visible:ring-1 focus-visible:ring-focus-ink-60 ${
                 error ? "border-danger-fill/60" : "border-border-strong"
               }`}
             />
@@ -379,14 +379,14 @@ function AddProjectDialog({
                 type="button"
                 onClick={onClose}
                 disabled={add.isPending}
-                className="rounded-md border border-border-strong bg-elevated px-3 py-1.5 text-[12.5px] text-fg outline-none hover:bg-panel-2 focus-visible:ring-1 focus-visible:ring-fg/60 disabled:opacity-50"
+                className="rounded-md border border-border-strong bg-elevated px-3 py-1.5 text-[12.5px] text-fg outline-none hover:bg-panel-2 focus-visible:ring-1 focus-visible:ring-focus-ink-60 disabled:opacity-50"
               >
                 {proposed ? "Not now" : "Cancel"}
               </button>
               <button
                 type="submit"
                 disabled={add.isPending || path.trim().length === 0}
-                className="rounded-md border border-accent bg-accent-fill px-3 py-1.5 text-[12.5px] font-medium text-on-accent outline-none hover:brightness-110 focus-visible:ring-1 focus-visible:ring-fg/60 disabled:opacity-50"
+                className="rounded-md border border-accent bg-accent-fill px-3 py-1.5 text-[12.5px] font-medium text-on-accent outline-none hover:brightness-110 focus-visible:ring-1 focus-visible:ring-focus-ink-60 disabled:opacity-50"
               >
                 {add.isPending ? "Adding…" : proposed ? "Add it" : "Add project"}
               </button>

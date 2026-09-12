@@ -11,22 +11,15 @@ function externalHue(color: string): string | undefined {
   return match ? `#${match[1].toLowerCase()}` : undefined
 }
 
-// A label hue is external data, so it never becomes a Frizz foreground directly. The document's
-// semantic foreground keeps the text readable in either palette while a measured portion of the
-// supplied hue remains in the ink, tint, and border. CSS owns the palette inputs, so these computed
+// A label hue is external data, so light mode does not use it directly as ink. The document's
+// light foreground keeps even white labels readable while the supplied hue remains in the tint.
+// Dark retains the original hex ink and 0x26/0x59 fill/border alphas. CSS owns the inputs, so these
 // expressions update on a live theme switch without a React subscription.
 export function githubLabelColors(color: string): GithubLabelColors {
-  const hue = externalHue(color)
-  if (!hue) {
-    return {
-      foreground: "var(--color-muted)",
-      background: "color-mix(in srgb, var(--color-muted) 10%, var(--color-panel))",
-      border: "color-mix(in srgb, var(--color-muted) 30%, var(--color-border))",
-    }
-  }
+  const hue = externalHue(color) ?? "var(--color-muted)"
   return {
-    foreground: `color-mix(in srgb, var(--color-fg) 76%, ${hue})`,
-    background: `color-mix(in srgb, ${hue} 12%, var(--color-panel))`,
-    border: `color-mix(in srgb, ${hue} 36%, var(--color-border))`,
+    foreground: `color-mix(in srgb, var(--color-fg) var(--gh-label-fg-mix), ${hue})`,
+    background: `color-mix(in srgb, ${hue} var(--gh-label-bg-mix), var(--gh-label-bg-base))`,
+    border: `color-mix(in srgb, ${hue} var(--gh-label-border-mix), var(--gh-label-border-base))`,
   }
 }

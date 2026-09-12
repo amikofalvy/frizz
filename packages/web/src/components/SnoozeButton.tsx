@@ -96,7 +96,7 @@ export function SnoozeButton({ thread, onSnoozed }: { thread: ThreadView; onSnoo
           aria-label={snoozedUntil ? "Wake thread now" : selectedAction}
           title={snoozedUntil ? `Wake now · ${formatSnoozeWake(snoozedUntil)}` : selectedAction}
           onClick={() => void apply(snoozedUntil ? null : snoozePresetInstant(selectedPreset))}
-          className="flex items-center gap-1.5 rounded-l-md px-2.5 py-1 text-[12px] font-medium text-fg/75 outline-none transition-colors hover:bg-panel-2 hover:text-fg focus-visible:ring-1 focus-visible:ring-fg/60 disabled:cursor-not-allowed disabled:opacity-45"
+          className="flex items-center gap-1.5 rounded-l-md px-2.5 py-1 text-[12px] font-medium text-fg/75 outline-none transition-colors hover:bg-panel-2 hover:text-fg focus-visible:ring-1 focus-visible:ring-focus-ink-60 disabled:cursor-not-allowed disabled:opacity-45"
         >
           {busy && <Loader2 size={12} className="animate-spin" />}
           {snoozedUntil ? "Wake now" : selectedAction}
@@ -109,7 +109,7 @@ export function SnoozeButton({ thread, onSnoozed }: { thread: ThreadView; onSnoo
               disabled={busy}
               aria-label="Snooze options"
               title={`Selected snooze: ${selectedLabel}`}
-              className="flex min-w-0 items-center justify-center gap-1 rounded-r-md px-2 text-fg/75 outline-none transition-colors hover:bg-panel-2 hover:text-fg focus-visible:ring-1 focus-visible:ring-fg/60 disabled:cursor-not-allowed disabled:opacity-45"
+              className="flex min-w-0 items-center justify-center gap-1 rounded-r-md px-2 text-fg/75 outline-none transition-colors hover:bg-panel-2 hover:text-fg focus-visible:ring-1 focus-visible:ring-focus-ink-60 disabled:cursor-not-allowed disabled:opacity-45"
             >
               <ChevronDown size={12} />
             </button>

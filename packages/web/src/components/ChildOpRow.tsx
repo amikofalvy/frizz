@@ -219,7 +219,7 @@ export function ChildOpRow({
     // `overflow-hidden` is load-bearing at a narrow width: the arrow/dot/kind tag inside are shrink-0,
     // so once the row runs out of room the button's own content used to SPILL and the × landed on top
     // of the "AGENT" tag. Clipping keeps the collapse graceful. The ring goes inset to survive it.
-    : `group flex min-w-0 max-w-[60%] items-center gap-1.5 overflow-hidden text-left text-[11.5px] ${clickable ? "cursor-pointer rounded-sm outline-none transition-colors focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-fg/60" : ""}`
+    : `group flex min-w-0 max-w-[60%] items-center gap-1.5 overflow-hidden text-left text-[11.5px] ${clickable ? "cursor-pointer rounded-sm outline-none transition-colors focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-focus-ink-60" : ""}`
 
   // The rail indents with PADDING, not margin: a margin would carve the row wrapper's full-width hover
   // highlight back on every nested row. The two prompt-box densities have no such highlight, so they
@@ -296,7 +296,7 @@ export function ChildOpRow({
           onMouseDown={(e) => e.stopPropagation()}
           title={CHILD_DISMISS_TITLE[dismissTone]}
           aria-label={`${CHILD_DISMISS_VERB[dismissTone]} ${CHILD_DISMISS_NOUN[kind]}: ${label}`}
-          className="shrink-0 rounded-sm p-0.5 text-muted-45 outline-none transition-colors hover:text-fg focus-visible:text-fg focus-visible:ring-1 focus-visible:ring-fg/60"
+          className="shrink-0 rounded-sm p-0.5 text-muted-45 outline-none transition-colors hover:text-fg focus-visible:text-fg focus-visible:ring-1 focus-visible:ring-focus-ink-60"
         >
           <X size={11} />
         </button>
