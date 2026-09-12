@@ -93,16 +93,45 @@ export async function checkSurfaceStates({ page, url, font, palette, out, check,
       await page.hover(selector)
       await settle()
       assert.equal(await page.$eval(selector, el => getComputedStyle(el).opacity), '1', 'Touch-only input is a negative control for the media-gated hover rule')
+      if (process.env.THEME_VERIFY_HOVER_NONE === '1') {
+        assert.equal(await page.evaluate(() => matchMedia('(hover: hover)').matches), false, 'The forced no-hover run must exercise the fallback')
+      } else {
+        await input.send('Emulation.setTouchEmulationEnabled', { enabled: false })
+      }
+      // Headless hosts without hover input need the equivalent media endpoint. Reuse the compiled
+      // hover rules, not an inline opacity that could hide a regression in those rules.
+      const media = await page.evaluateHandle(() => {
+        const changed = []
+        if (!matchMedia('(hover: hover)').matches) {
+          const visit = rules => {
+            for (const rule of rules) {
+              if (rule.type === CSSRule.MEDIA_RULE && /^\(hover:\s*hover\)$/.test(rule.conditionText)) {
+                changed.push({ rule, condition: rule.media.mediaText })
+                rule.media.mediaText = 'all'
+              }
+              if (rule.cssRules) visit(rule.cssRules)
+            }
+          }
+          for (const sheet of document.styleSheets) visit(sheet.cssRules)
+          if (!changed.length) throw new Error('No compiled hover media rules were found')
+        }
+        return changed
+      })
+      try {
+        result[`${name}-${label}-hover-input`] = await media.evaluate(changed => changed.length ? 'equivalent CSS media endpoint' : 'native pointer hover')
+        await page.hover(selector)
+        await settle()
+        assert.deepEqual(await page.$eval(selector, el => ({ hovered: el.matches(':hover'), opacity: getComputedStyle(el).opacity })), { hovered: true, opacity: '0.9' }, 'The compiled CSS hover endpoint is active before sampling')
+        await contrast(`${label}-hover`)
+        await shot(`${label}-hover`)
+      } finally {
+        await media.evaluate(changed => { for (const { rule, condition } of changed) rule.media.mediaText = condition })
+        await media.dispose()
+      }
     } finally {
       await input.send('Emulation.setTouchEmulationEnabled', { enabled: false })
       await input.detach()
     }
-    assert.equal(await page.evaluate(() => matchMedia('(hover: hover)').matches), true, 'Desktop samples explicitly enable mouse input')
-    await page.hover(selector)
-    await settle()
-    assert.deepEqual(await page.$eval(selector, el => ({ hovered: el.matches(':hover'), opacity: getComputedStyle(el).opacity })), { hovered: true, opacity: '0.9' }, 'The hover sample requires a pointer-capable Chrome with the real CSS hover endpoint active')
-    await contrast(`${label}-hover`)
-    await shot(`${label}-hover`)
     await page.keyboard.press('Escape')
     await page.waitForSelector('[role="dialog"]', { hidden: true })
   }
