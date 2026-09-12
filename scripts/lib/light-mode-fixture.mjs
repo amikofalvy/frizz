@@ -30,14 +30,26 @@ export async function seedLightModeFixture(stack, api) {
     { slug: "theme-running", title: "Running the verification suite", text: "Checking the live renderers and their connection state.", running: true },
     { slug: "theme-snoozed", title: "Waiting for the nightly checks", text: "The scheduled checks are still running." },
     { slug: "theme-done", title: "Preserve the existing dark appearance", text: "```done\n- Preserved the existing dark palette.\n- Verified the first visible canvas.\n```", archived: true },
+    { slug: "theme-invalid", title: "Recover from a malformed diagram", text: "```mermaid\nthis is not a valid diagram !\n```\n\n```mermaid\nflowchart LR\nA[Still renders] --> B[After a rejected job]\n```" },
   ]
   for (const fixture of fixtures) {
     const sessionId = randomUUID()
     fixture.sessionId = sessionId
     const records = [
       { type: "user", parentUuid: null, isSidechain: false, uuid: randomUUID(), timestamp, session_id: sessionId, cwd: project, message: { role: "user", content: `TASK:\n${fixture.title}` } },
-      { type: "assistant", parentUuid: null, isSidechain: false, uuid: randomUUID(), timestamp, session_id: sessionId, cwd: project, message: { id: `msg_${fixture.slug}`, model: "claude-opus-5", type: "message", role: "assistant", content: [{ type: "text", text: fixture.text }], stop_reason: fixture.running ? null : "end_turn", usage: { input_tokens: 4200, output_tokens: 320 } } },
+      { type: "assistant", parentUuid: null, isSidechain: false, uuid: randomUUID(), timestamp, session_id: sessionId, cwd: project, message: { id: `msg_${fixture.slug}`, model: "claude-opus-5", type: "message", role: "assistant", content: [{ type: "text", text: fixture.text }, ...(fixture.running ? [{ type: "tool_use", id: "theme-verification", name: "Bash", input: { command: "nub --test", description: "Checking the live renderers" } }] : [])], stop_reason: fixture.running ? "tool_use" : "end_turn", usage: { input_tokens: 4200, output_tokens: 320 } } },
     ]
+    if (fixture.slug === "theme-rich") {
+      const tool = (id, name, input, content, error = false) => [
+        { ...records[1], uuid: randomUUID(), message: { ...records[1].message, id: `msg_${id}`, content: [{ type: "tool_use", id, name, input }], stop_reason: "tool_use" } },
+        { ...records[0], uuid: randomUUID(), message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content, is_error: error }] } },
+      ]
+      records.splice(1, 0,
+        ...tool("theme-edit", "Edit", { file_path: join(project, "theme.ts"), old_string: "// Remember this browser\nconst palette = 'dark'", new_string: "// Follow the saved preference\nconst palette = 'light'" }, "Updated theme.ts"),
+        ...tool("theme-read", "Read", { file_path: join(project, "theme.ts") }, "1\t// Follow the saved preference\n2\tconst palette = 'light'"),
+        ...tool("theme-error", "Bash", { command: "nub --test missing.test.ts", description: "Checking an unavailable test" }, "Could not find missing.test.ts", true),
+      )
+    }
     writeFileSync(join(dir, `${sessionId}.jsonl`), records.map(JSON.stringify).join("\n") + "\n")
     const key = createHash("sha256").update(sessionId).digest("hex").slice(0, 16)
     writeFileSync(join(state, "claude-broker", `${key}.json`), JSON.stringify({ sessionId, daemonPid: process.pid, socketPath: join(state, "fixture.sock") }))
@@ -57,6 +69,7 @@ export async function seedLightModeFixture(stack, api) {
     await new Promise(r => setTimeout(r, 250))
   }
   await api.mutate("setThreadState", { slug: "theme-done", state: "archived" })
+  await api.mutate("setThreadState", { slug: "theme-invalid", state: "archived" })
   await api.mutate("setThreadSnooze", { slug: "theme-snoozed", sessionId: fixtures[3].sessionId, until: new Date(Date.now() + 3_600_000).toISOString() })
   await api.mutate("ask", { slug: "theme-question", questions: [{ question: "Which checkpoint should run next?", kind: "question", options: [{ label: "Renderer checks", description: "Verify state survives an appearance change", recommended: true }, { label: "Navigation checks", description: "Verify the first visible canvas on every route" }] }] })
   return fixtures
