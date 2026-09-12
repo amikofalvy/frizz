@@ -252,7 +252,7 @@ export function LogoutConfirmModal({ backend, onClose }: { backend: Backend; onC
               type="button"
               onClick={() => logout.mutate()}
               disabled={logout.isPending}
-              className="flex items-center gap-1.5 rounded-md bg-danger-fill/90 px-3 py-1.5 text-[12.5px] font-medium text-white outline-none transition-opacity hover:opacity-90 disabled:opacity-60"
+              className="flex items-center gap-1.5 rounded-md bg-danger-button/90 px-3 py-1.5 text-[12.5px] font-medium text-white outline-none transition-opacity hover:opacity-90 disabled:opacity-60"
             >
               {logout.isPending && <Loader2 size={13} className="animate-spin" />}
               Sign out

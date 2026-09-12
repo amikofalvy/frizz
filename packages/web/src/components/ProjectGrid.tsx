@@ -239,7 +239,7 @@ function DeleteProjectDialog({
             type="button"
             onClick={() => remove.mutate()}
             disabled={remove.isPending}
-            className="flex items-center gap-1.5 rounded-md bg-danger-fill/90 px-3 py-1.5 text-[12.5px] font-medium text-white outline-none transition-opacity hover:opacity-90 disabled:opacity-60"
+            className="flex items-center gap-1.5 rounded-md bg-danger-button/90 px-3 py-1.5 text-[12.5px] font-medium text-white outline-none transition-opacity hover:opacity-90 disabled:opacity-60"
           >
             {remove.isPending && <Loader2 size={12} className="animate-spin" />}
             {deleteData ? "Delete project and threads" : "Delete project"}

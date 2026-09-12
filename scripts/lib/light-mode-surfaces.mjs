@@ -76,6 +76,37 @@ export async function checkSurfaceStates({ page, url, font, palette, out, check,
   await shot("appearance-help")
   check(`${name} Appearance menu, help, focus and browser-only persistence`)
 
+  const inspectDestructive = async label => {
+    const selector = '[role="dialog"] button[class*="bg-danger"]'
+    await page.waitForSelector(selector, { visible: true })
+    const settle = () => page.evaluate(async () => {
+      await new Promise(requestAnimationFrame)
+      await Promise.all(document.getAnimations().filter(a => a.effect?.getTiming().iterations !== Infinity).map(a => a.finished.catch(() => {})))
+    })
+    await page.mouse.move(0, 0)
+    await settle()
+    await contrast(`${label}-normal`)
+    await page.hover(selector)
+    await settle()
+    await contrast(`${label}-hover`)
+    await shot(`${label}-hover`)
+    await page.keyboard.press('Escape')
+    await page.waitForSelector('[role="dialog"]', { hidden: true })
+  }
+  await page.goto(new URL('/', url).href, { waitUntil: 'networkidle2' })
+  await page.hover('[aria-label="More actions for theme-project"]')
+  await page.click('[aria-label="More actions for theme-project"]')
+  await page.click('[role="menuitem"]')
+  await inspectDestructive('delete-project')
+  await page.goto(`${url}/thread/theme-rich/full`, { waitUntil: 'networkidle2' })
+  // The alias trims whitespace; skip skill discovery against the transcript-only fixture.
+  await page.type('textarea', ' /logout')
+  await page.keyboard.down('Meta')
+  await page.keyboard.press('Enter')
+  await page.keyboard.up('Meta')
+  await inspectDestructive('sign-out')
+  check(`${name} destructive confirmation labels in normal and pointer-hover states, without submitting either action`)
+
   await page.goto(`${url}/thread/theme-rich/full`, { waitUntil: "networkidle2" })
   await page.evaluate(() => [...document.querySelectorAll('button[aria-expanded="false"]')].find(el => el.textContent.includes("Ran 3 tool calls"))?.click())
   await page.waitForSelector(".frizz-diff")

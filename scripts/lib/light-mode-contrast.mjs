@@ -10,7 +10,10 @@ export async function measureTextContrast(page) {
       const p = [...ctx.getImageData(0, 0, 1, 1).data]
       return [p[0], p[1], p[2], p[3] / 255]
     }
-    const over = (fg, bg) => [...fg.slice(0, 3).map((value, i) => value * fg[3] + bg[i] * (1 - fg[3])), 1]
+    const over = (fg, bg) => {
+      const alpha = fg[3] + bg[3] * (1 - fg[3])
+      return [...fg.slice(0, 3).map((value, i) => alpha ? (value * fg[3] + bg[i] * bg[3] * (1 - fg[3])) / alpha : 0), alpha]
+    }
     const luminance = rgb => rgb.slice(0, 3).map(c => c / 255).map(c => c <= .04045 ? c / 12.92 : ((c + .055) / 1.055) ** 2.4).reduce((sum, c, i) => sum + c * [.2126, .7152, .0722][i], 0)
     const records = []
     const seen = new Set()
@@ -27,19 +30,23 @@ export async function measureTextContrast(page) {
       const hit = document.elementFromPoint(Math.max(0, Math.min(innerWidth - 1, rect.left + Math.min(rect.width / 2, 8))), Math.max(0, Math.min(innerHeight - 1, rect.top + rect.height / 2)))
       if (!hit || !(element.contains(hit) || hit.contains(element))) continue
       const style = getComputedStyle(element)
-      const ancestors = []
+      let bg = [0, 0, 0, 0]
+      let fg = rgba(style.color)
       let opacity = 1
       for (let parent = element; parent; parent = parent.parentElement) {
         const css = getComputedStyle(parent)
         if (css.visibility === "hidden" || css.display === "none") { opacity = 0; break }
         opacity *= Number(css.opacity)
-        ancestors.unshift(css.backgroundColor)
+        // Group opacity applies to the painted background and foreground together.
+        const backdrop = rgba(css.backgroundColor)
+        bg = over(bg, backdrop)
+        fg = over(fg, backdrop)
+        bg[3] *= Number(css.opacity)
+        fg[3] *= Number(css.opacity)
       }
       if (opacity === 0) continue
-      const bg = ancestors.reduce((backdrop, color) => over(rgba(color), backdrop), [255, 255, 255, 1])
-      const ink = rgba(style.color)
-      ink[3] *= opacity
-      const fg = over(ink, bg)
+      bg = over(bg, [255, 255, 255, 1])
+      fg = over(fg, [255, 255, 255, 1])
       const a = luminance(fg), b = luminance(bg)
       const ratio = (Math.max(a, b) + .05) / (Math.min(a, b) + .05)
       const key = `${style.color}/${bg}/${opacity}/${element.className}`
