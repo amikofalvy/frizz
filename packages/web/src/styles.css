@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "./theme.css";
 
 /* Dark, dense orchestration surface. Yellow accent = "awaiting you".
    Mono-forward type system (Cursor/Linear-flavored), 13px base. */
@@ -17,28 +18,14 @@
      while a file click still fell back to the overlay drawer. */
   --breakpoint-split: 1200px;
 
-  --color-bg: #0d0e10;
-  --color-panel: #131519;
-  --color-panel-2: #181b20;
-  --color-elevated: #1c1f25;
-  --color-border: #26282d;
-  --color-border-strong: #33363c;
-  --color-fg: #e6e7e9;
   /* User chat bubble fill — a tick less white than --color-fg so the human's words read as a warm
      off-white card rather than a stark white block, while text (text-bg) stays high-contrast. */
-  --color-user-bubble: #d5d7da;
-  --color-muted: #8b8f96;
-  --color-accent: #e8b923;
-  --color-live: #4ac97e;
   /* A parked PR watcher's mark. Fitted to the accent-yellow/shell-blue pair in OKLCH rather than picked
      — see the .frizz-live-dot--github rule below for the numbers and for why it is violet and not the
      green that fits the same numbers. */
-  --color-watch: #b47feb;
-  --color-idle: #6b7280;
   /* Live-work indicators split by runtime concern: a background SHELL/Monitor pulses blue, a
      sub-agent pulses the accent-yellow. The blue is a clear azure, kept distinct from --color-live
      green and the accent gold so the two live states never blur. */
-  --color-shell: #4a9eff;
 
   /* CODE TOKEN COLOURS — one palette, every code surface in the app.
 
@@ -53,15 +40,6 @@
      tuned set rather than a hand-picked one, and it survives this app's darker background (#0d0e10 vs
      dark-dimmed's own #22272e) with room to spare. Both engines map onto these vars and neither one
      may hard-code a colour: `.hljs-*` below, `ftk-*` in lib/diff/diff.css. */
-  --code-kw: #f47067; /* keywords, doctags, template tags */
-  --code-op: var(--code-kw); /* operators track keywords, as the diff has always drawn them */
-  --code-fn: #dcbdfb; /* function/class names at their definition or call */
-  --code-num: #6cb6ff; /* numbers, literals, attributes, plain variables */
-  --code-str: #96d0ff; /* strings, regexps */
-  --code-type: #f69d50; /* built-ins, declared types, symbols */
-  --code-com: #768390; /* comments and quotes */
-  --code-tag: #8ddb8c; /* markup element and selector names */
-  --code-punct: #adbac7; /* brackets, separators — dark-dimmed's own base text tone */
 
   --font-mono: ui-monospace, "JetBrains Mono", "Fira Code", "SF Mono", "Cascadia Mono", Consolas,
     Menlo, "DejaVu Sans Mono", monospace;

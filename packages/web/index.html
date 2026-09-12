@@ -24,13 +24,24 @@
          paints its default canvas for the frame before the module CSS arrives. That default is WHITE,
          so every project switch strobed. `color-scheme` makes the UA canvas dark immediately; the
          inline rule is the belt to that braces, since it needs no stylesheet at all. -->
-    <meta name="color-scheme" content="dark" />
+    <meta name="color-scheme" content="dark light" />
     <style>
       html, body { background: #0d0e10; }
+      html[data-theme="light"], html[data-theme="light"] body { background: #f6f8fa; }
+      @media (prefers-color-scheme: light) { html:not([data-theme]), html:not([data-theme]) body { background: #f6f8fa; } }
     </style>
     <!-- FOUC guard: the font choice lives in server settings, which arrive an RPC round-trip after
          first paint — apply the last-known value synchronously from localStorage so the page never
          flashes mono before swapping to sans (font.ts confirms/corrects once settings load). -->
+    <script>
+      try {
+        const preference = localStorage.getItem("frizz-theme")
+        const theme = preference === "dark" || preference === "light" ? preference : matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"
+        document.documentElement.dataset.theme = theme
+        document.documentElement.style.colorScheme = theme
+        document.querySelector('meta[name="theme-color"]').content = theme === "dark" ? "#0d0e10" : "#f6f8fa"
+      } catch {}
+    </script>
     <script>
       try { document.documentElement.dataset.font = localStorage.getItem("frizz-font") === "mono" ? "mono" : "sans" } catch {}
     </script>

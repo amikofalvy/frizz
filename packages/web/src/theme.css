@@ -1,0 +1,90 @@
+/* Palette authority. Tailwind utilities keep their semantic names and resolve through these values. */
+@theme static {
+  --color-bg: var(--frizz-bg);
+  --color-panel: var(--frizz-panel);
+  --color-panel-2: var(--frizz-panel-2);
+  --color-elevated: var(--frizz-elevated);
+  --color-inset: var(--frizz-inset);
+  --color-border: var(--frizz-border);
+  --color-border-strong: var(--frizz-border-strong);
+  --color-fg: var(--frizz-fg);
+  --color-muted: var(--frizz-muted);
+  --color-faint: var(--frizz-faint);
+  --color-accent: var(--frizz-accent);
+  --color-accent-fg: var(--frizz-accent-fg);
+  --color-user-bubble: var(--frizz-user-bubble);
+  --color-user-bubble-fg: var(--frizz-user-bubble-fg);
+  --color-live: var(--frizz-live);
+  --color-watch: var(--frizz-watch);
+  --color-idle: var(--frizz-idle);
+  --color-shell: var(--frizz-shell);
+  --color-hover: var(--frizz-hover);
+  --color-scrim: var(--frizz-scrim);
+  --color-focus: var(--frizz-focus);
+}
+
+:root, :root[data-theme="dark"] {
+  color-scheme: dark;
+  --frizz-bg: #0d0e10;
+  --frizz-panel: #131519;
+  --frizz-panel-2: #181b20;
+  --frizz-elevated: #1c1f25;
+  --frizz-inset: #0d0e10;
+  --frizz-border: #26282d;
+  --frizz-border-strong: #33363c;
+  --frizz-fg: #e6e7e9;
+  --frizz-muted: #8b8f96;
+  --frizz-faint: #5f646d;
+  --frizz-accent: #e8b923;
+  --frizz-accent-fg: #171207;
+  --frizz-user-bubble: #d5d7da;
+  --frizz-user-bubble-fg: #111318;
+  --frizz-live: #4ac97e;
+  --frizz-watch: #b47feb;
+  --frizz-idle: #6b7280;
+  --frizz-shell: #4a9eff;
+  --frizz-hover: rgb(255 255 255 / 0.04);
+  --frizz-scrim: rgb(0 0 0 / 0.62);
+  --frizz-focus: rgb(232 185 35 / 0.45);
+  --code-kw: #f47067; --code-op: var(--code-kw); --code-fn: #dcbdfb; --code-num: #6cb6ff;
+  --code-str: #96d0ff; --code-type: #f69d50; --code-com: #768390; --code-tag: #8ddb8c; --code-punct: #adbac7;
+  --code-base: #d5d8dc; --code-add: #b4f1b4; --code-del: #ffd8d3; --code-add-bg: rgb(87 171 90 / 0.15); --code-del-bg: rgb(229 83 75 / 0.15); --code-gutter: #4b4f57;
+  --gh-fg-success: #3fb950; --gh-bg-success-emphasis: #238636; --gh-fg-danger: #f85149; --gh-bg-danger-emphasis: #da3633; --gh-fg-done: #ab7df8; --gh-bg-done-emphasis: #8957e5; --gh-fg-attention: #d29922; --gh-fg-neutral: #9198a1; --gh-bg-neutral-emphasis: #656c76; --gh-danger-link: #f85149;
+  --terminal-cursor: #e6e7e9; --terminal-selection: rgb(230 231 233 / .22);
+  --viz-series-1: #7aa2f7; --viz-series-2: #4ac97e; --viz-series-3: #e8b923; --viz-series-4: #bb9af7; --viz-series-5: #f7768e; --viz-series-6: #7dcfff;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --frizz-bg: #f6f8fa;
+  --frizz-panel: #ffffff;
+  --frizz-panel-2: #f1f4f7;
+  --frizz-elevated: #ffffff;
+  --frizz-inset: #edf1f5;
+  --frizz-border: #d0d7de;
+  --frizz-border-strong: #afb8c1;
+  --frizz-fg: #1f2328;
+  --frizz-muted: #57606a;
+  --frizz-faint: #6e7781;
+  --frizz-accent: #9a6700;
+  --frizz-accent-fg: #ffffff;
+  --frizz-user-bubble: #dbeafe;
+  --frizz-user-bubble-fg: #182230;
+  --frizz-live: #1a7f37;
+  --frizz-watch: #8250df;
+  --frizz-idle: #6e7781;
+  --frizz-shell: #0969da;
+  --frizz-hover: rgb(9 105 218 / 0.08);
+  --frizz-scrim: rgb(31 35 40 / 0.42);
+  --frizz-focus: rgb(9 105 218 / 0.45);
+  --code-kw: #cf222e; --code-op: var(--code-kw); --code-fn: #8250df; --code-num: #0550ae;
+  --code-str: #0a3069; --code-type: #953800; --code-com: #6e7781; --code-tag: #116329; --code-punct: #24292f;
+  --code-base: #24292f; --code-add: #116329; --code-del: #cf222e; --code-add-bg: #dafbe1; --code-del-bg: #ffebe9; --code-gutter: #6e7781;
+  --gh-fg-success: #1a7f37; --gh-bg-success-emphasis: #1f883d; --gh-fg-danger: #cf222e; --gh-bg-danger-emphasis: #cf222e; --gh-fg-done: #8250df; --gh-bg-done-emphasis: #8250df; --gh-fg-attention: #9a6700; --gh-fg-neutral: #57606a; --gh-bg-neutral-emphasis: #6e7781; --gh-danger-link: #cf222e;
+  --terminal-cursor: #1f2328; --terminal-selection: rgb(9 105 218 / .22);
+  --viz-series-1: #0969da; --viz-series-2: #1a7f37; --viz-series-3: #9a6700; --viz-series-4: #8250df; --viz-series-5: #cf222e; --viz-series-6: #0a7f8c;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) { color-scheme: light; }
+}
