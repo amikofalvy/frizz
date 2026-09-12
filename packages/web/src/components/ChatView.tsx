@@ -51,6 +51,7 @@ import { noteGithubRefs } from "../lib/githubHovercards.ts"
 import { ICON_LABEL_NUDGE } from "../lib/iconAlign.ts"
 import { prefs } from "../lib/prefs.ts"
 import { getThemeSnapshot, subscribeTheme } from "../lib/theme.ts"
+import { isVisualizationThemeAck, visualizationThemeMessage } from "../lib/visualizationThemeProtocol.ts"
 import { canAdoptThread } from "../lib/adoption.ts"
 import { THREAD_TITLE_MAX_LENGTH, manualThreadTitleSeed, threadTitleToCommit } from "../lib/threadTitle.ts"
 import { THREAD_HEADER_CLASS, THREAD_HEADER_CONTROLS_CLASS, THREAD_HEADER_TITLE_CLASS } from "../lib/threadHeaderLayout.ts"
@@ -3650,11 +3651,11 @@ const VIS_THEME_VARIABLES: Record<string, string> = {
   "--viz-series-6": "--viz-series-6",
 }
 
-function visualizationTheme() {
+function visualizationTheme(requestId: number) {
   const root = getComputedStyle(document.documentElement)
   const vars = Object.fromEntries(Object.entries(VIS_THEME_VARIABLES).map(([target, source]) => [target, root.getPropertyValue(source).trim()]))
   vars["--font-size-base"] = getComputedStyle(document.body).fontSize
-  return { type: "frizz-inline-vis-theme", colorScheme: root.colorScheme === "light" ? "light" : "dark", vars }
+  return visualizationThemeMessage(requestId, root.colorScheme === "light" ? "light" : "dark", vars)
 }
 
 // Codex Visualize emits a thread-local HTML fragment plus this directive. The server resolves the
@@ -3666,8 +3667,10 @@ export function InlineVisualization({ file }: { file: string }) {
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const [height, setHeight] = useState(360)
   const [available, setAvailable] = useState<boolean | null>(null)
-  const [paletteApplied, setPaletteApplied] = useState(false)
+  const [appliedSrc, setAppliedSrc] = useState<string | null>(null)
   const paletteTimeout = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const requestId = useRef(0)
+  const loadedSrc = useRef<string | null>(null)
   const { resolved } = useSyncExternalStore(subscribeTheme, getThemeSnapshot, getThemeSnapshot)
   const src = slug ? `${apiBase()}/local-visualization?slug=${encodeURIComponent(slug)}&file=${encodeURIComponent(file)}` : null
 
@@ -3675,6 +3678,9 @@ export function InlineVisualization({ file }: { file: string }) {
     if (!src) { setAvailable(false); return }
     const controller = new AbortController()
     setAvailable(null)
+    setAppliedSrc(null)
+    loadedSrc.current = null
+    window.clearTimeout(paletteTimeout.current)
     // Probe before mounting so a missing fragment gets a useful fallback instead of a tiny iframe
     // containing a bare HTTP status. HEAD avoids downloading a potentially 2 MB fragment twice.
     void fetch(src, { method: "HEAD", signal: controller.signal }).then((response) => {
@@ -3685,7 +3691,11 @@ export function InlineVisualization({ file }: { file: string }) {
     return () => controller.abort()
   }, [src])
 
-  const sendTheme = useCallback(() => iframeRef.current?.contentWindow?.postMessage(visualizationTheme(), "*"), [])
+  const sendTheme = useCallback(() => {
+    if (!src || loadedSrc.current !== src) return
+    const nextRequest = ++requestId.current
+    iframeRef.current?.contentWindow?.postMessage(visualizationTheme(nextRequest), "*")
+  }, [src])
 
   useEffect(() => {
     const receive = (event: MessageEvent) => {
@@ -3694,9 +3704,9 @@ export function InlineVisualization({ file }: { file: string }) {
         sendTheme()
         return
       }
-      if (event.data?.type === "frizz-inline-vis-applied") {
+      if (isVisualizationThemeAck(event.data, requestId.current) && src && loadedSrc.current === src) {
         window.clearTimeout(paletteTimeout.current)
-        setPaletteApplied(true)
+        setAppliedSrc(src)
         return
       }
       if (event.data?.type !== "frizz-inline-vis-height") return
@@ -3705,11 +3715,11 @@ export function InlineVisualization({ file }: { file: string }) {
     }
     window.addEventListener("message", receive)
     return () => window.removeEventListener("message", receive)
-  }, [sendTheme])
+  }, [sendTheme, src])
 
   useEffect(() => {
-    if (paletteApplied) sendTheme()
-  }, [paletteApplied, resolved, sendTheme])
+    sendTheme()
+  }, [resolved, sendTheme])
 
   useEffect(() => () => window.clearTimeout(paletteTimeout.current), [])
 
@@ -3724,13 +3734,15 @@ export function InlineVisualization({ file }: { file: string }) {
       title={file.replace(/\.html$/, "").replaceAll("-", " ")}
       sandbox="allow-scripts"
       onLoad={() => {
-        setPaletteApplied(false)
+        if (!src) return
+        setAppliedSrc(null)
+        loadedSrc.current = src
         sendTheme()
         window.clearTimeout(paletteTimeout.current)
         paletteTimeout.current = window.setTimeout(() => setAvailable(false), 5000)
       }}
       className="block w-full border-0 bg-transparent"
-      style={{ height, visibility: paletteApplied ? "visible" : "hidden" }}
+      style={{ height, visibility: appliedSrc === src ? "visible" : "hidden" }}
     />
   )
 }
