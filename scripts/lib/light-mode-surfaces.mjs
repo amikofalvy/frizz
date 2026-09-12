@@ -87,6 +87,17 @@ export async function checkSurfaceStates({ page, url, font, palette, out, check,
     await settle()
     assert.equal(await page.$eval(selector, el => getComputedStyle(el).opacity), '1', 'The normal sample is fully opaque')
     await contrast(`${label}-normal`)
+    const input = await page.createCDPSession()
+    try {
+      await input.send('Emulation.setTouchEmulationEnabled', { enabled: true })
+      await page.hover(selector)
+      await settle()
+      assert.equal(await page.$eval(selector, el => getComputedStyle(el).opacity), '1', 'Touch-only input is a negative control for the media-gated hover rule')
+    } finally {
+      await input.send('Emulation.setTouchEmulationEnabled', { enabled: false })
+      await input.detach()
+    }
+    assert.equal(await page.evaluate(() => matchMedia('(hover: hover)').matches), true, 'Desktop samples explicitly enable mouse input')
     await page.hover(selector)
     await settle()
     assert.deepEqual(await page.$eval(selector, el => ({ hovered: el.matches(':hover'), opacity: getComputedStyle(el).opacity })), { hovered: true, opacity: '0.9' }, 'The hover sample requires a pointer-capable Chrome with the real CSS hover endpoint active')
