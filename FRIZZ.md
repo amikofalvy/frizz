@@ -52,7 +52,7 @@ when the human asked for X is not progress on X. Two rows above describe INCOMPL
 The token and the sign-off must agree; the sign-off is the glance-level signal and the token is its
 one-line caption. `**Fixed** — the divider now shows the child's description, `749a37b` on `main`.`
 
-**A pending question does not stop a rest, and `mcp__frizz__ask` IS the sign-off.** Register the question, write the `**Needs you**` handoff, and come to rest normally. Frizz draws every open question at the rest it was asked, whether the write-up mentions it or not — the card draws itself, so the handoff carries the reasoning around the ask, never a copy of it (a fence that names or restates a registered question draws nothing; the old empty-fence placement marker was retired 2026-08-30 and is inert). `unask` the ones that no longer matter.
+**A pending question does not stop a rest, and `mcp__frizz__ask` IS the sign-off.** Register the question, write the `**Needs you**` handoff, and come to rest normally. Frizz draws every open question at the rest it was asked, whether the write-up mentions it or not — the card draws itself, so the handoff carries the reasoning around the ask, never a copy of it (prose that restates a registered question draws nothing, and the free-form ` ```question ` fence is retired — a fence with a question in its body is plain prose, not a card and not a sign-off). To place a registered question inside the prose, write an EMPTY fence naming its id — ` ```question qst_ab12cd34 ` on one line, ` ``` ` on the next; one marker per question, and a question with no marker renders at the tail of the rest. `unask` the ones that no longer matter.
 
 **`**Fixed**` is for work that LANDED, not for work you concluded.** An investigation whose output is a recommendation — merge this, decline that, post this comment, pick one of these two — is `**Needs you**`, because the act it recommends is still ahead of it and a ` ```done ` card files the recommendation away unread. Same for a draft you wrote but did not send, and for follow-up work you discovered: DO it first — dispatch a sub-agent, whose result comes back to you, so it lands on your card — and ASK second. `mcp__frizz__spawn_thread` is the LAST resort, for an effort that genuinely cannot ride on your card, because a spawned thread reports only to the maintainer and nothing it learns returns to you or its siblings.
 
@@ -67,7 +67,7 @@ written twice. The CARD is the ledger — one bullet per deliverable, what shipp
 nothing else. The PROSE is only what a ledger cannot hold: reasoning, caveats, the thing they have to
 do. If a sentence would read the same in either, it belongs in exactly one of them.
 
-**And nothing in a finished handoff points vaguely forward.** "One thing to carry forward…", "a follow-up could…", "someone should add a changelog line before this ships" — a forward-reference parked in a dismissal card is clutter: too weak for anyone to act on, too present to ignore, and archived unread. Every such thought resolves four ways and there is no fifth — do it (a sub-agent reports back to you), ask about it in a ` ```question `, spawn it onto its own card as a last resort, or DROP it. What is not worth a card is not worth a sentence. A thing the maintainer must do NOW is not a dangling idea; that is the handoff, and it has its own slot above.
+**And nothing in a finished handoff points vaguely forward.** "One thing to carry forward…", "a follow-up could…", "someone should add a changelog line before this ships" — a forward-reference parked in a dismissal card is clutter: too weak for anyone to act on, too present to ignore, and archived unread. Every such thought resolves four ways and there is no fifth — do it (a sub-agent reports back to you), ask about it with `mcp__frizz__ask`, spawn it onto its own card as a last resort, or DROP it. What is not worth a card is not worth a sentence. A thing the maintainer must do NOW is not a dangling idea; that is the handoff, and it has its own slot above.
 
 (Written 2026-07-31 after a handoff opened on root cause and buried the verdict under a differential
 table, two screenshots and a decision list — every fact was present and the maintainer still had to
@@ -154,8 +154,7 @@ touches GitHub as a PR.
   is no size threshold and no exception. If you find yourself about to create a PR, STOP: in this repo
   that is always the wrong move. This is the single most-violated rule here — treat any impulse to
   "open a PR for review" as a bug in your own plan and correct it before acting.
-- **Don't push a branch to the remote to stage a review either.** The remote plays no part in landing
-  work. Reading GitHub (issues, PRs, CI) is fine; creating or pushing a PR is not.
+- **Don't push a branch to the remote to stage a review either.** The remote plays no part in landing work. Reading GitHub (issues, PRs, CI) is fine; creating or pushing a PR is not. The one push that is not staging a review is a RELEASE: `release` is a fast-forward pointer into `main`, and pushing it is what publishes — when asked to cut one, follow `AGENTS.md` § Cutting a release, which is the whole procedure.
 - **The default is to work directly on `main` and commit there.** A small, self-contained change needs
   no branch and no worktree — edit, verify, commit on `main`, done.
 - **Use a git worktree freely whenever you want isolation** — messy in-progress work, isolated and

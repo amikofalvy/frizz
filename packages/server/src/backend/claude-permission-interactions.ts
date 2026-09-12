@@ -44,12 +44,14 @@ function clip(text: string, max: number): string {
 
 /** `~`-shorten a path for the prompt — putting the directory in front of the command only pays off if it
  *  stays narrow. (`src/readout.ts` has the CLI's own copy; the server package cannot import the root
- *  project without a circular project reference, and this is four lines of pure string work.) */
-function tildePath(path: string): string {
-  const home = homedir()
+ *  project without a circular project reference, and this is four lines of pure string work.)
+ *  The remainder after the home prefix may open with either separator: a Windows cwd is
+ *  `C:\Users\op\proj`, and requiring `/` left every Windows path at full length (Windows audit
+ *  2026-09-11, finding 14). Exported, with the home injectable, so both spellings are pinned. */
+export function tildePath(path: string, home: string = homedir()): string {
   if (!path.startsWith(home)) return path
   const rest = path.slice(home.length)
-  return rest === "" ? "~" : rest.startsWith("/") ? `~${rest}` : path
+  return rest === "" ? "~" : /^[\\/]/.test(rest) ? `~${rest}` : path
 }
 
 // The argument that says WHAT a tool call will do, in the order the tools that actually escalate carry
@@ -200,12 +202,13 @@ const CLAUDE_QUESTION_DECLINED =
   "The operator did not answer this question from the frizz dashboard. Do not ask it again with this tool — " +
   "decide with the information you already have, or raise it in your final message."
 
-/** A question frizz could not represent EXACTLY (see parseClaudeAskUserQuestion). Denied with the fence
- *  redirect rather than downgraded to an approval card, whose bare allow the model reads as unanswered. */
+/** A question frizz could not represent EXACTLY (see parseClaudeAskUserQuestion). Denied with the `ask`
+ *  redirect rather than downgraded to an approval card, whose bare allow the model reads as unanswered.
+ *  (It redirected to a ```question fence until 2026-09-11, when the free-form fence was retired.) */
 export const CLAUDE_ASK_DENY_MESSAGE =
-  "Frizz could not render this question as a card. Ask it in your FINAL MESSAGE instead, in a ```question " +
-  "fenced block — context, the question, lettered `- A. …` options, a recommendation — then end your turn. " +
-  "The operator answers it from the queue and the reply arrives as your next user message."
+  "Frizz could not render this question as a card. Register it with `mcp__frizz__ask` instead — context, " +
+  "the question, options with a one-line trade-off each, the recommended one first — never as a ```question " +
+  "fence, which is retired. The operator answers it from the queue and the reply arrives as your next user message."
 
 /** The card went away without an answer: the operator dismissed it, the turn was interrupted, the session
  *  was replaced — or, the common one, they sent a FOLLOW-UP instead of answering, which supersedes the
@@ -213,7 +216,7 @@ export const CLAUDE_ASK_DENY_MESSAGE =
 export const CLAUDE_ASK_WITHDRAWN_MESSAGE =
   "This question was withdrawn before anyone answered it — most likely because the operator sent a message " +
   "instead. Read their next message and follow it. Do not ask this again with this tool; if you still need " +
-  "the decision, put it in your final message as a ```question fenced block."
+  "the decision, register it with `mcp__frizz__ask`."
 
 function displayText(value: string, max: number, fallback: string, redact = true): string {
   const scrubbed = (redact ? redactCredentialSyntax(value) : value).replace(SCRUB_UNSAFE_TEXT, "").trim()

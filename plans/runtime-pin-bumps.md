@@ -53,7 +53,7 @@ If it fails, the vendor moved the format and the parser — `parseCodexLine` in 
 
 ## Then cut a release — a pin nobody can install is not a bump
 
-The point of a pin is the binary a USER ends up running, and `npx frizz` gives them whatever the last published version pinned. So a bump that lands on `main` and stops there has fixed nothing for anybody: it sits unreleased while every install keeps provisioning the old runtime. Finish the job (maintainer, 2026-09-07: *"once you bump these versions and test them end to end, you should cut a new release as well"*).
+The point of a pin is the binary a user runs. The selected `frizz-server` generation owns the provider pins; updating that server brings the new private runtimes without changing the stable launcher or global provider installations. A pin that lands on `main` alone remains unpublished. Finish the authorized release job (maintainer, 2026-09-07: *"once you bump these versions and test them end to end, you should cut a new release as well"*).
 
 ### Releases publish from the `release` branch, not from main
 
@@ -63,13 +63,13 @@ Main answers "has this landed?". [`release`](../.github/workflows/release.yml) a
 
 ### The sequence
 
-1. **Cut the version on main.** Raise `version` in the root [`package.json`](../package.json) and commit as `chore(release): X.Y.Z`. A patch bump is the convention, `feat(` commits included — `feat(codex): re-pin the app-server audit to codex 0.153.4` shipped in a patch. Match the last `chore(release):` and add one.
+1. **Cut the server version on main.** Raise `version` in [`packages/server-release/package.json`](../packages/server-release/package.json) and commit as `chore(release): frizz-server X.Y.Z`. Provider pins, frontend and server changes ship together there. Leave the root shell version alone unless its launcher changes; a new shell's `frizzServer.version` names its exact bootstrap server. Patch bumps remain the default.
 2. **Look at what ships with you.** `git log release..HEAD` is the exact set. Anything there you have not verified either gets verified now or gets left behind by pointing `release` at an earlier commit — that choice is the whole reason the branch exists.
 3. **Verify the commit you are about to publish, not "the tree".** `nub run test` and `nub run typecheck` against that sha. Typecheck is the workflow's own gate, deliberately not the full suite, because the suite drives real provider CLIs and has never run on a CI box.
 4. **Push main, then fast-forward and push `release`.** `git push origin main`, then `git branch -f release <sha> && git push origin release`. The push to `release` is what publishes.
 
-`release.yml` then does everything else by itself: the npm publish through Trusted Publishing, the tag, and the GitHub release. It asks the registry whether the version is already published rather than diffing commits, so a re-run, a revert-and-reland or a `workflow_dispatch` can never double-publish — which is also why the trigger carries no path filter. A filter tests the files changed in the pushed RANGE, and a fast-forward normally carries the version bump somewhere in the middle of it, so `paths: [package.json]` silently matched nothing and the first two releases from this branch both had to be dispatched by hand.
+The workflow publishes `frizz-server` before `frizz`, checking each version independently in npm. Tags and GitHub releases belong to the shell; a server-only release does not retag it. Retries reconcile missing shell metadata against npm's recorded `gitHead`. The trigger deliberately has no path filter: a fast-forward can carry the version bump in the middle of its range.
 
 **`pnpm install --frozen-lockfile` is the first gate the workflow hits, and it is the one that actually fails.** This repo's toolchain is `nub` but CI installs with pnpm, and the two disagree about how to record a specifier the root `pnpm.overrides` rewrites — nub writes what the manifest literally declares, pnpm writes what the override resolves to. That flipped `packages/web`'s react lines back and forth three times and broke a release each time, until the manifest was changed to declare the override's own version so both agree. If a release dies at the install step, check for that class first: reproduce it exactly with `git worktree add /tmp/check <sha>` and `pnpm install --frozen-lockfile` there, rather than trusting a local `nub install`.
 
-**The consequence worth remembering: a version bump on main is now INERT.** Pushing main no longer publishes anything. That silence is deliberate, but it is silence — so the daily runtime watch compares the root `package.json` against `npm view frizz version` on every wake and reports a bump that never shipped.
+**A version bump on main is inert.** Pushing main publishes nothing. On a runtime-watch wake, compare `packages/server-release/package.json` against `npm view frizz-server version`, and root `package.json` against `npm view frizz version`; checking only the shell misses an unpublished provider pin.

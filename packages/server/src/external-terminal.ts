@@ -4,6 +4,12 @@ export function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`
 }
 
+// PowerShell quoting: a single-quoted string is literal (no variable or escape expansion, same as the
+// POSIX form), and the only character that needs escaping inside it is the quote itself, doubled.
+export function powershellQuote(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`
+}
+
 // RESUME — the only external-terminal command frizz builds. This starts a NEW provider process that
 // rebuilds the conversation from the transcript on disk; it is NOT a second view of a running one.
 // Anything that lives only in the running process's memory — a pending permission prompt above all —
@@ -15,7 +21,21 @@ export function shellQuote(value: string): string {
 // not be re-prompted for work the unattended worker was already trusted to do. claude:
 // `--dangerously-skip-permissions`. codex: `--dangerously-bypass-approvals-and-sandbox` (the same
 // flag works on the `resume` subcommand).
-export function providerResumeCommand(backend: "claude" | "codex", projectDir: string, sessionId: string): string {
+//
+// TWO SPELLINGS, by platform. The POSIX form (`cd '…' && claude …`) fails in both default Windows
+// shells: cmd.exe treats `'` as a literal character, and Windows PowerShell 5.1 has no `&&` (only
+// PowerShell 7 does). So on win32 the command is the PowerShell form — `Set-Location -LiteralPath '…';
+// & claude …` — which every PowerShell version runs: single quotes are literal there too, `;`
+// sequences, `-LiteralPath` keeps `[`/`]` in a directory name from being read as a wildcard, and `&`
+// is the call operator, so the line survives being pasted even when a shell profile has aliased the
+// name (Windows audit 2026-09-11, finding 13).
+export function providerResumeCommand(backend: "claude" | "codex", projectDir: string, sessionId: string, platform: NodeJS.Platform = process.platform): string {
+  if (platform === "win32") {
+    const resume = backend === "codex"
+      ? `& codex resume ${powershellQuote(sessionId)} --dangerously-bypass-approvals-and-sandbox`
+      : `& claude --resume ${powershellQuote(sessionId)} --dangerously-skip-permissions`
+    return `Set-Location -LiteralPath ${powershellQuote(projectDir)}; ${resume}`
+  }
   const resume = backend === "codex"
     ? `codex resume ${shellQuote(sessionId)} --dangerously-bypass-approvals-and-sandbox`
     : `claude --resume ${shellQuote(sessionId)} --dangerously-skip-permissions`

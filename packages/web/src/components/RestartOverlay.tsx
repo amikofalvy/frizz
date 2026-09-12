@@ -1,11 +1,20 @@
-import { useEffect, useRef } from "react"
-import { RefreshCw } from "lucide-react"
+import { useEffect, useRef, useState } from "react"
+import { AlertTriangle, RefreshCw, X } from "lucide-react"
 
 // The default copy shown while the supervisor rebuilds and promotes a fresh Frizz artifact. The
 // supervisor may hand us a more specific `message`; when it does we show that as the sub-line.
 const RESTART_HEADING = "Updating and restarting Frizz"
 const RESTART_BODY =
   "This may take a moment while the new build is being prepared. All of your threads will continue running normally."
+
+// The copy once the hold has run past its deadline (finding 1, audit 2026-09-11): the old process is
+// gone, nothing answers on the port, and the only remedy is the terminal. `silentFor` is the house
+// duration reading (`3m`, never "3 minutes"), measured by App from the first unanswered poll.
+export const STALLED_HEADING = "Frizz did not come back"
+export function stalledRestartCopy(silentFor: string | undefined): string {
+  const silence = silentFor ? `Nothing has answered for ${silentFor}.` : "Nothing is answering."
+  return `${silence} Restart Frizz from the terminal with npx frizz (or frizz, if it is installed globally). This page reconnects on its own once the board is back.`
+}
 
 // Keys swallowed while the overlay is up, so no background control can be reached or activated:
 //  • Tab / Shift+Tab — the crux. Focus is parked on the overlay card and Tab is killed, so keyboard
@@ -34,12 +43,37 @@ function swallowsInteractionKey(event: KeyboardEvent): boolean {
  * its scrim, parks focus on itself and neutralizes the focus/activation keys — the user simply
  * cannot act until Frizz is ready, at which point App reloads this exact route. Sits at z-[300], above
  * ALL app chrome and every modal (the tallest of which — the shared Radix Dialog — is z-[200]).
+ *
+ * `stalled` is the one way out that is not "Frizz came back": past the hold's deadline the block is
+ * lifted — no scrim, no focus trap, no key guard, App drops `inert` in step — and the card becomes a
+ * dismissible notice pinned to the top, because the board underneath is dead and the operator needs
+ * to read what to do, not be walled off from a page that can no longer do anything. Polling continues
+ * behind it, so a board that does come back still reloads the page on its own.
  */
-export function RestartOverlay({ open, message }: { open: boolean; message?: string | null }) {
+export function RestartOverlay({
+  open,
+  message,
+  stalled = false,
+  silentFor,
+}: {
+  open: boolean
+  message?: string | null
+  /** The hold ran past its deadline with nothing answering — lift the block and say so. */
+  stalled?: boolean
+  /** How long nothing has answered, already spelled in the house grammar (`3m`). */
+  silentFor?: string
+}) {
   const cardRef = useRef<HTMLDivElement>(null)
+  // Dismissal is per stall: a board that answers again and then goes silent again earns a fresh notice.
+  const [dismissed, setDismissed] = useState(false)
+  const blocking = open && !stalled
 
   useEffect(() => {
-    if (!open) return
+    if (!stalled) setDismissed(false)
+  }, [stalled])
+
+  useEffect(() => {
+    if (!blocking) return
     // Move focus off any composer/textarea onto the overlay itself, so a stray Enter/Space can't
     // reach a background control before the key guard sees it, and screen readers land in-dialog.
     const active = document.activeElement
@@ -52,9 +86,41 @@ export function RestartOverlay({ open, message }: { open: boolean; message?: str
     }
     window.addEventListener("keydown", guard, { capture: true })
     return () => window.removeEventListener("keydown", guard, { capture: true })
-  }, [open])
+  }, [blocking])
 
   if (!open) return null
+
+  if (stalled) {
+    if (dismissed) return null
+    return (
+      // No scrim and no pointer capture on the wrapper: only the card itself is interactive, so the
+      // page behind it stays reachable (for whatever it is still worth without a server).
+      <div className="pointer-events-none fixed inset-x-0 top-6 z-[300] flex justify-center px-4">
+        <div
+          role="alert"
+          className="pointer-events-auto w-[min(26rem,calc(100vw-2rem))] rounded-2xl border border-danger-fill/45 bg-elevated p-5 text-left shadow-2xl shadow-black/60"
+        >
+          {/* The same header row as RestartFailureNotice (RestartFrizzButton.tsx) — mark, title,
+              dismiss — so the two failure surfaces read as one design and share its measured rhythm. */}
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-danger-fill/15 text-danger-soft">
+              <AlertTriangle aria-hidden="true" size={14} strokeWidth={2.25} />
+            </span>
+            <h2 className="text-[13px] font-semibold tracking-[-0.01em] text-fg">{STALLED_HEADING}</h2>
+            <button
+              type="button"
+              aria-label="Dismiss"
+              onClick={() => setDismissed(true)}
+              className="-mr-1 ml-auto flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted outline-none transition-colors hover:bg-panel-2 hover:text-fg focus-visible:ring-1 focus-visible:ring-border-strong"
+            >
+              <X aria-hidden="true" size={14} strokeWidth={2.25} />
+            </button>
+          </div>
+          <p aria-live="polite" className="mt-2.5 text-[12px] leading-relaxed text-muted">{stalledRestartCopy(silentFor)}</p>
+        </div>
+      </div>
+    )
+  }
 
   // A cleaned-up supervisor message reads as a status sub-line under the default body; drop anything
   // that is empty or just repeats the heading noise.

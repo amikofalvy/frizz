@@ -395,14 +395,17 @@ test("loadWorkerPrompt: the backend-AGNOSTIC core is present in BOTH contracts",
     // Whitespace-normalized: these pin CONTENT, not line-wrap. Reflowing a paragraph must not fail the
     // suite (the 2026-07-25 restructure broke ~15 assertions purely on rewrapped lines).
     const c = raw.replace(/\s+/g, " ")
-    for (const fence of [/```done/, /```awaiting/, /```question/]) assert.match(raw, fence) // fence grammar
+    for (const fence of [/```done/, /```awaiting/]) assert.match(raw, fence) // fence grammar
+    // The ONLY question fence left is the empty placement marker (the free-form fence was retired
+    // 2026-09-11); workerPrompt.test.ts pins that every question fence in the contract IS the marker.
+    assert.match(raw, /```question qst_/)
     if (kind === "codex") assert.match(raw, /## Thread types/) // claude's lean contract drops it
     assert.match(raw, /## Quality bar/)
     assert.match(raw, /## The stop criterion/)
     // THE CURRENT AWAITING GRAMMAR (2026-08-24): YAML frontmatter, PLURAL keys taking LISTS. `human:` used
     // to be pinned here; it is deleted, because it parked a thread in Snoozed and nothing ever fired it.
-    // Waiting on a person is a ```question now, and this asserts the contract says so rather than merely
-    // omitting the old kind.
+    // Waiting on a person is a registered question now (`mcp__frizz__ask`), and this asserts the contract
+    // says so rather than merely omitting the old kind.
     assert.match(c, /shells: \[bzvtnt3ig\]/)
     assert.match(c, /for: 2h/)
     // `reason:` IS GONE, and its absence is the whole reason the frontmatter can be YAML: a handoff
@@ -609,7 +612,10 @@ test("session-seed is a SLIM runtime pointer, not a fourth full contract copy", 
   assert.doesNotMatch(SESSION_SEED, /frizz:worker/)
   assert.match(SESSION_SEED, /\.frizz\/threads\//)
   assert.doesNotMatch(SESSION_SEED, /scratch\.md/, "no filename is reserved in the scratch directory")
-  for (const fence of [/```done/, /```awaiting/, /```question/]) assert.match(SESSION_SEED, fence)
+  for (const fence of [/```done/, /```awaiting/]) assert.match(SESSION_SEED, fence)
+  // A question is a registered row; the seed names `mcp__frizz__ask` and the empty placement marker only.
+  assert.match(SESSION_SEED, /mcp__frizz__ask/)
+  assert.doesNotMatch(SESSION_SEED, /```done \/ ```awaiting \/ ```question/)
   assert.doesNotMatch(SESSION_SEED, /RUNTIME RELEASE GATE:/)
   assert.doesNotMatch(SESSION_SEED, /never build a bespoke screenshot tool/)
   assert.doesNotMatch(SESSION_SEED, /back to awaiting/)

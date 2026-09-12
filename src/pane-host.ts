@@ -37,10 +37,25 @@ export interface PaneHostOptions {
 
 const CTRL_C = "\x03";
 
+/**
+ * Re-raise ^C as the SIGINT the raw-mode tty swallowed. Dispatched to this process's own listeners
+ * rather than through `process.kill(process.pid, "SIGINT")`: on Windows libuv implements a SIGINT
+ * sent to a pid as an unconditional TerminateProcess, so the launcher's graceful `stop` handler
+ * never ran there — no drain, no "Frizz stopped" farewell, exit 1 (Windows audit 2026-09-11). With
+ * no listener installed the kill is the right thing on every platform: Node's default action.
+ */
+export function raiseInterrupt(): void {
+  if (process.listenerCount("SIGINT") > 0) {
+    process.emit("SIGINT", "SIGINT");
+    return;
+  }
+  process.kill(process.pid, "SIGINT");
+}
+
 export function installPaneHost(options: PaneHostOptions): PaneHost | null {
   const input = options.input ?? process.stdin;
   const output = options.output ?? process.stdout;
-  const onInterrupt = options.onInterrupt ?? (() => process.kill(process.pid, "SIGINT"));
+  const onInterrupt = options.onInterrupt ?? raiseInterrupt;
   if (!input.isTTY || !output.isTTY || typeof input.setRawMode !== "function") return null;
 
   let active: Pane | null = null;

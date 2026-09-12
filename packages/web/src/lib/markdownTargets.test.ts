@@ -144,3 +144,36 @@ test("a document's base directory is its parent", () => {
   assert.equal(localFileDir("/repo/docs/guide.md"), "/repo/docs")
   assert.equal(localFileDir("/README.md"), "/")
 })
+
+test("a Windows base resolves relative links in its own separator and under its drive (Windows audit 2026-09-11, finding 12)", () => {
+  // Before the audit every case here was null — no relative link in a rendered local Markdown file
+  // ever opened on Windows. The link is written with `/` whatever the platform; the base decides.
+  const base = "C:\\Users\\x\\proj\\docs"
+  assert.equal(resolveRelativeLocalPath("guide.md", base), "C:\\Users\\x\\proj\\docs\\guide.md")
+  assert.equal(resolveRelativeLocalPath("./guide.md", base), "C:\\Users\\x\\proj\\docs\\guide.md")
+  assert.equal(resolveRelativeLocalPath("../AGENTS.md", base), "C:\\Users\\x\\proj\\AGENTS.md")
+  assert.equal(resolveRelativeLocalPath("a/../b/c.md", base), "C:\\Users\\x\\proj\\docs\\b\\c.md")
+  assert.equal(resolveRelativeLocalPath("shots/one%20two.png", base), "C:\\Users\\x\\proj\\docs\\shots\\one two.png")
+  assert.equal(resolveRelativeLocalPath("guide.md#section", base), "C:\\Users\\x\\proj\\docs\\guide.md")
+  // A `..` escape climbs no higher than the drive, as it climbs no higher than `/` on POSIX.
+  assert.equal(resolveRelativeLocalPath("../../../../../etc/passwd", base), "C:\\etc\\passwd")
+  // A forward-slash drive path (how some tools spell it) keeps its own spelling; a mixed base takes
+  // its first separator.
+  assert.equal(resolveRelativeLocalPath("docs/guide.md", "C:/Users/x/proj"), "C:/Users/x/proj/docs/guide.md")
+  assert.equal(resolveRelativeLocalPath("src/a.ts", "C:\\Users\\x/proj"), "C:\\Users\\x\\proj\\src\\a.ts")
+  // A Windows home expands `~` the same way.
+  assert.equal(resolveRelativeLocalPath("~/.claude/CLAUDE.md", base, "C:\\Users\\x"), "C:\\Users\\x\\.claude\\CLAUDE.md")
+  assert.equal(resolveRelativeLocalPath("~", base, "C:\\Users\\x"), "C:\\Users\\x")
+  // Already absolute is not relative: a drive path reads as a scheme (`c:`), a `\`-rooted one as a root.
+  assert.equal(resolveRelativeLocalPath("C:\\Users\\x\\other.md", base), null)
+  assert.equal(resolveRelativeLocalPath("\\abs\\x.md", base), null)
+  // The base itself must be rooted; a bare drive is drive-relative and is not.
+  assert.equal(resolveRelativeLocalPath("guide.md", "proj\\docs"), null)
+  assert.equal(resolveRelativeLocalPath("guide.md", "C:"), null)
+})
+
+test("a Windows document's base directory is its parent, in its own separator", () => {
+  assert.equal(localFileDir("C:\\Users\\x\\proj\\docs\\guide.md"), "C:\\Users\\x\\proj\\docs")
+  assert.equal(localFileDir("C:/Users/x/proj/README.md"), "C:/Users/x/proj")
+  assert.equal(localFileDir("C:\\README.md"), "C:\\")
+})

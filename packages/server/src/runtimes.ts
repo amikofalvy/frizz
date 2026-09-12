@@ -60,7 +60,7 @@ import { frizzRoots } from "./frizz-paths.ts"
 import { leaseRuntime, liveRuntimeLeases } from "./runtime-lease.ts"
 
 /** The Claude Agent SDK Frizz bundles. Must equal packages/claude-agent-sdk-runtime's dependency. */
-export const CLAUDE_AGENT_SDK_VERSION = "0.3.268"
+export const CLAUDE_AGENT_SDK_VERSION = "0.3.269"
 /** The Claude Code build that SDK was built against — its package.json `claudeCodeVersion`.
  *
  *  Keep this CURRENT when bumping, not merely matched: the first provisioned build (2.1.207, the SDK
@@ -68,7 +68,7 @@ export const CLAUDE_AGENT_SDK_VERSION = "0.3.268"
  *  2.1.207 does not support this model; version 2.1.251 or newer is required` — because a model's
  *  minimum CLI is enforced server-side. The pin makes Frizz's lag the worker's lag; a stale pin is a
  *  broken worker, not a conservative one. */
-export const CLAUDE_CODE_VERSION = "2.1.268"
+export const CLAUDE_CODE_VERSION = "2.1.269"
 /** The Codex build Frizz audited the app-server protocol against. One coordinate, owned there. */
 export const CODEX_VERSION = CODEX_APP_SERVER_SUPPORTED_VERSION
 
@@ -363,7 +363,24 @@ export interface ProvisionOptions {
   /** Registry base — a test points it at a local server. */
   registry?: string
   onProgress?: (message: string) => void
+  /** The final `renameSync(partial, finalDir)` — a test makes it fail the way Windows does. */
+  rename?: (from: string, to: string) => void
+  /** Pause between rename attempts (see RENAME_ATTEMPTS). */
+  retryDelayMs?: number
 }
+
+// How many times the final rename is tried before the race is called lost. On Windows the directory
+// that just received a 200 MB claude.exe is briefly held by Defender's real-time scan (and by the
+// Search indexer), and MoveFileEx on a directory with an open handle inside it fails EPERM/EBUSY —
+// so the first attempt losing says nothing about whether another provisioner finished first
+// (Windows audit 2026-09-11, finding 3; src/artifacts.ts carries the same retry for the same class).
+// Five tries 200 ms apart is a second: past that a held handle is a scanner that has the file open
+// for real, and the fallback below (someone else's pin, or the error) is the honest answer.
+const RENAME_ATTEMPTS = 5
+const RENAME_RETRY_DELAY_MS = 200
+const TRANSIENT_HANDLE_CODES = new Set(["EPERM", "EBUSY", "EACCES", "ENOTEMPTY"])
+
+const errorCode = (err: unknown): string | undefined => (err as NodeJS.ErrnoException | undefined)?.code
 
 export interface Provisioned {
   bin: string
@@ -466,8 +483,19 @@ export async function provisionRuntime(backend: RuntimeBackend, options: Provisi
     }
     writeFileSync(join(partial, MARKER), `${JSON.stringify(marker, null, 2)}\n`, "utf8")
 
+    const rename = options.rename ?? renameSync
     try {
-      renameSync(partial, finalDir)
+      for (let attempt = 1; ; attempt++) {
+        try {
+          rename(partial, finalDir)
+          break
+        } catch (err) {
+          // A transient handle (Windows, see RENAME_ATTEMPTS) is retried; EEXIST and the rest are the
+          // race, decided below. Once the pin exists the retry is pointless either way.
+          if (attempt >= RENAME_ATTEMPTS || !TRANSIENT_HANDLE_CODES.has(errorCode(err) ?? "") || existsSync(finalDir)) throw err
+          await new Promise<void>((resolve) => setTimeout(resolve, options.retryDelayMs ?? RENAME_RETRY_DELAY_MS))
+        }
+      }
     } catch (err) {
       // Someone else finished first. Theirs is complete by construction, so use it.
       const theirs = provisionedBinary(backend, root, coordinates.label)
@@ -486,17 +514,38 @@ export async function provisionRuntime(backend: RuntimeBackend, options: Provisi
 export interface RuntimeSweep {
   /** Version directories and stale partials that were removed. */
   removed: string[]
-  /** Superseded version directories left in place because a live process still leases them. */
-  kept: Array<{ dir: string; leases: Array<{ pid: number; role: string }> }>
+  /**
+   * Superseded version directories left in place: because a live process leases them (`leases`), or
+   * because the OS refused to remove them (`reason`) — on Windows a binary some process still runs
+   * cannot be deleted, lease or no lease.
+   */
+  kept: Array<{ dir: string; leases: Array<{ pid: number; role: string }>; reason?: string }>
 }
+
+export interface SweepRuntimesDeps {
+  /** `rmSync` of one entry — a test makes it fail the way Windows does on a mapped executable. */
+  rm?: (path: string) => void
+}
+
+// Windows cannot delete an executable that is currently mapped as a process image: rmSync gets
+// EBUSY/EPERM (or ENOTEMPTY for the directory, once the files inside it refused), and `force: true`
+// only forgives ENOENT. The version directory being swept is by design the one still-running daemons
+// execute from — they survive an update on purpose — and a daemon started by a Frizz older than
+// d37b8588 (2026-09-10) wrote no lease, so the lease check above cannot see it. `maxRetries` covers
+// the transient holders (a scanner, an exiting process); a refusal past that is a live one, and the
+// directory is KEPT and named rather than thrown about (Windows audit 2026-09-11, finding 2). The
+// next boot sweeps again.
+const defaultSweepRm = (path: string): void => rmSync(path, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })
 
 /**
  * Retire what the current pin superseded: every other version directory of this backend that no
  * live process leases (runtime-lease.ts — a server or daemon still running out of it), and any
  * partial left by a run that died more than a day ago (a younger one may still be mid-download in
- * another process). Returns what it removed and what it kept, for the log.
+ * another process). Returns what it removed and what it kept, for the log. Never throws for one
+ * entry's sake: an entry the OS refuses to remove is reported as kept, and the sweep goes on.
  */
-export function sweepRuntimes(backend: RuntimeBackend, root: string, keepLabel: string, now = Date.now()): RuntimeSweep {
+export function sweepRuntimes(backend: RuntimeBackend, root: string, keepLabel: string, now = Date.now(), deps: SweepRuntimesDeps = {}): RuntimeSweep {
+  const rm = deps.rm ?? defaultSweepRm
   const backendDir = join(root, backend)
   let entries: string[]
   try {
@@ -521,8 +570,16 @@ export function sweepRuntimes(backend: RuntimeBackend, root: string, keepLabel: 
         continue
       }
     }
-    rmSync(full, { recursive: true, force: true })
-    sweep.removed.push(full)
+    try {
+      rm(full)
+      sweep.removed.push(full)
+    } catch (err) {
+      const code = errorCode(err)
+      const reason = code && TRANSIENT_HANDLE_CODES.has(code)
+        ? `in use (${code})`
+        : `could not remove: ${err instanceof Error ? err.message : String(err)}`
+      sweep.kept.push({ dir: full, leases: [], reason })
+    }
   }
   return sweep
 }
@@ -539,6 +596,9 @@ export interface ResolveRuntimesOptions {
   log?: (level: "info" | "warn", message: string) => void
   /** Boot-progress hook; the message names the backend. */
   onProgress?: (backend: RuntimeBackend, message: string) => void
+  /** Seams for the Windows failure modes (tests): see ProvisionOptions.rename and SweepRuntimesDeps.rm. */
+  rename?: ProvisionOptions["rename"]
+  rm?: SweepRuntimesDeps["rm"]
 }
 
 async function resolveOne(backend: RuntimeBackend, explicit: string | undefined, options: ResolveRuntimesOptions): Promise<ResolvedRuntime> {
@@ -555,27 +615,39 @@ async function resolveOne(backend: RuntimeBackend, explicit: string | undefined,
     return { bin: bare, source: "path", version: "unknown", note }
   }
   const root = options.root ?? runtimesRoot(env)
+  let provisioned: Provisioned
   try {
-    const provisioned = await provisionRuntime(backend, {
-      root, coordinates, fetch: options.fetch, registry: options.registry,
+    provisioned = await provisionRuntime(backend, {
+      root, coordinates, fetch: options.fetch, registry: options.registry, rename: options.rename,
       onProgress: (message) => options.onProgress?.(backend, message),
     })
-    if (provisioned.fetched) log("info", `runtimes: provisioned ${backend} ${provisioned.label} at ${provisioned.bin}`)
-    // Lease BEFORE sweeping: another Frizz on this machine (a stack booted from a source tree with a
-    // newer pin, the successor of an in-place update) sweeps on ITS boot, and this is what tells it
-    // the pin resolved here is still in use.
-    leaseRuntime(provisioned.bin, "server")
-    const sweep = sweepRuntimes(backend, root, coordinates.label)
-    for (const retired of sweep.removed) log("info", `runtimes: retired ${retired}`)
-    for (const { dir, leases } of sweep.kept) {
-      log("info", `runtimes: kept ${dir} — still used by ${leases.map((lease) => `${lease.role} pid ${lease.pid}`).join(", ")}`)
-    }
-    return { bin: provisioned.bin, source: "provisioned", version: provisioned.label }
   } catch (err) {
     const note = err instanceof Error ? err.message : String(err)
     log("warn", `runtimes: could not provision ${backend} ${coordinates.label} (${note}); using ${bare} from PATH — the version Frizz was built against is not what will run`)
     return { bin: bare, source: "path", version: "unknown", note }
   }
+  if (provisioned.fetched) log("info", `runtimes: provisioned ${backend} ${provisioned.label} at ${provisioned.bin}`)
+  // Lease BEFORE sweeping: another Frizz on this machine (a stack booted from a source tree with a
+  // newer pin, the successor of an in-place update) sweeps on ITS boot, and this is what tells it
+  // the pin resolved here is still in use.
+  leaseRuntime(provisioned.bin, "server")
+  // The sweep is housekeeping and shares NOTHING with the pin above: until 2026-09-11 both sat in one
+  // `try`, so a sweep that threw (Windows refusing to delete a claude.exe some daemon still runs)
+  // discarded a perfectly good provisioned binary and degraded the whole backend to a bare name on
+  // PATH — which on a machine without an npm claude is "could not resolve 'claude'" at boot (Windows
+  // audit 2026-09-11, finding 2). sweepRuntimes itself now keeps rather than throws, and this catch
+  // is the backstop for whatever else it might do.
+  try {
+    const sweep = sweepRuntimes(backend, root, coordinates.label, Date.now(), { rm: options.rm })
+    for (const retired of sweep.removed) log("info", `runtimes: retired ${retired}`)
+    for (const { dir, leases, reason } of sweep.kept) {
+      const why = reason ?? `still used by ${leases.map((lease) => `${lease.role} pid ${lease.pid}`).join(", ")}`
+      log("info", `runtimes: kept ${dir} — ${why}`)
+    }
+  } catch (err) {
+    log("warn", `runtimes: sweep of superseded ${backend} versions failed (${err instanceof Error ? err.message : String(err)}); the pin is unaffected`)
+  }
+  return { bin: provisioned.bin, source: "provisioned", version: provisioned.label }
 }
 
 /** Resolve both backends, in parallel. Never throws: the fallback for every failure is PATH. */

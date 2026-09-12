@@ -1,0 +1,34 @@
+{
+  "name": "frizz-server",
+  "version": "0.13.3",
+  "private": false,
+  "description": "Replaceable Frizz server runtime",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/colinhacks/frizz.git"
+  },
+  "engines": {
+    "node": "^22.13.0 || >=23.4.0"
+  },
+  "type": "module",
+  "files": [
+    "dist",
+    "web-dist",
+    "runtime"
+  ],
+  "frizzServer": {
+    "protocol": 1,
+    "dataEpoch": 1
+  },
+  "dependencies": {
+    "@parcel/watcher": "^2.5",
+    "node-pty": "^1.1"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "node-pty",
+      "@parcel/watcher"
+    ]
+  }
+}

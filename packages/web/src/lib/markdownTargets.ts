@@ -1,5 +1,6 @@
 import { FRIZZ_ROUTE_PREFIX } from "@frizz/shared"
 import { apiBase, innerPath, projectSlug, APP_ROUTE_SEGMENTS } from "./base-path.ts"
+import { dirnameLike, isRooted, joinLike } from "./paths.ts"
 // Markdown is often written by tools that report local artifacts as links. A browser interprets a
 // POSIX absolute path as a same-origin URL path, which both navigates away from Frizz and produces a
 // deceptive localhost URL. Identify those targets before DOM sanitization so they can never become
@@ -139,6 +140,13 @@ export function isLocalMarkdownFile(path: string): boolean {
 // is the other half of that parity. Returns null for anything already absolute, a fragment, a query,
 // or a scheme; the query/fragment tail of a resolved path is dropped, since a filesystem path has
 // neither.
+//
+// The base may be a Windows path — `C:\Users\…` is what the board's `projectDir` and `homeDir` and the
+// reader's own file path all are when the server runs there — and until the Windows audit
+// (2026-09-11, finding 12) that returned null unconditionally, so NO relative link in a rendered local
+// Markdown file ever opened on Windows. joinLike keeps the base's separator and drive; the link itself
+// is always written with `/`, whatever the platform (a `..` climb is bounded by the drive the same way
+// it is bounded by `/`).
 export function resolveRelativeLocalPath(
   raw: string | null | undefined,
   baseDir: string,
@@ -146,30 +154,24 @@ export function resolveRelativeLocalPath(
 ): string | null {
   const href = raw?.trim()
   if (!href) return null
-  if (/^[a-z][a-z0-9+.-]*:/i.test(href)) return null // http(s):, file:, mailto:, cursor:, …
-  if (href.startsWith("/") || href.startsWith("#") || href.startsWith("?")) return null
+  if (/^[a-z][a-z0-9+.-]*:/i.test(href)) return null // http(s):, file:, mailto:, cursor:, C:\…, …
+  if (/^[\\/#?]/.test(href)) return null
   const relative = decodePath(href.replace(/[?#].*$/u, ""))
   if (!relative) return null
   // A home-anchored path carries its own root, so it needs no base at all — and must never be glued
   // onto one, which is what turned `~/.claude/CLAUDE.md` into `<baseDir>/~/.claude/CLAUDE.md`.
-  const homeAnchored = relative === "~" || relative.startsWith("~/")
-  if (homeAnchored && !home?.startsWith("/")) return null
+  const homeAnchored = relative === "~" || /^~[\\/]/.test(relative)
+  if (homeAnchored && !(home && isRooted(home))) return null
   const root = homeAnchored ? home! : baseDir
-  if (!root.startsWith("/")) return null
-  const segments = `${root}/${homeAnchored ? relative.slice(1) : relative}`.split("/")
-  const stack: string[] = []
-  for (const segment of segments) {
-    if (!segment || segment === ".") continue
-    if (segment === "..") stack.pop()
-    else stack.push(segment)
-  }
-  // `..` may climb above the base; the server's openable-root gate is what actually confines the
-  // result, exactly as it does for an absolute path an author wrote by hand.
-  return `/${stack.join("/")}`
+  if (!isRooted(root)) return null
+  return joinLike(root, homeAnchored ? relative.slice(2) : relative)
 }
 
-/** The directory a document at `path` lives in — the base for its relative links. */
+/**
+ * The directory a document at `path` lives in — the base for its relative links, in the path's own
+ * separator (`C:\proj\docs` for a Windows reader path). `/` for a path with no directory part, as it
+ * always was: the reader only ever holds a rooted, server-canonical path, so that arm is a stand-in.
+ */
 export function localFileDir(path: string): string {
-  const cut = path.lastIndexOf("/")
-  return cut > 0 ? path.slice(0, cut) : "/"
+  return dirnameLike(path) || "/"
 }

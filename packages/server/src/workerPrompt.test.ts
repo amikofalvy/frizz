@@ -36,15 +36,19 @@ test("the contract bounds the work to the task, not only the stopping", () => {
   }
 })
 
-// The placement rule's whole arc, because the contract has now taught three different things here and a
+// The placement rule's whole arc, because the contract has now taught four different things here and a
 // stale assertion would resurrect the wrong one. (1) 2026-08-28 morning, "Same question showing up twice
 // in a row": register-then-refence drew two cards, so the rule was "never also fence it". (2) The same
 // afternoon the maintainer reversed it ("it kind of makes sense to me for the agent to decide where
 // questions render in its own rest message"), and the fence became the PLACEMENT. (3) 2026-08-30 the
 // maintainer retired placement ("Retire mid-prose placement" — measured: 15 of 17 real markers sat at
-// the tail where the card lands anyway, 2 of 3,005 transcripts couched one mid-prose). The card now
-// draws itself at its rest, a fence naming or restating a registration draws nothing, and the contract
-// must teach the withdrawal — a question left out of the write-up is still open and still gates `done`.
+// the tail where the card lands anyway, 2 of 3,005 transcripts couched one mid-prose). (4) 2026-09-11 the
+// FREE-FORM fence was retired outright — `ask` had been "better than a fenced block" since 2026-08-26
+// while the contract went on teaching the fence, so workers wrote fences on every day from 2026-08-25 to
+// 2026-09-11, and nothing tracks a fence's answer — and the empty placement marker came BACK with it,
+// because a marker references a ROW: nothing about a question's lifecycle is guessed from prose. The card
+// still draws itself at its rest, a marker only moves it, and the contract must teach the withdrawal — a
+// question left out of the write-up is still open and still gates `done`.
 test("the contract teaches that a registered question draws itself, and how to unask one", () => {
   for (const backend of ["claude", "codex"] as const) {
     const prompt = buildWorkerPrompt(backend)
@@ -52,10 +56,37 @@ test("the contract teaches that a registered question draws itself, and how to u
     assert.match(prompt, /draws NOTHING: one question, one card/)
     // Leaving one out is not how a worker drops it — that is what `unask` is for.
     assert.match(prompt, /it is one you\s+`unask`/)
-    // And the retired grammar must be GONE, not merely contradicted somewhere further down: the empty
-    // placement fence taught by example is exactly what a worker would keep writing.
+    // The 2026-08-28 grammar ("place them all, or unask") must stay gone: placement is optional now.
     assert.doesNotMatch(prompt, /PLACE EVERY OPEN QUESTION/)
-    assert.doesNotMatch(prompt, /```question qst_ab12cd34\n\s*```/)
     assert.doesNotMatch(prompt, /A REGISTERED QUESTION IS NEVER ALSO FENCED/)
+  }
+})
+
+// THE FREE-FORM ```question FENCE IS RETIRED (2026-09-11), and the contract has to say so where a worker
+// reads it — both in § Questions for the human and in the End-of-turn signals list, which is what a
+// worker reads when it STOPS. The one fence left is the EMPTY placement marker naming a registered id.
+test("the contract teaches ask as the only way to ask, and the empty marker as the only question fence", () => {
+  for (const backend of ["claude", "codex"] as const) {
+    const prompt = buildWorkerPrompt(backend)
+    const c = prompt.replace(/\s+/g, " ")
+    assert.match(c, /THERE IS NO `question` FENCE ANY MORE/)
+    assert.match(c, /A QUESTION HAS NO FENCE ANY MORE/)
+    assert.match(c, /WAITING ON A PERSON IS A REGISTERED QUESTION/)
+    assert.match(c, /AN OPEN REGISTERED QUESTION IS THE HANDBACK/)
+    // The marker, taught by example, and its two properties: optional, and one per question.
+    assert.match(prompt, /```question qst_ab12cd34\n```/)
+    assert.match(c, /TO PLACE A QUESTION INSIDE YOUR PROSE, WRITE AN EMPTY FENCE NAMING ITS ID/)
+    assert.match(c, /Placement is OPTIONAL/)
+    assert.match(c, /One marker per question/)
+    // Every question fence in the contract IS the marker: no fenced example with a question in its body.
+    const fences = prompt.match(/```question[^\n]*\n/g) ?? []
+    assert.deepEqual(fences, ["```question qst_ab12cd34\n"])
+    // And the free-form teaching is gone in every spelling it had.
+    assert.doesNotMatch(c, /put each question in its own fenced `question` block/)
+    assert.doesNotMatch(c, /Fence a question you did NOT register/)
+    assert.doesNotMatch(c, /```question ` block IS the handback/)
+    assert.doesNotMatch(c, /was retired 2026-08-30;\s*a marker you still write draws nothing/)
+    assert.doesNotMatch(c, /surface it as a ` ```question `/)
+    assert.doesNotMatch(c, /ask a ```question/)
   }
 })

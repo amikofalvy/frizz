@@ -43,6 +43,9 @@ import {
   probeFrizz,
   readPreferredPort,
   resolveLaunchIntent,
+  resolveLaunchControlTarget,
+  runningFrizzStatus,
+  stopProjectLaunch,
   waitForWorkspace,
   workspaceFromLaunchTarget,
   workspaceLaunchTarget,
@@ -59,14 +62,13 @@ import {
   tryAcquireProjectLaunchOwner,
 } from "@frizz/server/project-launch";
 import { createSupervisorShutdownHandler, startDevSupervisor } from "@frizz/server/dev-supervisor";
-import {
-  handoffToRegistrySuccessor, npmRegistryReleaseAdapter, planRegistryUpdate, PRODUCTION_PRINT_LAUNCHER_FLAG, PRODUCTION_REEXEC_FLAG,
-  reexecIntoRegistrySuccessor, resolveRegistrySuccessor, type RegistrySuccessor,
-} from "./production-update.ts";
+import { planRegistryUpdate, PRODUCTION_PRINT_LAUNCHER_FLAG, PRODUCTION_REEXEC_FLAG, reexecArgv } from "./production-update.ts";
+import { npmServerPackageInstaller, serverGenerationLaunch, serverReleaseSpec, ServerReleaseStore, type ServerGeneration } from "./server-release.ts";
+import { acquireStableServerOwner, publishStableServerAddress, releaseStableServerOwner, type ServerOwnerLease } from "./server-owner.ts";
+import { GLOBAL_INSTALL_ENV, isGlobalInstall, keepUpdateHint } from "./production-update.ts";
 import {
   assertLaunchPrerequisites,
   assertRequiredExecutables,
-  ensureNativeHelperPermissions,
 } from "./preflight.ts";
 import { DEFAULT_PORT, fallbackPort } from "@frizz/shared";
 import { registerProject } from "@frizz/server/project-registry";
@@ -83,13 +85,8 @@ const PACKAGE_NAME = process.env.FRIZZ_REGISTRY_PACKAGE ?? "frizz";
  * package: a genuine 0.1.1 install served `artifactDigest: "npm:frizz@0.0.1"`, and still served
  * `0.0.1` after updating itself to 0.1.2.
  *
- * That is not cosmetic. `planRegistryUpdate(PACKAGE_NAME, PACKAGE_VERSION, …)` compares this against
- * the registry's latest, so a permanent `0.0.1` makes every version look newer: the "already current"
- * branch below is unreachable, and Update Frizz reinstalls-and-restarts even when nothing is stale.
- *
- * `import.meta.dirname` is the bundle's own directory (`<package>/dist`), the same base `webDist` and
- * `runtimeDir` resolve from below — so this reads the package.json that was published alongside it.
- * The env var stays as a fallback for anyone launching through a lifecycle script.
+ * This is now the stable launcher's diagnostic version, not the separately selected server version
+ * used for update comparisons. Read the manifest beside this bundle, never npm's invocation env.
  */
 function resolvePackageVersion(): string {
   try {
@@ -111,7 +108,9 @@ if (rawArgs.includes(PRODUCTION_PRINT_LAUNCHER_FLAG)) {
   console.log(fileURLToPath(import.meta.url));
   process.exit(0);
 }
-const args = rawArgs.filter((arg) => arg !== PRODUCTION_REEXEC_FLAG);
+// A re-exec'd launch was started by the PREVIOUS release, whose argv may carry a project directory this
+// release refuses (0.7.0–0.12.10 all append one); see reexecArgv. A human's argv is parsed as written.
+const args = reexec ? reexecArgv(rawArgs) : rawArgs;
 const fail = (error: unknown): never => {
   console.error(`frizz: ${error instanceof Error ? error.message : error}`);
   process.exit(1);
@@ -140,6 +139,8 @@ Options:
   --link                 print a fresh single-use access link for the running board
   --sessions             list the devices signed in to the running board
   --sign-out <id|all>    sign one device out, or every one of them
+  --status               report the board running for this project: address, pid, version
+  --stop                 stop the board running for this project (running agents keep going)
   --debug                stream the full event feed to the terminal instead of the compact readout
   -h, --help             show this help
 
@@ -163,19 +164,29 @@ if (sandbox) process.on("exit", () => cleanupSandbox(sandbox.home));
 let remote: RemoteController | null = null;
 /** The keyboard: L for a link, R for the remote-access walkthrough. Held so shutdown can restore the shell. */
 let paneHost: PaneHost | null = null;
+/**
+ * A global bin (`npm i -g frizz`) is the one launch shape a self-update does not outlive: the release
+ * lands in npm's execution cache and the bin on disk keeps pointing at this version. Decided here,
+ * from THIS bundle's path, and handed down through the environment — the successor's own path is
+ * always the cache and could never tell.
+ */
+const globalInstall = process.env[GLOBAL_INSTALL_ENV] === "1" || isGlobalInstall(import.meta.dirname);
 let accessPane: AccessPane | null = null;
 /** The single-use link this launch minted, read by the readout below. */
 let activeAccessLink: { url: string } | null = null;
+let serverOwner: ServerOwnerLease | undefined;
+// Cold-install errors and signals also release the lease. Live registered control-plane delegates
+// retain its draining fence until their exact process generations are gone.
+process.on("exit", () => { if (serverOwner) releaseStableServerOwner(serverOwner); });
 
 let launchIntent: LaunchIntent | undefined;
 const workspace: Workspace = (() => {
   try {
-  // BEFORE the workspace is resolved, because resolving it opens this project's database — so a
-  // machine running a Node the database cannot survive learns it here by name instead of from whichever
-  // internal step tripped over it first. The Node floor is effectively the whole check now: on an
+  // BEFORE workspace preparation, so a machine running a Node the server's database cannot survive
+  // learns it here by name instead of from whichever internal step tripped over it first. On an
   // unsupported release SQLite does not misbehave, it SEGFAULTS, and a segfault mid-boot is
-  // indistinguishable from Frizz being broken. The executables list beside it is empty — nothing shells
-  // out to `git` or `tmux` any more (see preflight.ts).
+  // indistinguishable from Frizz being broken. The required executables list beside it is empty:
+  // repository discovery can fall back to project markers when Git is absent (see preflight.ts).
   //
   // `--stop` and `--status` skip the Node floor deliberately: they only read a status file and signal
   // a process, both of which work on any runtime, and they are how someone shuts down a board after
@@ -205,6 +216,44 @@ const workspace: Workspace = (() => {
   } catch (error) { return fail(error); }
 })();
 process.chdir(workspace.root);
+if (options.stop) {
+  // The farewell after a detached update has said "stop it with frizz --stop" since 0.12.10, and
+  // `--help` never listed it, because nothing here handled it: the flag fell through to the join
+  // path below and OPENED A BROWSER TAB on the board it was asked to stop (audit 2026-09-11,
+  // finding 2). The protocol is the dev launcher's (src/index.ts stopWorkspace): token-bound HTTP
+  // stop, then reap only a provably stale owner — never a signal to a pid that might be recycled.
+  try {
+    // One server, every project: the record may belong to the project the board was launched from.
+    const control = await resolveLaunchControlTarget({ stateDir: workspace.stateDir, target: workspaceLaunchTarget(workspace) });
+    const where = control.host ? workspace.root : `${workspace.root} (the board was launched from ${control.target.projectDir})`;
+    const result = await stopProjectLaunch({ stateDir: control.stateDir, target: control.target });
+    console.log(
+      result.kind !== "stopped"
+        ? `Frizz is not running for ${where}`
+        : result.stale
+          // A board that died without releasing its record (a kill, a crash) reads as "running" to
+          // every later launch until someone reaps it; say what happened rather than claiming a stop.
+          ? `Frizz was not running for ${where}; cleared the record a dead board left behind`
+          : `stopped Frizz for ${where}; running agents keep going — they are detached daemons`,
+    );
+    process.exit(0);
+  } catch (error) { fail(error); }
+}
+if (options.status) {
+  const control = await resolveLaunchControlTarget({ stateDir: workspace.stateDir, target: workspaceLaunchTarget(workspace) });
+  const running = await runningFrizzStatus({ stateDir: control.stateDir, target: control.target });
+  if (!running) {
+    console.log(`Frizz is not running for ${workspace.root}`);
+    process.exit(1);
+  }
+  console.log(`running: http://127.0.0.1:${running.port}`);
+  console.log(`workspace: ${workspace.root}`);
+  if (!control.host) console.log(`launched from: ${control.target.projectDir} (one server serves every project)`);
+  console.log(`supervisor pid: ${running.pid}`);
+  console.log(`version: ${running.version ?? "unknown"}`);
+  if (running.state && running.state !== "ready") console.log(`state: ${running.state}${running.message ? ` — ${running.message}` : ""}`);
+  process.exit(0);
+}
 if (options.sessions || options.signOut !== undefined) {
   // Reads and writes the RUNNING board's session directory, so there is nothing useful to say when
   // no board is up — starting one here would create an empty directory and answer a different question.
@@ -249,7 +298,7 @@ const logger: Logger = setAmbientLogger(
 );
 const readout = reexec || process.env.FRIZZ_PRODUCTION_SUPERVISOR === "1"
   ? undefined
-  : new Readout({ debug: options.debug, version: PACKAGE_VERSION });
+  : new Readout({ debug: options.debug });
 /**
  * Where supervisor lifecycle beats print. Normally the boot readout — but a launcher that execve'd
  * itself into this release through Update Frizz has no boot to narrate and still owns the operator's
@@ -257,14 +306,14 @@ const readout = reexec || process.env.FRIZZ_PRODUCTION_SUPERVISOR === "1"
  * detached fallback successor has no terminal at all (stdio ignored) and stays quiet, as before.
  */
 const activityReadout =
-  readout ?? (reexec && process.stdout.isTTY ? noticeOnlyReadout({ version: PACKAGE_VERSION }) : undefined);
+  readout ?? (reexec && process.stdout.isTTY ? noticeOnlyReadout({}) : undefined);
 attachTerminalMirror(logger, options.debug || process.env.FRIZZ_DEBUG === "1");
 readout?.plan([
   { key: "server", label: "Server" },
   { key: "browser", label: options.noApp ? "Address" : "Browser" },
 ]);
 readout?.begin("server", "starting");
-logger.info("launcher", `frizz ${PACKAGE_VERSION} starting for ${workspace.root}`);
+logger.info("launcher", `Frizz launcher ${PACKAGE_VERSION} starting for ${workspace.root}`);
 const target = workspaceLaunchTarget(workspace);
 const expected = expectedOwnerHealth(target, readProjectLaunchOwner(workspace.stateDir));
 
@@ -331,8 +380,8 @@ function slugPath(): string {
 async function joinRunningFrizz(): Promise<{ port: number; slug: string } | undefined> {
   const slug = ownSlug();
   if (!slug) return undefined;
-  // The well-known port, then the one the fallback jumps to. A server that had to scan past both is
-  // rare enough to be worth a second server rather than a slow probe on every cold start.
+  // Compatibility with pre-split launchers, which did not publish the global owner/address record.
+  // New launchers join that record before probing application health, even during child recovery.
   for (const port of new Set([DEFAULT_PORT, fallbackPort(DEFAULT_PORT)])) {
     if (await probeFrizz(port, { projectId: target.projectId, projectDir: target.projectDir, slug }))
       return { port, slug };
@@ -378,7 +427,7 @@ async function openOrPrint(port: number, reused: boolean, path = ""): Promise<vo
   const warnings: string[] = [];
   if (sandbox) warnings.push(`Sandbox: everything here is throwaway (${sandbox.home}) and is deleted when this terminal closes.`);
   if (!readout) {
-    console.log(`${reused ? "reusing" : "started"} Frizz ${PACKAGE_VERSION} for ${workspace.root}`);
+    console.log(`${reused ? "reusing" : "started"} Frizz for ${workspace.root}`);
     console.log(url);
     if (publicOrigin) console.log(activeAccessLink?.url ?? `${publicOrigin}/`);
     for (const warning of warnings) console.log(warning);
@@ -408,55 +457,58 @@ async function openOrPrint(port: number, reused: boolean, path = ""): Promise<vo
   );
 }
 
-async function runSupervisor(port: number, token: string): Promise<never> {
+async function runSupervisor(port: number, token: string, onPrepared: () => void = () => {}): Promise<never> {
   assertLaunchPrerequisites();
-  // Registry installs may have skipped node-pty's post-install; repair it before anything spawns a pty.
-  ensureNativeHelperPermissions();
+  if (!serverOwner) throw new Error("stable server launch is missing global ownership");
   const owner = adoptProjectLaunchOwner(target, token, "supervisor");
   const env = projectLaunchEnvironment(
     {
       ...process.env,
       FRIZZ_PRODUCTION_SUPERVISOR: "1",
+      FRIZZ_SERVER_OWNERSHIP: JSON.stringify(projectLaunchEnvironment({}, serverOwner.target, serverOwner.token)),
       ...logEnvironment(logger, options.debug ? "debug" : "info"),
       ...(options.debug ? { FRIZZ_DEBUG: "1" } : {}),
     },
     target,
     owner.token,
   );
-  const webDist = join(import.meta.dirname, "..", "web-dist");
-  // The registry package runs directly from what it ships, so it carries its own runtime closure
-  // (staged by scripts/prepare-package.mjs). The server SHELLS OUT to the board parser and every
-  // dispatched worker loads the plugin, so both must be pointed at the bundled copies — the
-  // monorepo-relative default in server/src/frizz.ts resolves to a non-existent node_modules/board path.
-  const runtimeDir = join(import.meta.dirname, "..", "runtime");
-  const scriptsDir = join(runtimeDir, "board");
-  const workerPluginDir = join(runtimeDir, "cc-worker");
-  // The published package runs as an esbuild bundle (dist/frizz.js); the server child and the
-  // detached daemon are emitted as sibling bundles in the same dist/ by scripts/build-package.mjs.
-  // Resolve the child beside this bundle rather than from @frizz/server (whose .ts cannot run
-  // under node_modules). In a source checkout this launcher is never executed — frizz-dev uses index.ts.
-  const childEntry = fileURLToPath(new URL("./dev-child.js", import.meta.url));
-  // The release npm has already installed for the pending update — resolved while the board is still
-  // up, so the handoff below has nothing left to do that can fail quietly.
-  let plannedSuccessor: RegistrySuccessor | undefined;
+  const spec = serverReleaseSpec(
+    JSON.parse(readFileSync(join(import.meta.dirname, "..", "package.json"), "utf8")),
+    process.env.FRIZZ_SERVER_PACKAGE,
+  );
+  const installer = npmServerPackageInstaller(env);
+  const store = new ServerReleaseStore(spec, installer);
+  activityReadout?.notice("progress", "Starting", "loading the selected Frizz server release");
+  let active = await store.load();
+  let pending: ServerGeneration | undefined;
+  let previous = active;
+  onPrepared();
 
   // Whether the registry actually has something newer, refreshed on a timer and READ FROM CACHE.
   // The status endpoint is polled by every open tab, so it must never reach the network; and the
-  // answer only changes when someone publishes, so a slow cadence is plenty. Starts optimistic
-  // (`true`) so the button keeps its current appearance until the first probe lands — the operator
-  // never sees it flip from Restart to Update a second after load.
-  let updateAvailable = true;
+  // answer only changes when someone publishes, so a slow cadence is plenty.
+  //
+  // Seeded `false`, not `true`. It started optimistic so the button would not flip from Restart to
+  // Update a second after load — but the flip that actually happens is the other way: right after
+  // an update the successor seeded `true` again and the reloaded tab showed "Update Frizz" naming a
+  // version it already was, and a click in that window failed with "already current" presented as
+  // an error; offline, the seed never cleared at all and every click was a red failure (audit
+  // 2026-09-11, finding 5). A Restart that becomes Update once the registry answers is the cheaper
+  // mistake. Only a POSITIVE probe raises it; a probe that fails leaves the last known answer.
+  let updateAvailable = false;
   // The newer version the last successful probe saw, so the status endpoint can NAME the update it is
-  // advertising. Deliberately not seeded optimistically like the boolean above: a number we have not
-  // observed would be a lie, so until the registry answers the client gets its generic update copy.
+  // advertising. Set together with the boolean: a number we have not observed would be a lie, so
+  // until the registry answers the client gets its generic copy.
   let updateVersion: string | undefined;
   const refreshUpdateAvailable = async (): Promise<void> => {
     try {
-      const plan = await planRegistryUpdate(PACKAGE_NAME, PACKAGE_VERSION, npmRegistryReleaseAdapter);
+      const checkedVersion = active.version;
+      const plan = await planRegistryUpdate(spec.package, checkedVersion, installer);
+      if (active.version !== checkedVersion) return;
       updateAvailable = plan !== null;
       updateVersion = plan?.latestVersion;
     } catch {
-      // A registry we cannot reach is not evidence that we are current. Leave the last known answer.
+      // A registry we cannot reach is not evidence either way. Leave the last known answer.
     }
   };
   void refreshUpdateAvailable();
@@ -480,62 +532,46 @@ async function runSupervisor(port: number, token: string): Promise<never> {
     launchOwnerToken: owner.token,
     env,
     watch: false,
-    childEntry,
-    childEnvironment: () => ({ FRIZZ_STABLE_WEB_DIST: webDist, FRIZZ_STABLE_ARTIFACT: `npm:${PACKAGE_NAME}@${PACKAGE_VERSION}`, FRIZZ_SCRIPTS_DIR: scriptsDir, FRIZZ_WORKER_PLUGIN_DIR: workerPluginDir }),
+    childLaunchProvider: () => serverGenerationLaunch(pending ?? active),
+    updateMode: "child",
     updateAvailable: () => updateAvailable,
-    version: PACKAGE_VERSION,
+    version: () => active.version,
+    launcherVersion: PACKAGE_VERSION,
     updateVersion: () => updateVersion,
     // The terminal that owns the board says so when the board goes down and comes back. Everything
     // here is triggered from a browser tab or by a crash, so without this the foreground process is
     // the last place to learn what happened to it.
     onActivity: (event) => renderSupervisorActivity(activityReadout, event),
     updateRestart: async () => {
+      previous = active;
       try {
-        const plan = await planRegistryUpdate(PACKAGE_NAME, PACKAGE_VERSION, npmRegistryReleaseAdapter);
-        if (!plan) { updateAvailable = false; updateVersion = undefined; return { state: "failed" as const, message: `Frizz ${PACKAGE_VERSION} is already current` }; }
+        const plan = await planRegistryUpdate(spec.package, active.version, installer);
+        if (!plan) { updateAvailable = false; updateVersion = undefined; return { state: "failed" as const, message: `Frizz ${active.version} is already current` }; }
+        updateAvailable = true;
         updateVersion = plan.latestVersion;
-        // npm only writes its own cache, and this is where an install goes wrong if it is going to:
-        // the release is fetched, built and asked for its entry while the healthy supervisor is still
-        // up, so a failure here is a failed update with the board still serving — not, as before
-        // 2026-09-10, a successor dying unseen after the old owner had already quit.
-        plannedSuccessor = await resolveRegistrySuccessor(plan, { cwd: workspace.root, env }, npmRegistryReleaseAdapter);
-        return { state: "ready" as const, message: `Frizz ${plan.latestVersion} is installed in its own npm execution cache` };
+        // Install while the current server serves. Selection remains provisional until the new
+        // child is ready; the durable launcher, listener, terminal and tunnels never move.
+        pending = await store.prepare(plan.latestVersion);
+        return { state: "ready" as const, message: `Frizz ${plan.latestVersion} is installed and compatible` };
       } catch (error) {
         return { state: "failed" as const, message: error instanceof Error ? error.message : String(error) };
       }
     },
-    durableReexec: async () => {
-      const successor = plannedSuccessor;
-      if (!successor) throw new Error("no update was prepared");
-      const { plan } = successor;
-      const successorEnv = { ...env, FRIZZ_REGISTRY_PACKAGE: plan.packageName, FRIZZ_REGISTRY_VERSION: plan.latestVersion };
-      if (typeof process.execve === "function") {
-        // Same as frizz-dev's handoff: execve keeps this pid, this terminal and this stdio, so the
-        // updated Frizz is the FOREGROUND process the operator started — ctrl-c still stops it, the
-        // readout keeps narrating, closing the window still takes it down. The maintainer asked for
-        // exactly that (2026-09-10) after the detached form below left a board nobody's terminal
-        // could reach. The successor announces itself once its first child is up; this line covers
-        // the boot in between.
-        activityReadout?.notice("progress", "Updating", `reloading this launcher in place on Frizz ${plan.latestVersion}`);
-        // Raw mode would otherwise survive the exec on the same tty, and the successor installs its own
-        // pane host. The tunnel is handed back too: execve keeps this pid's children, so a cloudflared
-        // left here would outlive every handle to it and strand the hostname on a port nobody serves.
-        paneHost?.dispose();
-        remote?.stop();
-        // The successor adopts the same tokenized project lease. SQLite and provider sessions are
-        // keyed project resources, so neither process copies, deletes, nor recreates them.
-        reexecIntoRegistrySuccessor(successor, { port, env: successorEnv });
-      }
-      // No execve on this runtime (Windows): the successor starts detached with its stdio closed, so
-      // this terminal is not handed to it — the process simply ends, the shell prompt returns, and
-      // the board is still serving from a PID this window can no longer signal. Said plainly, that
-      // is an update; unsaid, it is indistinguishable from Frizz dying.
-      handoffToRegistrySuccessor(successor, { port, cwd: workspace.root, env: successorEnv }, npmRegistryReleaseAdapter);
-      readout?.notice("done", "Updated", `Frizz ${plan.latestVersion} is taking over on port ${port}`);
-      readout?.note(`\n  Frizz ${plan.latestVersion} now runs in the background — ctrl-c here no longer reaches it. Stop it with ${PACKAGE_NAME} --stop.\n`);
-      process.exit(0);
+    commitUpdate: () => {
+      if (!pending) throw new Error("no server update was prepared");
+      store.commit(pending);
+      active = pending;
+      pending = undefined;
+      updateAvailable = false;
+      updateVersion = undefined;
+    },
+    rollbackUpdate: () => {
+      if (active.id !== previous.id) store.commit(previous);
+      active = previous;
+      pending = undefined;
     },
   });
+  publishStableServerAddress(serverOwner, port);
   // The first single-use link, minted now that the board can redeem it. The old `?frizz_token=` this
   // replaced was a STANDING secret: it never expired and never rotated, so anything that saw it once
   // — a screenshot, scrollback, a chat log — kept working forever.
@@ -569,7 +605,7 @@ async function runSupervisor(port: number, token: string): Promise<never> {
   const stop = createSupervisorShutdownHandler({
     close: () => supervisor.close(),
     force: () => supervisor.forceStop(),
-    release: () => owner.release(),
+    release: () => { owner.release(); if (serverOwner) releaseStableServerOwner(serverOwner); },
     // Acknowledge the first signal on the spot; the drain that follows is bounded but not instant.
     onStop: () => {
       logger.info("launcher", "stop signal received; draining the control plane");
@@ -601,13 +637,32 @@ async function runSupervisor(port: number, token: string): Promise<never> {
   process.on("SIGHUP", stop);
   void supervisor.stopRequested.then(stop);
   await supervisor.firstBoot;
+  store.commit(active);
+  activityReadout?.notice("done", "Server", `${active.version} · launcher ${PACKAGE_VERSION}`);
   // The execve'd generation prints no boot block (it is not an interactive launch), so this one line
   // is the only thing that tells the operator the update finished and this terminal still owns it.
-  if (reexec) activityReadout?.notice("done", "Updated", `Frizz ${PACKAGE_VERSION} is serving on port ${port} · ctrl-c to stop`);
+  if (reexec) {
+    activityReadout?.notice(
+      "done",
+      "Updated",
+      `Frizz ${active.version} is serving on port ${port} · ctrl-c to stop${globalInstall ? ` · ${keepUpdateHint(PACKAGE_NAME, PACKAGE_VERSION)}` : ""}`,
+    );
+  }
   return await new Promise<never>(() => {});
 }
 
 try {
+  // Hold this across downloads, child handoffs and recovery. A 503 from the application is never
+  // permission to start a second scheduler, and a custom port is just as discoverable as the default.
+  const globalClaim = acquireStableServerOwner();
+  if (globalClaim.kind === "busy") throw new Error("Frizz is starting or recovering on this machine; retry shortly");
+  if (globalClaim.kind === "running") {
+    if (options.port && options.port !== globalClaim.port)
+      throw new Error(`Frizz is already running on port ${globalClaim.port}; --port cannot change a running server`);
+    await openOrPrint(globalClaim.port, true, slugPath());
+    process.exit(0);
+  }
+  serverOwner = globalClaim.lease;
   if (process.env.FRIZZ_PRODUCTION_SUPERVISOR === "1" || reexec) {
     if (!options.port) throw new Error("internal registry supervisor launch is missing --port");
     const token = projectLaunchOwnerTokenFromEnvironment(process.env);
@@ -638,13 +693,18 @@ try {
     // runSupervisor(...)` always won and a cold `npx frizz` never printed its URL, never opened a
     // browser, and never released the lock it took — the detached-spawn branch that used to follow was
     // dead code the day parseCliArgs stopped honouring --detach.
-    const running = runSupervisor(port, claim.lease.token);
+    let didPrepare!: () => void;
+    const prepared = new Promise<void>((resolve) => { didPrepare = resolve; });
+    const running = runSupervisor(port, claim.lease.token, didPrepare);
     // Allocation is the only machine-shared step, so the machine-global lock ends HERE — the port
     // reservation above, not this lock, keeps `port` ours until the child listens. Holding it across
     // the progress-tracked wait below meant one cold `npx frizz` could sit on it for minutes while
     // every other repository's launcher gave up after a far shorter budget.
     release();
     release = undefined;
+    // Cold installs have their own bounded npm timeout. Do not spend the server's boot/stall budget
+    // waiting for a download, and do not hold the machine-global allocation lock while it runs.
+    await Promise.race([prepared, running]);
     // Progress-tracked: a boot that keeps reporting steps keeps the launcher's patience, so a large
     // board on a busy machine is no longer indistinguishable from a wedge. See waitForWorkspace.
     // `running` stays in the race so a supervisor that dies while booting reports immediately.

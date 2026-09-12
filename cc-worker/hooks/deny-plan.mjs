@@ -23,8 +23,8 @@
 // instead — frizz NEVER spawns a worker in plan mode (dispatch.ts coerces `--permission-mode plan`
 // → `auto` in both command builders), so a real frizz worker is never in plan mode and this deny
 // only ever meets a SPURIOUS ExitPlanMode call (nothing to exit → deny + redirect is correct). A
-// worker "plans" by writing a durable plan file and asking via a ```question
-// approval block, never via interactive plan mode.
+// worker "plans" by writing a durable plan file and asking via `mcp__frizz__ask`,
+// never via interactive plan mode.
 // RESIDUAL GAP (accepted, documented): the deny could softlock only a FOREIGN session that is
 // simultaneously in plan mode AND running with FRIZZ_THREAD set AND this plugin loaded — a combo
 // frizz never produces (FRIZZ_THREAD is set only by frizz dispatch, which coerces plan away).
@@ -48,7 +48,7 @@ try {
 // the model reads is `additionalContext`, injected as a plain-text system-reminder. Exit 0 with
 // this JSON on stdout (exit 2 would make Claude Code ignore the JSON — never mix).
 const reason =
-  'Interactive plan-approval prompts freeze headless workers (no one is at the keyboard to approve). Do NOT present a plan for approval. Instead: if the plan is settled, just proceed with the work. If the plan is the deliverable, write it into a durable plan file — wherever the dispatch or the project\'s conventions name; your scratch directory works when nothing names one. If it needs a human call before you build, ask in your FINAL MESSAGE with a two-option ```question block stating what you need approved, then come to rest — the human reviews it from the frizz queue.';
+  'Interactive plan-approval prompts freeze headless workers (no one is at the keyboard to approve). Do NOT present a plan for approval. Instead: if the plan is settled, just proceed with the work. If the plan is the deliverable, write it into a durable plan file — wherever the dispatch or the project\'s conventions name; your scratch directory works when nothing names one. If it needs a human call before you build, register a two-option question with `mcp__frizz__ask` stating what you need approved (never a ```question fence — that fence is retired), then come to rest — the human reviews it from the frizz queue.';
 
 process.stdout.write(
   JSON.stringify({

@@ -5,6 +5,7 @@ export async function checkThemePreferences({ browser, url, check }) {
   const loadingContext = await browser.createBrowserContext()
   try {
     const loadingPage = await loadingContext.newPage()
+    await loadingPage.setViewport({ width: 1440, height: 1000, deviceScaleFactor: 1 })
     const held = []
     let unavailable = false
     await loadingPage.setRequestInterception(true)
@@ -17,6 +18,7 @@ export async function checkThemePreferences({ browser, url, check }) {
     await loadingPage.waitForSelector('[data-surface="newComposer"]')
     await loadingPage.evaluate(async () => { (await import('/src/store.ts')).store.showSettings = true })
     await loadingPage.waitForSelector('button[aria-label="Appearance"]')
+    await loadingPage.waitForFunction(() => getComputedStyle(document.querySelector('.frizz-sheet-panel').parentElement).opacity === '1')
     await loadingPage.waitForFunction(() => document.body.textContent.includes('Loading server settings'))
     for (const choice of ['Light', 'Dark']) {
       await loadingPage.click('button[aria-label="Appearance"]')

@@ -405,7 +405,7 @@ export function frizzConfigBlock(projectDir: string): string {
 // Workers have NO coherent interactive-plan-mode semantics: plan mode stays read-only until an
 // INTERACTIVE ExitPlanMode approval, which a headless dashboard worker can't satisfy (no one is at
 // the keyboard) and which blocks all edits until then — a softlock. A worker "plans" by writing a
-// durable plan file and asking via a ```question fence, never via interactive plan
+// durable plan file and asking via `mcp__frizz__ask`, never via interactive plan
 // mode. So a worker is NEVER spawned in plan mode: `plan` is coerced to the safe frizz default
 // (`auto`). Applied inside BOTH spawn builders so dispatch, adopt, AND resume are all covered. (The
 // dispatch UI still OFFERS "plan" in its permission-mode dropdown — dropping it in web/options.ts is

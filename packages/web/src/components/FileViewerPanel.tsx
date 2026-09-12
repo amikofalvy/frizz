@@ -10,6 +10,7 @@ import { useLocalFileCodeLinks } from "../lib/localFileCode.ts"
 import { useMarkdownHtml } from "../lib/useMarkdown.ts"
 import { splitFrontmatter } from "../lib/frontmatter.ts"
 import { isLocalMarkdownFile, localFileDir } from "../lib/markdownTargets.ts"
+import { basename } from "../lib/paths.ts"
 import { contextChipLabel, insertTokenIntoProse, locateInSource, uniqueToken } from "../lib/composerContext.ts"
 import { Frontmatter, FOOTER_STYLE, OpenAction } from "./MarkdownDrawer.tsx"
 import { SheetHeader } from "./ui/SheetHeader.tsx"
@@ -83,7 +84,7 @@ export function FileViewerPanel({ slug, path }: { slug: string; path: string }) 
   const sourceRef = useRef<HTMLPreElement>(null)
   const rootRef = useRef<HTMLDivElement>(null)
   useLocalFileCodeLinks(renderedRef, html)
-  const title = resolved.split("/").filter(Boolean).pop() || resolved
+  const title = basename(resolved)
 
   // ⌘I / Ctrl-I: stage the current selection (when it lives inside this panel) as a context item —
   // splicing its `@file:line` token into the draft AT THE CARET — then FOCUS the composer

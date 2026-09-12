@@ -29,6 +29,19 @@ test("a registry launcher's update popover names both versions and says a newer 
   assert.equal((html.match(/<p /g) ?? []).length, 1)
 })
 
+test("the popover shows only the application version, not launcher diagnostics", () => {
+  const status = {
+    version: "0.13.1",
+    launcherVersion: "0.13.0",
+    updateVersion: "0.13.2",
+  }
+  for (const update of [true, false]) {
+    const html = renderToStaticMarkup(createElement(UpdateRestartPopover, { open: true, update, ...status }))
+    assert.match(html, update ? />0\.13\.1 → 0\.13\.2</ : />0\.13\.1</)
+    assert.doesNotMatch(html, /Server |Launcher |0\.13\.0/)
+  }
+})
+
 test("an up-to-date registry install still shows what version it is running", () => {
   const html = renderToStaticMarkup(createElement(UpdateRestartPopover, { open: true, update: false, version: "0.4.2" }))
   assert.match(html, /Restart Frizz\. Your running threads will not be affected\./)
@@ -135,6 +148,29 @@ test("the supervisor's build log is contained, not spilled down the board", () =
   assert.ok(pre.includes("max-h-64") && pre.includes("overflow-y-auto"), pre)
   assert.ok(pre.includes("whitespace-pre-wrap") && pre.includes("break-words"), pre)
   assert.match(html, /error TS2304/)
+})
+
+// Finding 11 (audit 2026-09-11). After a successful handoff the SUCCESSOR's proxy answers the polls, so
+// a "failed" from its child boot is the new version failing — and the previous one is already gone.
+// The panel used to say it kept running regardless; now the sentence follows the outcome App/button
+// judge from the failed answer's version against the version at click (api/restart.ts).
+test("a successor that came up and then failed is named, not reported as the previous version kept", () => {
+  const html = renderToStaticMarkup(
+    createElement(RestartFailureNotice, { update: true, message: "control plane stopped (exit 1) before ready", outcome: { kind: "successor-failed", version: "0.5.0" }, onDismiss: () => undefined }),
+  )
+  assert.match(html, /Update failed/)
+  assert.match(html, /Frizz 0\.5\.0 came up but could not start its board, and the previous version is gone\./)
+  assert.match(html, /npx frizz/)
+  assert.doesNotMatch(html, /kept running the previous version/)
+  // The supervisor's own reason still rides in the log block underneath.
+  assert.match(html, /control plane stopped \(exit 1\) before ready/)
+
+  // Without an outcome the panel keeps its old sentence — the click-handler's own catch (a POST the
+  // running server rejected) and the fixture both render it that way.
+  const kept = renderToStaticMarkup(
+    createElement(RestartFailureNotice, { update: true, message: "boom", outcome: { kind: "previous-kept" }, onDismiss: () => undefined }),
+  )
+  assert.match(kept, /Frizz kept running the previous version, and your threads are unaffected\./)
 })
 
 test("a failure can be dismissed, and a legacy restart names itself correctly", () => {

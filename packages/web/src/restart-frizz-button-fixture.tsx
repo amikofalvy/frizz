@@ -12,14 +12,14 @@ document.documentElement.dataset.font = params.get("font") === "mono" ? "mono" :
 // ?versionless drops the registry launcher's version fields, i.e. the frizz-dev / legacy popover.
 const versions = params.has("versionless")
   ? {}
-  : { version: "0.4.2", updateVersion: params.has("patch") ? "0.4.3" : "0.5.0" }
+  : { version: "0.4.2", updateVersion: params.has("patch") ? "0.4.3" : "0.5.0", launcherVersion: "0.13.0" }
 
 const nativeFetch = window.fetch.bind(window)
 window.fetch = async (input, init) => {
   const requestUrl = typeof input === "string" ? input : input instanceof URL ? input.href : input.url
   const url = new URL(requestUrl, window.location.href)
   if (url.pathname === "/_frizz/control/status") {
-    return new Response(JSON.stringify({ protocol: 1, state: "ready", updateRestart: true, ...versions }), {
+    return new Response(JSON.stringify({ protocol: 1, state: "ready", updateRestart: true, updateAvailable: !params.has("current"), ...versions }), {
       headers: { "content-type": "application/json" },
     })
   }

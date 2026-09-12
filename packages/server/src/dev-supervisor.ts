@@ -29,8 +29,16 @@ export const DEV_CRASH_STABLE_MS = 5000
 export const DEV_CRASH_RETRY_BASE_MS = 500
 export const DEV_CRASH_RETRY_MAX_MS = 10_000
 // A server's public shutdown deadline is diagnostic, not proof that its ownership fence is safe to
-// abandon. Leave enough room for the child to finish that late drain before escalating to SIGKILL.
+// abandon. Leave enough room for the child to finish that late drain before escalating to a signal.
 const CHILD_STOP_TIMEOUT_MS = 15_000
+/** A stable update must either report ready promptly or return the old selection to service. */
+export const STABLE_UPDATE_READY_TIMEOUT_MS = 30_000
+/** Reject a ready-then-immediately-dead candidate before making its artifact durable. */
+export const STABLE_UPDATE_STABILIZE_MS = 1_000
+// POSIX only: how long a child that ignored the IPC ask gets to answer SIGTERM before SIGKILL. A
+// child whose event loop is wedged answers neither, so this is the bound on a wedged child's life,
+// not a second drain budget (its own force timer already fired at CHILD_STOP_TIMEOUT_MS).
+const CHILD_KILL_GRACE_MS = 5_000
 const SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".mjs", ".cjs", ".json"])
 const CONFIG_NAMES = new Set(["package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", ".npmrc"])
 const CHILD_RUNTIME_PACKAGES = new Set(["server", "shared", "rpc", "claude-agent-sdk-runtime"])
@@ -135,10 +143,23 @@ export interface DevSupervisorOptions {
   childArgs?: string[]
   /** Stable-mode only: build/preflight a candidate before the controlled child restart. */
   updateRestart?: () => Promise<RestartResult>
+  /**
+   * Source-backed artifacts replace the durable supervisor as well as its child. The registry
+   * launcher's `child` mode retains this proxy/launcher, proves one candidate child, then commits it.
+   */
+  updateMode?: "durableReexec" | "child"
+  /** Commit the prepared child selection only after that child is ready and remains alive briefly. */
+  commitUpdate?: () => Promise<void> | void
+  /** Bounded candidate-ready wait for `updateMode: "child"`; injectable for real-child fixtures. */
+  updateReadyTimeoutMs?: number
+  /** Required healthy interval before committing a child update; injectable for real-child fixtures. */
+  updateStabilizeMs?: number
   /** Cheap CACHED "is a newer artifact actually available" read; see RestartSupervisorProxy. */
   updateAvailable?: () => boolean
-  /** The published package version this launcher runs. Registry launcher only; see RestartSupervisorProxy. */
-  version?: string
+  /** The active application-server version. Registry launcher only; see RestartSupervisorProxy. */
+  version?: string | (() => string | undefined)
+  /** Stable launcher package version, exposed only as a diagnostic beside the server version. */
+  launcherVersion?: string
   /** Cheap CACHED read of the newer registry version, when observed; see RestartSupervisorProxy. */
   updateVersion?: () => string | undefined
   /** Launched from a source checkout (frizz-dev / `pnpm dev`)? See RestartSupervisorProxy. */
@@ -213,11 +234,11 @@ export interface SupervisorShutdownHandlerOptions {
 export const SUPERVISOR_ESCALATE_GRACE_MS = 500
 
 /**
- * The drain's own bound: the child's stop timeout plus room for the proxy to close. A drain still
- * running past this has wedged somewhere no per-step bound covers, and the operator gets the terminal
- * back without having to find the second Ctrl-C.
+ * The drain's own bound: the child's whole stop budget (the ask, then SIGTERM, then SIGKILL) plus
+ * room for the proxy to close. A drain still running past this has wedged somewhere no per-step
+ * bound covers, and the operator gets the terminal back without having to find the second Ctrl-C.
  */
-export const SUPERVISOR_DRAIN_DEADLINE_MS = CHILD_STOP_TIMEOUT_MS + 5_000
+export const SUPERVISOR_DRAIN_DEADLINE_MS = CHILD_STOP_TIMEOUT_MS + CHILD_KILL_GRACE_MS + 5_000
 
 /**
  * Idempotent, permanently-installed signal/control handler for the durable supervisor owner.
@@ -464,6 +485,12 @@ class Supervisor implements DevSupervisor {
   private debounce: ReturnType<typeof setTimeout> | null = null
   private restartRunning = false
   private restartAgain = false
+  /** Resolves when a pre-existing watcher restart has released the one child slot. */
+  private restartCompletion: Promise<void> | null = null
+  /** Serializes an update candidate with watcher/browser restart requests. */
+  private updateChildRunning = false
+  /** A candidate never joins crash-retry until its selection has committed. */
+  private updateCandidate: ChildProcess | null = null
   private reloadLauncher = false
   private crashAttempts = 0
   private crashStableTimer: ReturnType<typeof setTimeout> | null = null
@@ -499,11 +526,22 @@ class Supervisor implements DevSupervisor {
   private lastActivity: string | undefined
   private readonly publicProxy: RestartSupervisorProxy
   private readonly updateRestart?: () => Promise<RestartResult>
+  private readonly updateMode: "durableReexec" | "child"
+  private readonly commitUpdate?: () => Promise<void> | void
+  private readonly updateReadyTimeoutMs: number
+  private readonly updateStabilizeMs: number
   private readonly rollbackUpdate?: () => Promise<void> | void
   private readonly durableReexec?: () => Promise<void> | void
   /** Environment of the generation that actually reached ready, never merely the latest pointer. */
   private activeChildEnvironment: NodeJS.ProcessEnv = {}
   private lastRestartFailure: string | undefined
+  /**
+   * True from the moment an update starts draining the old child until that update has settled.
+   * Before it — the prepare phase — the old child is untouched and serving, and the status delegate
+   * says so; during it the child bookkeeping reads as "failed" (no child, no boot), which is not
+   * what a poll during those seconds should learn.
+   */
+  private handoffDraining = false
 
   constructor(opts: DevSupervisorOptions) {
     const launchOwner = verifyProjectLaunchDelegate(opts.launchTarget, opts.launchOwnerToken)
@@ -533,7 +571,9 @@ class Supervisor implements DevSupervisor {
     this.childLaunchProvider = opts.childLaunchProvider
     this.childArgs = opts.childArgs ?? []
     this.watchSubscribe = opts.watchSubscribe ?? ((root, callback, options) => watcher.subscribe(root, callback, options))
-    this.reexec = opts.reexec ?? (typeof process.execve === "function"
+    // Not `typeof process.execve === "function"`: Node 24 on Windows exports it and throws
+    // ERR_FEATURE_UNAVAILABLE_ON_PLATFORM on the call (measured 2026-09-11), so the platform decides.
+    this.reexec = opts.reexec ?? (process.platform !== "win32" && typeof process.execve === "function"
       ? (request) => process.execve!(request.executable, request.argv, request.env)
       : undefined)
     if (opts.stateDir && resolve(opts.stateDir) !== opts.launchTarget.stateDir) {
@@ -548,6 +588,10 @@ class Supervisor implements DevSupervisor {
     this.errorLine = opts.error ?? ((line) => frizzLog.error("supervisor", stripPrefix(line)))
     this.onActivity = opts.onActivity
     this.updateRestart = opts.updateRestart
+    this.updateMode = opts.updateMode ?? "durableReexec"
+    this.commitUpdate = opts.commitUpdate
+    this.updateReadyTimeoutMs = Math.max(1, opts.updateReadyTimeoutMs ?? STABLE_UPDATE_READY_TIMEOUT_MS)
+    this.updateStabilizeMs = Math.max(0, opts.updateStabilizeMs ?? STABLE_UPDATE_STABILIZE_MS)
     this.rollbackUpdate = opts.rollbackUpdate
     this.durableReexec = opts.durableReexec
     this.publicProxy = new RestartSupervisorProxy({
@@ -563,10 +607,13 @@ class Supervisor implements DevSupervisor {
       updateRestart: this.updateRestart ? () => this.updateFromBrowser() : undefined,
       updateAvailable: opts.updateAvailable,
       version: opts.version,
+      launcherVersion: opts.launcherVersion,
       updateVersion: opts.updateVersion,
       dev: opts.dev,
       status: () => {
-        if (this.browserRestart || this.restartRunning) return { state: "restarting" as const }
+        // The proxy reports THIS answer, not its own acknowledged transition, while an update is in
+        // flight: only this supervisor knows when the prepare phase ends and the drain begins.
+        if (this.handoffDraining || this.browserRestart || this.restartRunning) return { state: "restarting" as const }
         const failed = this.child === null && this.boot === null
         const artifactDigest = this.activeChildEnvironment.FRIZZ_STABLE_ARTIFACT
         return failed
@@ -665,6 +712,12 @@ class Supervisor implements DevSupervisor {
 
   private requestRestart(reason: string, immediate = false, reloadLauncher = false, delayMs = this.debounceMs): void {
     if (this.closed) return
+    // A candidate has exclusive ownership of the child slot. Preserve a watcher-triggered restart
+    // for after the update resolves instead of allowing a second `fork()` beside the candidate.
+    if (this.updateChildRunning) {
+      this.restartAgain = true
+      return
+    }
     this.reloadLauncher ||= reloadLauncher
     if (this.debounce) clearTimeout(this.debounce)
     const run = () => {
@@ -685,11 +738,18 @@ class Supervisor implements DevSupervisor {
   }
 
   private async restart(): Promise<void> {
+    if (this.updateChildRunning) {
+      this.restartAgain = true
+      return
+    }
     if (this.restartRunning) {
       this.restartAgain = true
       return
     }
     this.restartRunning = true
+    let completeRestart!: () => void
+    const completion = new Promise<void>((resolveCompletion) => { completeRestart = resolveCompletion })
+    this.restartCompletion = completion
     try {
       let shouldReloadLauncher = false
       do {
@@ -697,7 +757,9 @@ class Supervisor implements DevSupervisor {
         shouldReloadLauncher ||= this.reloadLauncher
         this.reloadLauncher = false
         await this.stopChild()
-        if (!this.closed) {
+        // An update can arrive while a watcher restart is between its drain and spawn. It owns the
+        // next child slot, so this older restart must finish without creating another generation.
+        if (!this.closed && !this.updateChildRunning) {
           const ready = await this.spawnChild()
           // Keep the old watcher alive after a syntax/import/start failure. The next relevant edit is
           // another retry; crucially, a broken launcher never strands the running shell with no watcher.
@@ -707,6 +769,8 @@ class Supervisor implements DevSupervisor {
       if (shouldReloadLauncher && !this.closed) await this.reexecLauncher()
     } finally {
       this.restartRunning = false
+      completeRestart()
+      if (this.restartCompletion === completion) this.restartCompletion = null
     }
   }
 
@@ -739,14 +803,17 @@ class Supervisor implements DevSupervisor {
 
   private async updateFromBrowser(): Promise<RestartResult> {
     if (!this.updateRestart) return { state: "failed", message: "Update & Restart is unavailable in this launcher mode" }
+    if (this.updateMode === "child") return this.updateChildFromBrowser()
     // The candidate is built and validated while the known-good child stays live. Only a successful
     // candidate reaches the controlled restart path, so a failed build never takes the board down.
     //
     // Announced BEFORE the await, not through writeStatus like every other beat: preparing a
-    // candidate is the longest step of an update (a source build in frizz-dev, an npm resolve in the
+    // candidate is the longest step of an update (a source build in frizz-dev, an npm install in the
     // registry launcher) and it writes no status at all, so the terminal would otherwise sit silent
-    // for a minute and then jump straight to "restarting".
-    this.emitActivity("updating", "preparing the new build — the running one is untouched until it is ready")
+    // for a minute and then jump straight to "restarting". The copy names neither, because this
+    // beat cannot know which: it read "preparing the new build" for the registry launcher's npm
+    // install (audit 2026-09-11, finding 6). The hook's own message, which does know, follows it.
+    this.emitActivity("updating", "preparing the update — the running Frizz is untouched until it is ready")
     const candidate = await this.updateRestart()
     if (candidate.state !== "ready") {
       this.emitActivity("failed", candidate.message ?? "the update could not be prepared")
@@ -771,7 +838,139 @@ class Supervisor implements DevSupervisor {
     } catch (error) {
       const message = `durable supervisor handoff failed: ${error instanceof Error ? error.message : error}`
       return this.failDurableUpdate(message, handoffPreparationStarted)
+    } finally {
+      // Only a failed handoff gets here (a successful one never returns from exec). The proxy has
+      // this update's "failed" verdict in hand by the time a poll can next be served, so the
+      // delegate may go back to describing the restored child.
+      this.handoffDraining = false
     }
+  }
+
+  /**
+   * Update only the disposable application server while retaining the public listener and launcher.
+   * There is deliberately no blue/green overlap: a Frizz child opens SQLite, tailers and schedulers
+   * before it can report ready, so a candidate is started only after the old child is fully gone.
+   */
+  private async updateChildFromBrowser(): Promise<RestartResult> {
+    if (!this.commitUpdate || !this.rollbackUpdate) {
+      return { state: "failed", message: "child-only Update & Restart requires commit and rollback callbacks" }
+    }
+    // This covers preparation too: source-watch restarts must not replace the old child while the
+    // update callback is selecting a candidate for it.
+    this.updateChildRunning = true
+    try {
+      // A watcher restart already in flight may be awaiting a private-port allocation. Let it drain
+      // out under the exclusive update flag before selecting/spawning the candidate.
+      await this.restartCompletion
+      this.emitActivity("updating", "preparing the new build — the running one is untouched until it is ready")
+      let prepared: RestartResult
+      try {
+        prepared = await this.updateRestart!()
+      } catch (error) {
+        return this.failChildUpdate(`the update could not be prepared: ${error instanceof Error ? error.message : error}`, false)
+      }
+      if (prepared.state !== "ready") {
+        return this.failChildUpdate(prepared.message ?? "the update could not be prepared", false)
+      }
+      if (this.closed) return this.failChildUpdate("Frizz supervisor stopped while preparing the update", false)
+      if (prepared.message) this.emitActivity("updating", prepared.message)
+      // Do not run two server children. The old generation owns the shared runtime resources until
+      // this exact drain completes; only then may the prepared launch provider select its candidate.
+      this.handoffDraining = true
+      await this.stopChild()
+      if (this.closed) return this.failChildUpdate("Frizz supervisor stopped while starting the update", true)
+      const ready = await this.spawnChild({
+        updateCandidate: true,
+        readinessTimeoutMs: this.updateReadyTimeoutMs,
+      })
+      const candidate = this.child
+      if (!ready || !candidate) {
+        return this.failChildUpdate(this.lastRestartFailure ?? "the update candidate did not become ready", true)
+      }
+      if (!await this.stabilizeUpdateCandidate(candidate)) {
+        return this.failChildUpdate("the update candidate stopped before it became stable", true)
+      }
+      try {
+        await this.commitUpdate()
+      } catch (error) {
+        return this.failChildUpdate(`the update could not be committed: ${error instanceof Error ? error.message : error}`, true)
+      }
+      // `close()` can race a synchronous store commit. Restore the prior selection rather than
+      // leaving a dead launcher pointing at an update it never got to serve.
+      if (this.closed || this.child !== candidate || candidate.exitCode !== null || candidate.signalCode !== null) {
+        return this.failChildUpdate("the update candidate stopped while committing the update", true)
+      }
+      this.updateCandidate = null
+      this.lastRestartFailure = undefined
+      return { state: "ready" }
+    } finally {
+      this.updateChildRunning = false
+      this.handoffDraining = false
+      // A source edit that arrived during preparation is meaningful, but it must run only after the
+      // candidate has either committed or the prior selection has been restored.
+      if (this.restartAgain && !this.closed) {
+        this.restartAgain = false
+        this.requestRestart("changes received while updating", true)
+      }
+    }
+  }
+
+  /** Wait past a ready event so an immediate post-boot crash cannot be made durable. */
+  private async stabilizeUpdateCandidate(candidate: ChildProcess): Promise<boolean> {
+    if (this.child !== candidate || candidate.exitCode !== null || candidate.signalCode !== null) return false
+    if (this.updateStabilizeMs === 0) return true
+    return new Promise<boolean>((resolveStable) => {
+      let settled = false
+      const finish = (stable: boolean) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        candidate.removeListener("exit", exited)
+        resolveStable(stable)
+      }
+      const exited = () => finish(false)
+      const timer = setTimeout(() => finish(this.child === candidate && !this.closed), this.updateStabilizeMs)
+      timer.unref()
+      candidate.once("exit", exited)
+    })
+  }
+
+  /** Restore the prepared selection and, if it was drained, put the known-good child back. */
+  private async failChildUpdate(message: string, restoreChild: boolean): Promise<RestartResult> {
+    const failures: string[] = []
+    // Never let an uncommitted candidate run after an update failure. Its exit handler is explicitly
+    // retry-suppressed, so this also cannot turn a bad candidate into a watchdog restart loop.
+    const candidate = this.updateCandidate
+    if (candidate && this.child === candidate) await this.stopChild()
+    this.updateCandidate = null
+    let rolledBack = false
+    if (!this.rollbackUpdate) failures.push("rollback callback is unavailable")
+    else {
+      try {
+        await this.rollbackUpdate()
+        rolledBack = true
+      } catch (error) {
+        failures.push(`rollback failed: ${error instanceof Error ? error.message : error}`)
+      }
+    }
+    // The provider resolves from its current mutable selection. If rollback did not put that
+    // selection back, spawning here could resurrect the very candidate we just rejected.
+    if (restoreChild && rolledBack && !this.closed) {
+      try {
+        const restored = await this.spawnChild()
+        if (!restored) failures.push(`control plane recovery failed: ${this.lastRestartFailure ?? "the previous child did not become ready"}`)
+      } catch (error) {
+        failures.push(`control plane recovery failed: ${error instanceof Error ? error.message : error}`)
+      }
+    } else if (restoreChild && !rolledBack) {
+      failures.push("control plane was not restarted because rollback did not restore a known-good selection")
+    }
+    const detail = failures.length > 0 ? `${message}; ${failures.join("; ")}` : message
+    this.errorLine(`[frizz] ${detail}`)
+    // `close()` has removed the owner status and public listener. A late prepare/commit completion
+    // must not resurrect either observability state or a child after that shutdown boundary.
+    if (!this.closed) this.writeStatus("failed", detail, this.boot)
+    return { state: "failed", message: detail }
   }
 
   /**
@@ -815,6 +1014,9 @@ class Supervisor implements DevSupervisor {
   }
 
   private async prepareDurableReexec(): Promise<void> {
+    // The drain starts HERE, not when the update was accepted: everything before this line left the
+    // old child serving, and the status delegate reported it so.
+    this.handoffDraining = true
     this.closed = true
     this.clearCrashStability()
     if (this.debounce) clearTimeout(this.debounce)
@@ -828,7 +1030,7 @@ class Supervisor implements DevSupervisor {
     this.writeStatus("restarting", "immutable artifact promoted; re-executing durable supervisor", null)
   }
 
-  private async spawnChild(): Promise<boolean> {
+  private async spawnChild(options: { updateCandidate?: boolean; readinessTimeoutMs?: number } = {}): Promise<boolean> {
     const privatePort = await allocatePrivateDevPort(this.port)
     let launch: { entry: string; environment: NodeJS.ProcessEnv } | undefined
     try {
@@ -851,6 +1053,12 @@ class Supervisor implements DevSupervisor {
           // parent-only flags are invalid or dangerous for a file-backed control-plane child.
           execArgv: [],
           stdio: ["inherit", "inherit", "inherit", "ipc"],
+          // A registry update leaves this supervisor with no console on Windows (its successor starts
+          // detached). A console program forked from a console-less parent gets a new, VISIBLE console
+          // window, and closing that window would stop the board. `windowsHide` keeps the window from
+          // appearing (measured 2026-09-07: hwnd 0 for the child and its children). No effect elsewhere.
+          // `fork` passes it to `spawn` at runtime; `ForkOptions` in @types/node 24 does not declare it.
+          ...({ windowsHide: true } as object),
         })
       } catch (error) {
         const message = `child spawn failed: ${error instanceof Error ? error.message : error}; watching for a corrective edit`
@@ -861,15 +1069,30 @@ class Supervisor implements DevSupervisor {
         return
       }
       this.child = child
+      if (options.updateCandidate) this.updateCandidate = child
       this.childPort = privatePort
       this.boot = null
       let started = false
       let ownershipRejected = false
       let spawnSettled = false
+      let readinessTimer: ReturnType<typeof setTimeout> | undefined
       const settleSpawn = (ready: boolean) => {
         if (spawnSettled) return
         spawnSettled = true
+        if (readinessTimer) clearTimeout(readinessTimer)
         settled(ready)
+      }
+      if (options.readinessTimeoutMs !== undefined) {
+        readinessTimer = setTimeout(() => {
+          if (spawnSettled) return
+          const message = `update candidate did not become ready within ${options.readinessTimeoutMs}ms`
+          this.lastRestartFailure = message
+          this.errorLine(`[frizz] ${message}`)
+          this.writeStatus("failed", message, null)
+          try { child.kill("SIGTERM") } catch { /* exit handler owns cleanup */ }
+          settleSpawn(false)
+        }, options.readinessTimeoutMs)
+        readinessTimer.unref()
       }
 
       child.on("message", (message) => {
@@ -921,7 +1144,9 @@ class Supervisor implements DevSupervisor {
           this.boot = null
           this.activeChildEnvironment = {}
         }
-        const expected = this.closed || this.stopping === child || ownershipRejected
+        // A prepared update has not committed its launch selection yet. It may fail or exit, but it
+        // must never enter the normal crash watchdog (which would fork it again against a rollback).
+        const expected = this.closed || this.stopping === child || ownershipRejected || this.updateCandidate === child
         this.clearCrashStability()
         if (!expected) {
           const why = signal ? `signal ${signal}` : `exit ${code ?? "unknown"}`
@@ -1053,6 +1278,21 @@ class Supervisor implements DevSupervisor {
     this.resolveStopRequested()
   }
 
+  /**
+   * Drain the control-plane child: ASK first, signal only a child that did not answer.
+   *
+   * The ask is `child.disconnect()` — closing the IPC channel — because dev-child already treats a
+   * lost supervisor as an order to shut down (`process.once("disconnect")`), so it needs no second
+   * protocol and it works on every platform. The ask used to be `kill("SIGTERM")`, which on POSIX
+   * runs the same shutdown handler but on Windows is a TerminateProcess: Node maps EVERY signal it
+   * can send to a hard kill there, so the child's `server.close()`, its shutdown fence and its
+   * delegate release never ran, and every Restart and every update on Windows cut open RPCs and
+   * socket writes mid-flight (audit 2026-09-11, finding 3). Only a child that has not exited within
+   * CHILD_STOP_TIMEOUT_MS is signalled — SIGTERM then, CHILD_KILL_GRACE_MS later, SIGKILL on POSIX,
+   * where a wedged event loop ignores the first; a single kill() on win32, where the first is final.
+   * A child with no channel to ask over (already gone, or never had one) gets the signal at once,
+   * which is exactly what it got before.
+   */
   private async stopChild(): Promise<void> {
     this.clearCrashStability()
     const child = this.child
@@ -1060,19 +1300,40 @@ class Supervisor implements DevSupervisor {
     this.stopping = child
     await new Promise<void>((resolveStop) => {
       let done = false
+      const timers: ReturnType<typeof setTimeout>[] = []
       const finish = () => {
         if (done) return
         done = true
-        clearTimeout(force)
+        for (const timer of timers) clearTimeout(timer)
         resolveStop()
       }
+      const later = (callback: () => void, delayMs: number) => {
+        const timer = setTimeout(callback, delayMs)
+        timer.unref()
+        timers.push(timer)
+      }
+      const who = `dev child ${child.pid ?? "?"}`
+      // kill() is false once the process has already exited; the 'exit' listener below then never
+      // fires (it already did), so a false return is the signal to finish here.
+      const signal = (name: NodeJS.Signals | undefined, why: string) => {
+        this.errorLine(`[frizz] ${who} ${why}; ${name === "SIGTERM" ? "sending SIGTERM to" : "killing"} the control plane only`)
+        if (!child.kill(name)) finish()
+      }
+      const escalate = (why: string) => {
+        if (process.platform === "win32") {
+          signal(undefined, why)
+          return
+        }
+        signal("SIGTERM", why)
+        later(() => signal("SIGKILL", `ignored SIGTERM for ${CHILD_KILL_GRACE_MS}ms`), CHILD_KILL_GRACE_MS)
+      }
       child.once("exit", finish)
-      const force = setTimeout(() => {
-        this.errorLine(`[frizz] dev child ${child.pid ?? "?"} did not close in ${CHILD_STOP_TIMEOUT_MS}ms; killing control plane only`)
-        child.kill("SIGKILL")
-      }, CHILD_STOP_TIMEOUT_MS)
-      force.unref()
-      if (!child.kill("SIGTERM")) finish()
+      if (!child.connected) {
+        escalate("has no IPC channel to ask over")
+        return
+      }
+      later(() => escalate(`did not close in ${CHILD_STOP_TIMEOUT_MS}ms`), CHILD_STOP_TIMEOUT_MS)
+      child.disconnect()
     })
     if (this.child === child) this.child = null
     if (this.childPort !== undefined) this.childPort = undefined

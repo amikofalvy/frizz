@@ -467,10 +467,10 @@ async function freeSupervisorPort(): Promise<number> {
   return address.port
 }
 
-async function eventually<T>(probe: () => T | undefined, description: string, timeoutMs = 6_000): Promise<T> {
+async function eventually<T>(probe: () => T | Promise<T | undefined> | undefined, description: string, timeoutMs = 6_000): Promise<T> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    const value = probe()
+    const value = await probe()
     if (value !== undefined) return value
     await delay(10)
   }
@@ -705,6 +705,356 @@ test("Update & Restart hands the durable owner to a fresh supervisor without cop
     })
   } finally {
     await successor?.close()
+    await supervisor?.close()
+    owner.release()
+    rmSync(workspace, { recursive: true, force: true })
+  }
+})
+
+test("child-only Update & Restart commits one stable child without replacing its public listener", { timeout: 15_000 }, async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "frizz-child-update-success-"))
+  const stateDir = join(workspace, ".state")
+  const childEntry = join(workspace, "child.mjs")
+  const events = join(stateDir, "events")
+  mkdirSync(stateDir, { recursive: true })
+  writeFileSync(childEntry, `
+    import { appendFileSync } from "node:fs"
+    import { registerProjectLaunchDelegate, projectLaunchOwnerTokenFromEnvironment, projectLaunchTargetFromEnvironment } from ${JSON.stringify(projectLaunchUrl)}
+    const artifact = process.env.FRIZZ_STABLE_ARTIFACT
+    const target = projectLaunchTargetFromEnvironment(process.env)
+    const token = projectLaunchOwnerTokenFromEnvironment(process.env)
+    const delegate = registerProjectLaunchDelegate(target, token)
+    appendFileSync(process.env.EVENTS, \`start:\${artifact}:\${process.pid}\\n\`)
+    process.send?.({ type: "frizz-ready", pid: delegate.pid, processStart: delegate.processStart, port: Number(process.env.FRIZZ_DEV_PORT), bootId: \`\${artifact}-\${process.pid}\` })
+    const stop = () => { appendFileSync(process.env.EVENTS, \`stop:\${artifact}:\${process.pid}\\n\`); delegate.release(); process.exit(0) }
+    process.once("SIGTERM", stop); process.once("disconnect", stop); setInterval(() => {}, 1000)
+  `)
+  const target = { projectId: randomUUID(), projectDir: workspace, stateDir }
+  const owner = acquireProjectLaunchOwner(target, "supervisor")
+  const port = await freeSupervisorPort()
+  let selected = "old"
+  let active = "old"
+  let prepares = 0
+  let commits = 0
+  let rollbacks = 0
+  let supervisor: DevSupervisor | undefined
+  try {
+    supervisor = await startDevSupervisor({
+      port, cwd: workspace, stateDir, launchTarget: target, launchOwnerToken: owner.token, watch: false,
+      childLaunchProvider: () => ({ entry: childEntry, environment: { FRIZZ_STABLE_ARTIFACT: selected, EVENTS: events } }),
+      updateMode: "child",
+      updateReadyTimeoutMs: 500,
+      updateStabilizeMs: 20,
+      updateRestart: async () => { prepares++; selected = "new"; return { state: "ready" } },
+      commitUpdate: () => { commits++; active = selected },
+      rollbackUpdate: () => { rollbacks++; selected = active },
+      log: () => {}, error: () => {},
+    })
+    const first = await supervisor.firstBoot
+    assert.match((await fetch(`http://127.0.0.1:${port}/_frizz/control/status`, { headers: { origin: `http://127.0.0.1:${port}` } })).statusText, /OK/)
+    const one = await fetch(`http://127.0.0.1:${port}/_frizz/control/update-restart`, { method: "POST", headers: { origin: `http://127.0.0.1:${port}` } })
+    const [two, ordinaryRestart] = await Promise.all([
+      fetch(`http://127.0.0.1:${port}/_frizz/control/update-restart`, { method: "POST", headers: { origin: `http://127.0.0.1:${port}` } }),
+      fetch(`http://127.0.0.1:${port}/_frizz/control/restart`, { method: "POST", headers: { origin: `http://127.0.0.1:${port}` } }),
+    ])
+    assert.equal(one.status, 202)
+    assert.equal(two.status, 202)
+    assert.equal(ordinaryRestart.status, 202, "a concurrent ordinary restart joins the update rather than spawning a second child")
+    const status = await eventually(async () => {
+      const body = await (await fetch(`http://127.0.0.1:${port}/_frizz/control/status`, { headers: { origin: `http://127.0.0.1:${port}` } })).json() as { state: string; artifactDigest?: string }
+      return body.state === "ready" && body.artifactDigest === "new" ? body : undefined
+    }, "the committed child update")
+    assert.equal(status.artifactDigest, "new")
+    assert.equal(supervisor.port, port, "the durable listener remains the same endpoint")
+    assert.notEqual(supervisor.currentBoot()?.pid, first.pid)
+    assert.deepEqual({ prepares, commits, rollbacks, active }, { prepares: 1, commits: 1, rollbacks: 0, active: "new" })
+    const lines = readFileSync(events, "utf8").trim().split("\n")
+    assert.ok(lines.findIndex((line) => line.startsWith("stop:old:")) < lines.findIndex((line) => line.startsWith("start:new:")), "old child exits before candidate starts")
+  } finally {
+    await supervisor?.close()
+    owner.release()
+    rmSync(workspace, { recursive: true, force: true })
+  }
+})
+
+test("child-only update rolls back failed candidates and a close race without retrying them", { timeout: 30_000 }, async () => {
+  for (const failure of ["hang", "crash", "commit", "rollback", "close"] as const) {
+    const workspace = mkdtempSync(join(tmpdir(), `frizz-child-update-${failure}-`))
+    const stateDir = join(workspace, ".state")
+    const childEntry = join(workspace, "child.mjs")
+    const events = join(stateDir, "events")
+    mkdirSync(stateDir, { recursive: true })
+    writeFileSync(childEntry, `
+      import { appendFileSync } from "node:fs"
+      import { registerProjectLaunchDelegate, projectLaunchOwnerTokenFromEnvironment, projectLaunchTargetFromEnvironment } from ${JSON.stringify(projectLaunchUrl)}
+      const artifact = process.env.FRIZZ_STABLE_ARTIFACT
+      if (artifact === "hang") { appendFileSync(process.env.EVENTS, \"start:hang\\n\"); setInterval(() => {}, 1000) }
+      else {
+        const target = projectLaunchTargetFromEnvironment(process.env); const token = projectLaunchOwnerTokenFromEnvironment(process.env)
+        const delegate = registerProjectLaunchDelegate(target, token)
+        appendFileSync(process.env.EVENTS, \`start:\${artifact}:\${process.pid}\\n\`)
+        process.send?.({ type: "frizz-ready", pid: delegate.pid, processStart: delegate.processStart, port: Number(process.env.FRIZZ_DEV_PORT), bootId: \`\${artifact}-\${process.pid}\` })
+        if (artifact === "crash") setTimeout(() => process.exit(19), 5)
+        const stop = () => { appendFileSync(process.env.EVENTS, \`stop:\${artifact}:\${process.pid}\\n\`); delegate.release(); process.exit(0) }
+        process.once("SIGTERM", stop); process.once("disconnect", stop); setInterval(() => {}, 1000)
+      }
+    `)
+    const target = { projectId: randomUUID(), projectDir: workspace, stateDir }
+    const owner = acquireProjectLaunchOwner(target, "supervisor")
+    const port = await freeSupervisorPort()
+    let selected = "old"
+    let active = "old"
+    let rollbacks = 0
+    const launchSelections: string[] = []
+    let supervisor: DevSupervisor | undefined
+    try {
+      supervisor = await startDevSupervisor({
+        port, cwd: workspace, stateDir, launchTarget: target, launchOwnerToken: owner.token, watch: false,
+        childLaunchProvider: () => { launchSelections.push(selected); return { entry: childEntry, environment: { FRIZZ_STABLE_ARTIFACT: selected, EVENTS: events } } },
+        updateMode: "child", updateReadyTimeoutMs: 500, updateStabilizeMs: 60,
+        updateRestart: async () => { selected = failure === "commit" || failure === "rollback" ? "new" : failure === "close" ? "hang" : failure; return { state: "ready" } },
+        commitUpdate: () => {
+          if (failure === "commit" || failure === "rollback") throw new Error("commit fixture failed")
+          active = selected
+        },
+        rollbackUpdate: () => {
+          rollbacks++
+          if (failure === "rollback") throw new Error("rollback fixture failed")
+          selected = active
+        },
+        log: () => {}, error: () => {},
+      })
+      await supervisor.firstBoot
+      const response = await fetch(`http://127.0.0.1:${port}/_frizz/control/update-restart`, { method: "POST", headers: { origin: `http://127.0.0.1:${port}` } })
+      assert.equal(response.status, 202, failure)
+      if (failure === "close") {
+        await supervisor.close()
+        await eventually(() => rollbacks === 1 && selected === "old" ? true : undefined, "close-race selection rollback")
+        assert.equal(supervisor.currentBoot(), null, "close leaves no candidate child behind")
+        assert.equal(existsSync(join(stateDir, "dev-supervisor.lock")), false, "late update completion does not recreate owner status")
+        continue
+      }
+      if (failure === "rollback") {
+        const status = await eventually(async () => {
+          const body = await (await fetch(`http://127.0.0.1:${port}/_frizz/control/status`, { headers: { origin: `http://127.0.0.1:${port}` } })).json() as { state: string; message?: string }
+          return body.state === "failed" && /rollback failed/.test(body.message ?? "") ? body : undefined
+        }, "rollback failure")
+        assert.match(status.message ?? "", /not restarted because rollback did not restore/, failure)
+        assert.equal(selected, "new", failure)
+        assert.equal(rollbacks, 1, failure)
+        assert.deepEqual(launchSelections, ["old", "new"], "a failed rollback never launches the candidate again")
+        continue
+      }
+      const status = await eventually(async () => {
+        const body = await (await fetch(`http://127.0.0.1:${port}/_frizz/control/status`, { headers: { origin: `http://127.0.0.1:${port}` } })).json() as { state: string; artifactDigest?: string }
+        return body.state === "failed" && body.artifactDigest === "old" ? body : undefined
+      }, `${failure} rollback`)
+      assert.equal(status.artifactDigest, "old", failure)
+      assert.equal(selected, "old", failure)
+      assert.equal(rollbacks, 1, failure)
+      const lines = readFileSync(events, "utf8").trim().split("\n")
+      const bad = failure === "commit" ? "new" : failure
+      assert.equal(lines.filter((line) => line.startsWith(`start:${bad}`)).length, 1, `${failure} candidate never enters watchdog retry: ${lines.join(", ")}; selections=${launchSelections.join(",")}`)
+      assert.ok(lines.filter((line) => line.startsWith("start:old:")).length >= 2, `${failure} restores a real old child`)
+    } finally {
+      await supervisor?.close()
+      owner.release()
+      rmSync(workspace, { recursive: true, force: true })
+    }
+  }
+})
+
+test("child-only update rejects a candidate that exits during an async commit", { timeout: 15_000 }, async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "frizz-child-update-commit-exit-"))
+  const stateDir = join(workspace, ".state")
+  const childEntry = join(workspace, "child.mjs")
+  mkdirSync(stateDir, { recursive: true })
+  writeFileSync(childEntry, `
+    import { registerProjectLaunchDelegate, projectLaunchOwnerTokenFromEnvironment, projectLaunchTargetFromEnvironment } from ${JSON.stringify(projectLaunchUrl)}
+    const target = projectLaunchTargetFromEnvironment(process.env); const token = projectLaunchOwnerTokenFromEnvironment(process.env)
+    const delegate = registerProjectLaunchDelegate(target, token)
+    process.send?.({ type: "frizz-ready", pid: delegate.pid, processStart: delegate.processStart, port: Number(process.env.FRIZZ_DEV_PORT), bootId: \`\${process.env.FRIZZ_STABLE_ARTIFACT}-\${process.pid}\` })
+    const stop = () => { delegate.release(); process.exit(0) }
+    process.once("SIGTERM", stop); process.once("disconnect", stop); setInterval(() => {}, 1000)
+  `)
+  const target = { projectId: randomUUID(), projectDir: workspace, stateDir }
+  const owner = acquireProjectLaunchOwner(target, "supervisor")
+  const port = await freeSupervisorPort()
+  let selected = "old"
+  let active = "old"
+  let rollbacks = 0
+  let startCommit!: () => void
+  const committing = new Promise<void>((resolve) => { startCommit = resolve })
+  let finishCommit!: () => void
+  const commitGate = new Promise<void>((resolve) => { finishCommit = resolve })
+  let supervisor: DevSupervisor | undefined
+  try {
+    supervisor = await startDevSupervisor({
+      port, cwd: workspace, stateDir, launchTarget: target, launchOwnerToken: owner.token, watch: false,
+      childLaunchProvider: () => ({ entry: childEntry, environment: { FRIZZ_STABLE_ARTIFACT: selected } }),
+      updateMode: "child", updateReadyTimeoutMs: 500, updateStabilizeMs: 20,
+      updateRestart: async () => { selected = "new"; return { state: "ready" } },
+      commitUpdate: async () => { startCommit(); await commitGate; active = selected },
+      rollbackUpdate: () => { rollbacks++; active = "old"; selected = active },
+      log: () => {}, error: () => {},
+    })
+    const first = await supervisor.firstBoot
+    const response = await fetch(`http://127.0.0.1:${port}/_frizz/control/update-restart`, { method: "POST", headers: { origin: `http://127.0.0.1:${port}` } })
+    assert.equal(response.status, 202)
+    await committing
+    const candidate = supervisor.currentBoot()
+    assert.ok(candidate && candidate.pid !== first.pid, "commit is gated with the candidate as current child")
+    process.kill(candidate.pid, "SIGTERM")
+    await eventually(() => supervisor?.currentBoot() === null ? true : undefined, "candidate exit during commit")
+    finishCommit()
+    const status = await eventually(async () => {
+      const body = await (await fetch(`http://127.0.0.1:${port}/_frizz/control/status`, { headers: { origin: `http://127.0.0.1:${port}` } })).json() as { state: string; artifactDigest?: string; message?: string }
+      return body.state === "failed" && body.artifactDigest === "old" ? body : undefined
+    }, "dead committed candidate rollback")
+    assert.match(status.message ?? "", /stopped while committing/)
+    assert.equal(selected, "old")
+    assert.equal(active, "old", "the rollback callback reverses a commit that completed before liveness was rechecked")
+    assert.equal(rollbacks, 1)
+  } finally {
+    await supervisor?.close()
+    owner.release()
+    rmSync(workspace, { recursive: true, force: true })
+  }
+})
+
+// The drain is an IPC ask, not a signal (audit 2026-09-11, finding 3). This child listens for
+// 'disconnect' ONLY — no SIGTERM handler — so a supervisor that still led with kill("SIGTERM") would
+// end it under Node's default handler on POSIX with no marker written (and after the 15 s escalation
+// timer, which this test's timeout does not allow). On Windows, where every signal Node can send is a
+// TerminateProcess, the marker is the only evidence that a shutdown handler ran at all.
+test("stopping the control plane asks over IPC first, so the child's own shutdown runs before any signal", { timeout: 12_000 }, async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "frizz-dev-supervisor-drain-"))
+  const stateDir = join(workspace, ".state")
+  const markers = join(workspace, "markers")
+  const childEntry = join(workspace, "drain-child.mjs")
+  mkdirSync(stateDir, { recursive: true })
+  mkdirSync(markers, { recursive: true })
+  writeFileSync(childEntry, `
+    import { writeFileSync } from "node:fs"
+    import { join } from "node:path"
+    import { registerProjectLaunchDelegate, projectLaunchOwnerTokenFromEnvironment, projectLaunchTargetFromEnvironment } from ${JSON.stringify(projectLaunchUrl)}
+    const target = projectLaunchTargetFromEnvironment(process.env); const token = projectLaunchOwnerTokenFromEnvironment(process.env)
+    const delegate = registerProjectLaunchDelegate(target, token)
+    process.send?.({ type: "frizz-ready", pid: delegate.pid, processStart: delegate.processStart, port: Number(process.env.FRIZZ_DEV_PORT), bootId: "drain-" + process.pid })
+    process.once("disconnect", () => {
+      writeFileSync(join(process.env.MARKERS, String(process.pid)), "shutdown handler ran")
+      delegate.release()
+      process.exit(0)
+    })
+    setInterval(() => {}, 1000)
+  `)
+  const target = { projectId: randomUUID(), projectDir: workspace, stateDir }
+  const owner = acquireProjectLaunchOwner(target, "supervisor")
+  const port = await freeSupervisorPort()
+  const errors: string[] = []
+  let supervisor: DevSupervisor | undefined
+  try {
+    supervisor = await startDevSupervisor({
+      port, cwd: workspace, stateDir, launchTarget: target, launchOwnerToken: owner.token, watch: false,
+      childEntry, childEnvironment: () => ({ MARKERS: markers }),
+      log: () => {}, error: (line) => { errors.push(line) },
+    })
+    const first = await supervisor.firstBoot
+    // Restart Frizz: the old generation was asked, not shot.
+    const restart = await fetch(`http://127.0.0.1:${port}/_frizz/control/restart`, {
+      method: "POST", headers: { origin: `http://127.0.0.1:${port}` },
+    })
+    assert.equal(restart.status, 202)
+    const second = await nextBoot(supervisor, first.pid)
+    assert.equal(readFileSync(join(markers, String(first.pid)), "utf8"), "shutdown handler ran")
+    // A supervisor close is the same ask.
+    const startedAt = Date.now()
+    await supervisor.close()
+    supervisor = undefined
+    assert.equal(readFileSync(join(markers, String(second.pid)), "utf8"), "shutdown handler ran")
+    assert.ok(Date.now() - startedAt < 5_000, "the child answered the ask; no escalation timer had to fire")
+    assert.deepEqual(errors.filter((line) => /did not close|SIGTERM|killing/.test(line)), [], "no signal was sent")
+  } finally {
+    await supervisor?.close()
+    owner.release()
+    rmSync(workspace, { recursive: true, force: true })
+  }
+})
+
+// The board is not blocked for the prepare phase (audit 2026-09-11, finding 6): while the update hook
+// runs — an npm install, a source build — the old child is untouched, and /status says "ready" with
+// the additive `preparing` stamp. "restarting" begins when the drain does. This child answers the ask
+// slowly on purpose, so the drain is wide enough to observe through the still-open proxy.
+test("an update reports the old child ready and preparing until the drain begins, then restarting", { timeout: 20_000 }, async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "frizz-dev-supervisor-preparing-"))
+  const stateDir = join(workspace, ".state")
+  const childEntry = join(workspace, "slow-drain-child.mjs")
+  mkdirSync(stateDir, { recursive: true })
+  writeFileSync(childEntry, `
+    import { registerProjectLaunchDelegate, projectLaunchOwnerTokenFromEnvironment, projectLaunchTargetFromEnvironment } from ${JSON.stringify(projectLaunchUrl)}
+    const target = projectLaunchTargetFromEnvironment(process.env); const token = projectLaunchOwnerTokenFromEnvironment(process.env)
+    const delegate = registerProjectLaunchDelegate(target, token)
+    process.send?.({ type: "frizz-ready", pid: delegate.pid, processStart: delegate.processStart, port: Number(process.env.FRIZZ_DEV_PORT), bootId: "slow-" + process.pid })
+    const stop = () => setTimeout(() => { delegate.release(); process.exit(0) }, 1_000)
+    process.once("SIGTERM", stop); process.once("disconnect", stop); setInterval(() => {}, 1000)
+  `)
+  const target = { projectId: randomUUID(), projectDir: workspace, stateDir }
+  const owner = acquireProjectLaunchOwner(target, "supervisor")
+  const port = await freeSupervisorPort()
+  let release!: (result: { state: "ready" }) => void
+  const prepared = new Promise<{ state: "ready" }>((resolve) => { release = resolve })
+  const status = async (): Promise<{ state: string; preparing?: boolean } | undefined> => {
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/_frizz/control/status`, { headers: { origin: `http://127.0.0.1:${port}` } })
+      return await response.json() as { state: string; preparing?: boolean }
+    } catch {
+      return undefined
+    }
+  }
+  let supervisor: DevSupervisor | undefined
+  try {
+    supervisor = await startDevSupervisor({
+      port, cwd: workspace, stateDir, launchTarget: target, launchOwnerToken: owner.token, watch: false,
+      childEntry,
+      updateRestart: () => prepared,
+      rollbackUpdate: () => {},
+      // Returning is the "reexec-returns" failure: the supervisor restores itself, which is how this
+      // test gets a proxy back to read the settled verdict from.
+      durableReexec: async () => {},
+      log: () => {}, error: () => {},
+    })
+    const first = await supervisor.firstBoot
+    const response = await fetch(`http://127.0.0.1:${port}/_frizz/control/update-restart`, {
+      method: "POST", headers: { origin: `http://127.0.0.1:${port}` },
+    })
+    assert.equal(response.status, 202)
+    for (let poll = 0; poll < 5; poll++) {
+      const observed = await status()
+      assert.equal(observed?.state, "ready", "the old child is untouched while the update is prepared")
+      assert.equal(observed?.preparing, true, "and the poll can tell that an update is in progress")
+      assert.equal(supervisor.currentBoot()?.pid, first.pid)
+      await delay(40)
+    }
+    release({ state: "ready" })
+    let draining: { state: string; preparing?: boolean } | undefined
+    const deadline = Date.now() + 5_000
+    while (Date.now() < deadline) {
+      const observed = await status()
+      if (observed?.state === "restarting") { draining = observed; break }
+      if (observed === undefined) break
+      await delay(10)
+    }
+    assert.equal(draining?.state, "restarting", "the drain, once begun, is reported as one")
+    assert.equal("preparing" in (draining ?? {}), false)
+    await eventually(() => {
+      const current = readSupervisorStatus(join(stateDir, "dev-supervisor.lock"))
+      return current?.state === "failed" ? current : undefined
+    }, "the returned handoff to be reported as a failure")
+    await nextBoot(supervisor, first.pid)
+    const settled = await status()
+    assert.equal(settled?.state, "failed")
+    assert.equal("preparing" in (settled ?? {}), false)
+  } finally {
     await supervisor?.close()
     owner.release()
     rmSync(workspace, { recursive: true, force: true })

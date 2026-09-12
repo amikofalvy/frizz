@@ -142,3 +142,10 @@ test("what is not the serialization renders as the plain text it is", () => {
   assert.equal(parseSentContext("about Selected context:\n\n@guide.md:3 (docs/guide.md, line 3):\n> q"), null)
   assert.equal(parseSentContext("plain message"), null)
 })
+
+test("contextDisplayPath: a Windows project shortens the same way, in the path's own separators (Windows audit 2026-09-11, finding 12)", () => {
+  assert.equal(contextDisplayPath("C:\\Users\\x\\proj\\docs\\guide.md", "C:\\Users\\x\\proj"), "docs\\guide.md")
+  assert.equal(contextDisplayPath("c:/Users/x/proj/docs/guide.md", "C:\\Users\\x\\proj\\"), "docs/guide.md")
+  assert.equal(contextDisplayPath("D:\\elsewhere\\guide.md", "C:\\Users\\x\\proj"), "D:\\elsewhere\\guide.md")
+  assert.equal(contextChipLabel({ path: "C:\\Users\\x\\proj\\docs\\guide.md", startLine: 3, endLine: 3 }), "guide.md:3")
+})

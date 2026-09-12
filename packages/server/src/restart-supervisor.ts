@@ -85,16 +85,20 @@ export interface RestartSupervisorProxyOptions {
    */
   updateAvailable?: () => boolean
   /**
-   * The published package version this launcher is running. Sent only by the registry launcher —
-   * frizz-dev runs mutable checkout source, which has no version a user could act on, so it omits
-   * this and the client shows no version line at all.
+   * The version of the RUNNING application server. A child-only update changes this while its
+   * launcher remains alive, so stable launchers supply a getter. Omitted by frizz-dev and legacy
+   * supervisors, preserving their versionless status payload and UI.
    */
-  version?: string
+  version?: string | (() => string | undefined)
   /**
-   * The NEWER registry version `updateAvailable` is reporting, when the launcher has actually
-   * observed one. Same contract as `updateAvailable`: a cheap CACHED read, refreshed off the status
-   * path. Undefined while the registry has not answered yet or nothing newer exists — the client
-   * falls back to its generic update copy rather than claiming a number it does not have.
+   * The stable launcher's own package version. This is diagnostic only: it neither gates the update
+   * action nor participates in badge comparison, which are both application-server concerns.
+   */
+  launcherVersion?: string
+  /**
+   * The target APPLICATION SERVER version `updateAvailable` is reporting. Same contract as
+   * `updateAvailable`: a cheap CACHED read, refreshed off the status path. Undefined while the
+   * registry has not answered yet or nothing newer exists.
    */
   updateVersion?: () => string | undefined
   /**
@@ -109,7 +113,13 @@ export interface RestartSupervisorProxyOptions {
    * here, on the status the client already polls.
    */
   dev?: boolean
-  /** Status is intentionally available without a child, for a useful recovery UI. */
+  /**
+   * Status is intentionally available without a child, for a useful recovery UI.
+   *
+   * While an UPDATE is in flight this answer is reported as-is (see `status()` below), so a delegate
+   * that wires `updateRestart` must itself say "restarting" from the moment it starts draining the
+   * old child — the proxy cannot see that moment, only the promise around the whole action.
+   */
   status?: () => { state: RestartControlState; message?: string; artifactDigest?: string }
 }
 
@@ -204,6 +214,8 @@ async function readJsonBody(req: IncomingMessage, limit = 64 * 1024): Promise<Re
 export class RestartSupervisorProxy {
   private server: Server | null = null
   private restartInFlight: Promise<RestartResult> | null = null
+  /** Which action `restartInFlight` is. An update's prepare phase leaves the child serving; a restart does not. */
+  private transition: "restart" | "update" | null = null
   private state: RestartControlState = "ready"
   private message: string | undefined
   private readonly options: RestartSupervisorProxyOptions
@@ -343,27 +355,41 @@ export class RestartSupervisorProxy {
     })
   }
 
-  private status(): { state: RestartControlState; message?: string; artifactDigest?: string; updateRestart: boolean; updateAvailable?: boolean; version?: string; updateVersion?: string; dev?: boolean } {
+  private status(): { state: RestartControlState; message?: string; artifactDigest?: string; preparing?: boolean; updateRestart: boolean; updateAvailable?: boolean; version?: string; launcherVersion?: string; updateVersion?: string; dev?: boolean } {
     const delegated = this.options.status?.()
     const updateVersion = this.options.updateVersion?.()
-    // The disposable child can quite correctly still report ready while the durable owner is building
-    // a successor. The owner is the authority for that transition; never leak the old child's ready
-    // state during it, or clients will send writes to a server that is about to disappear.
-    const ownerTransition = this.restartInFlight !== null || this.state === "failed"
+    const version = typeof this.options.version === "function" ? this.options.version() : this.options.version
+    const owner = { state: this.state, ...(this.message ? { message: this.message } : {}) }
+    // A RESTART drains the child the moment it is accepted, so the owner's acknowledged transition
+    // is the truth from the first poll and the delegate's lingering "ready" must not leak through it.
+    //
+    // An UPDATE is different: it has a PREPARE phase — frizz-dev's source build, the registry
+    // launcher's npm install — during which the old child is untouched and serving, and which can
+    // run for minutes (a native module compiled from source on a slow box) or stall on a registry.
+    // Reporting "restarting" through all of it put every open tab behind the blocking overlay for the
+    // whole install (audit 2026-09-11, finding 6). So while an update is in flight the DELEGATE's
+    // answer is reported: the owner delegate says "restarting" itself from the moment the drain
+    // begins (see the option's doc), and its "ready" is stamped `preparing` — additive, absent
+    // otherwise — so a client can say "installing" without treating the ack as already contradicted.
+    // A proxy with no delegate has nothing truer to say and keeps reporting the acknowledged transition.
+    const reported = this.transition === "update" && delegated
+      ? { ...delegated, ...(delegated.state === "ready" ? { preparing: true } : {}) }
+      : this.restartInFlight !== null || this.state === "failed"
+        ? owner
+        : delegated ?? owner
     return {
       ...(delegated ?? {}),
-      ...(ownerTransition
-        ? { state: this.state, ...(this.message ? { message: this.message } : {}) }
-        : delegated ?? { state: this.state, ...(this.message ? { message: this.message } : {}) }),
+      ...reported,
       // Never infer this from the generic protocol: legacy/static supervisors can recover a child
       // but cannot build and promote the canonical Frizz artifact.
       updateRestart: typeof this.options.updateRestart === "function",
       // Sent ONLY when the launcher can actually answer it, so an older client — and frizz-dev, which
       // has no notion of "already current" — keeps today's behaviour on its absence.
       ...(this.options.updateAvailable ? { updateAvailable: this.options.updateAvailable() === true } : {}),
-      // Version numbers ride the same launcher-only contract: absent for frizz-dev and legacy
-      // supervisors, so their clients render exactly what they render today.
-      ...(this.options.version ? { version: this.options.version } : {}),
+      // The active SERVER version changes on a child-only update. Its absence keeps frizz-dev and
+      // old monolithic supervisors' status payload and versionless UI exactly as they were.
+      ...(version ? { version } : {}),
+      ...(this.options.launcherVersion ? { launcherVersion: this.options.launcherVersion } : {}),
       ...(updateVersion ? { updateVersion } : {}),
       // Sent only when TRUE, so a published Frizz's payload is byte-identical to what it sends today
       // and an older client is unaffected. Absent therefore means "not a development build".
@@ -371,8 +397,9 @@ export class RestartSupervisorProxy {
     }
   }
 
-  private async runAction(action: () => Promise<RestartResult>): Promise<RestartResult> {
+  private async runAction(action: () => Promise<RestartResult>, transition: "restart" | "update"): Promise<RestartResult> {
     if (this.restartInFlight) return this.restartInFlight
+    this.transition = transition
     this.state = "restarting"
     this.message = undefined
     // Yield one turn before running the action. The durable update's artifact build is SYNCHRONOUS
@@ -396,7 +423,10 @@ export class RestartSupervisorProxy {
         this.message = result.message
         return result
       },
-    ).finally(() => { this.restartInFlight = null })
+    ).finally(() => {
+      this.restartInFlight = null
+      this.transition = null
+    })
     this.restartInFlight = work
     return work
   }
@@ -491,11 +521,11 @@ export class RestartSupervisorProxy {
       // Building and re-executing the durable owner can outlive (and intentionally close) this
       // response. Acknowledge ownership of the transition immediately; /status remains the source
       // of truth until a successor is ready or the candidate fails.
-      void this.runAction(this.options.updateRestart!)
+      void this.runAction(this.options.updateRestart!, "update")
       responseJson(res, 202, { protocol: SUPERVISOR_CONTROL_PROTOCOL, state: "restarting" })
       return
     }
-    const result = await this.runAction(this.options.restart)
+    const result = await this.runAction(this.options.restart, "restart")
     responseJson(res, result.state === "ready" ? 202 : 503, { protocol: SUPERVISOR_CONTROL_PROTOCOL, ...result })
   }
 

@@ -3057,7 +3057,10 @@ export function createRouter(ctx: AppContext) {
     openExternal: mutation({
       input: z.object({ url: z.string() }),
       handler: async ({ input }) => {
-        openExternalUrl(input.url)
+        // Awaited so a dead opener (no `xdg-open` on Windows, an editor that is not installed) is
+        // the caller's error instead of a swallowed log line (Windows audit 2026-09-11).
+        const result = await openExternalUrl(input.url)
+        if (!result.opened) throw new Error(result.error)
       },
     }),
 

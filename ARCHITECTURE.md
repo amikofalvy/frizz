@@ -48,7 +48,7 @@ A TTY launch repaints a step list while booting and settles into a static block 
 the project, and this run's log. It repaints only during the boot — once that block prints, nothing
 touches the cursor again, so a stray write can never land on a live region.
 
-Under that block the launcher APPENDS one timestamped line per lifecycle beat — Restart Frizz, Update Frizz, a control-plane crash, and the recovery that follows each. Appending keeps the no-repaint rule above intact. The supervisor raises these through `onActivity` (`SupervisorActivity` in `dev-supervisor.ts`), which every transition reaches through `writeStatus`, so a path added later announces itself without being wired up again; `renderSupervisorActivity` in `src/readout.ts` turns one into a row. Beats are suppressed until the first boot settles, because until then the readout owns the terminal. A launcher that re-execs itself for an update — `frizz-dev` keeps its pid and its tty across the handoff — builds a `noticeOnlyReadout` instead, or the generation that took over would be mute for the rest of the session. The registry launcher cannot: its successor is detached with its stdio closed, so it prints a farewell naming the new version and `frizz --stop` before it exits.
+Under that block the launcher APPENDS one timestamped line per lifecycle beat — Restart Frizz, Update Frizz, a control-plane crash, and the recovery that follows each. Appending keeps the no-repaint rule above intact. The supervisor raises these through `onActivity` (`SupervisorActivity` in `dev-supervisor.ts`), which every transition reaches through `writeStatus`, so a path added later announces itself without being wired up again; `renderSupervisorActivity` in `src/readout.ts` turns one into a row. Beats are suppressed until the first boot settles, because until then the readout owns the terminal. A launcher that re-execs itself for an update — `frizz-dev` keeps its pid and its tty across the handoff — builds a `noticeOnlyReadout` instead, or the generation that took over would be mute for the rest of the session. The registry launcher does the same on a Node that has `process.execve` (22.15+ / 23.11+, which is why that is the floor). Where there is none — Windows — it starts the successor detached with its stdio closed, holds on until that successor answers the status route with the new version (a successor that exits first or never answers is a failed update, and the old board is restored), and only then prints a farewell naming the new version and `frizz --stop` and exits; `frizz --stop` and `frizz --status` are real flags on that launcher since 2026-09-11.
 
 Every process writes the complete feed to `<stateDir>/logs/frizz-<timestamp>-<pid>.log`, one file per
 run, with `logs/latest.log` pointing at the newest. The launcher passes that path down in
@@ -114,7 +114,7 @@ Invoking `nub --test` by hand is fine for one file, but it bypasses that check.
   is waiting and the tailer reads that. A broker thread's approvals arrive as typed permission
   requests over the control channel. The `perm-prompt` runtime rides the board snapshot
   with no notify and no unread — the sidebar's attention sort surfaces it.
-- **Human questions are REGISTERED rows (`mcp__frizz__ask`, a `thread_question` row, since 2026-08-27) or ```question fenced blocks in the worker's final pre-rest message** — the fence was the only medium until then (two earlier designs — a BLOCKING MCP tool and a frizz-ask CLI + .questions/ sidecars — were built and rejected: fragile timeouts / redundant state); `ask` is non-blocking, and the row outlives the message, a compaction and a restart, which is what the fence could not do (`plans/rest-by-registration.md`). Both reach the same card. A fence that RESTATES a question registered at the same rest draws nothing — the registered card wins, because answering it is what settles the row (web/src/lib/questionShadow.ts; 2026-08-28, one question drawn twice back to back). The fence body is plain
+- **Human questions are REGISTERED rows (`mcp__frizz__ask`, a `thread_question` row, since 2026-08-27). The free-form ```question fence — a question written into a fence body — is RETIRED for every thread dispatched at or after `QUESTION_FENCE_RETIRED_AT` (2026-09-11, `packages/shared`): there it is prose, never `pendingQuestion`, never a card, never a sign-off; a thread dispatched before it keeps the fence as an ask, because a running worker keeps the contract it was dispatched under (`questionFencesLive`). The one fence a worker still writes is the EMPTY marker `` ```question qst_… `` that PLACES its registered card inside the handoff (web/src/lib/questionShadow.ts `placeQuestions`); an unplaced question renders at the tail of its rest, and the rest's one Send sends every answer.** The fence was the only medium until 2026-08-27 (two earlier designs — a BLOCKING MCP tool and a frizz-ask CLI + .questions/ sidecars — were built and rejected: fragile timeouts / redundant state); `ask` is non-blocking, and the row outlives the message, a compaction and a restart, which is what the fence could not do (`plans/rest-by-registration.md`). Both reach the same card. A fence that RESTATES a question registered at the same rest draws nothing — the registered card wins, because answering it is what settles the row (web/src/lib/questionShadow.ts; 2026-08-28, one question drawn twice back to back). The fence body is plain
   markdown; a TRAILING `- A. …` option list + optional `Recommendation:` line are convention-parsed
   into choice chips (web/src/lib/questionBlocks.ts). A go/no-go is just a two-option question — the
   old ` ```question approval ` gate (one Approve button that sent on click) was dropped 2026-07-26;
@@ -207,16 +207,19 @@ Two browser-level checks live in `packages/web/src/lib/projectSwitch.e2e.test.ts
 
 Two entry points, deliberately distinct:
 
-- **`npx frizz`** (published package) runs directly from what it ships. `prepare-package.mjs`
-  stages the full runtime closure at prepack: `web-dist/` (built client), `runtime/board/` (the board
-  parser the server shells out to), and `runtime/cc-worker/` (the worker plugin dispatch loads).
-  `production.ts` points `FRIZZ_SCRIPTS_DIR` / `FRIZZ_WORKER_PLUGIN_DIR` at those. `runtime/` MUST
-  mirror the repo root, because cc-worker's shims reach back relatively (`../../board`) — and it is a
-  COPY rather than a `files` entry naming `board/` and `cc-worker/` directly, so that every published
-  path stays build output and the allowlist can never name repository content. `prepare-package.mjs
-  --clean` sweeps both staged trees at postpack, so a checkout never carries a frozen duplicate of the
-  worker plugin for agents to grep. Both build paths assert the same closure
-  (`src/worker-plugin-closure.ts`); widening it is one edit.
+- **`npx frizz`** installs a stable, small `frizz` shell that resolves a compatible `frizz-server`
+  generation into an immutable managed directory. The shell package contains only `dist/frizz.js`;
+  its `frizzServer` manifest field names the default server package/version and compatibility epoch.
+  `prepare-package.mjs --server` stages the public server's runtime closure at
+  `packages/server-release/`: `web-dist/` (built client), `runtime/board/` (the board parser the
+  server shells out to), and `runtime/cc-worker/` (the worker plugin dispatch loads), while
+  `build-package.mjs --server` emits `dist/dev-child.js` plus every detached daemon sibling. The
+  runtime tree MUST keep board and cc-worker as siblings because the worker shims reach back
+  relatively (`../../board`); it is a COPY rather than a `files` entry naming source directories, so
+  every public server path remains build output. Root prepack intentionally leaves this staging in
+  place: `npm pack --ignore-scripts packages/server-release` is the reproducible standalone server
+  pack after a root build. Both build paths assert the same closure (`src/worker-plugin-closure.ts`);
+  widening it is one edit.
 - **`frizz-dev`** (`nub run frizz-dev:install`) is source-backed at launch only: the shim holds an
   absolute pointer to this checkout's CLI entrypoint. On each fresh launch it selects a
   verified immutable artifact matching the current source fingerprint, reuses an identical global one,
@@ -227,6 +230,16 @@ State is keyed by a stable checkout UUID: an ordinary worktree keeps it in `git 
 each linked worktree in its private Git admin dir, so siblings stay isolated. Canonical real paths make
 a checkout opened through a symlink reuse the same instance. The project id and its state dir are the
 whole identity — there is no multiplexer and nothing else to key.
+
+### Stable server updates
+
+The registry launcher owns the public proxy and recovery listener for its entire lifetime. It installs an exact `frizz-server` version with npm's JavaScript entry under the current Node executable, with lifecycle scripts disabled and a private prefix. No shell startup hooks, global provider upgrades or project permission changes are part of this operation. The only native permission repair targets the installed server generation's own `node-pty` spawn helper.
+
+An update stages and validates the candidate while the old server continues serving, drains the old child, then starts the candidate. After authenticated readiness and a short stability interval, it atomically commits the active generation. Candidate failures restore the previous same-epoch selection. Frontend assets, provider daemons and worker plugin files come from that same immutable server generation; retained generations protect detached workers still using their files.
+
+A global generation-checked lease in the Frizz state root keeps stable launchers from starting separate schedulers across repositories or custom ports. Each server child registers as a delegate before opening application state. After a launcher crash, a replacement cannot acquire that lease until its live delegates have exited. A second launch joins the recorded public listener even while the application child is unavailable.
+
+Protocol and data epoch are explicit compatibility contracts. Ordinary updates reject a mismatched epoch before draining. An explicitly newer compatible shell may stage its exact next-epoch bootstrap server, but advances a global compatibility marker before that server can write data; lower-epoch shells then fail closed, including after a pre-readiness crash. Protocol changes require a separately designed migration. Pre-split binaries cannot honor a marker they predate, so manually downgrading to those releases is unsupported.
 
 ### Browser launch modes
 

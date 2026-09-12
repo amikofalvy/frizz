@@ -119,17 +119,41 @@ export function allFencesShadowed(
   return fences.length > 0 && fences.every((seg) => seg.kind === "question" && fenceStandsFor(seg, registered) !== undefined)
 }
 
-// ---- PLACEMENT IS RETIRED (2026-08-30) ----
+// ---- PLACEMENT: the marker says WHERE the registered card renders ----
 //
-// The fence used to say WHERE the registered card renders: an empty ```question qst_… marker took the
-// rest's whole group into its own slot (`placeQuestions`), so a worker could couch the ask inside its
-// handoff. Measured before retiring it: across the 3,005 transcripts on this machine, 15 of 17 real
-// markers sat at the TAIL of their message — where the card lands with no marker at all — and 2 were
-// genuinely couched mid-prose (maintainer 2026-08-30, choosing "Retire mid-prose placement"). Questions
-// now always render at the tail of their rest; one asked above the loaded window renders at the window
-// head, as the no-marker fallback always did. The FOLD above survives the retirement — a fence that
-// names or restates a registration still draws nothing — so a legacy marker is inert rather than a
-// second card, and fenceStandsFor below is the fold's matcher.
+// An empty ```question qst_… fence is a PLACEMENT MARKER: the registered card whose id it names renders
+// in its slot, so a worker can couch a question inside its own handoff — the setup above it, the card,
+// then what happens either way — instead of every card landing at the tail of the rest.
+//
+// It has been in and out once. Built 2026-08-28 (maintainer: "it's kind of nice that they can couch a
+// registered question within some copy"), it placed the rest's WHOLE group at the first standing fence,
+// with a text-match fallback for a worker that re-fenced the question in prose. Retired 2026-08-30 on
+// usage data (15 of 17 real markers sat at the tail, where the card lands with no marker at all). Back
+// on 2026-09-11 for a different reason than couching: the free-form ```question fence — a question
+// written INTO a fence body — is retired from the contract outright (shared QUESTION_FENCE_RETIRED_AT),
+// because a fence's answer is bytes in a later message that nothing tracks, and settling one means
+// guessing (PR #33, declined). The marker is the ONE fence a worker still writes, and it is safe
+// precisely because it names a ROW: the row is open or answered, and nothing about the fence is ever
+// inferred (maintainer 2026-09-11: "a version of the question fence that just contains a reference to
+// a specific registered question. Any question identifier that doesn't show up inside one of these
+// question reference fences can just show up at the end").
+//
+// PLACEMENT IS PER QUESTION, BY ID, AND NOTHING ELSE. One marker places exactly the question it names;
+// a rest's other questions render at the anchor as they always did; a marker naming an id that is not
+// standing at its message draws nothing (the fold below). The 2026-08-28 text-match placement is NOT
+// back: prose that restates a registration still FOLDS (draws nothing, so an old-contract worker's
+// re-fenced question is never a second card) but never places, because a fuzzy match is exactly the
+// guess the marker exists to remove.
+//
+// THE ANSWERS STILL SEND AS ONE UNIT. The `answerQuestions` RPC takes every staged answer in one call
+// (a per-question send would half-wake the worker), so scattering the cards through the prose cannot
+// scatter the Send: the cards share ONE answering state (RegisteredQuestionCards' provider) and the
+// rest's stack at the anchor carries the one "Send answers" for all of them, placed or not.
+//
+// NOTHING IS EVER LOST BY OMISSION. A rest whose message names none of its registrations renders them
+// at the anchor exactly as before — the worker chooses the position, never whether the human sees it.
+// And the placement is NOT confined to the asking rest: a worker that rests again after the human
+// replied past the question writes its marker into THAT handoff, and the marker takes there.
 
 /** The registration a ```question fence STANDS FOR, if any: the one its info-string id names, else the
  *  one its prose restates. The id is exact and the prose is not, so a worker that writes
@@ -140,5 +164,61 @@ export function fenceStandsFor<Q extends Pick<RegisteredQuestionView, "id" | "sp
 ): Q | undefined {
   if (seg.registeredId) return registered.find((q) => q.id.toLowerCase() === seg.registeredId)
   return registered.find((q) => fenceRestatesRegistered(seg.text, [q]))
+}
+
+export interface QuestionPlacement<Q> {
+  /** The questions placed INTO each message, keyed by the index of the message whose marker places
+   *  them, in registration order. */
+  placed: Map<number, Q[]>
+  /** Every placed question's id — what the anchor path subtracts, so a placed card is drawn once. */
+  placedIds: Set<string>
+}
+
+/** The ids a message's markers name, lowercased, in order — the empty-bodied ```question qst_… fences
+ *  only. A fence WITH a body is a legacy question (or, under the new contract, prose), never a marker. */
+export function markerIdsIn(text: string): string[] {
+  if (!text.includes("```question")) return []
+  return splitQuestionBlocks(text).flatMap((seg) => seg.kind === "question" && seg.registeredId && seg.text.trim() === "" ? [seg.registeredId] : [])
+}
+
+/** Where each registered question renders, given what the messages from its ask onward actually wrote:
+ *  the LAST message (the newest handoff — the one the human is reading; an older placement is history)
+ *  from the question's rest onward whose empty marker names its id. A question no loaded message names
+ *  is absent from `placed` and renders at its anchor. Human turns never place anything — a wake carries
+ *  no marker of the worker's. */
+export function placeQuestions<Q extends Pick<RegisteredQuestionView, "id"> & { askedAt: string }>(
+  messages: readonly (AnchorMessage & { text?: string })[],
+  questions: readonly Q[],
+): QuestionPlacement<Q> {
+  const placed = new Map<number, Q[]>()
+  const placedIds = new Set<string>()
+  if (questions.length === 0) return { placed, placedIds }
+  // One parse per marker-bearing message, however many questions are open.
+  const markersAt = new Map<number, string[]>()
+  const markersOf = (i: number): string[] => {
+    let ids = markersAt.get(i)
+    if (ids === undefined) {
+      const m = messages[i]
+      ids = m.role === "assistant" && m.text ? markerIdsIn(m.text) : []
+      markersAt.set(i, ids)
+    }
+    return ids
+  }
+  for (const [anchor, group] of questionsByAnchor(messages, questions)) {
+    for (const q of group) {
+      const id = q.id.toLowerCase()
+      let placedAt = -1
+      for (let i = restStart(messages, anchor); i < messages.length; i++) {
+        if (isTurn(messages[i])) continue
+        if (markersOf(i).includes(id)) placedAt = i
+      }
+      if (placedAt < 0) continue
+      const at = placed.get(placedAt)
+      if (at) at.push(q)
+      else placed.set(placedAt, [q])
+      placedIds.add(q.id)
+    }
+  }
+  return { placed, placedIds }
 }
 

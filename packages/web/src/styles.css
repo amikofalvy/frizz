@@ -369,6 +369,25 @@ html[data-font="sans"] .frizz-bash .md-body {
    re-guess — and if the row's type scale or its line-height moves, both numbers are stale together. */
 .frizz-op-dot-slot { transform: translateY(var(--op-dot-nudge, -0.112em)); }
 html[data-font="sans"] .frizz-op-dot-slot { --op-dot-nudge: 0em; }
+/* THE KIND TAG'S COLUMN — one fixed track behind every `AGENT` / `SHELL` / `WATCH` / `File` / `Link` tag
+   on the ops strip (ChildOpRow's sheet density and ThreadLinks, both via CHILD_KIND_TAG_CLASS), so every
+   label on the strip starts at the same x. Each row is its own flex line, so nothing shares a track
+   unless the tag's box does the sharing: with natural-width tags the column was exactly as wide as the
+   word, and a saved-reference row's own 33px column then put its label 14.1px right of a SHELL row's in
+   mono and 7.2px in sans (maintainer 2026-09-11: "The label is further to the right. Why? There's no
+   reason for that at all").
+
+   Sized in em of the tag's own 9.5px, PER FONT, because petite caps measure differently in the two
+   (html[data-font], applied before first paint). Natural widths at 9.5px, measured 2026-09-11:
+
+     mono   AGENT / SHELL / WATCH 21.39px each · File / Link 17.11px   → 2.25em = 21.375px
+     sans   WATCH 32.05 · AGENT 30.33 · SHELL 28.33 · Link 20.69 · File 18.75 → 3.4em  = 32.30px
+
+   Mono keeps exactly the column its five-letter tags always had; sans takes its widest tag plus a quarter
+   pixel, which also closes the ~2px AGENT-vs-SHELL raggedness that column carried there. Re-measure both
+   if the tag's size or any tag's word changes. */
+.frizz-kind-tag { width: var(--kind-tag-w, 2.25em); }
+html[data-font="sans"] .frizz-kind-tag { --kind-tag-w: 3.4em; }
 /* THE RAIL's rest-with-live-work mark — a pulsing dot centred in the sidebar's 15px StatusBox. Same
    hue, same cadence and the same meaning as `.frizz-live-dot` above, but it is a mark INSIDE the
    checkbox family's box, so it takes THAT family's geometry rather than the transcript's. Two

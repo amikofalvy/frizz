@@ -265,11 +265,13 @@ test("status names the running and newer versions only when the launcher supplie
   const current = await child("versioned")
   const port = await freePort()
   let observed: string | undefined
+  let running = "0.4.2"
   const proxy = new RestartSupervisorProxy({
     port,
     childPort: () => current.port,
     restart: async () => ({ state: "ready" }),
-    version: "0.4.2",
+    version: () => running,
+    launcherVersion: "0.4.0",
     updateVersion: () => observed,
   })
   const barePort = await freePort()
@@ -283,11 +285,14 @@ test("status names the running and newer versions only when the launcher supplie
     await bare.listen()
     const before = (await get(port, SUPERVISOR_STATUS_PATH)).body
     assert.match(before, /"version":"0\.4\.2"/)
+    assert.match(before, /"launcherVersion":"0\.4\.0"/)
     assert.doesNotMatch(before, /"updateVersion"/, "no observed newer version yet")
     observed = "0.5.0"
     assert.match((await get(port, SUPERVISOR_STATUS_PATH)).body, /"updateVersion":"0\.5\.0"/)
+    running = "0.4.3"
+    assert.match((await get(port, SUPERVISOR_STATUS_PATH)).body, /"version":"0\.4\.3"/, "a child-only commit can update the running version without replacing the listener")
     const versionless = (await get(barePort, SUPERVISOR_STATUS_PATH)).body
-    assert.doesNotMatch(versionless, /"version"|"updateVersion"/, "frizz-dev/legacy stays byte-identical")
+    assert.doesNotMatch(versionless, /"version"|"launcherVersion"|"updateVersion"/, "frizz-dev/legacy stays byte-identical")
   } finally {
     await proxy.close().catch(() => undefined)
     await bare.close().catch(() => undefined)
@@ -295,17 +300,22 @@ test("status names the running and newer versions only when the launcher supplie
   }
 })
 
-test("update acknowledgement and status stay truthful while the old child remains ready", async () => {
+// Changed deliberately (audit 2026-09-11, finding 6). This test used to pin "restarting" for the whole
+// update, prepare phase included — which put every open tab behind the blocking overlay for the entire
+// npm install, while the old child underneath was healthy and serving. The 202 acknowledgement still
+// says "restarting"; /status now reports what the OWNER's delegate reports, and stamps its "ready" as
+// `preparing` (additive, absent otherwise) until the delegate itself says the drain has begun.
+test("update acknowledgement is accepted, but status follows the owner delegate through prepare and drain", async () => {
   const current = await child("old-but-still-serving")
   const port = await freePort()
   let release!: (result: RestartResult) => void
   const building = new Promise<RestartResult>((resolve) => { release = resolve })
+  let delegated: { state: "ready" | "restarting"; artifactDigest?: string } = { state: "ready", artifactDigest: "old-artifact" }
   const proxy = new RestartSupervisorProxy({
     port,
     childPort: () => current.port,
-    // This recreates the real failure mode: the disposable child can serve requests while the
-    // durable owner builds its successor artifact.
-    status: () => ({ state: "ready", artifactDigest: "old-artifact" }),
+    // The disposable child serves requests while the durable owner prepares its successor artifact.
+    status: () => delegated,
     restart: async () => ({ state: "ready" }),
     updateRestart: () => building,
   })
@@ -314,13 +324,70 @@ test("update acknowledgement and status stay truthful while the old child remain
     const update = await get(port, SUPERVISOR_UPDATE_RESTART_PATH, "POST")
     assert.equal(update.status, 202)
     assert.match(update.body, /"state":"restarting"/)
-    assert.match((await get(port, SUPERVISOR_STATUS_PATH)).body, /"state":"restarting"/)
+    const preparing = JSON.parse((await get(port, SUPERVISOR_STATUS_PATH)).body)
+    assert.equal(preparing.state, "ready", "the old child is untouched while the candidate is prepared")
+    assert.equal(preparing.preparing, true)
+    assert.equal(preparing.artifactDigest, "old-artifact")
     assert.equal((await get(port, "/still-live")).body, "old-but-still-serving:/still-live")
+    // The owner starts draining: its delegate says so, and the stamp leaves with the "ready" it qualified.
+    delegated = { state: "restarting" }
+    const draining = JSON.parse((await get(port, SUPERVISOR_STATUS_PATH)).body)
+    assert.equal(draining.state, "restarting")
+    assert.equal("preparing" in draining, false)
+    delegated = { state: "ready", artifactDigest: "new-artifact" }
     release({ state: "ready" })
     await new Promise((resolve) => setTimeout(resolve, 0))
-    assert.match((await get(port, SUPERVISOR_STATUS_PATH)).body, /"state":"ready"/)
+    const settled = JSON.parse((await get(port, SUPERVISOR_STATUS_PATH)).body)
+    assert.equal(settled.state, "ready")
+    assert.equal("preparing" in settled, false, "the stamp is an in-flight qualifier, not a state")
   } finally {
     await proxy.close().catch(() => undefined)
+    await current.close().catch(() => undefined)
+  }
+})
+
+// A RESTART drains the child the moment it is accepted, and a proxy with no owner delegate has nothing
+// truer to say than the transition it acknowledged: both report "restarting" for the whole action,
+// exactly as before, however long the delegate's stale "ready" lingers.
+test("a plain restart, and an update with no owner delegate, report restarting throughout", async () => {
+  const current = await child("draining")
+  const restartPort = await freePort()
+  const updatePort = await freePort()
+  let releaseRestart!: (result: RestartResult) => void
+  let releaseUpdate!: (result: RestartResult) => void
+  const restarting = new RestartSupervisorProxy({
+    port: restartPort,
+    childPort: () => current.port,
+    status: () => ({ state: "ready", artifactDigest: "stale" }),
+    restart: () => new Promise<RestartResult>((resolve) => { releaseRestart = resolve }),
+  })
+  const updating = new RestartSupervisorProxy({
+    port: updatePort,
+    childPort: () => current.port,
+    restart: async () => ({ state: "ready" }),
+    updateRestart: () => new Promise<RestartResult>((resolve) => { releaseUpdate = resolve }),
+  })
+  try {
+    await restarting.listen()
+    await updating.listen()
+    const restart = get(restartPort, SUPERVISOR_RESTART_PATH, "POST")
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const midRestart = JSON.parse((await get(restartPort, SUPERVISOR_STATUS_PATH)).body)
+    assert.equal(midRestart.state, "restarting", "the delegate's lingering ready never leaks through a restart")
+    assert.equal("preparing" in midRestart, false)
+    releaseRestart({ state: "ready" })
+    assert.equal((await restart).status, 202)
+
+    assert.equal((await get(updatePort, SUPERVISOR_UPDATE_RESTART_PATH, "POST")).status, 202)
+    const midUpdate = JSON.parse((await get(updatePort, SUPERVISOR_STATUS_PATH)).body)
+    assert.equal(midUpdate.state, "restarting", "no delegate: the acknowledged transition is all the proxy knows")
+    assert.equal("preparing" in midUpdate, false)
+    releaseUpdate({ state: "ready" })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    assert.match((await get(updatePort, SUPERVISOR_STATUS_PATH)).body, /"state":"ready"/)
+  } finally {
+    await restarting.close().catch(() => undefined)
+    await updating.close().catch(() => undefined)
     await current.close().catch(() => undefined)
   }
 })
