@@ -45,29 +45,30 @@
  *  on any github.com page with `data-color-mode="dark"`. */
 export const PRIMER = {
   /** `--fgColor-success` — an open PR/issue glyph, a passing check, a diffstat's `+N`. */
-  fgSuccess: "#3fb950",
+  fgSuccess: "var(--gh-fg-success)",
   /** `--bgColor-success-emphasis` — the "Open" pill's fill, a diffstat's added square. */
-  bgSuccessEmphasis: "#238636",
+  bgSuccessEmphasis: "var(--gh-bg-success-emphasis)",
 
   /** `--fgColor-danger` — a closed-PR glyph, a failing check, a diffstat's `−N`. */
-  fgDanger: "#f85149",
+  fgDanger: "var(--gh-fg-danger)",
   /** `--bgColor-danger-emphasis` — the "Closed" pill's fill, a diffstat's deleted square. */
-  bgDangerEmphasis: "#da3633",
+  bgDangerEmphasis: "var(--gh-bg-danger-emphasis)",
 
   /** `--fgColor-done` — a merged-PR glyph, a closed-as-completed issue glyph. */
-  fgDone: "#ab7df8",
+  fgDone: "var(--gh-fg-done)",
   /** `--bgColor-done-emphasis` — the "Merged" pill's fill. */
-  bgDoneEmphasis: "#8957e5",
+  bgDoneEmphasis: "var(--gh-bg-done-emphasis)",
 
   /** `--fgColor-attention` — checks still running. Already worn by the in-progress spinner. */
-  fgAttention: "#d29922",
+  fgAttention: "var(--gh-fg-attention)",
 
   /** `--fgColor-neutral` — a draft PR's glyph. Near-identical to this app's own `--color-muted`
    *  (#8b8f96), so the change is invisible; it is here so one `StateIcon` speaks one palette rather
    *  than three arms of Primer and one of the theme. */
-  fgNeutral: "#9198a1",
+  fgNeutral: "var(--gh-fg-neutral)",
   /** `--bgColor-neutral-emphasis` — the "Draft" / "Closed as not planned" pill fill. */
-  bgNeutralEmphasis: "#656c76",
+  bgNeutralEmphasis: "var(--gh-bg-neutral-emphasis)",
+  onEmphasis: "var(--color-accent-fg)",
 } as const
 
 /** The "view failures" link on a red PR watch row — the one place a Primer colour needs a HOVER state,
@@ -77,7 +78,7 @@ export const PRIMER = {
  *
  *  KEEP THE THREE HEXES IN STEP WITH `fgDanger` ABOVE. They cannot interpolate — Tailwind matches the
  *  literal text, so a template string here compiles to nothing at all. */
-export const PRIMER_DANGER_LINK = "text-[#f85149]/85 decoration-[#f85149]/30 hover:decoration-[#f85149]"
+export const PRIMER_DANGER_LINK = "text-[color:var(--gh-danger-link)] decoration-[color:color-mix(in_srgb,var(--gh-danger-link)_30%,transparent)] hover:decoration-[color:var(--gh-danger-link)]"
 
 /** A mark that expresses FRIZZ's own state rather than GitHub's — "not polled yet", a sub-agent's
  *  spinner — keeps the app's palette and must NOT be pulled in here. GitHub has no such state, so

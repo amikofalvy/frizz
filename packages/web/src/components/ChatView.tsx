@@ -1,4 +1,4 @@
-import { createContext, Fragment, memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react"
+import { createContext, Fragment, memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentPropsWithoutRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react"
 import { createPortal } from "react-dom"
 import { useSnapshot } from "valtio"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
@@ -50,6 +50,7 @@ import { snoozePresetInstant, formatSnoozeWake } from "../lib/snooze.ts"
 import { noteGithubRefs } from "../lib/githubHovercards.ts"
 import { ICON_LABEL_NUDGE } from "../lib/iconAlign.ts"
 import { prefs } from "../lib/prefs.ts"
+import { getThemeSnapshot, subscribeTheme } from "../lib/theme.ts"
 import { canAdoptThread } from "../lib/adoption.ts"
 import { THREAD_TITLE_MAX_LENGTH, manualThreadTitleSeed, threadTitleToCommit } from "../lib/threadTitle.ts"
 import { THREAD_HEADER_CLASS, THREAD_HEADER_CONTROLS_CLASS, THREAD_HEADER_TITLE_CLASS } from "../lib/threadHeaderLayout.ts"
@@ -3640,6 +3641,13 @@ const VIS_THEME_VARIABLES: Record<string, string> = {
   "--border": "--color-border-strong",
   "--input": "--color-border-strong",
   "--ring": "--color-accent",
+  "--destructive": "--gh-fg-danger",
+  "--viz-series-1": "--viz-series-1",
+  "--viz-series-2": "--viz-series-2",
+  "--viz-series-3": "--viz-series-3",
+  "--viz-series-4": "--viz-series-4",
+  "--viz-series-5": "--viz-series-5",
+  "--viz-series-6": "--viz-series-6",
 }
 
 function visualizationTheme() {
@@ -3658,6 +3666,9 @@ export function InlineVisualization({ file }: { file: string }) {
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const [height, setHeight] = useState(360)
   const [available, setAvailable] = useState<boolean | null>(null)
+  const [paletteApplied, setPaletteApplied] = useState(false)
+  const paletteTimeout = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const { resolved } = useSyncExternalStore(subscribeTheme, getThemeSnapshot, getThemeSnapshot)
   const src = slug ? `${apiBase()}/local-visualization?slug=${encodeURIComponent(slug)}&file=${encodeURIComponent(file)}` : null
 
   useEffect(() => {
@@ -3674,15 +3685,33 @@ export function InlineVisualization({ file }: { file: string }) {
     return () => controller.abort()
   }, [src])
 
+  const sendTheme = useCallback(() => iframeRef.current?.contentWindow?.postMessage(visualizationTheme(), "*"), [])
+
   useEffect(() => {
     const receive = (event: MessageEvent) => {
-      if (event.source !== iframeRef.current?.contentWindow || event.data?.type !== "frizz-inline-vis-height") return
+      if (event.source !== iframeRef.current?.contentWindow) return
+      if (event.data?.type === "frizz-inline-vis-ready") {
+        sendTheme()
+        return
+      }
+      if (event.data?.type === "frizz-inline-vis-applied") {
+        window.clearTimeout(paletteTimeout.current)
+        setPaletteApplied(true)
+        return
+      }
+      if (event.data?.type !== "frizz-inline-vis-height") return
       const next = Number(event.data.height)
       if (Number.isFinite(next)) setHeight(Math.max(80, Math.min(2400, Math.ceil(next))))
     }
     window.addEventListener("message", receive)
     return () => window.removeEventListener("message", receive)
-  }, [])
+  }, [sendTheme])
+
+  useEffect(() => {
+    if (paletteApplied) sendTheme()
+  }, [paletteApplied, resolved, sendTheme])
+
+  useEffect(() => () => window.clearTimeout(paletteTimeout.current), [])
 
   if (available === false || !src) {
     return <div role="status" className={`${BLOCK_RADIUS} border border-border bg-panel-2 px-4 py-2.5 text-[12px] text-muted`}>Visualization unavailable: <span className="font-mono-keep break-all">{file}</span></div>
@@ -3694,9 +3723,14 @@ export function InlineVisualization({ file }: { file: string }) {
       src={src}
       title={file.replace(/\.html$/, "").replaceAll("-", " ")}
       sandbox="allow-scripts"
-      onLoad={() => iframeRef.current?.contentWindow?.postMessage(visualizationTheme(), "*")}
+      onLoad={() => {
+        setPaletteApplied(false)
+        sendTheme()
+        window.clearTimeout(paletteTimeout.current)
+        paletteTimeout.current = window.setTimeout(() => setAvailable(false), 5000)
+      }}
       className="block w-full border-0 bg-transparent"
-      style={{ height }}
+      style={{ height, visibility: paletteApplied ? "visible" : "hidden" }}
     />
   )
 }

@@ -58,6 +58,20 @@ const BASE_STYLE = `
   --mono:ui-monospace,"JetBrains Mono","SF Mono","Cascadia Mono",Menlo,Consolas,monospace;
   --ease:cubic-bezier(0,0,.2,1);
 }
+:root[data-theme=light]{
+  color-scheme:light;
+  --bg:#f6f8fa;--panel:#fff;--panel-2:#f1f4f7;
+  --border:#d0d7de;--border-strong:#afb8c1;
+  --fg:#1f2328;--muted:#57606a;--accent:#9a6700;--danger:#cf222e;
+}
+@media(prefers-color-scheme:light){
+  :root:not([data-theme]){
+    color-scheme:light;
+    --bg:#f6f8fa;--panel:#fff;--panel-2:#f1f4f7;
+    --border:#d0d7de;--border-strong:#afb8c1;
+    --fg:#1f2328;--muted:#57606a;--accent:#9a6700;--danger:#cf222e;
+  }
+}
 html,body{background:var(--bg)}
 body{
   margin:0;min-height:100vh;min-height:100dvh;
@@ -146,6 +160,7 @@ const RECOVERY_STYLE = `
 // so it reads the same key for itself — otherwise a restart flips a sans board to mono for two seconds.
 // Branded pages only: the key names the product.
 const FONT_SCRIPT = `try{document.documentElement.dataset.font=localStorage.getItem("frizz-font")==="mono"?"mono":"sans"}catch{}`
+const THEME_SCRIPT = `var p;try{p=localStorage.getItem("frizz-theme")}catch{}var d=false;try{d=matchMedia&&matchMedia("(prefers-color-scheme: dark)").matches}catch{}var t=p==="dark"||p==="light"?p:d?"dark":"light";document.documentElement.dataset.theme=t;document.documentElement.style.colorScheme=t;document.querySelector('meta[name="theme-color"]').content=t==="dark"?"#0d0e10":"#f6f8fa"`
 
 /**
  * THE RECOVERY PAGE POLLS, and the comment this replaces said it deliberately did not: "a broken child
@@ -273,9 +288,11 @@ function documentShell(options: {
   return `<!doctype html><html lang="en" data-font="sans"><head><meta charset="utf-8">`
     + `<title>${options.title}</title>`
     + `<meta name="viewport" content="width=device-width,initial-scale=1">`
-    + `<meta name="color-scheme" content="dark"><meta name="theme-color" content="#0d0e10">`
+    + (options.font
+      ? `<meta name="color-scheme" content="dark light"><meta name="theme-color" content="#0d0e10">`
+      : `<meta name="color-scheme" content="dark light"><meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0d0e10"><meta name="theme-color" media="(prefers-color-scheme: light)" content="#f6f8fa">`)
     + `<style>${options.style ? `${BASE_STYLE}\n${options.style}` : BASE_STYLE}</style>`
-    + (options.font ? `<script>${FONT_SCRIPT}</script>` : "")
+    + (options.font ? `<script>${THEME_SCRIPT}</script><script>${FONT_SCRIPT}</script>` : "")
     + `</head>`
     + `<body${options.bodyAttributes ? ` ${options.bodyAttributes}` : ""}><main>${options.body}</main>`
     + (options.script ? `<script>${options.script}</script>` : "")

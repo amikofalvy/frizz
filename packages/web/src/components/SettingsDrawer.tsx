@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { useSnapshot } from "valtio"
 import { Check, Copy, HelpCircle } from "lucide-react"
@@ -7,6 +7,7 @@ import { isRetryableRpcError, rpc } from "../api/rpc.ts"
 import { store } from "../store.ts"
 import { copyTextToClipboard } from "../lib/clipboard.ts"
 import { prefs } from "../lib/prefs.ts"
+import { getThemeSnapshot, setThemePreference, subscribeTheme, type ThemePreference } from "../lib/theme.ts"
 import { registerSettingsClose } from "../lib/overlays.ts"
 import { SHEET_CLOSE_MS, SHEET_PANEL_CLASS, SHEET_SCRIM_CLASS, prefersReducedMotion } from "../lib/sheet.ts"
 import { queryClient } from "../main.tsx"
@@ -19,6 +20,7 @@ import { CODEX_CONTEXT_WINDOW_DEFAULT, codexContextWindowOptions } from "../lib/
 
 type NotifPerm = "default" | "granted" | "denied" | "unsupported"
 export const SETTINGS_HELP = {
+  appearance: "Applies to this browser across all projects. System follows the device appearance.",
   permissionMode: "The permission mode new Claude Code threads launch with. Auto runs safe actions and asks you to approve the risky ones in the thread. Bypass launches the worker with --dangerously-skip-permissions: it never asks, so nothing waits on you and nothing is checked either. Takes effect on the next thread you dispatch; to change a thread that already exists, use the picker beside its model in the prompt box. Codex threads always run with full workspace access and are unaffected.",
   promptCacheTtl: "Which prompt-cache tier a new Claude thread writes to. A 1-hour entry costs twice the input price to write, a 5-minute entry 1.25 times; the hour only pays off when the thread's cache actually survives that long. Measured 2026-09-03: cache writes were half of a day's spend and the entries were lost every 15 to 30 minutes regardless, so 5 minutes was the cheaper tier. Automatic leaves the choice to Claude Code, which picks 1 hour on a subscription. Takes effect on the next thread you dispatch and on a thread that resumes after its worker exited.",
   autoCompactWindow: "How large a new Claude thread's conversation may grow, in tokens, before Claude Code compacts it. Frizz launches every Claude thread with the 1M context window, so without a ceiling a long thread keeps re-sending everything it has read on every turn; 500K halves that at the cost of an earlier summary. Takes effect on the next thread you dispatch and on a thread that resumes after its worker exited; a thread whose worker is already running keeps its current ceiling. A thread's context dial reads against the ceiling it was launched with, not the model's full window.",
@@ -198,10 +200,14 @@ export function SettingsDrawer() {
       >
         <SheetHeader title="Settings" actions={<SaveStatus state={saveState} />} onClose={close} />
 
-        {!draft ? (
-          <div className="p-4 text-[13px] text-muted">Loading…</div>
-        ) : (
-          <div className="flex-1 overflow-y-auto p-5 flex flex-col gap-6">
+        <div className="flex-1 overflow-y-auto p-5 flex flex-col gap-6">
+          <SettingsField label="Appearance" help={SETTINGS_HELP.appearance}>
+            <AppearanceControl />
+          </SettingsField>
+          {!draft ? (
+            <div className="text-[13px] text-muted">Loading server settings…</div>
+          ) : (
+            <>
             {/* ORDER: the preferences that shape the interface every operator looks at come first, and
                 anything that belongs to ONE runtime sits under a band that names it. The Claude
                 permission picker led the form until 2026-08-24, so the first thing the drawer said was
@@ -265,13 +271,23 @@ export function SettingsDrawer() {
             <CodexSection draft={draft} setDraft={update} />
 
             <PromptsSection draft={draft} setDraft={update} />
-          </div>
-        )}
+            </>
+          )}
+        </div>
       </div>
     </div>
   )
 }
 
+function AppearanceControl() {
+  const { preference } = useSyncExternalStore(subscribeTheme, getThemeSnapshot, getThemeSnapshot)
+  const options: { value: ThemePreference; label: string }[] = [
+    { value: "system", label: "System" },
+    { value: "light", label: "Light" },
+    { value: "dark", label: "Dark" },
+  ]
+  return <Select variant="bordered" value={preference} onValueChange={(value) => setThemePreference(value as ThemePreference)} options={options} indicatorPosition="right" ariaLabel="Appearance" />
+}
 // The header's whole account of persistence, now that no button carries it. Quiet by design: the form
 // writes itself, so the only states worth a word are the write in flight, the moment it lands, and the
 // one that matters — a write that did NOT land, in the accent that means "this wants you".
