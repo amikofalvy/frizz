@@ -132,9 +132,9 @@ export function BackgroundShellSheet({
                     {query.data?.truncated && <span className="text-[10.5px] text-muted/50">Showing latest 512 KB</span>}
                   </div>
                   {output ? (
-                    <pre data-background-shell-output className={`font-mono-keep min-h-40 whitespace-pre-wrap break-words ${BLOCK_RADIUS} border border-border bg-[#090b10] px-4 py-3 text-[12px] leading-relaxed text-fg/85`}>{output}</pre>
+                    <pre data-background-shell-output className={`font-mono-keep min-h-40 whitespace-pre-wrap break-words ${BLOCK_RADIUS} border border-border bg-inset px-4 py-3 text-[12px] leading-relaxed text-fg/85`}>{output}</pre>
                   ) : (
-                    <div data-background-shell-output className={`flex min-h-40 items-center justify-center ${BLOCK_RADIUS} border border-border bg-[#090b10] px-4 text-center text-[12px] text-muted/60`}>
+                    <div data-background-shell-output className={`flex min-h-40 items-center justify-center ${BLOCK_RADIUS} border border-border bg-inset px-4 text-center text-[12px] text-muted/60`}>
                       {state === "done" ? "No output was captured." : "No output yet."}
                     </div>
                   )}

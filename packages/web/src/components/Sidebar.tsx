@@ -596,7 +596,7 @@ export const ThreadRow = memo(function ThreadRow({
   return (
     <div
       data-sidebar-item={t.id}
-      className={`group relative flex min-w-0 items-start rounded-md transition-[color,opacity] after:pointer-events-none after:absolute after:inset-0 after:rounded-md after:bg-white/[0.04] after:opacity-0 after:transition-opacity hover:after:opacity-100 ${legacy ? "opacity-80" : dim ? "opacity-65 hover:opacity-90 focus-within:opacity-90" : ""}`}
+      className={`group relative flex min-w-0 items-start rounded-md transition-[color,opacity] after:pointer-events-none after:absolute after:inset-0 after:rounded-md after:bg-hover after:opacity-0 after:transition-opacity hover:after:opacity-100 ${legacy ? "opacity-80" : dim ? "opacity-65 hover:opacity-90 focus-within:opacity-90" : ""}`}
     >
       {/* The reading position owns a real, in-row rail rather than borrowing the status-icon column.
           The marker spans the row's complete visual height, including wrapped titles and subtitles,

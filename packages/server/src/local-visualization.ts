@@ -110,12 +110,14 @@ a { color: inherit; }
 (() => {
   const notifyHeight = () => parent.postMessage({ type: "frizz-inline-vis-height", height: Math.ceil(document.documentElement.scrollHeight) }, "*");
   addEventListener("message", (event) => {
+    if (event.source !== parent) return;
     if (event.data?.type !== "frizz-inline-vis-theme" || !event.data.vars) return;
     for (const [name, value] of Object.entries(event.data.vars)) {
       if (/^--[a-z0-9-]+$/.test(name) && typeof value === "string") document.documentElement.style.setProperty(name, value);
     }
     document.documentElement.style.colorScheme = event.data.colorScheme === "light" ? "light" : "dark";
     requestAnimationFrame(notifyHeight);
+    parent.postMessage({ type: "frizz-inline-vis-applied" }, "*");
   });
   window.openai = Object.freeze({
     sendFollowUpMessage: async () => { throw new Error("Follow-up actions are not supported in Frizz visualizations yet"); }
@@ -123,6 +125,7 @@ a { color: inherit; }
   addEventListener("DOMContentLoaded", () => {
     new ResizeObserver(notifyHeight).observe(document.body);
     notifyHeight();
+    parent.postMessage({ type: "frizz-inline-vis-ready" }, "*");
   });
 })();
 </script>

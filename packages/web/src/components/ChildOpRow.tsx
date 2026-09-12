@@ -264,7 +264,7 @@ export function ChildOpRow({
   // the × arrived, because the button no longer spans the row and a highlight on the button would stop
   // short of the × and the duration. The indent stayed on the button (see rowClass).
   const wrapperClass = rail
-    ? "flex w-full min-w-0 items-center gap-1.5 rounded-md py-0.5 pr-1.5 text-[11.5px] transition-colors hover:bg-white/[0.04]"
+    ? "flex w-full min-w-0 items-center gap-1.5 rounded-md py-0.5 pr-1.5 text-[11.5px] transition-colors hover:bg-hover"
     : "flex min-w-0 items-center gap-1.5 text-[11.5px]"
   const wrapperStyle = !rail && nestIndent > 0 ? { marginLeft: nestIndent } : undefined
 

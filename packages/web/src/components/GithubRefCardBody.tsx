@@ -110,7 +110,7 @@ const BLOCK_STYLE = {
   add: { backgroundColor: PRIMER.bgSuccessEmphasis, borderColor: PRIMER.bgSuccessEmphasis },
   del: { backgroundColor: PRIMER.bgDangerEmphasis, borderColor: PRIMER.bgDangerEmphasis },
   // The empty block is neutral at 0x33, over Primer's own `--borderColor-default` hairline.
-  none: { backgroundColor: `${PRIMER.bgNeutralEmphasis}33`, borderColor: "#3d444d" },
+  none: { backgroundColor: "color-mix(in srgb, var(--gh-bg-neutral-emphasis) 20%, transparent)", borderColor: "var(--color-border-strong)" },
 } as const
 
 function Diffstat({ additions, deletions }: { additions: number; deletions: number }) {
@@ -144,7 +144,7 @@ function StatePill({ card }: { card: GithubRefCard }) {
   return (
     <span
       data-gh-pill
-      className="inline-flex items-baseline gap-1 rounded-full px-2.5 py-1 text-[12px] font-medium text-white"
+      className="inline-flex items-baseline gap-1 rounded-full px-2.5 py-1 text-[12px] font-medium text-[color:var(--color-accent-fg)]"
       style={{ backgroundColor: style.bg }}
     >
       {/* ITEMS-BASELINE, not items-center, and the size in `em` rather than px. Every one of these

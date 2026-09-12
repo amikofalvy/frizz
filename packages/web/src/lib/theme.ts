@@ -11,7 +11,8 @@ export const THEME_STORAGE_KEY = "frizz-theme"
 const DARK_CANVAS = "#0d0e10"
 const LIGHT_CANVAS = "#f6f8fa"
 const listeners = new Set<() => void>()
-let snapshot: ThemeSnapshot = { preference: "system", resolved: "light" }
+// Production remains dark until main.tsx activates the resolver after renderer migration.
+let snapshot: ThemeSnapshot = { preference: "system", resolved: "dark" }
 let initialized = false
 let media: MediaQueryList | undefined
 

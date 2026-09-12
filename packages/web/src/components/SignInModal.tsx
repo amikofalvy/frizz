@@ -130,7 +130,7 @@ export function SignInModal({
               </p>
               {/* The restricted account terminal: a global provider sign-in session, NOT a thread —
                   it inherits no project prompt and accepts no other command. */}
-              <div className="mb-4 h-[340px] overflow-hidden rounded-lg border border-border bg-[#0d0e10]">
+              <div className="mb-4 h-[340px] overflow-hidden rounded-lg border border-border bg-bg">
                 <Suspense fallback={<div className="flex h-full items-center justify-center text-[12px] text-muted">Opening terminal…</div>}>
                   <TerminalPane slug={attempt} />
                 </Suspense>
@@ -185,7 +185,7 @@ export function SignInModal({
                   type="button"
                   onClick={() => start.mutate()}
                   disabled={start.isPending}
-                  className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-[12.5px] font-medium text-white outline-none transition-opacity hover:opacity-90 disabled:opacity-60"
+              className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-[12.5px] font-medium text-accent-fg outline-none transition-opacity hover:opacity-90 disabled:opacity-60"
                 >
                   {start.isPending && <Loader2 size={13} className="animate-spin" />}
                   Sign in here

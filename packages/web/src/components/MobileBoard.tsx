@@ -321,7 +321,7 @@ function MobileThreadRow({
       <button
         data-mobile-thread-row={t.id}
         onClick={() => openThread(t.id)}
-        className="flex w-full items-start gap-3 px-4 pb-2.5 pt-2.5 text-left active:bg-white/[0.04]"
+        className="flex w-full items-start gap-3 px-4 pb-2.5 pt-2.5 text-left active:bg-hover"
       >
         <span className="flex h-[21px] shrink-0 items-center justify-center">
           <ThreadMark kind={kind} />
@@ -463,7 +463,7 @@ function MoreSheet({ connection, onClose }: { connection: ConnectionState; onClo
                 store.showSettings = true
                 onClose()
               }}
-              className="flex min-h-[48px] w-full items-center gap-3 px-4 text-left active:bg-white/[0.04]"
+              className="flex min-h-[48px] w-full items-center gap-3 px-4 text-left active:bg-hover"
             >
               <SettingsIcon size={16} className="shrink-0 text-muted/70" />
               <span className="min-w-0 flex-1 text-[16px] leading-[21px] text-fg">Settings</span>
@@ -537,7 +537,7 @@ export function MobileBoard() {
             aria-label="Board actions"
             data-mobile-more
             onClick={() => setMoreOpen(true)}
-            className="ml-auto flex size-[44px] items-center justify-center rounded-full text-fg/85 active:bg-white/[0.06]"
+            className="ml-auto flex size-[44px] items-center justify-center rounded-full text-fg/85 active:bg-hover"
           >
             <Ellipsis size={20} />
           </button>

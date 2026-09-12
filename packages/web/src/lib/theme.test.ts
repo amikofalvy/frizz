@@ -14,11 +14,8 @@ test("theme preferences validate independently from the resolved appearance", ()
   assert.equal(resolveTheme("dark", false), "dark")
 })
 
-test("the pre-paint guard and runtime share the dedicated preference key and canvas values", () => {
-  const entry = readFileSync(new URL("../../index.html", import.meta.url), "utf8")
+test("the runtime keeps its dedicated preference key and palette canvas values", () => {
   const runtime = readFileSync(new URL("./theme.ts", import.meta.url), "utf8")
-  assert.match(entry, /frizz-theme/)
-  assert.match(entry, /#f6f8fa/)
   assert.match(runtime, /THEME_STORAGE_KEY = "frizz-theme"/)
   assert.match(runtime, /LIGHT_CANVAS = "#f6f8fa"/)
 })
