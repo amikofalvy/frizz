@@ -19,7 +19,7 @@ export const CHILD_ARROW = "⤷"
 // used /45, the ops strip and the completion dialog /40. The arrow is the row's STRUCTURAL marker — the
 // thing that says "this line hangs off the one above it" — so it takes the brighter of the two rather
 // than sitting below the muted label it introduces.
-export const CHILD_ARROW_CLASS = "shrink-0 text-[11px] leading-none text-muted/45"
+export const CHILD_ARROW_CLASS = "shrink-0 text-[11px] leading-none text-muted-45"
 
 // The flat dot for a child with no recent output. /30 (the rail's value); the ops strip's /25 was the
 // outlier and read as a smudge next to the same dot one surface over.

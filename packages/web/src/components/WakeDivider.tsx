@@ -49,7 +49,7 @@ export function WakeDivider({ icon: Icon, children, sourceId, ariaLabel, marker,
   const chrome = (
     <>
       <span aria-hidden="true" className="h-px flex-1 bg-border/70 transition-colors group-hover/wake:bg-border" />
-      <span className="petite-caps flex min-w-0 items-center gap-1 break-words text-center text-[12px] text-muted/70 transition-colors group-hover/wake:text-fg">
+      <span className="petite-caps flex min-w-0 items-center gap-1 break-words text-center text-[12px] text-muted-70 transition-colors group-hover/wake:text-fg">
         {Icon && <Icon aria-hidden="true" size={12} className={WAKE_DIVIDER_ICON} />}
         {children}
         <DividerAge at={at} />

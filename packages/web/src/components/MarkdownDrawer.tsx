@@ -103,7 +103,7 @@ export function MarkdownDrawer({ id, path, title, depth, widthDepth }: { id: num
             ) : body.error ? (
               // The gate's own words — "outside Frizz's trusted roots", "was not found" — say more than
               // a generic failure would, and the footer still offers the desktop opener.
-              <div className="text-[13px] text-red-400/90">Couldn’t read this file: {(body.error as Error).message}</div>
+              <div className="text-[13px] text-danger-90">Couldn’t read this file: {(body.error as Error).message}</div>
             ) : html ? (
               <>
                 {front && <Frontmatter source={front} />}

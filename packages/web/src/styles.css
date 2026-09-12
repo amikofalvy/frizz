@@ -576,17 +576,33 @@ a[href] {
   height: var(--sbw);
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--color-border-strong);
+  background: var(--color-scrollbar);
   border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--color-muted);
+  background: var(--color-scrollbar-hover);
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 .scrollbar-none {
   scrollbar-width: none; /* Firefox */
+}
+
+/* The new selector's 1em chevron shares the cap band in either UI font. The uncorrected
+   mono glyph sat 0.94px below it; baseline + cap avoids a font-specific fitted offset. */
+.appearance-select {
+  align-items: baseline;
+  border-color: var(--color-control-border);
+}
+.appearance-select .select-caret {
+  width: 1em;
+  height: 1em;
+  translate: 0 calc(0.5em - 0.5cap);
+}
+.appearance-select:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
 }
 .scrollbar-none::-webkit-scrollbar {
   display: none; /* WebKit/Blink */

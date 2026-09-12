@@ -170,7 +170,7 @@ export function GithubPickerModal({ onClose }: { onClose: () => void }) {
         <h2 className="mb-4 flex items-center gap-2 text-[14px] font-medium">
           <Github size={15} className="text-muted" />
           <span>Investigate this issue and make recommendations</span>
-          <span className="text-muted/40">—</span>
+          <span className="text-muted-40">—</span>
           <span className="font-mono-keep text-[12.5px] text-muted">{nameWithOwner}</span>
         </h2>
 
@@ -185,7 +185,7 @@ export function GithubPickerModal({ onClose }: { onClose: () => void }) {
             ]}
           />
           <div className="flex items-center gap-2">
-            <span className="petite-caps text-[11px] text-muted/70">Sort</span>
+            <span className="petite-caps text-[11px] text-muted-70">Sort</span>
             <Segmented
               value={sort}
               onChange={switchSort}
@@ -208,13 +208,13 @@ export function GithubPickerModal({ onClose }: { onClose: () => void }) {
             <ListSkeleton />
           ) : list.isError ? (
             <Centered>
-              <span className="text-[12.5px] text-muted/80">Couldn't load {kind === "issues" ? "issues" : "pull requests"}.</span>
-              <span className="max-w-[80%] text-center text-[11px] text-muted/45">{(list.error as Error).message.slice(0, 140)}</span>
+              <span className="text-[12.5px] text-muted-80">Couldn't load {kind === "issues" ? "issues" : "pull requests"}.</span>
+              <span className="max-w-[80%] text-center text-[11px] text-muted-45">{(list.error as Error).message.slice(0, 140)}</span>
             </Centered>
           ) : items.length === 0 ? (
             <Centered>
-              <Inbox size={28} strokeWidth={1.25} className="text-muted/30" />
-              <span className="text-[12.5px] text-muted/60">No open {kind === "issues" ? "issues" : "pull requests"}</span>
+              <Inbox size={28} strokeWidth={1.25} className="text-muted-30" />
+              <span className="text-[12.5px] text-muted-60">No open {kind === "issues" ? "issues" : "pull requests"}</span>
             </Centered>
           ) : (
             items.map((it) => (
@@ -232,19 +232,19 @@ export function GithubPickerModal({ onClose }: { onClose: () => void }) {
           // width and the totals collide with the prev-page button. The running-selection cluster and
           // the page controls hold their size; only the repo total (the least actionable number here)
           // truncates when the modal is squeezed.
-          <div className="mt-2.5 flex items-center justify-between gap-3 whitespace-nowrap text-[11.5px] text-muted/60">
+          <div className="mt-2.5 flex items-center justify-between gap-3 whitespace-nowrap text-[11.5px] text-muted-60">
             <div className="flex min-w-0 items-center gap-1.5">
               <span className="truncate tabular-nums">
                 {total} open {kind === "issues" ? (total === 1 ? "issue" : "issues") : total === 1 ? "pull request" : "pull requests"}
               </span>
               {n > 0 && (
                 <span className="flex shrink-0 items-center gap-1.5">
-                  <span className="text-muted/30">·</span>
+                  <span className="text-muted-30">·</span>
                   <span className="tabular-nums text-fg/70">{n} selected</span>
                   <button
                     onClick={clearSelection}
                     onMouseDown={(e) => e.preventDefault()}
-                    className="rounded py-0.5 text-muted/60 underline-offset-2 outline-none transition-colors hover:text-fg hover:underline"
+                    className="rounded py-0.5 text-muted-60 underline-offset-2 outline-none transition-colors hover:text-fg hover:underline"
                   >
                     Clear
                   </button>
@@ -299,7 +299,7 @@ export function GithubPickerModal({ onClose }: { onClose: () => void }) {
               menuZClass={OPAQUE_PORTAL_SURFACE_ABOVE_DIALOG_Z}
               className="max-w-[min(21rem,60vw)]"
             />
-            {profileError && <p className="mt-1 max-w-[430px] text-[10.5px] text-red-400">{profileError}</p>}
+            {profileError && <p className="mt-1 max-w-[430px] text-[10.5px] text-danger">{profileError}</p>}
           </div>
           <div className="flex items-center gap-3">
             <button
@@ -342,7 +342,7 @@ function PagerButton({
       disabled={disabled}
       onClick={onClick}
       onMouseDown={(e) => e.preventDefault()}
-      className="inline-flex h-[22px] w-[22px] items-center justify-center rounded-md border border-border/70 text-muted/70 outline-none transition-colors hover:border-border hover:bg-elevated hover:text-fg disabled:pointer-events-none disabled:opacity-30"
+      className="inline-flex h-[22px] w-[22px] items-center justify-center rounded-md border border-border/70 text-muted-70 outline-none transition-colors hover:border-border hover:bg-elevated hover:text-fg disabled:pointer-events-none disabled:opacity-30"
     >
       {children}
     </button>
@@ -460,7 +460,7 @@ function Row({ item, checked, onActivate }: { item: GithubItem; checked: boolean
             <LabelChip key={l.name} name={l.name} color={l.color} />
           ))}
         </span>
-        <span className="flex items-center gap-1 text-[11px] text-muted/55">
+        <span className="flex items-center gap-1 text-[11px] text-muted-55">
           <a
             href={item.url}
             target="_blank"
@@ -473,7 +473,7 @@ function Row({ item, checked, onActivate }: { item: GithubItem; checked: boolean
           {meta ? <span className="truncate">· {meta}</span> : null}
         </span>
       </span>
-      <span className="mt-px flex shrink-0 items-center gap-2.5 text-[11.5px] text-muted/70">
+      <span className="mt-px flex shrink-0 items-center gap-2.5 text-[11.5px] text-muted-70">
         {item.linkedPrs ? <LinkedPrBadge prs={item.linkedPrs} /> : null}
         {item.comments ? <Badge icon={MessageSquare} n={item.comments} label="comments" /> : null}
         {item.reactions ? <Badge emoji="👍" n={item.reactions} label="reactions" /> : null}

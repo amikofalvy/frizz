@@ -96,9 +96,9 @@ export type CardTone = "neutral" | "attention" | "caution" | "risk" | "danger"
 const CARD_TONES: Record<CardTone, { border: string; head: string }> = {
   neutral: { border: "border-border-strong", head: "text-fg" },
   attention: { border: "border-accent/45", head: "text-accent" },
-  caution: { border: "border-border-strong", head: "text-amber-400" },
-  risk: { border: "border-border-strong", head: "text-red-400" },
-  danger: { border: "border-red-500/45", head: "text-red-400" },
+  caution: { border: "border-border-strong", head: "text-attention" },
+  risk: { border: "border-border-strong", head: "text-danger" },
+  danger: { border: "border-danger-fill/45", head: "text-danger" },
 }
 
 // The 14px corner glyph is optically centred on the TITLE'S CAP BLOCK, not on its line box — same
@@ -252,7 +252,7 @@ export function CardActions({ children, className = "" }: { children: ReactNode;
 
 // The explainer that sits beside a card's action. Exported so every card spells its caption the same
 // way instead of re-deriving the muted scale and the flex behavior at each call site.
-export const CARD_ACTION_EXPLAINER = "min-w-0 flex-1 text-[11px] leading-snug text-muted/70"
+export const CARD_ACTION_EXPLAINER = "min-w-0 flex-1 text-[11px] leading-snug text-muted-70"
 
 // A LINK inside a card — the app's link language, straight off `.md-body a` in styles.css: accent,
 // underlined, 2px offset. A link has to LOOK like one at rest; `text-fg` with a hover-only underline

@@ -286,7 +286,7 @@ function AppearanceControl() {
     { value: "light", label: "Light" },
     { value: "dark", label: "Dark" },
   ]
-  return <Select variant="bordered" value={preference} onValueChange={(value) => setThemePreference(value as ThemePreference)} options={options} indicatorPosition="right" ariaLabel="Appearance" />
+  return <Select className="appearance-select" variant="bordered" value={preference} onValueChange={(value) => setThemePreference(value as ThemePreference)} options={options} indicatorPosition="right" ariaLabel="Appearance" />
 }
 // The header's whole account of persistence, now that no button carries it. Quiet by design: the form
 // writes itself, so the only states worth a word are the write in flight, the moment it lands, and the
@@ -308,7 +308,7 @@ function LabelWithHelp({ label, help }: { label: string; help: string }) {
     <span className="flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted">
       {label}
       <Tooltip label={help} side="right" clickable>
-        <button type="button" aria-label={`About ${label}`} className="inline-flex size-4 items-center justify-center text-muted/60 hover:text-fg transition-colors">
+        <button type="button" aria-label={`About ${label}`} className="inline-flex size-4 items-center justify-center text-muted-60 hover:text-fg transition-colors">
           <HelpCircle size={12} />
         </button>
       </Tooltip>
@@ -495,7 +495,7 @@ function PromptsSection({
 // hairline divider").
 function DividerLabel({ label }: { label: string }) {
   return (
-    <div className="mt-4 mb-1 flex items-center gap-2.5 text-[11px] uppercase tracking-wide text-muted/70">
+    <div className="mt-4 mb-1 flex items-center gap-2.5 text-[11px] uppercase tracking-wide text-muted-70">
       <span aria-hidden className="h-px flex-1 bg-border/60" />
       <span className="shrink-0">{label}</span>
       <span aria-hidden className="h-px flex-1 bg-border/60" />
@@ -535,7 +535,7 @@ function TokenHelpPopover() {
               <code className="font-mono-keep rounded border border-border bg-bg px-1 py-0.5 text-[10px] text-fg/80">
                 {`{${token}}`}
               </code>
-              <span className="text-muted/80">{gloss}</span>
+              <span className="text-muted-80">{gloss}</span>
             </li>
           ))}
         </ul>
@@ -589,7 +589,7 @@ function GithubPromptField({
               >
                 Reset to default
               </button>
-              <span aria-hidden className="text-[11px] text-muted/40">·</span>
+              <span aria-hidden className="text-[11px] text-muted-40">·</span>
             </>
           )}
           <TokenHelpPopover />
@@ -721,7 +721,7 @@ function PermHint({ perm }: { perm: NotifPerm }) {
     default: "Browser permission not yet granted — notifications won't fire until you allow them.",
     unsupported: "This browser does not support desktop notifications.",
   }
-  return <span className="text-[11px] text-muted/70">{text[perm]}</span>
+  return <span className="text-[11px] text-muted-70">{text[perm]}</span>
 }
 
 type Browser = "chrome" | "edge" | "safari" | "firefox" | "other"
@@ -745,7 +745,7 @@ function NotifDeniedHelp() {
   const chromiumUrl = `${browser === "edge" ? "edge" : "chrome"}://settings/content/siteDetails?site=${encodeURIComponent(origin)}`
 
   return (
-    <div className="flex flex-col gap-1 text-[11px] text-muted/70">
+    <div className="flex flex-col gap-1 text-[11px] text-muted-70">
       <span>Notifications are blocked for this site. Re-enable them in your browser, then reload.</span>
       {browser === "chrome" || browser === "edge" ? (
         <CopyableAddress url={chromiumUrl} hint="Paste this into a new tab, set Notifications → Allow:" />

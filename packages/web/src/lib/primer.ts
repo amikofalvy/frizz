@@ -71,14 +71,8 @@ export const PRIMER = {
   onEmphasis: "var(--gh-on-emphasis)",
 } as const
 
-/** The "view failures" link on a red PR watch row — the one place a Primer colour needs a HOVER state,
- *  which an inline `style` cannot express. Spelled as Tailwind arbitrary values so the hex still lives
- *  in this file and nowhere else; the same trick `iconRhythm.ts` uses, and it works because Tailwind
- *  scans this module's source for class-shaped strings like any other.
- *
- *  KEEP THE THREE HEXES IN STEP WITH `fgDanger` ABOVE. They cannot interpolate — Tailwind matches the
- *  literal text, so a template string here compiles to nothing at all. */
-export const PRIMER_DANGER_LINK = "text-[color:var(--gh-danger-link)] decoration-[color:color-mix(in_srgb,var(--gh-danger-link)_30%,transparent)] hover:decoration-[color:var(--gh-danger-link)]"
+/** Primer danger ink and decoration resolve through CSS, including the legacy dark ink alpha. */
+export const PRIMER_DANGER_LINK = "text-[color:var(--gh-danger-link-fg)] decoration-[color:color-mix(in_srgb,var(--gh-danger-link)_30%,transparent)] hover:decoration-[color:var(--gh-danger-link)]"
 
 /** A mark that expresses FRIZZ's own state rather than GitHub's — "not polled yet", a sub-agent's
  *  spinner — keeps the app's palette and must NOT be pulled in here. GitHub has no such state, so

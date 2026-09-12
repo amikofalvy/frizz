@@ -80,7 +80,7 @@ function Card({ project, home }: { project: ProjectCard; home: string | undefine
             {/* Shown only when it is not simply the name: a directory called "app" under "pullfrog"
                 lives at /pullfrog-app and that is worth saying, while "nub" would just repeat itself. */}
             {project.slug !== project.name ? (
-              <span className="max-w-[45%] shrink-0 truncate font-mono text-[11px] text-muted/70">
+              <span className="max-w-[45%] shrink-0 truncate font-mono text-[11px] text-muted-70">
                 /{project.slug}
               </span>
             ) : null}
@@ -88,7 +88,7 @@ function Card({ project, home }: { project: ProjectCard; home: string | undefine
           <span className="truncate text-[11px] text-muted" title={project.path}>
             {shortPath(project.path, home)}
           </span>
-          <span className="truncate text-[11px] text-muted/70">
+          <span className="truncate text-[11px] text-muted-70">
             {project.stale ? "Directory is missing" : opened ? `Opened ${opened}` : "Never opened"}
           </span>
         </span>
@@ -173,7 +173,7 @@ function ProjectMenu({
           className="z-[220] min-w-[170px] rounded-lg border border-border bg-panel p-1 shadow-xl shadow-black/40"
         >
           <RadixDropdown.Item
-            className="cursor-default rounded px-2 py-1.5 text-[12.5px] text-red-400 outline-none data-[highlighted]:bg-red-500/10 data-[highlighted]:text-red-300"
+            className="cursor-default rounded px-2 py-1.5 text-[12.5px] text-danger outline-none data-[highlighted]:bg-danger-fill/10 data-[highlighted]:text-danger-soft"
             onSelect={onDelete}
           >
             Delete project…
@@ -239,7 +239,7 @@ function DeleteProjectDialog({
             type="button"
             onClick={() => remove.mutate()}
             disabled={remove.isPending}
-            className="flex items-center gap-1.5 rounded-md bg-red-500/90 px-3 py-1.5 text-[12.5px] font-medium text-white outline-none transition-opacity hover:opacity-90 disabled:opacity-60"
+            className="flex items-center gap-1.5 rounded-md bg-danger-fill/90 px-3 py-1.5 text-[12.5px] font-medium text-white outline-none transition-opacity hover:opacity-90 disabled:opacity-60"
           >
             {remove.isPending && <Loader2 size={12} className="animate-spin" />}
             {deleteData ? "Delete project and threads" : "Delete project"}
@@ -267,14 +267,14 @@ function DeleteProjectDialog({
           />
           <span className="flex flex-col gap-0.5">
             <span>Also delete its threads and history</span>
-            <span className="text-[11.5px] text-muted/80">
+            <span className="text-[11.5px] text-muted-80">
               {deleteData
                 ? "Everything Frizz has stored for this project, and any workers still running are stopped. This cannot be undone."
                 : "Left off, its threads are kept — adding the folder again brings the board back."}
             </span>
           </span>
         </label>
-        {error ? <p className="text-[11.5px] text-red-400">{error}</p> : null}
+        {error ? <p className="text-[11.5px] text-danger">{error}</p> : null}
       </div>
     </Dialog>
   )
@@ -305,10 +305,10 @@ function PhantomCard({
         hero ? "min-h-[118px]" : "min-h-[74px]"
       }`}
     >
-      <span className="text-[17px] leading-none text-muted/70">+</span>
+      <span className="text-[17px] leading-none text-muted-70">+</span>
       <span className="text-[12.5px]">{pending ? "Choosing a folder…" : "Add a project"}</span>
       {hero ? (
-        <span className="text-[11px] text-muted/70">Point Frizz at a folder on this machine</span>
+        <span className="text-[11px] text-muted-70">Point Frizz at a folder on this machine</span>
       ) : null}
     </button>
   )
@@ -341,7 +341,7 @@ function AddProjectDialog({
   return (
     <RadixDialog.Root open onOpenChange={(open) => { if (!open && !add.isPending) onClose() }}>
       <RadixDialog.Portal>
-        <RadixDialog.Overlay className="fixed inset-0 z-[210] bg-black/30 backdrop-blur-md backdrop-saturate-150" />
+        <RadixDialog.Overlay className="fixed inset-0 z-[210] bg-scrim-30 backdrop-blur-md backdrop-saturate-150" />
         <RadixDialog.Content
           aria-modal="true"
           aria-describedby={undefined}
@@ -369,11 +369,11 @@ function AddProjectDialog({
               onChange={(event) => setPath(event.target.value)}
               placeholder="~/code/my-project"
               spellCheck={false}
-              className={`w-full rounded-md border bg-bg px-2.5 py-2 font-mono text-[12px] text-fg outline-none placeholder:text-muted/50 focus-visible:ring-1 focus-visible:ring-fg/60 ${
-                error ? "border-red-500/60" : "border-border-strong"
+              className={`w-full rounded-md border bg-bg px-2.5 py-2 font-mono text-[12px] text-fg outline-none placeholder:text-muted-50 focus-visible:ring-1 focus-visible:ring-fg/60 ${
+                error ? "border-danger-fill/60" : "border-border-strong"
               }`}
             />
-            {error ? <p className="mt-1.5 text-[11.5px] text-red-400">{error}</p> : null}
+            {error ? <p className="mt-1.5 text-[11.5px] text-danger">{error}</p> : null}
             <div className="mt-4 flex justify-end gap-2">
               <button
                 type="button"
@@ -386,7 +386,7 @@ function AddProjectDialog({
               <button
                 type="submit"
                 disabled={add.isPending || path.trim().length === 0}
-                className="rounded-md border border-accent bg-accent px-3 py-1.5 text-[12.5px] font-medium text-bg outline-none hover:brightness-110 focus-visible:ring-1 focus-visible:ring-fg/60 disabled:opacity-50"
+                className="rounded-md border border-accent bg-accent-fill px-3 py-1.5 text-[12.5px] font-medium text-on-accent outline-none hover:brightness-110 focus-visible:ring-1 focus-visible:ring-fg/60 disabled:opacity-50"
               >
                 {add.isPending ? "Adding…" : proposed ? "Add it" : "Add project"}
               </button>
@@ -481,7 +481,7 @@ export function ProjectGrid() {
             <PhantomCard hero={empty} pending={pick.isPending} onClick={() => pick.mutate()} />
           </div>
           {empty ? (
-            <p className="mt-6 text-[11.5px] text-muted/70">
+            <p className="mt-6 text-[11.5px] text-muted-70">
               Or run{" "}
               <code className="rounded border border-border bg-panel px-1.5 py-0.5 font-mono text-muted">
                 frizz

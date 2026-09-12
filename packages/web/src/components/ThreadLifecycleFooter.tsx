@@ -152,7 +152,7 @@ function PendingSnooze({ thread }: { thread: ThreadView }) {
       {/* `INK_TRIM_HOURGLASS` because this glyph is the strip's most inset mark — lucide's `Hourglass`
           paints 8px of its 12px box, so with `px-0.5` it carries 4px of dead space a side and would
           otherwise sit 8px further from its neighbours than the strip's other marks do. */}
-      <span data-pending-snooze aria-label={detail} className={`flex items-center px-0.5 text-muted/60 ${INK_TRIM_HOURGLASS}`}>
+      <span data-pending-snooze aria-label={detail} className={`flex items-center px-0.5 text-muted-60 ${INK_TRIM_HOURGLASS}`}>
         <Hourglass size={12} />
       </span>
     </Tooltip>
@@ -331,10 +331,10 @@ function CompletionHoldBody({ hold }: { hold: CompletionHold | undefined }) {
                 <span aria-hidden className={CHILD_ARROW_CLASS}>{CHILD_ARROW}</span>
                 <span className="min-w-0 truncate text-fg/80">{item.label}</span>
                 {/* Stale is why we ask rather than proof of life: say so instead of implying either. */}
-                {item.stale && <span className="shrink-0 text-[11px] text-muted/60">no recent output</span>}
+                {item.stale && <span className="shrink-0 text-[11px] text-muted-60">no recent output</span>}
               </li>
             ))}
-            {group.overflow > 0 && <li className="pl-[15px] text-muted/60">+{group.overflow} more</li>}
+            {group.overflow > 0 && <li className="pl-[15px] text-muted-60">+{group.overflow} more</li>}
           </ul>
         </div>
       ))}

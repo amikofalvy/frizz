@@ -68,7 +68,7 @@ export function RestartOverlay({ open, message }: { open: boolean; message?: str
       // z-[300] beats the shared Radix Dialog (z-[200]) so a dialog already open when a
       // supervisor-initiated restart begins is covered, not tied. A heavier black wash than the
       // frosted dialogs (black/55 vs /30) reads as a genuine block; the scrim captures pointer events.
-      className="fixed inset-0 z-[300] flex items-center justify-center bg-black/55 px-4 backdrop-blur-md backdrop-saturate-150"
+      className="fixed inset-0 z-[300] flex items-center justify-center bg-scrim-55 px-4 backdrop-blur-md backdrop-saturate-150"
     >
       <div
         ref={cardRef}
@@ -82,7 +82,7 @@ export function RestartOverlay({ open, message }: { open: boolean; message?: str
         <p className="mt-2 text-[12.5px] leading-relaxed text-muted">{RESTART_BODY}</p>
         {/* Only the supervisor's changing status line is a live region, so a screen reader isn't
             re-read the whole dialog each poll; alertdialog already announces the rest once on open. */}
-        {detail && <p aria-live="polite" className="mt-2 text-[11.5px] leading-relaxed text-muted/80">{detail}</p>}
+        {detail && <p aria-live="polite" className="mt-2 text-[11.5px] leading-relaxed text-muted-80">{detail}</p>}
       </div>
     </div>
   )

@@ -2,7 +2,8 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import { readFileSync } from "node:fs"
 import vm from "node:vm"
-import { parseThemePreference, resolveTheme } from "./theme.ts"
+import { getThemeSnapshot, initTheme, parseThemePreference, resolveTheme, setThemePreference, subscribeTheme } from "./theme.ts"
+import { recoveryPage, unauthorizedPage } from "../../../server/src/supervisor-pages.ts"
 
 test("theme preferences validate independently from the resolved appearance", () => {
   assert.equal(parseThemePreference("system"), "system")
@@ -44,4 +45,108 @@ test("the runtime and pre-paint resolver share the dedicated preference key and 
   assert.match(entry, /#f6f8fa/)
   assert.match(runtime, /THEME_STORAGE_KEY = "frizz-theme"/)
   assert.match(runtime, /LIGHT_CANVAS = "#f6f8fa"/)
+})
+
+const declarations = (css: string) => Object.fromEntries([...css.matchAll(/(--[\w-]+):\s*([^;]+);/g)].map(([, name, value]) => [name, value.trim()]))
+
+test("both palettes are complete, including OS fallback and recovery subset parity", () => {
+  const css = readFileSync(new URL("../theme.css", import.meta.url), "utf8")
+  const dark = declarations(css.split(':root, :root[data-theme="dark"] {')[1]!.split("}")[0]!)
+  const light = declarations(css.split(':root[data-theme="light"] {')[1]!.split("}")[0]!)
+  const fallback = declarations(css.split(':root:not([data-theme]) {')[1]!.split("}")[0]!)
+  assert.deepEqual(Object.keys(dark).sort(), Object.keys(light).sort())
+  assert.deepEqual(light, fallback)
+  const recovery = recoveryPage("/")
+  const recoveryDark = declarations(recovery.split(":root{")[1]!.split("}")[0]!)
+  const recoveryLight = declarations(recovery.split(":root[data-theme=light]{")[1]!.split("}")[0]!)
+  const normalize = (color: string) => color === "#fff" ? "#ffffff" : color
+  for (const name of ["bg", "panel", "panel-2", "border", "border-strong", "fg", "muted", "accent"]) {
+    assert.equal(normalize(recoveryDark[`--${name}`]!), dark[`--frizz-${name}`], `dark ${name}`)
+    assert.equal(normalize(recoveryLight[`--${name}`]!), light[`--frizz-${name}`], `light ${name}`)
+  }
+  assert.doesNotMatch(unauthorizedPage(), /frizz|board|agent/i)
+})
+
+test("actual startup scripts and runtime agree for the complete preference matrix", () => {
+  const entry = readFileSync(new URL("../../index.html", import.meta.url), "utf8")
+  const scripts = [entry, recoveryPage("/")].map(html => [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)][0]![1]!)
+  const css = readFileSync(new URL("../theme.css", import.meta.url), "utf8")
+  for (const stored of [null, "system", "dark", "light", "invalid"]) for (const systemDark of [false, true]) for (const denied of [false, true]) for (const noMedia of [false, true]) {
+    const expected = resolveTheme(parseThemePreference(denied ? null : stored), noMedia ? false : systemDark)
+    for (const script of scripts) {
+      const meta = { content: "", setAttribute(_: string, value: string) { this.content = value } }
+      const root = { dataset: {} as Record<string, string>, style: {} as Record<string, string> }
+      vm.runInNewContext(script, {
+        localStorage: { getItem() { if (denied) throw new Error("denied"); return stored } },
+        matchMedia: noMedia ? undefined : () => ({ matches: systemDark }),
+        document: { documentElement: root, querySelector: () => meta },
+      })
+      assert.equal(root.dataset.theme, expected)
+      assert.equal(root.style.colorScheme, expected)
+      const palette = css.split(expected === "dark" ? ':root, :root[data-theme="dark"] {' : ':root[data-theme="light"] {')[1]!.split("}")[0]!
+      assert.equal(meta.content, declarations(palette)["--frizz-bg"])
+    }
+  }
+})
+
+test("runtime retains memory choices, stable snapshots and one disposable listener pair", () => {
+  const keys = ["window", "document", "localStorage"] as const
+  const previous = keys.map(key => Object.getOwnPropertyDescriptor(globalThis, key))
+  const events = new Map<string, (event: any) => void>()
+  const mediaEvents = new Set<(event: { matches: boolean }) => void>()
+  let stored: string | null = null
+  let failedWrite = false
+  let writes = 0
+  const storage = { getItem: () => stored, setItem(_: string, value: string) { writes++; if (failedWrite) throw new Error("full"); stored = value } }
+  const media = { matches: true, addEventListener(_: string, fn: (event: { matches: boolean }) => void) { mediaEvents.add(fn) }, removeEventListener(_: string, fn: (event: { matches: boolean }) => void) { mediaEvents.delete(fn) } }
+  const root = { dataset: {} as Record<string, string>, style: {} as Record<string, string> }
+  const win = { matchMedia: () => media, addEventListener(name: string, fn: (event: any) => void) { events.set(name, fn) }, removeEventListener(name: string) { events.delete(name) } }
+  Object.defineProperties(globalThis, { window: { configurable: true, value: win }, document: { configurable: true, value: { documentElement: root, querySelector: () => null } }, localStorage: { configurable: true, value: storage } })
+  let cleanup: (() => void) | undefined
+  const notifications: string[] = []
+  const unsubscribe = subscribeTheme(() => notifications.push(getThemeSnapshot().resolved))
+  try {
+    cleanup = initTheme()
+    assert.equal(initTheme(), cleanup)
+    assert.equal(mediaEvents.size, 1)
+    assert.equal(events.size, 1)
+    const stable = getThemeSnapshot()
+    setThemePreference("system")
+    assert.equal(getThemeSnapshot(), stable)
+    setThemePreference("light")
+    media.matches = false
+    for (const listener of mediaEvents) listener(media)
+    media.matches = true
+    for (const listener of mediaEvents) listener(media)
+    assert.equal(getThemeSnapshot().resolved, "light")
+    setThemePreference("system")
+    const beforeOS = writes
+    media.matches = false
+    for (const listener of mediaEvents) listener(media)
+    assert.equal(getThemeSnapshot().resolved, "light")
+    assert.equal(writes, beforeOS)
+    failedWrite = true
+    setThemePreference("dark")
+    for (const listener of mediaEvents) listener(media)
+    assert.equal(getThemeSnapshot().resolved, "dark")
+    const beforeStorage = writes
+    events.get("storage")!({ key: "frizz-theme", newValue: "light", storageArea: {} })
+    assert.equal(getThemeSnapshot().resolved, "dark", "sessionStorage is not theme storage")
+    events.get("storage")!({ key: "frizz-theme", newValue: null, storageArea: storage })
+    assert.deepEqual(getThemeSnapshot(), { preference: "system", resolved: "light" })
+    events.get("storage")!({ key: "frizz-theme", newValue: "dark", storageArea: storage })
+    events.get("storage")!({ key: null, storageArea: storage })
+    assert.deepEqual(getThemeSnapshot(), { preference: "system", resolved: "light" })
+    assert.equal(writes, beforeStorage)
+    assert.ok(notifications.length >= 4)
+    cleanup?.()
+    assert.equal(mediaEvents.size, 0)
+    assert.equal(events.size, 0)
+    cleanup = initTheme()
+    assert.equal(mediaEvents.size, 1, "HMR can reinitialize")
+  } finally {
+    unsubscribe()
+    cleanup?.()
+    keys.forEach((key, i) => { if (previous[i]) Object.defineProperty(globalThis, key, previous[i]!); else Reflect.deleteProperty(globalThis, key) })
+  }
 })

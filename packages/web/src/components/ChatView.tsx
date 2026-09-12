@@ -1597,7 +1597,7 @@ export function ThreadHeader({ slug, onStatusApplied, onClose, showReturnToQueue
             )}
             <AiRenameButton thread={thread} hidden={editingTitle} />
           </div>
-          <LastActive at={lastActiveLabelAt(thread)} fallbackAt={thread.spawnedAt} className="mt-0.5 block truncate text-[11px] leading-tight text-muted/75" />
+          <LastActive at={lastActiveLabelAt(thread)} fallbackAt={thread.spawnedAt} className="mt-0.5 block truncate text-[11px] leading-tight text-muted-75" />
         </div>
       </div>
       {/* At constrained drawer widths, controls get their own deliberate row. This keeps the
@@ -2336,7 +2336,7 @@ export function ToolStatusMeta({ status, backgroundState, liveBackgroundState, e
             : [undefined, undefined]
   const duration = durationMs !== undefined ? formatToolDuration(durationMs) : undefined
   const title = [longLabel, duration].filter(Boolean).join(" · ")
-  const tone = status === "failed" ? "frizz-tool-failed" : status === "cancelled" ? "text-amber-400" : "text-muted/55"
+  const tone = status === "failed" ? "frizz-tool-failed" : status === "cancelled" ? "text-attention" : "text-muted-55"
   return (
     <ToolMetaReading
       tone={tone}
@@ -2423,7 +2423,7 @@ function ToolCard({ name, detail, count, status, backgroundState, liveBackground
         </span>
         <span className="flex shrink-0 items-center gap-2">
           <ToolStatusMeta status={status} backgroundState={backgroundState} liveBackgroundState={liveBackgroundState} exitCode={exitCode} durationMs={durationMs} />
-          {count > 1 && <span className="tabular-nums text-[11px] text-muted/45">×{count}</span>}
+          {count > 1 && <span className="tabular-nums text-[11px] text-muted-45">×{count}</span>}
         </span>
       </div>
     </div>
@@ -2855,7 +2855,7 @@ export function AgentBlock({
               {profile && (
                 <span
                   data-subagent-profile
-                  className="petite-caps frizz-tool-header-caps shrink-0 whitespace-nowrap text-[11.5px] leading-none text-muted/55"
+                  className="petite-caps frizz-tool-header-caps shrink-0 whitespace-nowrap text-[11.5px] leading-none text-muted-55"
                   title={`Sub-agent profile: ${profile}`}
                 >
                   {profile}
@@ -2867,10 +2867,10 @@ export function AgentBlock({
                   row's flex gap while the reading's identical dot ("stopped · 41 min") is spaced by two
                   text spaces, and the two rhythms did not agree — measured 8.91/8.26px of ink against
                   the text one's 6.51/7.01. Trimmed, they read as one chain (6.9/6.3). */}
-              {profile && reading && <span aria-hidden className="petite-caps frizz-tool-header-caps -mx-[2px] shrink-0 text-[11.5px] leading-none text-muted/55">·</span>}
+              {profile && reading && <span aria-hidden className="petite-caps frizz-tool-header-caps -mx-[2px] shrink-0 text-[11.5px] leading-none text-muted-55">·</span>}
               {reading && (
                 <ToolMetaReading
-                  tone={reading.tone === "failed" ? "frizz-tool-failed" : "text-muted/55"}
+                  tone={reading.tone === "failed" ? "frizz-tool-failed" : "text-muted-55"}
                   title={reading.title}
                   label={reading.label}
                   duration={reading.duration}
@@ -3230,7 +3230,7 @@ function UserBubble({ text, rawText, queued, deliveryUnconfirmed, deliveryId, so
           terminal", from when a worker sat in a pane an operator could open; there is no such surface
           now, so it states the fact and leaves the next move to them. */}
       {deliveryUnconfirmed && (
-        <div className="text-[11px] text-amber-400/80">Delivery unconfirmed — no receipt from the worker</div>
+        <div className="text-[11px] text-attention-80">Delivery unconfirmed — no receipt from the worker</div>
       )}
       {/* No "click to unqueue" hint: the hover lift above already says the bubble is live, and a
           label spelling that out is noise on every queued send. Only the IN-FLIGHT retraction gets a
@@ -3507,7 +3507,7 @@ export const Message = memo(function Message({ m, answering, dense, paired, text
           type="button"
           data-mobile-answer-open
           onClick={() => setAnswerSheetOpen(true)}
-          className="flex h-[40px] items-center justify-center rounded-[12px] bg-accent px-4 text-[15px] font-semibold text-bg active:brightness-90"
+          className="flex h-[40px] items-center justify-center rounded-[12px] bg-accent-fill px-4 text-[15px] font-semibold text-on-accent active:brightness-90"
         >
           {askBlocks.length > 1 ? `Answer ${askBlocks.length} questions` : "Answer"}
         </button>
@@ -3584,12 +3584,12 @@ function ProseHtml({ md, wrap }: { md: string; wrap?: boolean }) {
 // passes the tool name + target + status through it, so the card IS the frame — see ImageFrame).
 export function BlockImage({ path, hideCaption, altText, header }: { path: string; hideCaption?: boolean; altText?: string; header?: ReactNode }) {
   const [broken, setBroken] = useState(false)
-  if (broken) return <div className="font-mono-keep text-[12px] text-muted/70 break-all">{path}</div>
+  if (broken) return <div className="font-mono-keep text-[12px] text-muted-70 break-all">{path}</div>
   const base = path.split("/").filter(Boolean).pop() || path
   return (
     <ImageFrame
       header={header}
-      caption={hideCaption ? undefined : <figcaption className="bg-panel-2 px-2 pb-1.5 font-mono-keep text-[11px] text-muted/60 break-all">{base}</figcaption>}
+      caption={hideCaption ? undefined : <figcaption className="bg-panel-2 px-2 pb-1.5 font-mono-keep text-[11px] text-muted-60 break-all">{base}</figcaption>}
     >
       <img
         src={localImageUrl(path)}
@@ -4181,7 +4181,7 @@ export function PendingAskCard({ ask, onTerminal }: { ask: PendingAsk; onTermina
       <div className="flex flex-col gap-3">
         {ask.questions.map((q, i) => (
           <div key={i} className="flex flex-col gap-1.5">
-            {q.header && <div className="text-[10px] uppercase tracking-wide text-muted/55">{q.header}</div>}
+            {q.header && <div className="text-[10px] uppercase tracking-wide text-muted-55">{q.header}</div>}
             <div className="min-w-0 text-[12px] font-medium leading-5 text-fg">{q.question}</div>
             {q.options.length > 0 && (
               <div className="flex flex-col gap-1">
@@ -4191,10 +4191,10 @@ export function PendingAskCard({ ask, onTerminal }: { ask: PendingAsk; onTermina
                   // question card's chips have to their card, so a row reads as a row on every surface.
                   <div key={j} className="rounded-md border border-border bg-elevated px-3 py-1.5 text-[12px] text-fg/80">
                     <span className="font-medium text-fg/90">{o.label}</span>
-                    {o.description && <span className="text-muted/70"> — {o.description}</span>}
+                    {o.description && <span className="text-muted-70"> — {o.description}</span>}
                   </div>
                 ))}
-                {q.multiSelect && <div className="text-[10px] text-muted/50">select one or more</div>}
+                {q.multiSelect && <div className="text-[10px] text-muted-50">select one or more</div>}
               </div>
             )}
           </div>
@@ -4606,7 +4606,7 @@ export function WorkingIndicator({ since, startedAt, activityLabel, run }: { sin
           />
         )}
       </span>
-      <span className="shrink-0 whitespace-nowrap tabular-nums text-[12px] text-muted/60">{durationLabel}</span>
+      <span className="shrink-0 whitespace-nowrap tabular-nums text-[12px] text-muted-60">{durationLabel}</span>
     </>
   )
   return (

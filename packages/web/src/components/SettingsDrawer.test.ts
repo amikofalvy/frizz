@@ -86,7 +86,7 @@ test("the Codex context window presets come from the catalogue, not a hand-typed
 
 test("notification recovery aligns with its control and keeps recovery instructions visible", () => {
   const denied = source.slice(source.indexOf("function NotifDeniedHelp"), source.indexOf("function hostOf"))
-  assert.match(denied, /className="flex flex-col gap-1 text-\[11px\] text-muted\/70"/)
+  assert.match(denied, /className="flex flex-col gap-1 text-\[11px\] text-muted-70"/)
   assert.doesNotMatch(denied, /pl-6/)
   assert.match(denied, /Notifications are blocked for this site/)
   assert.match(denied, /Paste this into a new tab, set Notifications/)
