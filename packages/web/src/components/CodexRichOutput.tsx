@@ -16,6 +16,7 @@ import {
 import type { CodexHostDirective, CodexHostDirectiveValue } from "../lib/codexHostDirectives.ts"
 import { BLOCK_RADIUS } from "./TranscriptCard.tsx"
 import { getThemeSnapshot, subscribeTheme } from "../lib/theme.ts"
+import { createMermaidRenderQueue } from "../lib/mermaidRenderQueue.ts"
 
 function text(attrs: CodexHostDirective["attrs"], key: string): string | undefined {
   const value = attrs[key]
@@ -170,7 +171,6 @@ export function CodexDirectiveCard({ directive }: { directive: CodexHostDirectiv
 
 type MermaidModule = typeof import("mermaid")["default"]
 let mermaidModule: Promise<MermaidModule> | undefined
-let mermaidQueue: Promise<unknown> = Promise.resolve()
 let nextMermaidRender = 0
 
 function loadMermaid(): Promise<MermaidModule> {
@@ -186,15 +186,14 @@ function mermaidColors() {
   }
 }
 
-function renderMermaid(id: string, source: string) {
-  const request = mermaidQueue.then(async () => {
+const mermaidRenderer = createMermaidRenderQueue(
+  async (request) => {
     const mermaid = await loadMermaid()
-    mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: getThemeSnapshot().resolved === "dark" ? "dark" : "base", themeVariables: mermaidColors() })
-    return mermaid.render(id, source)
-  })
-  mermaidQueue = request.catch(() => {})
-  return request
-}
+    mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: request.resolved === "dark" ? "dark" : "base", themeVariables: request.palette })
+    return mermaid.render(request.id, request.source)
+  },
+  (id) => document.getElementById(`d${id}`)?.remove(),
+)
 
 export function MermaidDiagram({ source }: { source: string }) {
   const reactId = useId()
@@ -213,16 +212,13 @@ export function MermaidDiagram({ source }: { source: string }) {
       return () => { live = false }
     }
     const id = `frizz-mermaid-${reactId.replace(/[^a-zA-Z0-9]/g, "")}-${++nextMermaidRender}`
-    void renderMermaid(id, source)
+    void mermaidRenderer.enqueue({ id, source, resolved, palette: mermaidColors() })
       .then(({ svg }) => { if (live && generation.current === currentGeneration) setState({ html: svg }) })
       .catch((error: unknown) => {
         if (!live || generation.current !== currentGeneration) return
         const message = error instanceof Error ? error.message.split(/\n| for text:/, 1)[0] : "Unknown diagram error"
         setState({ error: message.slice(0, 240) })
       })
-      // Mermaid appends a `d<id>` scratch container to document.body while rendering. Its rejection
-      // path leaves that node behind as a giant error diagram unless the host removes it explicitly.
-      .finally(() => document.getElementById(`d${id}`)?.remove())
     return () => { live = false }
   }, [reactId, resolved, source])
 
