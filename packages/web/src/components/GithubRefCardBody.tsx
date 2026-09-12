@@ -144,7 +144,7 @@ function StatePill({ card }: { card: GithubRefCard }) {
   return (
     <span
       data-gh-pill
-      className="inline-flex items-baseline gap-1 rounded-full px-2.5 py-1 text-[12px] font-medium text-[color:var(--color-accent-fg)]"
+      className="inline-flex items-baseline gap-1 rounded-full px-2.5 py-1 text-[12px] font-medium text-[color:var(--gh-on-emphasis)]"
       style={{ backgroundColor: style.bg }}
     >
       {/* ITEMS-BASELINE, not items-center, and the size in `em` rather than px. Every one of these
