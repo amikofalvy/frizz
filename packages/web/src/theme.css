@@ -86,5 +86,16 @@
 }
 
 @media (prefers-color-scheme: light) {
-  :root:not([data-theme]) { color-scheme: light; }
+  :root:not([data-theme]) {
+    color-scheme: light;
+    --frizz-bg: #f6f8fa; --frizz-panel: #ffffff; --frizz-panel-2: #f1f4f7; --frizz-elevated: #ffffff; --frizz-inset: #edf1f5;
+    --frizz-border: #d0d7de; --frizz-border-strong: #afb8c1; --frizz-fg: #1f2328; --frizz-muted: #57606a; --frizz-faint: #6e7781;
+    --frizz-accent: #9a6700; --frizz-accent-fg: #ffffff; --frizz-user-bubble: #dbeafe; --frizz-user-bubble-fg: #182230;
+    --frizz-live: #1a7f37; --frizz-watch: #8250df; --frizz-idle: #6e7781; --frizz-shell: #0969da; --frizz-hover: rgb(9 105 218 / .08); --frizz-scrim: rgb(31 35 40 / .42); --frizz-focus: rgb(9 105 218 / .45);
+    --code-kw: #cf222e; --code-op: var(--code-kw); --code-fn: #8250df; --code-num: #0550ae; --code-str: #0a3069; --code-type: #953800; --code-com: #6e7781; --code-tag: #116329; --code-punct: #24292f;
+    --code-base: #24292f; --code-add: #116329; --code-del: #cf222e; --code-add-bg: #dafbe1; --code-del-bg: #ffebe9; --code-gutter: #6e7781;
+    --gh-fg-success: #1a7f37; --gh-bg-success-emphasis: #1f883d; --gh-fg-danger: #cf222e; --gh-bg-danger-emphasis: #cf222e; --gh-fg-done: #8250df; --gh-bg-done-emphasis: #8250df; --gh-fg-attention: #9a6700; --gh-fg-neutral: #57606a; --gh-bg-neutral-emphasis: #6e7781; --gh-danger-link: #cf222e;
+    --terminal-cursor: #1f2328; --terminal-selection: rgb(9 105 218 / .22); --terminal-black: #24292f; --terminal-red: #cf222e; --terminal-green: #116329; --terminal-yellow: #9a6700; --terminal-blue: #0969da; --terminal-magenta: #8250df; --terminal-cyan: #0a7f8c; --terminal-white: #57606a; --terminal-bright-black: #6e7781; --terminal-bright-red: #a40e26; --terminal-bright-green: #1a7f37; --terminal-bright-yellow: #7d4e00; --terminal-bright-blue: #0550ae; --terminal-bright-magenta: #6639ba; --terminal-bright-cyan: #007c83; --terminal-bright-white: #1f2328;
+    --viz-series-1: #0969da; --viz-series-2: #1a7f37; --viz-series-3: #9a6700; --viz-series-4: #8250df; --viz-series-5: #cf222e; --viz-series-6: #0a7f8c;
+  }
 }

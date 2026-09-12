@@ -170,7 +170,7 @@ export function CodexDirectiveCard({ directive }: { directive: CodexHostDirectiv
 
 type MermaidModule = typeof import("mermaid")["default"]
 let mermaidModule: Promise<MermaidModule> | undefined
-let mermaidQueue = Promise.resolve()
+let mermaidQueue: Promise<unknown> = Promise.resolve()
 let nextMermaidRender = 0
 
 function loadMermaid(): Promise<MermaidModule> {
