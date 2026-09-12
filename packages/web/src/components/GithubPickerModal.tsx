@@ -13,6 +13,7 @@ import { buildGithubBatchInput, dispatchProfileError } from "../lib/githubDispat
 import { useGithubStatus } from "./GithubTrigger.tsx"
 import { applyRowSelection } from "../lib/rowRangeSelection.ts"
 import { PRIMER } from "../lib/primer.ts"
+import { githubLabelColors } from "../lib/githubLabelColors.ts"
 import { compactAge } from "../lib/activityTime.ts"
 
 type Kind = "issues" | "prs"
@@ -398,13 +399,13 @@ function StateIcon({ item }: { item: GithubItem }) {
 }
 
 
-// A github-style label chip: the label's own color as outline + text on a faint tint. Truncates long names.
+// The shared label treatment protects contrast while retaining the API hue in the tint and border.
 function LabelChip({ name, color }: { name: string; color: string }) {
-  const hex = /^[0-9a-fA-F]{6}$/.test(color) ? `#${color}` : undefined
+  const label = githubLabelColors(color)
   return (
     <span
       className="max-w-[130px] shrink-0 truncate rounded-full border px-1.5 py-px text-[9.5px] leading-[13px]"
-      style={hex ? { borderColor: `${hex}59`, color: hex, backgroundColor: `${hex}14` } : undefined}
+      style={{ color: label.foreground, backgroundColor: label.background, borderColor: label.border }}
       title={name}
     >
       {name}
