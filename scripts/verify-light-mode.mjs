@@ -90,6 +90,10 @@ try {
   const setTheme = async preference => {
     await page.evaluate(async preference => { const theme = await import("/src/lib/theme.ts"); theme.setThemePreference(preference) }, preference)
     await page.waitForFunction(expected => document.documentElement.dataset.theme === expected, {}, preference === "system" ? "dark" : preference)
+    await page.evaluate(async () => {
+      await new Promise(requestAnimationFrame)
+      await Promise.all(document.getAnimations().filter(a => a.effect?.getTiming().iterations !== Infinity).map(a => a.finished.catch(() => {})))
+    })
   }
   const palettes = baseline ? ["dark"] : ["dark", "light"]
   for (const font of process.argv.includes("--behavior-only") ? [] : ["sans", "mono"]) {
