@@ -182,14 +182,14 @@ function mermaidColors() {
   const root = getComputedStyle(document.documentElement)
   const color = (name: string) => root.getPropertyValue(name).trim()
   return {
-    background: color("--color-panel-2"), primaryColor: color("--color-panel-2"), primaryTextColor: color("--color-fg"), primaryBorderColor: color("--color-border-strong"), lineColor: color("--color-muted"), secondaryColor: color("--color-panel"), tertiaryColor: color("--color-bg"), fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+    background: color("--color-panel-2"), primaryColor: color("--color-panel-2"), primaryTextColor: color("--color-fg"), primaryBorderColor: color("--color-border-strong"), lineColor: color("--color-muted"), secondaryColor: color("--color-border"), tertiaryColor: color("--color-bg"), fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
   }
 }
 
 function renderMermaid(id: string, source: string) {
   const request = mermaidQueue.then(async () => {
     const mermaid = await loadMermaid()
-    mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: "base", themeVariables: mermaidColors() })
+    mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: getThemeSnapshot().resolved === "dark" ? "dark" : "base", themeVariables: mermaidColors() })
     return mermaid.render(id, source)
   })
   mermaidQueue = request.catch(() => {})

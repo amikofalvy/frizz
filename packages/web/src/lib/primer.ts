@@ -68,7 +68,7 @@ export const PRIMER = {
   fgNeutral: "var(--gh-fg-neutral)",
   /** `--bgColor-neutral-emphasis` — the "Draft" / "Closed as not planned" pill fill. */
   bgNeutralEmphasis: "var(--gh-bg-neutral-emphasis)",
-  onEmphasis: "var(--color-accent-fg)",
+  onEmphasis: "var(--gh-on-emphasis)",
 } as const
 
 /** The "view failures" link on a red PR watch row — the one place a Primer colour needs a HOVER state,

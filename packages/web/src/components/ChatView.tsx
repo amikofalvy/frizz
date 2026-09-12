@@ -3090,8 +3090,8 @@ function SentContextBody({ body, items }: { body: string; items: SentContextItem
       })}
       {openItem && (
         <span className="mt-2 block cursor-auto rounded-md border border-bg/20 bg-bg/[0.06] px-2 py-1.5" onClick={(e) => e.stopPropagation()}>
-          <span className="block truncate font-mono-keep text-[11px] text-bg/60">{openItem.display}{openItem.startLine !== undefined ? ` · ${openItem.startLine === openItem.endLine ? `line ${openItem.startLine}` : `lines ${openItem.startLine}-${openItem.endLine}`}` : ""}</span>
-          <span className="mt-1 block max-h-40 overflow-y-auto whitespace-pre-wrap break-words font-mono-keep text-[11.5px] leading-4 text-bg/80">{openItem.text}</span>
+          <span className="block truncate font-mono-keep text-[11px] text-user-bubble-fg/60">{openItem.display}{openItem.startLine !== undefined ? ` · ${openItem.startLine === openItem.endLine ? `line ${openItem.startLine}` : `lines ${openItem.startLine}-${openItem.endLine}`}` : ""}</span>
+          <span className="mt-1 block max-h-40 overflow-y-auto whitespace-pre-wrap break-words font-mono-keep text-[11.5px] leading-4 text-user-bubble-fg/80">{openItem.text}</span>
         </span>
       )}
     </>
@@ -3176,7 +3176,7 @@ function UserBubble({ text, rawText, queued, deliveryUnconfirmed, deliveryId, so
           // in the app uses. A KEYBOARD focus ring still has to exist, so it keeps the accent — but
           // OFFSET onto the near-black page, which is the only place this yellow reads clean and is how
           // every other focus ring in the app is drawn.
-          className={`relative ${BLOCK_RADIUS} rounded-br-sm bg-user-bubble px-3.5 py-3 text-[14px] whitespace-pre-wrap [overflow-wrap:anywhere] text-bg ${queued ? "opacity-50" : ""} ${unqueueable ? "cursor-pointer transition-opacity group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-bg" : ""} ${unqueuePending ? "!opacity-30" : ""}`}
+          className={`relative ${BLOCK_RADIUS} rounded-br-sm bg-user-bubble px-3.5 py-3 text-[14px] whitespace-pre-wrap [overflow-wrap:anywhere] text-user-bubble-fg ${queued ? "opacity-50" : ""} ${unqueueable ? "cursor-pointer transition-opacity group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-bg" : ""} ${unqueuePending ? "!opacity-30" : ""}`}
         >
           {/* Verbatim bytes, but link-shaped runs (a pasted URL, `#123`, a commit hash) render as the
               anchors they would be in agent prose — see LinkifiedText. The anchors stop their own
