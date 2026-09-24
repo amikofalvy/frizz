@@ -137,7 +137,7 @@ export class Readout {
 
   /** The terminal rows an untruncated line takes: one, or as many as it wraps to. */
   private rowsOf(line: string): number {
-    return Math.max(1, Math.ceil(visibleLength(line) / this.width))
+    return Math.max(1, Math.ceil(cellWidth(line) / this.width))
   }
 
   /** Truncate to the terminal width so a row can never wrap — wrapping desynchronizes the repaint. */
@@ -424,6 +424,36 @@ const SGR = /\x1b\[[0-9;]*m/g
 
 export function visibleLength(line: string): number {
   return line.replace(SGR, "").length
+}
+
+/**
+ * Terminal CELLS a line occupies, which is what decides where it wraps: a CJK ideograph or an emoji
+ * takes two, a combining mark or a zero-width joiner takes none. `visibleLength` counts code units,
+ * which is right for the truncation above (a slice has to land between code units) and wrong for
+ * predicting a wrap — a path with `界` in it wrapped a row the QR sizing had not reserved (review on
+ * #44, 2026-09-23). The ranges are the East Asian Wide/Fullwidth blocks plus emoji presentation; a
+ * full Unicode width table would be over-engineering for a launch readout.
+ */
+export function cellWidth(line: string): number {
+  let cells = 0
+  for (const char of line.replace(SGR, "")) {
+    const cp = char.codePointAt(0)!
+    if (/\p{M}/u.test(char) || cp === 0x200b || cp === 0x200c || cp === 0x200d || cp === 0xfe0f) continue
+    cells +=
+      (cp >= 0x1100 && cp <= 0x115f) ||
+      (cp >= 0x2e80 && cp <= 0xa4cf) ||
+      (cp >= 0xac00 && cp <= 0xd7a3) ||
+      (cp >= 0xf900 && cp <= 0xfaff) ||
+      (cp >= 0xfe30 && cp <= 0xfe4f) ||
+      (cp >= 0xff00 && cp <= 0xff60) ||
+      (cp >= 0xffe0 && cp <= 0xffe6) ||
+      (cp >= 0x1f300 && cp <= 0x1f64f) ||
+      (cp >= 0x1f900 && cp <= 0x1f9ff) ||
+      (cp >= 0x20000 && cp <= 0x3fffd)
+        ? 2
+        : 1
+  }
+  return cells
 }
 
 /** Take `limit` visible characters, preserving whatever colour codes were already open. */

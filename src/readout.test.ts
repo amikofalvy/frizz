@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Readout, clockTime, formatDuration, noticeOnlyReadout, renderSupervisorActivity, tildePath, visibleLength } from "./readout.ts";
+import { Readout, cellWidth, clockTime, formatDuration, noticeOnlyReadout, renderSupervisorActivity, tildePath, visibleLength } from "./readout.ts";
 
 class Capture {
   chunks: string[] = [];
@@ -192,6 +192,30 @@ test("the ready block's QR is sized against the rows the block itself takes, wra
   const wrappedQr = wrapped.raw.split("\n").filter((line) => /\x1b\[48;5;(0|15)m/.test(line));
   assert.equal(wrappedQr.length, Math.ceil(codeRows / 2), "a wrapped entry costs the rows the big rendering needed");
   assert.match(wrapped.raw, /[▀▄]/, "so the half-block rendering is what prints");
+
+  // Width is CELLS, not characters: sixty ideographs are sixty code units — one row by length — but
+  // a hundred and twenty cells, which is two rows at this width, and that second row is the one the
+  // glyph-free code needed.
+  const wide = Object.assign(new Capture(true, 100), { rows: frame + codeRows });
+  new Readout({ output: wide, color: false, tickMs: 60_000 }).ready(
+    [...entries, { label: "Project", value: "界".repeat(60) }],
+    "press ctrl-c to stop",
+    { qrUrl: url },
+  );
+  const wideQr = wide.raw.split("\n").filter((line) => /\x1b\[48;5;(0|15)m/.test(line));
+  assert.equal(wideQr.length, Math.ceil(codeRows / 2) + 0, "a wide-character entry is counted at the rows it wraps to");
+  assert.match(wide.raw, /[▀▄]/, "so the half-block rendering is what prints");
+});
+
+test("cellWidth counts terminal cells: wide characters two, combining marks and joiners none", () => {
+  assert.equal(cellWidth("abc"), 3);
+  assert.equal(cellWidth("\x1b[1mabc\x1b[0m"), 3, "colour codes take no cells");
+  assert.equal(cellWidth("界"), 2);
+  assert.equal(cellWidth("日本語"), 6);
+  assert.equal(cellWidth("é"), 1, "a combining accent rides on its base");
+  assert.equal(cellWidth("👍"), 2);
+  assert.equal(cellWidth("‍"), 0, "a zero-width joiner");
+  assert.equal(cellWidth("~/code/frizz"), visibleLength("~/code/frizz"), "ASCII agrees with visibleLength");
 });
 
 test("labels in the ready block align on one column regardless of length", () => {
