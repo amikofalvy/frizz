@@ -12,10 +12,12 @@
 // of a region we are still redrawing.
 
 import type { SupervisorActivity } from "@frizz/server/dev-supervisor"
+import { renderQrLines } from "@frizz/server/qr"
 
 export interface ReadoutOutput {
   isTTY?: boolean
   columns?: number
+  rows?: number
   write(chunk: string): boolean
 }
 
@@ -131,6 +133,11 @@ export class Readout {
 
   private get width(): number {
     return Math.max(40, this.out.columns ?? 80)
+  }
+
+  /** The terminal rows an untruncated line takes: one, or as many as it wraps to. */
+  private rowsOf(line: string): number {
+    return Math.max(1, Math.ceil(visibleLength(line) / this.width))
   }
 
   /** Truncate to the terminal width so a row can never wrap — wrapping desynchronizes the repaint. */
@@ -318,7 +325,7 @@ export class Readout {
   ready(
     entries: Array<{ label: string; value: string; accent?: boolean }>,
     hint?: string,
-    options: { status?: string; warning?: string; qr?: string[] } = {},
+    options: { status?: string; warning?: string; qrUrl?: string } = {},
   ): void {
     for (const step of this.steps) if (step.state === "active") this.settle(step.key, "done")
     const elapsed = formatDuration(this.now() - this.startedAt)
@@ -334,7 +341,7 @@ export class Readout {
       return
     }
     const width = entries.reduce((max, entry) => Math.max(max, entry.label.length), 0) + 1
-    const lines = [
+    const above = [
       "",
       `  ${this.c(`${ANSI.bold}${ANSI.magenta}`, "FRIZZ")}${
         this.version ? ` ${this.c(ANSI.dim, `v${this.version}`)}` : ""
@@ -350,13 +357,25 @@ export class Readout {
         const value = entry.accent ? this.c(ANSI.cyan, entry.value) : this.c(ANSI.dim, entry.value)
         return `  ${arrow}  ${label} ${value}`
       }),
+    ]
+    const below = [
       // Yellow, above the dim hint: exposing the board off loopback is the one launch outcome the
       // operator must not skim past, so it may not share the hint's low-contrast styling.
-      ...(options.qr?.length ? ["", ...options.qr.map((row) => `  ${row}`)] : []),
       ...(options.warning ? ["", `  ${this.c(ANSI.yellow, options.warning)}`] : []),
       ...(hint ? ["", `  ${this.c(ANSI.dim, hint)}`] : []),
       "",
     ]
+    // The QR is rendered HERE, last, against the rows the rest of this block actually takes — with
+    // each untruncated entry counted at the height it wraps to — so the glyph-free rendering is chosen
+    // only when the whole block fits the window, and the half-block one otherwise. A fixed reserve at
+    // the call site could not know that (review on #44, 2026-09-23).
+    const qr = options.qrUrl
+      ? renderQrLines(options.qrUrl, {
+          columns: this.width - 2,
+          rows: (this.out.rows ?? 24) - [...above, "", ...below].reduce((rows, line) => rows + this.rowsOf(line), 0),
+        })
+      : []
+    const lines = [...above, ...(qr.length ? ["", ...qr.map((row) => `  ${row}`)] : []), ...below]
     // Erase the boot region and leave the final block in the scrollback.
     const rewind = this.painted > 0 ? `\x1b[${this.painted}A\r\x1b[0J` : "\r\x1b[0J"
     this.out.write(`${rewind}${lines.join("\n")}\n`)

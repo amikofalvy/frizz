@@ -162,6 +162,38 @@ test("reopening an already-running server reports what it found, not a boot time
   assert.equal(/frizz: ready in/.test(piped.rendered), false, piped.rendered);
 });
 
+test("the ready block's QR is sized against the rows the block itself takes, wrapped entries included", () => {
+  // The readout renders the code LAST, against what is left of the window after its own lines — and
+  // an untruncated Logs path that wraps counts at the height it wraps to, which no fixed reserve at
+  // the call site could know (review on #44, 2026-09-23). Sized so that the glyph-free rendering fits
+  // with short entries and does not once a long path eats the rows it needed.
+  const url = "https://colin.frizz.sh/?frizz_code=pW58RJTeG4IMkc6ojgC";
+  const entries = [
+    { label: "Local", value: "http://127.0.0.1:4923/" },
+    { label: "Public", value: url },
+  ];
+  const codeRows = 41; // a version-3 code (29 modules) plus a four-module quiet zone on each side
+  const frame = 3 + entries.length + 2 + 2 + 1; // heading rows, entries, the QR's blank, hint with blank, trailing blank
+  const roomy = Object.assign(new Capture(true, 100), { rows: frame + codeRows });
+  new Readout({ output: roomy, color: false, tickMs: 60_000 }).ready(entries, "press ctrl-c to stop", { qrUrl: url });
+  // `raw`, not `rendered`: the replay strips every escape sequence, and the QR's cells ARE colour sequences.
+  const roomyQr = roomy.raw.split("\n").filter((line) => /\x1b\[48;5;(0|15)m/.test(line));
+  assert.equal(roomyQr.length, codeRows, "with room, one terminal row per module row — the glyph-free rendering");
+  assert.equal(/[▀▄]/.test(roomy.raw), false, "and no glyph anywhere in it");
+
+  // Same window, but a Logs path 250 characters long: three rows at 100 columns, so the block no
+  // longer fits the glyph-free code and the half-block rendering is chosen instead.
+  const wrapped = Object.assign(new Capture(true, 100), { rows: frame + codeRows });
+  new Readout({ output: wrapped, color: false, tickMs: 60_000 }).ready(
+    [...entries, { label: "Logs", value: `~/${"very/long/".repeat(24)}frizz.log` }],
+    "press ctrl-c to stop",
+    { qrUrl: url },
+  );
+  const wrappedQr = wrapped.raw.split("\n").filter((line) => /\x1b\[48;5;(0|15)m/.test(line));
+  assert.equal(wrappedQr.length, Math.ceil(codeRows / 2), "a wrapped entry costs the rows the big rendering needed");
+  assert.match(wrapped.raw, /[▀▄]/, "so the half-block rendering is what prints");
+});
+
 test("labels in the ready block align on one column regardless of length", () => {
   const out = new Capture(true);
   const readout = new Readout({ output: out, color: false, tickMs: 60_000 });

@@ -856,7 +856,7 @@ async function openOrPrint(
       ...(warnings.length > 0 ? { warning: warnings.join(" ") } : {}),
       // Scannable, because the point of the link is to reach a phone and nobody types 40 characters
       // off a terminal. Only when there IS a link — a loopback board has nothing to scan.
-      ...(accessLink ? { qr: renderQrLines(accessLink.url) } : {}),
+      ...(accessLink ? { qrUrl: accessLink.url } : {}),
     }
   );
 }
