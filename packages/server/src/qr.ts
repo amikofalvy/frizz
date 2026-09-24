@@ -3,34 +3,37 @@ import qrcode from "qrcode-generator"
 /**
  * Render a string as a QR code sized for a terminal.
  *
- * Three decisions worth stating, because each is the difference between "scans instantly" and "does
- * not scan at all":
+ * Two decisions worth stating, because both are the difference between "scans instantly" and "does not
+ * scan at all":
  *
- * NO GLYPHS WHEN THERE IS ROOM. A terminal paints a cell's BACKGROUND edge to edge; it paints a
- * GLYPH wherever the font put the ink, and a font's block glyphs need not fill the cell. Measured on
- * the maintainer's terminal (2026-09-23, screenshot of a real Tailscale sign-in): every `▀` was one
- * pixel narrower than its 14-pixel cell, so a hairline of the terminal's own background ran down
- * every column boundary through every glyph — while the quiet zone, painted as background alone,
- * was seamless in both directions (values 229–230 across 110 pixels, no dips). The finder patterns
- * came out as combs and the phone would not read them ("the markers are not solid, there are random
- * lines going through it"). So the default rendering draws NOTHING: one module per terminal row, two
- * background-painted spaces per module (cells are about twice as tall as wide, so two make a square),
- * and there is no ink for a font or a minimum-contrast setting to mistreat.
+ * HALF BLOCKS. Terminal cells are about twice as tall as they are wide, so one module per cell yields a
+ * QR stretched 2:1 that many phone cameras refuse. Packing two module ROWS into one cell with `▀`
+ * (upper half block) makes the code square AND halves its height — a 33-module code is 41 columns with
+ * its quiet zone, which is 21 rows instead of 41 and therefore fits an 80x24 terminal.
  *
- * HALF BLOCKS WHEN THERE IS NOT. Two columns and one row per module needs `2×size` columns and
- * `size` rows — 90×45 for a five-version code — and a QR the terminal wraps or scrolls is as
- * unscannable as a striped one. The room that counts is what the CODE gets, after the caller's indent
- * and the lines it prints around it (review on #44, 2026-09-23: the first cut measured the whole
- * terminal and would have chosen blocks for a code the readout then scrolled off). Below that, two
- * module ROWS share one cell: a half block in dark ink
- * on a light background, `▀` when the top module is the dark one and `▄` when the bottom is, and a
- * bare background-painted space when both are the same. That still draws glyphs on the mixed cells,
- * so it inherits the font's hairlines there; it is the fallback, not the default.
+ * EXPLICIT COLOUR, NOT BARE GLYPHS. A QR needs dark modules on a light field. Drawing glyphs in the
+ * terminal's default colours inverts that on a dark theme, which is most of them, and an inverted QR
+ * does not scan on iOS. So every cell sets an explicit foreground and background instead of trusting
+ * the theme. The quiet zone is drawn, not assumed — a QR flush against surrounding text is unreadable
+ * even when the code itself is perfect.
  *
- * EXPLICIT COLOUR, NOT THE THEME. A QR needs dark modules on a light field. Drawing in the terminal's
- * default colours inverts that on a dark theme, which is most of them, and an inverted QR does not
- * scan on iOS. So every cell sets its own colours. The quiet zone is drawn, not assumed — a QR flush
- * against surrounding text is unreadable even when the code itself is perfect.
+ * NO GLYPH IN A UNIFORM CELL. A pair of dark modules used to be `▀` in dark ink on a dark background,
+ * and that is a glyph the SAME colour as the field behind it — which is exactly what a terminal's
+ * minimum-contrast setting exists to "repair" by lightening the ink, and what any font whose half block
+ * stops short of the cell edge leaves a hairline of background through. Either way every solid dark
+ * run came out striped, and a phone would not read the finder patterns (maintainer's screenshot,
+ * 2026-09-23: "the qr code is unscannable, looks like some artifacts"). The light field never
+ * striped, because a light glyph on a light background is invisible whatever happens to it. So a
+ * uniform cell is now a bare space over its colour as background, with no glyph to mistreat; only a
+ * MIXED cell draws a half block, and always as dark ink on a light background — `▀` when the top
+ * module is the dark one, `▄` when the bottom is — so the one edge the glyph draws is a real module
+ * edge, and the contrast across it is the full contrast a scanner wants.
+ *
+ * A font whose half block is a pixel narrower than its cell still leaves a hairline through the dark
+ * half of each mixed cell. A glyph-free rendering (two background-painted columns per module, one row
+ * each) avoids that entirely, and was tried on #44 — but it is four times the area of this one, 82x41
+ * cells for a typical sign-in link, which dominates a terminal. Rejected for size; the hairline is
+ * confined to mixed cells and a camera's blur absorbs it.
  */
 
 const LIGHT_BG = "\x1b[48;5;15m"
@@ -41,47 +44,12 @@ const UPPER_HALF = "▀"
 const LOWER_HALF = "▄"
 /** Four modules is the spec's minimum quiet zone; less and the finder patterns stop being findable. */
 const QUIET_ZONE = 4
-/**
- * What a caller that names no area is assumed to put around the code, so the default fit is judged on
- * the space the code itself gets rather than on the whole terminal. Every current surface indents the
- * rows by two columns; the readout (readout.ts) is the largest frame, at up to 14 rows — a heading,
- * five labelled entries, the warning, the hint and their blank lines — and its entries are deliberately
- * never truncated, so the two that carry a path (Project, Logs) can each wrap onto a second or third
- * line on a narrow window. Twenty covers that; erring high only costs the half-block fallback, erring
- * low costs a code that scrolls off. A pane that knows its own frame passes the exact area instead
- * (access-pane.ts, remote-pane.ts).
- */
-const ASSUMED_INDENT = 2
-const ASSUMED_FRAME_ROWS = 20
-
-export type QrStyle = "blocks" | "half"
 
 export interface QrRenderOptions {
   /** Error correction. "M" tolerates ~15% damage, which covers a slightly out-of-focus phone camera. */
   errorCorrection?: "L" | "M" | "Q" | "H"
   /** Emit plain `#`/space instead of ANSI colour, for tests and non-TTY sinks. */
   plain?: boolean
-  /**
-   * `blocks` — one module per row, two background-painted columns per module, no glyphs at all.
-   * `half` — two module rows per cell via half blocks; half the height, but glyph-dependent.
-   * Omitted: `blocks` when `columns`/`rows` have room for it, else `half`.
-   */
-  style?: QrStyle
-  /**
-   * The area the CODE ITSELF may occupy, in cells — the terminal minus the caller's own indent and
-   * the lines it prints around the code. Omitted: stdout's size (80×24 without a TTY) less the assumed
-   * indent and frame above, which is the readout's, the largest of the current surfaces.
-   */
-  columns?: number
-  rows?: number
-}
-
-/** The area a code gets by default on a terminal of the given size: the assumed indent and frame taken off. */
-export function qrAreaOf(terminal: { columns?: number; rows?: number }): { columns: number; rows: number } {
-  return {
-    columns: (terminal.columns ?? 80) - ASSUMED_INDENT,
-    rows: (terminal.rows ?? 24) - ASSUMED_FRAME_ROWS,
-  }
 }
 
 /** True when the module at (x, y) is dark; anything outside the code is quiet zone, hence light. */
@@ -105,15 +73,6 @@ function encode(value: string, errorCorrection: "L" | "M" | "Q" | "H"): { size: 
   }
 }
 
-/** The style a code of `size` modules gets, given the area it may occupy (see `QrRenderOptions`). */
-export function qrStyleFor(size: number, options: Pick<QrRenderOptions, "style" | "columns" | "rows"> = {}): QrStyle {
-  if (options.style) return options.style
-  const assumed = qrAreaOf(process.stdout)
-  const columns = options.columns ?? assumed.columns
-  const rows = options.rows ?? assumed.rows
-  return columns >= size * 2 && rows >= size ? "blocks" : "half"
-}
-
 /**
  * The code as terminal lines, quiet zone included. Returns lines rather than a blob so a caller can
  * centre it, box it, or repaint a region without re-encoding.
@@ -122,17 +81,6 @@ export function renderQrLines(value: string, options: QrRenderOptions = {}): str
   if (!value) throw new Error("renderQr requires a value")
   const { size, at } = encode(value, options.errorCorrection ?? "M")
   const lines: string[] = []
-  if (qrStyleFor(size, options) === "blocks") {
-    for (let y = 0; y < size; y++) {
-      let line = ""
-      for (let x = 0; x < size; x++) {
-        const dark = at(x, y)
-        line += options.plain ? (dark ? "##" : "  ") : `${dark ? DARK_BG : LIGHT_BG}  `
-      }
-      lines.push(options.plain ? line : `${line}${RESET}`)
-    }
-    return lines
-  }
   // Two module rows per terminal row. An odd final row pairs with quiet zone, which is light anyway.
   for (let y = 0; y < size; y += 2) {
     let line = ""
@@ -157,7 +105,6 @@ export function renderQr(value: string, options: QrRenderOptions = {}): string {
 }
 
 /** Width in terminal columns, so a caller can centre or box the code without rendering it first. */
-export function qrWidth(value: string, errorCorrection: "L" | "M" | "Q" | "H" = "M", options: Pick<QrRenderOptions, "style" | "columns" | "rows"> = {}): number {
-  const { size } = encode(value, errorCorrection)
-  return qrStyleFor(size, options) === "blocks" ? size * 2 : size
+export function qrWidth(value: string, errorCorrection: "L" | "M" | "Q" | "H" = "M"): number {
+  return encode(value, errorCorrection).size
 }

@@ -62,11 +62,7 @@ export function createAccessPane(options: AccessPaneOptions): AccessPane {
         : `Single use, expires in ${remaining}s.`;
     output.write(CLEAR);
     output.write("\n");
-    // The area the code gets: this pane indents it two columns and prints five rows around it — the
-    // blank above, the URL and the status with their blanks. Named exactly, so the glyph-free rendering
-    // is chosen only when it really fits (see qr.ts).
-    const area = { columns: (output.columns ?? 80) - 2, rows: (output.rows ?? 24) - 5 };
-    for (const row of renderQrLines(shown.url, area)) output.write(`  ${row}\n`);
+    for (const row of renderQrLines(shown.url)) output.write(`  ${row}\n`);
     output.write(`\n  ${shown.url}\n`);
     output.write(`\n  ${DIM}${status}  Press any other key to close.${RESET}\n`);
   };

@@ -452,7 +452,7 @@ async function openOrPrint(port: number, reused: boolean, path = ""): Promise<vo
     {
       ...(reused ? { status: `already running on port ${port}` } : {}),
       ...(warnings.length > 0 ? { warning: warnings.join(" ") } : {}),
-      ...(activeAccessLink && !reused ? { qrUrl: activeAccessLink.url } : {}),
+      ...(activeAccessLink && !reused ? { qr: renderQrLines(activeAccessLink.url) } : {}),
     },
   );
 }

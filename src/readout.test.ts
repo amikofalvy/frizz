@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Readout, cellWidth, clockTime, formatDuration, noticeOnlyReadout, renderSupervisorActivity, tildePath, visibleLength } from "./readout.ts";
+import { Readout, clockTime, formatDuration, noticeOnlyReadout, renderSupervisorActivity, tildePath, visibleLength } from "./readout.ts";
 
 class Capture {
   chunks: string[] = [];
@@ -160,78 +160,6 @@ test("reopening an already-running server reports what it found, not a boot time
   });
   assert.match(piped.rendered, /frizz: already running on port 4923/);
   assert.equal(/frizz: ready in/.test(piped.rendered), false, piped.rendered);
-});
-
-test("the ready block's QR is sized against the rows the block itself takes, wrapped entries included", () => {
-  // The readout renders the code LAST, against what is left of the window after its own lines — and
-  // an untruncated Logs path that wraps counts at the height it wraps to, which no fixed reserve at
-  // the call site could know (review on #44, 2026-09-23). Sized so that the glyph-free rendering fits
-  // with short entries and does not once a long path eats the rows it needed.
-  const url = "https://colin.frizz.sh/?frizz_code=pW58RJTeG4IMkc6ojgC";
-  const entries = [
-    { label: "Local", value: "http://127.0.0.1:4923/" },
-    { label: "Public", value: url },
-  ];
-  const codeRows = 41; // a version-3 code (29 modules) plus a four-module quiet zone on each side
-  const frame = 3 + entries.length + 2 + 2 + 1; // heading rows, entries, the QR's blank, hint with blank, trailing blank
-  const roomy = Object.assign(new Capture(true, 100), { rows: frame + codeRows });
-  new Readout({ output: roomy, color: false, tickMs: 60_000 }).ready(entries, "press ctrl-c to stop", { qrUrl: url });
-  // `raw`, not `rendered`: the replay strips every escape sequence, and the QR's cells ARE colour sequences.
-  const roomyQr = roomy.raw.split("\n").filter((line) => /\x1b\[48;5;(0|15)m/.test(line));
-  assert.equal(roomyQr.length, codeRows, "with room, one terminal row per module row — the glyph-free rendering");
-  assert.equal(/[▀▄]/.test(roomy.raw), false, "and no glyph anywhere in it");
-
-  // Same window, but a Logs path 250 characters long: three rows at 100 columns, so the block no
-  // longer fits the glyph-free code and the half-block rendering is chosen instead.
-  const wrapped = Object.assign(new Capture(true, 100), { rows: frame + codeRows });
-  new Readout({ output: wrapped, color: false, tickMs: 60_000 }).ready(
-    [...entries, { label: "Logs", value: `~/${"very/long/".repeat(24)}frizz.log` }],
-    "press ctrl-c to stop",
-    { qrUrl: url },
-  );
-  const wrappedQr = wrapped.raw.split("\n").filter((line) => /\x1b\[48;5;(0|15)m/.test(line));
-  assert.equal(wrappedQr.length, Math.ceil(codeRows / 2), "a wrapped entry costs the rows the big rendering needed");
-  assert.match(wrapped.raw, /[▀▄]/, "so the half-block rendering is what prints");
-
-  // Width is CELLS, not characters: sixty ideographs are sixty code units — one row by length — but
-  // a hundred and twenty cells, which is two rows at this width, and that second row is the one the
-  // glyph-free code needed.
-  const wide = Object.assign(new Capture(true, 100), { rows: frame + codeRows });
-  new Readout({ output: wide, color: false, tickMs: 60_000 }).ready(
-    [...entries, { label: "Project", value: "界".repeat(60) }],
-    "press ctrl-c to stop",
-    { qrUrl: url },
-  );
-  const wideQr = wide.raw.split("\n").filter((line) => /\x1b\[48;5;(0|15)m/.test(line));
-  assert.equal(wideQr.length, Math.ceil(codeRows / 2), "a wide-character entry is counted at the rows it wraps to");
-  assert.match(wide.raw, /[▀▄]/, "so the half-block rendering is what prints");
-
-  // The same boundary with an emoji outside any hand-listed block: sixty rockets, one row by length,
-  // two by cells.
-  const rockets = Object.assign(new Capture(true, 100), { rows: frame + codeRows });
-  new Readout({ output: rockets, color: false, tickMs: 60_000 }).ready(
-    [...entries, { label: "Project", value: "🚀".repeat(60) }],
-    "press ctrl-c to stop",
-    { qrUrl: url },
-  );
-  const rocketsQr = rockets.raw.split("\n").filter((line) => /\x1b\[48;5;(0|15)m/.test(line));
-  assert.equal(rocketsQr.length, Math.ceil(codeRows / 2), "an emoji entry is counted at the rows it wraps to");
-});
-
-test("cellWidth counts terminal cells: wide characters two, combining marks and joiners none", () => {
-  assert.equal(cellWidth("abc"), 3);
-  assert.equal(cellWidth("\x1b[1mabc\x1b[0m"), 3, "colour codes take no cells");
-  assert.equal(cellWidth("界"), 2);
-  assert.equal(cellWidth("日本語"), 6);
-  assert.equal(cellWidth("é"), 1, "a combining accent rides on its base");
-  assert.equal(cellWidth("👍"), 2);
-  assert.equal(cellWidth("🚀"), 2, "U+1F680 sits outside the first hand-listed blocks and is wide by Unicode's own property");
-  assert.equal(cellWidth("🫠"), 2, "a newer emoji block");
-  assert.equal(cellWidth("❤"), 1, "a text-presentation symbol is narrow");
-  assert.equal(cellWidth("❤️"), 2, "until a variation selector asks for the emoji picture");
-  assert.equal(cellWidth("©"), 1, "a symbol that is not an emoji by default stays one cell");
-  assert.equal(cellWidth("‍"), 0, "a zero-width joiner");
-  assert.equal(cellWidth("~/code/frizz"), visibleLength("~/code/frizz"), "ASCII agrees with visibleLength");
 });
 
 test("labels in the ready block align on one column regardless of length", () => {

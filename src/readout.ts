@@ -12,12 +12,10 @@
 // of a region we are still redrawing.
 
 import type { SupervisorActivity } from "@frizz/server/dev-supervisor"
-import { renderQrLines } from "@frizz/server/qr"
 
 export interface ReadoutOutput {
   isTTY?: boolean
   columns?: number
-  rows?: number
   write(chunk: string): boolean
 }
 
@@ -133,11 +131,6 @@ export class Readout {
 
   private get width(): number {
     return Math.max(40, this.out.columns ?? 80)
-  }
-
-  /** The terminal rows an untruncated line takes: one, or as many as it wraps to. */
-  private rowsOf(line: string): number {
-    return Math.max(1, Math.ceil(cellWidth(line) / this.width))
   }
 
   /** Truncate to the terminal width so a row can never wrap — wrapping desynchronizes the repaint. */
@@ -325,7 +318,7 @@ export class Readout {
   ready(
     entries: Array<{ label: string; value: string; accent?: boolean }>,
     hint?: string,
-    options: { status?: string; warning?: string; qrUrl?: string } = {},
+    options: { status?: string; warning?: string; qr?: string[] } = {},
   ): void {
     for (const step of this.steps) if (step.state === "active") this.settle(step.key, "done")
     const elapsed = formatDuration(this.now() - this.startedAt)
@@ -341,7 +334,7 @@ export class Readout {
       return
     }
     const width = entries.reduce((max, entry) => Math.max(max, entry.label.length), 0) + 1
-    const above = [
+    const lines = [
       "",
       `  ${this.c(`${ANSI.bold}${ANSI.magenta}`, "FRIZZ")}${
         this.version ? ` ${this.c(ANSI.dim, `v${this.version}`)}` : ""
@@ -357,25 +350,13 @@ export class Readout {
         const value = entry.accent ? this.c(ANSI.cyan, entry.value) : this.c(ANSI.dim, entry.value)
         return `  ${arrow}  ${label} ${value}`
       }),
-    ]
-    const below = [
       // Yellow, above the dim hint: exposing the board off loopback is the one launch outcome the
       // operator must not skim past, so it may not share the hint's low-contrast styling.
+      ...(options.qr?.length ? ["", ...options.qr.map((row) => `  ${row}`)] : []),
       ...(options.warning ? ["", `  ${this.c(ANSI.yellow, options.warning)}`] : []),
       ...(hint ? ["", `  ${this.c(ANSI.dim, hint)}`] : []),
       "",
     ]
-    // The QR is rendered HERE, last, against the rows the rest of this block actually takes — with
-    // each untruncated entry counted at the height it wraps to — so the glyph-free rendering is chosen
-    // only when the whole block fits the window, and the half-block one otherwise. A fixed reserve at
-    // the call site could not know that (review on #44, 2026-09-23).
-    const qr = options.qrUrl
-      ? renderQrLines(options.qrUrl, {
-          columns: this.width - 2,
-          rows: (this.out.rows ?? 24) - [...above, "", ...below].reduce((rows, line) => rows + this.rowsOf(line), 0),
-        })
-      : []
-    const lines = [...above, ...(qr.length ? ["", ...qr.map((row) => `  ${row}`)] : []), ...below]
     // Erase the boot region and leave the final block in the scrollback.
     const rewind = this.painted > 0 ? `\x1b[${this.painted}A\r\x1b[0J` : "\r\x1b[0J"
     this.out.write(`${rewind}${lines.join("\n")}\n`)
@@ -424,39 +405,6 @@ const SGR = /\x1b\[[0-9;]*m/g
 
 export function visibleLength(line: string): number {
   return line.replace(SGR, "").length
-}
-
-/**
- * Terminal CELLS a line occupies, which is what decides where it wraps: a CJK ideograph or an emoji
- * takes two, a combining mark or a zero-width joiner takes none. `visibleLength` counts code units,
- * which is right for the truncation above (a slice has to land between code units) and wrong for
- * predicting a wrap — a path with `界` in it wrapped a row the QR sizing had not reserved (review on
- * #44, 2026-09-23). Emoji come from Unicode's own `Emoji_Presentation` property — the set that renders
- * as a wide picture by default, which is what terminals give two cells — rather than from a hand list
- * of blocks, which missed U+1F680 🚀 (second review). A text-presentation symbol such as ❤ is one cell
- * until a following U+FE0F asks for the emoji picture, and then it is two. The East Asian Wide and
- * Fullwidth blocks have no regex property, so they are the one hand-kept list.
- */
-export function cellWidth(line: string): number {
-  let cells = 0
-  const chars = [...line.replace(SGR, "")]
-  for (let i = 0; i < chars.length; i++) {
-    const char = chars[i]!
-    const cp = char.codePointAt(0)!
-    if (/\p{M}/u.test(char) || cp === 0x200b || cp === 0x200c || cp === 0x200d || cp === 0xfe0e || cp === 0xfe0f) continue
-    const emoji = /\p{Emoji_Presentation}/u.test(char) || (/\p{Extended_Pictographic}/u.test(char) && chars[i + 1] === "️")
-    const eastAsianWide =
-      (cp >= 0x1100 && cp <= 0x115f) ||
-      (cp >= 0x2e80 && cp <= 0xa4cf) ||
-      (cp >= 0xac00 && cp <= 0xd7a3) ||
-      (cp >= 0xf900 && cp <= 0xfaff) ||
-      (cp >= 0xfe30 && cp <= 0xfe4f) ||
-      (cp >= 0xff00 && cp <= 0xff60) ||
-      (cp >= 0xffe0 && cp <= 0xffe6) ||
-      (cp >= 0x20000 && cp <= 0x3fffd)
-    cells += emoji || eastAsianWide ? 2 : 1
-  }
-  return cells
 }
 
 /** Take `limit` visible characters, preserving whatever colour codes were already open. */
