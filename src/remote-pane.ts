@@ -169,7 +169,11 @@ export function createRemotePane(options: RemotePaneOptions): Pane {
     if (s.name === "done") {
       const lines = [s.message, ""];
       if (s.link) {
-        for (const row of renderQrLines(s.link.url)) lines.push(row);
+        // The area the code gets: `write` indents two columns and adds a blank line, and this screen
+        // puts eight more rows around the code — the message, the URL, the hint, the return prompt
+        // and their blanks. Named exactly, so the glyph-free rendering is chosen only when it fits.
+        const area = { columns: (output.columns ?? 80) - 2, rows: (output.rows ?? 24) - 9 };
+        for (const row of renderQrLines(s.link.url, area)) lines.push(row);
         lines.push("", s.link.url, "", `${DIM}Scan to sign in on a phone. Single use, expires in 5 minutes. Press L later for another.${RESET}`);
       }
       lines.push("", `${DIM}press any key to return${RESET}`);

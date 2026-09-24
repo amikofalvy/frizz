@@ -19,7 +19,10 @@ import qrcode from "qrcode-generator"
  *
  * HALF BLOCKS WHEN THERE IS NOT. Two columns and one row per module needs `2×size` columns and
  * `size` rows — 90×45 for a five-version code — and a QR the terminal wraps or scrolls is as
- * unscannable as a striped one. Below that, two module ROWS share one cell: a half block in dark ink
+ * unscannable as a striped one. The room that counts is what the CODE gets, after the caller's indent
+ * and the lines it prints around it (review on #44, 2026-09-23: the first cut measured the whole
+ * terminal and would have chosen blocks for a code the readout then scrolled off). Below that, two
+ * module ROWS share one cell: a half block in dark ink
  * on a light background, `▀` when the top module is the dark one and `▄` when the bottom is, and a
  * bare background-painted space when both are the same. That still draws glyphs on the mixed cells,
  * so it inherits the font's hairlines there; it is the fallback, not the default.
@@ -38,8 +41,15 @@ const UPPER_HALF = "▀"
 const LOWER_HALF = "▄"
 /** Four modules is the spec's minimum quiet zone; less and the finder patterns stop being findable. */
 const QUIET_ZONE = 4
-/** Rows the panes print around the code — a heading, the URL, a status line — that must fit too. */
-const SURROUNDING_ROWS = 6
+/**
+ * What a caller that names no area is assumed to put around the code, so the default fit is judged on
+ * the space the code itself gets rather than on the whole terminal. Every current surface indents the
+ * rows by two columns; the readout (readout.ts) is the largest frame, at up to 14 rows — a heading,
+ * five labelled entries, the warning, the hint and their blank lines. A pane that knows its own frame
+ * passes the exact area instead (access-pane.ts, remote-pane.ts).
+ */
+const ASSUMED_INDENT = 2
+const ASSUMED_FRAME_ROWS = 16
 
 export type QrStyle = "blocks" | "half"
 
@@ -54,9 +64,21 @@ export interface QrRenderOptions {
    * Omitted: `blocks` when `columns`/`rows` have room for it, else `half`.
    */
   style?: QrStyle
-  /** The terminal's size, for choosing the style. Defaults to stdout's, or 80×24 without a TTY. */
+  /**
+   * The area the CODE ITSELF may occupy, in cells — the terminal minus the caller's own indent and
+   * the lines it prints around the code. Omitted: stdout's size (80×24 without a TTY) less the assumed
+   * indent and frame above, which is the readout's, the largest of the current surfaces.
+   */
   columns?: number
   rows?: number
+}
+
+/** The area a code gets by default on a terminal of the given size: the assumed indent and frame taken off. */
+export function qrAreaOf(terminal: { columns?: number; rows?: number }): { columns: number; rows: number } {
+  return {
+    columns: (terminal.columns ?? 80) - ASSUMED_INDENT,
+    rows: (terminal.rows ?? 24) - ASSUMED_FRAME_ROWS,
+  }
 }
 
 /** True when the module at (x, y) is dark; anything outside the code is quiet zone, hence light. */
@@ -80,12 +102,13 @@ function encode(value: string, errorCorrection: "L" | "M" | "Q" | "H"): { size: 
   }
 }
 
-/** The style a code of `size` modules gets, given the terminal it is going to. */
+/** The style a code of `size` modules gets, given the area it may occupy (see `QrRenderOptions`). */
 export function qrStyleFor(size: number, options: Pick<QrRenderOptions, "style" | "columns" | "rows"> = {}): QrStyle {
   if (options.style) return options.style
-  const columns = options.columns ?? process.stdout.columns ?? 80
-  const rows = options.rows ?? process.stdout.rows ?? 24
-  return columns >= size * 2 && rows >= size + SURROUNDING_ROWS ? "blocks" : "half"
+  const assumed = qrAreaOf(process.stdout)
+  const columns = options.columns ?? assumed.columns
+  const rows = options.rows ?? assumed.rows
+  return columns >= size * 2 && rows >= size ? "blocks" : "half"
 }
 
 /**
