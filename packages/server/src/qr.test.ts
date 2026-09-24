@@ -134,12 +134,12 @@ test("glyph-free blocks are the default wherever the terminal has room, half blo
   assert.equal(renderQrLines(SAMPLE, { columns: 200, rows: 60 }).length, size, "blocks: one row per module row")
   assert.equal(qrWidth(SAMPLE, "M", { columns: 200, rows: 60 }), size * 2, "blocks: two columns per module")
   // A caller naming no area is assumed to frame the code like the readout, the largest current surface:
-  // two columns of indent and up to sixteen rows around it.
-  assert.deepEqual(qrAreaOf({ columns: 100, rows: 60 }), { columns: 98, rows: 44 })
-  assert.deepEqual(qrAreaOf({}), { columns: 78, rows: 8 }, "no TTY reads as 80x24")
-  assert.equal(qrStyleFor(size, qrAreaOf({ columns: size * 2 + 2, rows: size + 16 })), "blocks", "a terminal that fits the readout's frame")
-  assert.equal(qrStyleFor(size, qrAreaOf({ columns: size * 2 + 1, rows: size + 16 })), "half", "the indent counts")
-  assert.equal(qrStyleFor(size, qrAreaOf({ columns: size * 2 + 2, rows: size + 15 })), "half", "the frame counts")
+  // two columns of indent and up to twenty rows around it, wrapped path entries included.
+  assert.deepEqual(qrAreaOf({ columns: 100, rows: 60 }), { columns: 98, rows: 40 })
+  assert.deepEqual(qrAreaOf({}), { columns: 78, rows: 4 }, "no TTY reads as 80x24")
+  assert.equal(qrStyleFor(size, qrAreaOf({ columns: size * 2 + 2, rows: size + 20 })), "blocks", "a terminal that fits the readout's frame")
+  assert.equal(qrStyleFor(size, qrAreaOf({ columns: size * 2 + 1, rows: size + 20 })), "half", "the indent counts")
+  assert.equal(qrStyleFor(size, qrAreaOf({ columns: size * 2 + 2, rows: size + 19 })), "half", "the frame counts")
 })
 
 test("the glyph-free rendering is background paint alone — no ink anywhere, two cells per module", () => {

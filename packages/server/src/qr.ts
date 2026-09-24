@@ -45,11 +45,14 @@ const QUIET_ZONE = 4
  * What a caller that names no area is assumed to put around the code, so the default fit is judged on
  * the space the code itself gets rather than on the whole terminal. Every current surface indents the
  * rows by two columns; the readout (readout.ts) is the largest frame, at up to 14 rows — a heading,
- * five labelled entries, the warning, the hint and their blank lines. A pane that knows its own frame
- * passes the exact area instead (access-pane.ts, remote-pane.ts).
+ * five labelled entries, the warning, the hint and their blank lines — and its entries are deliberately
+ * never truncated, so the two that carry a path (Project, Logs) can each wrap onto a second or third
+ * line on a narrow window. Twenty covers that; erring high only costs the half-block fallback, erring
+ * low costs a code that scrolls off. A pane that knows its own frame passes the exact area instead
+ * (access-pane.ts, remote-pane.ts).
  */
 const ASSUMED_INDENT = 2
-const ASSUMED_FRAME_ROWS = 16
+const ASSUMED_FRAME_ROWS = 20
 
 export type QrStyle = "blocks" | "half"
 
