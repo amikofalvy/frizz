@@ -2,10 +2,13 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import { createRequire } from "node:module"
 import qrcode from "qrcode-generator"
-import { qrWidth, renderQr, renderQrLines } from "./qr.ts"
+import { qrStyleFor, qrWidth, renderQr, renderQrLines } from "./qr.ts"
 
 const QUIET_ZONE = 4
 const SAMPLE = "https://colin.frizz.sh/?frizz_code=pW58RJTeG4IMkc6ojgC"
+/** The half-block cases below ask for that style by name, so the size of the test runner's terminal cannot switch them. */
+const HALF = { style: "half" } as const
+const BLOCKS = { style: "blocks" } as const
 
 /** What the encoder itself says, so the test compares the RENDERING against ground truth, not itself. */
 function truth(value: string) {
@@ -30,7 +33,7 @@ test("the half-block rendering round-trips back to the exact module matrix", () 
   // and the result still LOOKS like a QR while scanning as garbage or not at all. So reconstruct the
   // matrix from the rendered glyphs and compare every cell against the encoder.
   const { size, dark } = truth(SAMPLE)
-  const lines = renderQrLines(SAMPLE, { plain: true })
+  const lines = renderQrLines(SAMPLE, { plain: true, ...HALF })
   assert.equal(lines.length, Math.ceil(size / 2), "one terminal row per two module rows")
   for (const line of lines) assert.equal(line.length, size, "every row is the full width incl. quiet zone")
 
@@ -47,7 +50,7 @@ test("the half-block rendering round-trips back to the exact module matrix", () 
 test("the quiet zone is drawn on all four sides, not assumed", () => {
   // A QR flush against surrounding terminal text does not scan, however correct the code itself is.
   const { size } = truth(SAMPLE)
-  const lines = renderQrLines(SAMPLE, { plain: true })
+  const lines = renderQrLines(SAMPLE, { plain: true, ...HALF })
   const blankRow = " ".repeat(size)
   for (let i = 0; i < QUIET_ZONE / 2; i++) {
     assert.equal(lines[i], blankRow, `top quiet-zone row ${i} is not blank`)
@@ -62,7 +65,7 @@ test("the quiet zone is drawn on all four sides, not assumed", () => {
 test("colour polarity is explicit, so a dark terminal theme cannot invert the code", () => {
   // An inverted QR does not scan on iOS. Dark modules must be painted dark REGARDLESS of theme, which
   // means every cell carries its own fg+bg rather than inheriting the terminal's.
-  const rendered = renderQr(SAMPLE)
+  const rendered = renderQr(SAMPLE, HALF)
   assert.match(rendered, /\x1b\[48;5;0m/, "some cell paints a dark pair as background")
   assert.match(rendered, /\x1b\[48;5;15m/, "some cell paints a light module as background")
   assert.ok(rendered.endsWith("\x1b[0m"), "the last row resets, or the terminal keeps the QR's colours")
@@ -85,7 +88,7 @@ test("a uniform cell is background only, and a half block is always dark ink on 
   // through — every solid dark run came out striped and the phone would not read the finders. So no
   // uniform cell may carry a glyph, and no glyph may share a colour with the field it sits on.
   const { size, dark } = truth(SAMPLE)
-  const lines = renderQrLines(SAMPLE)
+  const lines = renderQrLines(SAMPLE, HALF)
   assert.equal(lines.length, Math.ceil(size / 2))
   for (let row = 0; row < lines.length; row++) {
     const rowCells = cells(lines[row]!)
@@ -107,11 +110,72 @@ test("a uniform cell is background only, and a half block is always dark ink on 
 })
 
 test("a launch-sized code fits an 80x24 terminal", () => {
-  // The whole reason for half blocks. If this regresses, the QR silently stops being scannable because
-  // the terminal wraps it — which looks like a rendering bug and is actually a sizing one.
-  const width = qrWidth(SAMPLE)
+  // The whole reason half blocks still exist. If this regresses, the QR silently stops being scannable
+  // because the terminal wraps it — which looks like a rendering bug and is actually a sizing one.
+  const width = qrWidth(SAMPLE, "M", { columns: 80, rows: 24 })
   assert.ok(width <= 80, `QR is ${width} columns, wider than an 80-column terminal`)
-  assert.ok(renderQrLines(SAMPLE).length <= 24, "QR is taller than a 24-row terminal")
+  assert.ok(renderQrLines(SAMPLE, { columns: 80, rows: 24 }).length <= 24, "QR is taller than a 24-row terminal")
+})
+
+test("glyph-free blocks are the default wherever the terminal has room, half blocks where it has not", () => {
+  // The finding this encodes (2026-09-23): the font's `▀` was a pixel narrower than its cell, so every
+  // column boundary through every glyph showed a hairline of the terminal's background and the finder
+  // patterns came out as combs — while background paint was seamless. Only a rendering with NO glyph
+  // is immune, and it costs twice the rows and columns, so it is chosen exactly when they exist.
+  const { size } = truth(SAMPLE)
+  assert.equal(qrStyleFor(size, { columns: size * 2, rows: size + 6 }), "blocks", "just enough room")
+  assert.equal(qrStyleFor(size, { columns: size * 2 - 1, rows: 200 }), "half", "one column short wraps")
+  assert.equal(qrStyleFor(size, { columns: 200, rows: size + 5 }), "half", "one row short scrolls the heading off")
+  assert.equal(qrStyleFor(size, { columns: 80, rows: 24 }), "half", "the classic 80x24")
+  assert.equal(qrStyleFor(size, { columns: 80, rows: 24, style: "blocks" }), "blocks", "an explicit style is obeyed")
+  assert.equal(renderQrLines(SAMPLE, { columns: 200, rows: 60 }).length, size, "blocks: one row per module row")
+  assert.equal(qrWidth(SAMPLE, "M", { columns: 200, rows: 60 }), size * 2, "blocks: two columns per module")
+})
+
+test("the glyph-free rendering is background paint alone — no ink anywhere, two cells per module", () => {
+  const { size, dark } = truth(SAMPLE)
+  const lines = renderQrLines(SAMPLE, BLOCKS)
+  assert.equal(lines.length, size)
+  for (let y = 0; y < size; y++) {
+    const rowCells = cells(lines[y]!)
+    assert.equal(rowCells.length, size * 2, `row ${y} has two cells per module`)
+    for (let x = 0; x < size; x++) {
+      const expected = dark(x, y) ? "\x1b[48;5;0m" : "\x1b[48;5;15m"
+      const [first, second] = [rowCells[x * 2]!, rowCells[x * 2 + 1]!]
+      assert.equal(first.glyph, " ", `module (${x},${y}) is a bare space`)
+      assert.equal(second.glyph, " ", `module (${x},${y}) is a bare space`)
+      assert.deepEqual(first.sgr, [expected], `module (${x},${y}) is painted as background alone`)
+      assert.deepEqual(second.sgr, [], `module (${x},${y}): its second cell inherits the same background`)
+    }
+    assert.ok(lines[y]!.endsWith("\x1b[0m"), "every row resets")
+  }
+})
+
+test("the glyph-free rendering decodes back to its URL through a real QR decoder", () => {
+  const require_ = createRequire(import.meta.url)
+  const jsQR = require_("jsqr") as (d: Uint8ClampedArray, w: number, h: number) => { data: string } | null
+  const lines = renderQrLines(SAMPLE, { plain: true, ...BLOCKS })
+  const size = lines.length
+  for (const line of lines) assert.equal(line.length, size * 2, "plain blocks are two characters per module")
+  const scale = 4
+  const width = size * scale
+  const height = size * scale
+  const pixels = new Uint8ClampedArray(width * height * 4)
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const pair = lines[y]!.slice(x * 2, x * 2 + 2)
+      assert.ok(pair === "##" || pair === "  ", `module (${x},${y}) is a whole pair, got ${JSON.stringify(pair)}`)
+      const value = pair === "##" ? 0 : 255
+      for (let dy = 0; dy < scale; dy++) {
+        for (let dx = 0; dx < scale; dx++) {
+          const at = ((y * scale + dy) * width + (x * scale + dx)) * 4
+          pixels[at] = pixels[at + 1] = pixels[at + 2] = value
+          pixels[at + 3] = 255
+        }
+      }
+    }
+  }
+  assert.equal(jsQR(pixels, width, height)?.data, SAMPLE)
 })
 
 test("rendering refuses an empty value rather than emitting an unscannable box", () => {
@@ -125,7 +189,7 @@ test("the rendered code decodes back to its URL through a real QR decoder", () =
   const require_ = createRequire(import.meta.url)
   const jsQR = require_("jsqr") as (d: Uint8ClampedArray, w: number, h: number) => { data: string } | null
 
-  const lines = renderQrLines(SAMPLE, { plain: true })
+  const lines = renderQrLines(SAMPLE, { plain: true, ...HALF })
   const size = lines[0]!.length
   const scale = 4
   const width = size * scale
