@@ -203,8 +203,19 @@ test("the ready block's QR is sized against the rows the block itself takes, wra
     { qrUrl: url },
   );
   const wideQr = wide.raw.split("\n").filter((line) => /\x1b\[48;5;(0|15)m/.test(line));
-  assert.equal(wideQr.length, Math.ceil(codeRows / 2) + 0, "a wide-character entry is counted at the rows it wraps to");
+  assert.equal(wideQr.length, Math.ceil(codeRows / 2), "a wide-character entry is counted at the rows it wraps to");
   assert.match(wide.raw, /[▀▄]/, "so the half-block rendering is what prints");
+
+  // The same boundary with an emoji outside any hand-listed block: sixty rockets, one row by length,
+  // two by cells.
+  const rockets = Object.assign(new Capture(true, 100), { rows: frame + codeRows });
+  new Readout({ output: rockets, color: false, tickMs: 60_000 }).ready(
+    [...entries, { label: "Project", value: "🚀".repeat(60) }],
+    "press ctrl-c to stop",
+    { qrUrl: url },
+  );
+  const rocketsQr = rockets.raw.split("\n").filter((line) => /\x1b\[48;5;(0|15)m/.test(line));
+  assert.equal(rocketsQr.length, Math.ceil(codeRows / 2), "an emoji entry is counted at the rows it wraps to");
 });
 
 test("cellWidth counts terminal cells: wide characters two, combining marks and joiners none", () => {
@@ -214,6 +225,11 @@ test("cellWidth counts terminal cells: wide characters two, combining marks and 
   assert.equal(cellWidth("日本語"), 6);
   assert.equal(cellWidth("é"), 1, "a combining accent rides on its base");
   assert.equal(cellWidth("👍"), 2);
+  assert.equal(cellWidth("🚀"), 2, "U+1F680 sits outside the first hand-listed blocks and is wide by Unicode's own property");
+  assert.equal(cellWidth("🫠"), 2, "a newer emoji block");
+  assert.equal(cellWidth("❤"), 1, "a text-presentation symbol is narrow");
+  assert.equal(cellWidth("❤️"), 2, "until a variation selector asks for the emoji picture");
+  assert.equal(cellWidth("©"), 1, "a symbol that is not an emoji by default stays one cell");
   assert.equal(cellWidth("‍"), 0, "a zero-width joiner");
   assert.equal(cellWidth("~/code/frizz"), visibleLength("~/code/frizz"), "ASCII agrees with visibleLength");
 });

@@ -431,15 +431,21 @@ export function visibleLength(line: string): number {
  * takes two, a combining mark or a zero-width joiner takes none. `visibleLength` counts code units,
  * which is right for the truncation above (a slice has to land between code units) and wrong for
  * predicting a wrap — a path with `界` in it wrapped a row the QR sizing had not reserved (review on
- * #44, 2026-09-23). The ranges are the East Asian Wide/Fullwidth blocks plus emoji presentation; a
- * full Unicode width table would be over-engineering for a launch readout.
+ * #44, 2026-09-23). Emoji come from Unicode's own `Emoji_Presentation` property — the set that renders
+ * as a wide picture by default, which is what terminals give two cells — rather than from a hand list
+ * of blocks, which missed U+1F680 🚀 (second review). A text-presentation symbol such as ❤ is one cell
+ * until a following U+FE0F asks for the emoji picture, and then it is two. The East Asian Wide and
+ * Fullwidth blocks have no regex property, so they are the one hand-kept list.
  */
 export function cellWidth(line: string): number {
   let cells = 0
-  for (const char of line.replace(SGR, "")) {
+  const chars = [...line.replace(SGR, "")]
+  for (let i = 0; i < chars.length; i++) {
+    const char = chars[i]!
     const cp = char.codePointAt(0)!
-    if (/\p{M}/u.test(char) || cp === 0x200b || cp === 0x200c || cp === 0x200d || cp === 0xfe0f) continue
-    cells +=
+    if (/\p{M}/u.test(char) || cp === 0x200b || cp === 0x200c || cp === 0x200d || cp === 0xfe0e || cp === 0xfe0f) continue
+    const emoji = /\p{Emoji_Presentation}/u.test(char) || (/\p{Extended_Pictographic}/u.test(char) && chars[i + 1] === "️")
+    const eastAsianWide =
       (cp >= 0x1100 && cp <= 0x115f) ||
       (cp >= 0x2e80 && cp <= 0xa4cf) ||
       (cp >= 0xac00 && cp <= 0xd7a3) ||
@@ -447,11 +453,8 @@ export function cellWidth(line: string): number {
       (cp >= 0xfe30 && cp <= 0xfe4f) ||
       (cp >= 0xff00 && cp <= 0xff60) ||
       (cp >= 0xffe0 && cp <= 0xffe6) ||
-      (cp >= 0x1f300 && cp <= 0x1f64f) ||
-      (cp >= 0x1f900 && cp <= 0x1f9ff) ||
       (cp >= 0x20000 && cp <= 0x3fffd)
-        ? 2
-        : 1
+    cells += emoji || eastAsianWide ? 2 : 1
   }
   return cells
 }
