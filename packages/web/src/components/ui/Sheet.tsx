@@ -14,7 +14,7 @@ import {
 // Below 800px a drawer covers (nearly) the whole screen, so it behaves as a MODAL: ThreadSheet renders
 // a modal Radix dialog there, and a plain Sheet takes the matching scroll lock (see Sheet below).
 //
-// ONLY THE TOPMOST LIVE LAYER HOLDS THAT LOCK. react-remove-scroll lets exactly one lock decide — the
+// ONE LAYER HOLDS THAT LOCK: the topmost live one. react-remove-scroll lets exactly one lock decide — the
 // one that MOUNTED last — and it cancels every wheel and touchmove outside that lock's own element. A
 // plain sheet stacked over a thread (a `.md` reader, a sub-agent, a shell, the frizz-doc) is a sibling
 // of the thread's Radix dialog, not inside it, so while the thread's lock was the deciding one the
@@ -22,6 +22,17 @@ import {
 // the right lock last: Radix mounts its lock a commit late (its Portal waits for a layout effect), so a
 // thread that turns modal in the same commit as the sheet above it — a tablet rotated below 800px with
 // a reader open — lands on top. Holding the lock in one layer at a time makes the order irrelevant.
+//
+// With no live layer left, the last one still sliding out keeps it until it unmounts: otherwise the
+// final thread's close dropped the lock at the START of its 210ms exit, while it still covered the
+// page. A closing layer above a live one never holds it — the live layer's lock must win.
+export function useHoldsScrollLock(id: number): boolean {
+  const snap = useSnapshot(store)
+  const holder = [...snap.drawers].reverse().find((drawer) => !drawer.closing) ?? snap.drawers.at(-1)
+  return holder?.id === id
+}
+
+// The topmost layer that is not on its way out.
 export function useIsTopDrawer(id: number): boolean {
   const snap = useSnapshot(store)
   return [...snap.drawers].reverse().find((drawer) => !drawer.closing)?.id === id
@@ -168,16 +179,16 @@ export function Sheet({
   const { shown, close } = useSheetLayer(id)
   const panelRef = useRef<HTMLDivElement>(null)
   const narrow = useNarrowDrawer()
-  const top = useIsTopDrawer(id)
+  const holdsLock = useHoldsScrollLock(id)
   useOutsidePointerDismiss(id, panelRef, close, subagentParent)
   // The panel's own scroll lock while it is the top layer on a narrow screen — the lock the thread
-  // sheet below hands over (see useIsTopDrawer). Pinch-zoom stays allowed, as Radix's lock allows it.
+  // sheet below hands over (see useHoldsScrollLock). Pinch-zoom stays allowed, as Radix's lock allows it.
   return (
     <div
       className={`${SHEET_SCRIM_CLASS} pointer-events-none flex justify-end ${shown ? "opacity-100" : "opacity-0"}`}
       style={{ zIndex: 50 + depth * 2 }}
     >
-      <RemoveScroll ref={panelRef} enabled={narrow && top} allowPinchZoom forwardProps>
+      <RemoveScroll ref={panelRef} enabled={narrow && holdsLock} allowPinchZoom forwardProps>
         <div
           className={`${SHEET_PANEL_CLASS} pointer-events-auto ${shown ? "translate-x-0" : "translate-x-full"}`}
           style={{ width: sheetWidth(widthDepth, widthOffset) }}

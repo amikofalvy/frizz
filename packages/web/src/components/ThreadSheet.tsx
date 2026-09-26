@@ -6,7 +6,7 @@ import { useBoard } from "../hooks.ts"
 import { rpc } from "../api/rpc.ts"
 import { displayTitle } from "../groups.ts"
 import { registerDrawerFocus } from "../lib/overlays.ts"
-import { useIsTopDrawer, useNarrowDrawer, useSheetLayer } from "./ui/Sheet.tsx"
+import { useHoldsScrollLock, useIsTopDrawer, useNarrowDrawer, useSheetLayer } from "./ui/Sheet.tsx"
 import { SHEET_PANEL_CLASS, SHEET_SCRIM_CLASS, sheetWidth } from "../lib/sheet.ts"
 import { resolveThreadRoute } from "../lib/threadRouteState.ts"
 import { handleDialogEscape } from "../lib/selectOverlay.ts"
@@ -33,6 +33,7 @@ export function ThreadSheet({ id, slug, depth, widthDepth, initiallyOpen }: { id
   const initialScrollRef = useRef<DrawerInitialScrollCoordinator | null>(null)
   const drawerSnap = useSnapshot(store)
   const isTopDrawer = useIsTopDrawer(id)
+  const holdsScrollLock = useHoldsScrollLock(id)
   const narrow = useNarrowDrawer()
   // Sheets are store/route-mounted rather than opened by RadixDialog.Trigger. Preserve the focused
   // row/button (or the control in the layer below) so closing this stack layer restores it exactly.
@@ -178,9 +179,9 @@ export function ThreadSheet({ id, slug, depth, widthDepth, initiallyOpen }: { id
     <RadixDialog.Root modal={narrow} open onOpenChange={(open) => { if (!open) close() }}>
       <RadixDialog.Portal>
         {/* The modal Overlay is what carries Radix's scroll lock, so a thread covered by another layer
-            renders the same scrim WITHOUT it and lets the layer on top hold the lock (useIsTopDrawer).
+            renders the same scrim WITHOUT it and lets the layer on top hold the lock (useHoldsScrollLock).
             The Content stays modal either way: toggling `modal` would remount the whole transcript. */}
-        {narrow && !isTopDrawer ? (
+        {narrow && !holdsScrollLock ? (
           <div className={`${SHEET_SCRIM_CLASS} ${shown ? "opacity-100" : "opacity-0"}`} style={{ zIndex: 50 + depth * 2, pointerEvents: "auto" }} />
         ) : (
           <RadixDialog.Overlay

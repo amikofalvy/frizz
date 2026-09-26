@@ -45,16 +45,12 @@ test("a .md reader stacked over a thread scrolls by touch and by wheel on a phon
       return scrollTop()
     }
 
-    // A real finger drag: synthesized through the renderer's touch pipeline, so a cancelled touchmove
-    // stops it exactly as it stops a phone.
-    const cdp = await page.createCDPSession()
-    await cdp.send("Input.synthesizeScrollGesture", {
-      x: Math.round(scroller.x),
-      y: Math.round(scroller.y),
-      yDistance: -300,
-      gestureSourceType: "touch",
-      speed: 1200,
-    })
+    // A real finger drag: trusted touch events (Input.dispatchTouchEvent), so a cancelled touchmove
+    // stops it exactly as it stops a phone. Not Input.synthesizeScrollGesture — on Chrome 153 that
+    // emitted no touchmove at all and never scrolled, fix or no fix.
+    await page.touchscreen.touchStart(scroller.x, scroller.y + 150)
+    for (let step = 1; step <= 10; step++) await page.touchscreen.touchMove(scroller.x, scroller.y + 150 - step * 30)
+    await page.touchscreen.touchEnd()
     const afterTouch = await settle(0)
     assert.ok(afterTouch > 0, "a touch drag over the reader must scroll it")
 
