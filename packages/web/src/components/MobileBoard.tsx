@@ -507,7 +507,9 @@ const TAB_COUNT = "text-[12.5px] font-medium tabular-nums text-muted"
 export function MobileBoard() {
   const board = useBoard()
   const snap = useSnapshot(store)
-  const updateAvailable = canUpdateRestart(useSupervisorStatus().data ?? null)
+  const status = useSupervisorStatus().data ?? null
+  // The dev launcher always offers a rebuild; that is an action, not an observed newer release.
+  const updateAvailable = canUpdateRestart(status) && Boolean(status?.updateVersion)
   const [moreOpen, setMoreOpen] = useState(false)
   const [tab, setTab] = useState<Tab>("queue")
   // ONE row open at a time — two half-open rows read as a rendering fault.

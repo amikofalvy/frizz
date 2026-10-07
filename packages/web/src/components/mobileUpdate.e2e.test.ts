@@ -3,6 +3,8 @@ import test from "node:test"
 
 // Point at the BOARD URL of an isolated adhoc-stack, never the live instance. Only the supervisor
 // is simulated: the real App chooses its shell and renders the shared update/restart control.
+// Start with `nub scripts/adhoc-stack.mjs --port=49637 --project=/path/to/disposable/demo`, then run
+// `FRIZZ_MOBILE_UPDATE_E2E_URL=<board URL> nub run test packages/web/src/components/mobileUpdate.e2e.test.ts`.
 const url = process.env.FRIZZ_MOBILE_UPDATE_E2E_URL
 
 test("the real mobile shell exposes update/restart and keeps failure recovery reachable", { skip: !url, timeout: 90_000 }, async () => {
@@ -16,13 +18,14 @@ test("the real mobile shell exposes update/restart and keeps failure recovery re
     let unavailable = false
     let requests = 0
     let patch = false
+    let dev = false
     await page.setRequestInterception(true)
     page.on("request", async request => {
       const path = new URL(request.url()).pathname
       if (path === "/_frizz/control/status") {
         return request.respond({ status: unavailable ? 404 : 200, contentType: "application/json", body: JSON.stringify({
-          protocol: 1, state: "ready", updateRestart: true, updateAvailable: !current,
-          version: "0.13.8", updateVersion: current ? undefined : patch ? "0.13.9" : "0.14.0",
+          protocol: 1, state: "ready", updateRestart: true,
+          ...(dev ? { dev: true } : { updateAvailable: !current, version: "0.13.8", updateVersion: current ? undefined : patch ? "0.13.9" : "0.14.0" }),
         }) })
       }
       if (path === "/_frizz/control/update-restart") {
@@ -41,7 +44,11 @@ test("the real mobile shell exposes update/restart and keeps failure recovery re
       }
       await page.setViewport({ width, height: 844 })
       await page.goto(url!, { waitUntil: "networkidle2" })
-      await page.waitForSelector(width <= 700 ? "[data-mobile-board]" : "[data-status-row]")
+      try {
+        await page.waitForSelector(width <= 700 ? "[data-mobile-board]" : "[data-status-row]")
+      } catch (error) {
+        throw new Error(`Shell at ${width}px (${page.url()}): ${await page.$eval('body', el => el.innerText)}; page errors: ${errors.join('; ')}`, { cause: error })
+      }
     }
     const openMenu = async () => {
       await page.click("[data-mobile-more]")
@@ -102,6 +109,14 @@ test("the real mobile shell exposes update/restart and keeps failure recovery re
     await openMenu()
     await page.waitForSelector('button[aria-label="Update Frizz"]')
     assert.ok(await page.$("[data-mobile-update-row-notification]"))
+    dev = true
+    await load(390)
+    assert.equal(await page.$('[data-mobile-update-notification]'), null)
+    assert.equal(await page.$eval('[data-mobile-more]', el => el.getAttribute('aria-label')), 'Board actions')
+    await openMenu()
+    await page.waitForSelector('button[aria-label="Update Frizz"]')
+    assert.equal(await page.$eval('[data-mobile-update-row]', el => (el as HTMLButtonElement).disabled), false)
+    assert.equal(await page.$('[data-mobile-update-row-notification]'), null)
     await page.keyboard.press("Escape")
     await page.waitForSelector('[data-mobile-more-sheet]', { hidden: true })
     await openMenu()

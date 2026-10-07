@@ -274,7 +274,7 @@ export function RestartActionButton({
           <RefreshCw aria-hidden="true" className={`${MOBILE_MENU_ICON} text-muted-70 ${busy ? "animate-spin" : ""}`} />
           <span className="flex items-baseline gap-2">
             <span>{label}</span>
-            {update && !busy && <span data-mobile-update-row-notification aria-hidden="true" className={MOBILE_MENU_NOTIFICATION} />}
+            {update && !busy && updateVersion && <span data-mobile-update-row-notification aria-hidden="true" className={MOBILE_MENU_NOTIFICATION} />}
           </span>
         </span>
       </button>

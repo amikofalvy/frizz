@@ -93,13 +93,13 @@ test("mobile update and restart are labeled menu rows with a phone-sized touch t
 })
 
 test("the mobile update row identifies the notification source, including patch updates", () => {
-  for (const updateVersion of ["0.13.9", "0.14.0", undefined]) {
+  for (const updateVersion of ["0.13.9", "0.14.0"]) {
     const html = renderToStaticMarkup(createElement(RestartActionButton, { mobile: true, update: true, busy: false, version: "0.13.8", updateVersion, onClick: () => undefined }))
     assert.match(html, /data-mobile-update-row-notification/)
     assert.match(html, /bg-accent/)
     assert.match(html, /aria-hidden="true"/)
   }
-  for (const props of [{ update: false, busy: false }, { update: true, busy: true }]) {
+  for (const props of [{ update: false, busy: false, updateVersion: "0.14.0" }, { update: true, busy: true, updateVersion: "0.14.0" }, { update: true, busy: false }]) {
     const html = renderToStaticMarkup(createElement(RestartActionButton, { mobile: true, ...props, onClick: () => undefined }))
     assert.doesNotMatch(html, /data-mobile-update-row-notification/)
   }
