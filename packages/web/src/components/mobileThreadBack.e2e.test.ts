@@ -80,10 +80,17 @@ test("mobile thread Back returns direct/reloaded links to their project and pops
       await recorder?.stop()
     }
 
+    const priorBoardKey = await page.evaluate(() => history.state.key)
     await openFromBoard()
     await page.reload({ waitUntil: "networkidle2" })
     await waitForThread()
     await backToBoard()
+    // Reload fallback replaces the thread entry; it does not discard an older board underneath.
+    await page.goBack({ waitUntil: "networkidle2" })
+    assert.equal(new URL(page.url()).pathname, boardPath)
+    assert.equal(await page.evaluate(() => history.state.key), priorBoardKey)
+    assert.ok(await page.$("[data-mobile-board]"))
+    assert.equal(await page.$("[data-mobile-thread-back]"), null)
     assert.deepEqual(errors, [])
   } finally {
     await browser.close()

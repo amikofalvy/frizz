@@ -154,6 +154,9 @@ export function spaNavigate(path: string, options?: SpaNavigateOptions): void {
  * thread was opened from, and the thread's entry rewritten to it — so the next Back did nothing.
  * The same-URL entries lib/backDismiss pushes carry the router's state over, so live sheets retain the
  * identity. Reload creates a fresh identity, making the thread's arrow use its project-board fallback.
+ * This deliberately prioritizes reaching the project over deduplicating pre-reload history: if an
+ * older board entry exists, the next system Back can revisit it. Popping after reload could instead
+ * reach a dead sheet entry, and a cross-document pop also loses leaveFiledThread's popstate callback.
  */
 // A discriminator, not a credential; works on LAN HTTP too, where crypto.randomUUID is unavailable.
 const navigationSession = `${Date.now()}-${Math.random().toString(36).slice(2)}`
