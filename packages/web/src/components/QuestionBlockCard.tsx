@@ -14,11 +14,12 @@
 // It lives in its own module rather than in ChatView so BOTH producers can reach it: the interaction
 // surface (InteractionCards.tsx) is imported BY ChatView, so a question card defined inside ChatView
 // could only have been shared through a module cycle.
-import { Fragment, type ReactNode, useId, useLayoutEffect, useMemo, useRef } from "react"
+import { Fragment, type ReactNode, useEffect, useId, useLayoutEffect, useMemo, useRef } from "react"
 import { AlertTriangle, Check } from "lucide-react"
 import { useInlineMarkdownHtml, useMarkdownHtml } from "../lib/useMarkdown.ts"
 import { shouldSubmitStagedEnter } from "../lib/composerKeyboard.ts"
-import { parseQuestionBlock, type BlockAnswer, type ParsedQuestion, type QuestionKind } from "../lib/questionBlocks.ts"
+import { parseQuestionBlock, splitOptionId, type BlockAnswer, type ParsedQuestion, type QuestionKind } from "../lib/questionBlocks.ts"
+import { registerQuestionKeys, type QuestionKeyResult } from "../lib/questionKeys.ts"
 import { LinkedHtml } from "./LinkedHtml.tsx"
 import { QUEUE_WRAP, TranscriptCard } from "./TranscriptCard.tsx"
 
@@ -114,6 +115,33 @@ export function QuestionBlockCard({
     // hidden). `offsetHeight - clientHeight` is the vertical border delta measured at height:auto.
     ta.style.height = `${ta.scrollHeight + ta.offsetHeight - ta.clientHeight}px`
   }, [freetext])
+  // NUMBER KEYS (lib/questionKeys.ts): key n picks option n, the key one past the last option takes the
+  // caret to the free-text row. Registered once per mount; `keysRef` hands the router the latest render's
+  // controller, so a pick never acts on the answer as it stood when the card mounted.
+  const keysRef = useRef({ interactive, isMulti, chosen, chosenSet, freetext, count: parsed.options.length })
+  keysRef.current = { interactive, isMulti, chosen, chosenSet, freetext, count: parsed.options.length }
+  const answerable = !!interactive
+  useEffect(() => {
+    const grid = gridRef.current
+    if (!grid || !answerable) return
+    return registerQuestionKeys(grid, {
+      press: (n): QuestionKeyResult => {
+        const k = keysRef.current
+        if (!k.interactive) return false
+        if (n === k.count + 1 && taRef.current) {
+          taRef.current.focus()
+          return "text"
+        }
+        if (n > k.count) return false
+        k.interactive.onChip(n - 1, parsed.options[n - 1] ?? "")
+        return k.isMulti ? "toggled" : "picked"
+      },
+      answered: () => {
+        const k = keysRef.current
+        return k.isMulti ? k.chosenSet.length > 0 || !!k.freetext.trim() : k.chosen !== null || !!k.freetext.trim()
+      },
+    })
+  }, [answerable, parsed])
   // NO corner glyph on an answerable question (dropped 2026-08-31). The registered-question × rides
   // the same corner, and beside it a full-strength HelpCircle/ListChecks read as the actionable thing
   // while the actual control read as chrome (maintainer: "the actionable thing is gray and light,
@@ -168,7 +196,8 @@ export function QuestionBlockCard({
               interactive.onSubmit()
             }
           }}
-          className="mt-2 grid grid-cols-1 gap-1.5 outline-none"
+          data-question-grid
+          className="group/qgrid mt-2 grid grid-cols-1 gap-1.5 outline-none"
         >
           {parsed.options.map((opt, i) => (
             <Fragment key={i}>
@@ -180,6 +209,7 @@ export function QuestionBlockCard({
               {parsed.optionHeadings?.[i] && <OptionHeading md={parsed.optionHeadings[i]!} wrap={wrap} />}
             <Chip
               label={opt}
+              index={i}
               // The option's BODY — a multi-line trade-off, the diff, the mockup, the message that
               // would actually be posted — rendered INSIDE the chip, ALWAYS, read-only cards included.
               // It was `optionPreviews`, revealed only once the option was picked, until 2026-09-01:
@@ -221,6 +251,14 @@ export function QuestionBlockCard({
               below the multi-column options, and is an auto-growing textarea (see taRef effect above)
               rather than a one-line input, so a long "something else…" answer stays fully visible. */}
           {interactive && (
+            // The free-text row takes the next number's keycap when the question has options, laid over
+            // the box's left padding so the box itself keeps its own border and focus treatment.
+            <div className="relative col-span-full">
+            {parsed.options.length > 0 && (
+              <span className="pointer-events-none absolute left-3 top-[7px] flex">
+                <OptionKey n={parsed.options.length + 1} live />
+              </span>
+            )}
             <textarea
               ref={taRef}
               data-1p-ignore
@@ -240,7 +278,8 @@ export function QuestionBlockCard({
                 e.stopPropagation()
                 if (e.key === "Escape") {
                   e.preventDefault()
-                  e.currentTarget.blur()
+                  // Climb out onto this question's own options, where the number keys answer it.
+                  gridRef.current?.focus()
                   return
                 }
                 // Enter (or ⌘/Ctrl-Enter) sends the staged answers; Shift/Option-Enter write a
@@ -266,7 +305,7 @@ export function QuestionBlockCard({
                 if (!isMulti && chosen !== null) interactive.onText(freetext)
               }}
               placeholder={
-                isMulti ? "Add a note…" : parsed.options.length ? `${nextOptionId(parsed.options)} Something else…` : "Type your answer…"
+                isMulti ? "Add a note…" : parsed.options.length ? "Something else…" : "Type your answer…"
               }
               // Styled as the FINAL option row (same shape as a chip) that SPANS both grid columns.
               // resize-none + overflow-hidden hand height control to the auto-grow effect (no manual
@@ -274,10 +313,11 @@ export function QuestionBlockCard({
               // with no chip chosen (a chosen chip beats the text, so text beside one is an unselected
               // draft and the box goes quiet, exactly like an unselected chip). Focus always shows the
               // accent border — the selection moves here the moment the box is entered.
-              className={`col-span-full w-full resize-none overflow-hidden rounded-md border px-3 py-1.5 text-[12px] leading-snug text-fg/90 outline-none placeholder:text-muted-80 transition-colors ${
+              className={`block w-full resize-none overflow-hidden rounded-md border py-1.5 pr-3 ${parsed.options.length > 0 ? OPTION_TEXT_INSET : "pl-3"} text-[12px] leading-snug text-fg/90 outline-none placeholder:text-muted-80 transition-colors ${
                 freetext.trim() && (isMulti || chosen === null) ? "border-selection-border bg-selection" : "border-border bg-transparent hover:bg-panel-2 focus:border-accent"
               }`}
             />
+            </div>
           )}
         </div>
       )}
@@ -326,13 +366,6 @@ function OptionHeading({ md, wrap }: { md: string; wrap?: boolean }) {
   )
 }
 
-// The free-text row's identifier: one past the last option ("A. B. C." → "D.", "1. 2." → "3.").
-function nextOptionId(options: string[]): string {
-  const last = options[options.length - 1]?.match(/^\s*([A-Za-z]|\d+)([.)])\s/)
-  if (!last) return `${String.fromCharCode(65 + options.length)}.`
-  const [, id, punct] = last
-  return /\d/.test(id) ? `${Number(id) + 1}${punct}` : `${String.fromCharCode(id.toUpperCase().charCodeAt(0) + 1)}${punct}`
-}
 
 // recommendedIndex (rec-line → option index) now lives in ../lib/questionBlocks.ts alongside the rest
 // of the question parsing, so it's covered by the pure-logic unit tests.
@@ -355,6 +388,7 @@ function nextOptionId(options: string[]): string {
 // to flatten links to spans (`inertInteractive`), which is why a file named in an option never opened.
 function Chip({
   label,
+  index,
   bodyMd,
   wrap,
   selected,
@@ -365,7 +399,10 @@ function Chip({
   recTitle,
   onClick,
 }: {
+  /** The option line as the producer wrote it, identifier included ("2. SQLite — …"). */
   label: string
+  /** Position in the option list: the KEY that picks it is `index + 1`. */
+  index: number
   /** Block markdown rendered INSIDE the chip, under the label line, ALWAYS — the multi-line trade-off,
    *  the diff, the message that would be posted. Part of the answer, so it shows before anything is
    *  picked and survives into read-only and settled cards. */
@@ -383,7 +420,12 @@ function Chip({
 }) {
   // Inline-only: the label line is one line, so no `<p>`/list block chrome. Raw `label` used to leak
   // `**bold**`/backticks. The body below it is the opposite — FULL markdown, blocks and all.
-  const labelHtml = useInlineMarkdownHtml(label)
+  // The identifier comes OFF the label line and goes into the gutter, as the keycap that picks it. The
+  // keycap shows the label's own number when it has one — a settled card keeps only the picked options,
+  // and "3" must still say which one — else the position (a worker's lettered fence still answers to 1).
+  const { id, rest } = splitOptionId(label)
+  const labelHtml = useInlineMarkdownHtml(rest)
+  const n = id && /^\d+$/.test(id) ? Number(id) : index + 1
   const bodyHtml = useMarkdownHtml(bodyMd ?? "")
   const labelId = useId()
   return (
@@ -421,10 +463,12 @@ function Chip({
         type="button"
         disabled={disabled}
         aria-labelledby={labelId}
+        aria-keyshortcuts={disabled || n > 9 ? undefined : String(n)}
         onClick={onClick}
         onMouseDown={(e) => e.preventDefault()}
         className="absolute inset-0 rounded-md outline-none"
       />
+      <OptionKey n={n} live={!disabled} selected={selected} />
       {multi && (
         <span
           aria-hidden
@@ -461,5 +505,34 @@ function Chip({
         )}
       </div>
     </div>
+  )
+}
+
+// Where an option's TEXT starts: the row's 12px padding, the 16px keycap, the row's 8px gap. The
+// free-text row lays its keycap over its own padding, so it insets its text by the same sum to line up.
+const OPTION_TEXT_INSET = "pl-9"
+
+// An option's number in its gutter. LIVE (an answerable card) it is a KEYCAP — a key-shaped mark reads as
+// "press this" with nothing to explain, and the key on screen is the key the card binds (questionKeys).
+// Read-only it is the plain number: a settled card answers no key. Past 9 there is no key to name, so
+// those stay plain too. On a touch screen there is no keyboard to point at, so the cap drops its border
+// and fill and reads as a plain number. The SELECTED cap fills with the accent, the same fill the multi
+// checkbox uses, so a keyboard pick shows where it landed. Inside the focused options grid every cap
+// steps up a tone: the question that holds the keyboard says so.
+function OptionKey({ n, live, selected = false }: { n: number; live: boolean; selected?: boolean }) {
+  if (!live || n > 9) {
+    return <span aria-hidden className="mt-px w-4 shrink-0 text-center text-[11px] tabular-nums text-muted">{n}.</span>
+  }
+  return (
+    <span
+      aria-hidden
+      className={`pointer-events-none flex h-4 min-w-4 shrink-0 items-center justify-center rounded-[4px] border border-b-2 px-1 text-[10.5px] font-medium leading-none tabular-nums transition-colors ${
+        selected
+          ? "border-accent bg-accent-fill text-on-accent"
+          : "border-border-strong bg-panel text-muted group-focus-visible/qgrid:border-control-strong group-focus-visible/qgrid:text-fg"
+      } pointer-coarse:border-transparent pointer-coarse:bg-transparent pointer-coarse:font-normal ${selected ? "pointer-coarse:text-fg" : "pointer-coarse:text-muted"}`}
+    >
+      {n}
+    </span>
   )
 }

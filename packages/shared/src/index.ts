@@ -1825,7 +1825,7 @@ function signoffNudgeText(needsInput: boolean): string {
   "",
   "**STILL OWED counts things you are not going to do yourself.** A decision you are RECOMMENDING, a",
   "draft you wrote but did not send, follow-up work you discovered — all of it dies with the card, even",
-  "the part that is someone else's to do. Each ends on a question with your recommendation as option A,",
+  "the part that is someone else's to do. Each ends on a question with your recommendation as option 1,",
   "or you DO it first — a sub-agent's result comes BACK to you, so it lands on your card; a new card via",
   "`mcp__frizz__spawn_thread` is the LAST resort, since nothing it learns returns to you or its siblings.",
   "None of them is a `done`. And what is not",
@@ -2578,8 +2578,8 @@ export const AskedQuestionSchema: z.ZodType<AskedQuestion> = z.lazy(() => z.obje
   danger: z.boolean().optional(),
   // UNBOUNDED, deliberately. This carried `.max(8)` from launch until 2026-09-03, when the maintainer
   // asked for the cap to go ("allow arbitrary numbers of options"): a `multi` over a long list — which
-  // gates to run, which of twenty findings to act on — is a real shape, and the card letters past 26
-  // (`AA.`) already. The count is the worker's to choose; the answer's `chosen` is unbounded to match.
+  // gates to run, which of twenty findings to act on — is a real shape, and the card numbers past 9
+  // (only 1–9 are keys) already. The count is the worker's to choose; the answer's `chosen` is unbounded to match.
   options: z.array(AskedOptionSchema).optional(),
 }).strict())
 
