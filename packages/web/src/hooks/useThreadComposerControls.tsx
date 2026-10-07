@@ -10,6 +10,7 @@ import { AcpModelSelect } from "../components/AcpModelSelect.tsx"
 import { Select } from "../components/ui/Select.tsx"
 import { CLAUDE_DISPATCH_PERMISSION_OPTIONS, claudePermValue } from "../lib/options.ts"
 import { threadProfileControlState } from "../lib/threadProfile.ts"
+import { ownedByThisPage } from "../lib/projectOwnership.ts"
 
 // One control strip for every place a registered thread can be steered: the model/effort selector, and
 // — for a Claude thread — the Auto/Bypass permission picker beside it. This lives outside the component
@@ -37,7 +38,10 @@ export function useThreadComposerControls(slug: string): { busy: boolean; footer
   const profiles = useQuery({
     queryKey: ["threadProfileOptions", slug],
     queryFn: () => rpc.threadProfileOptions({ slug }),
-    enabled: Boolean(thread && !thread.foreign && thread.kind === "session"),
+    // A project switch clears the old board in an effect, after this card has already mounted once under
+    // the new URL; without the ownership check that render asks the new project about the old project's
+    // slug and gets a 500.
+    enabled: Boolean(thread && !thread.foreign && thread.kind === "session" && ownedByThisPage(snap.board?.projectSlug)),
     staleTime: 5_000,
   })
   const profile = useMutation({
