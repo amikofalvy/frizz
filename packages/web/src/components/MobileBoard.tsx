@@ -1,19 +1,17 @@
 import { useMemo, useRef, useState } from "react"
 import { useSnapshot } from "valtio"
-import { AlarmClock, ArrowLeft, Check, Clock, Hourglass, Plus, Settings as SettingsIcon } from "lucide-react"
+import { ArrowLeft, Check, Clock, Plus, Settings as SettingsIcon } from "lucide-react"
 import { activeBandThread, boardAskThread, type ThreadView } from "@frizz/shared"
 import { openThread, store } from "../store.ts"
 import { asThreads, useBoard } from "../hooks.ts"
 import { prefs } from "../lib/prefs.ts"
 import {
   displayTitle,
-  futureSnoozedUntil,
   lastActiveLabelAt,
   needsAction,
   restIsWorking,
   sectionThreads,
   sessionIndicatorKind,
-  type SessionIndicatorKind,
 } from "../groups.ts"
 import { ageSpan, spanUntil } from "../lib/activityTime.ts"
 import { useNowMs } from "../lib/liveClock.ts"
@@ -23,7 +21,7 @@ import { rpc } from "../api/rpc.ts"
 import { showToast } from "../store.ts"
 import { snoozePresetInstant, snoozePresetLabel } from "../lib/snooze.ts"
 import { agentSuffix, liveAgentCount, rowSecondLine, wakeAt } from "../lib/mobileBoardRow.ts"
-import { projectIdentity } from "./Sidebar.tsx"
+import { projectIdentity, sessionIndicatorFor } from "./Sidebar.tsx"
 import { StatusListView } from "./StatusListView.tsx"
 import { ThreadActionsSheet } from "./MobileThreadActionsSheet.tsx"
 
@@ -45,14 +43,12 @@ import { ThreadActionsSheet } from "./MobileThreadActionsSheet.tsx"
 //     screen showing eight rows, splitting them costs a tab switch to see work you already own — and
 //     `sectionThreads` already returns the two together, so the merge is the absence of a split rather
 //     than a new rule.
-//   · A RUNNING ROW WEARS A STATIC PLAY MARK, not the rail's travelling spinner. With running and rested
-//     rows as neighbours the difference has to survive a glance at arm's length, and a 1px arc crawling
-//     round an 18px box does not. The row still moves — its activity line and its live children do.
-//   · NOTHING IN THE CHROME ANIMATES. The header and tabs are permanent, and permanent motion in the
-//     corner of the eye is noise.
+//   · THREAD MARKS ARE THE DESKTOP'S: a travelling checkbox frame for running work, with the same inner
+//     symbols for shells, sub-agents and PRs. The shared renderer keeps state and motion consistent.
+//   · NOTHING IN THE NAVIGATION CHROME ANIMATES. The header and tabs stay still.
 //   · NO COMPOSER ON THIS SCREEN. Starting a thread is the "New thread" button; the reply box belongs to
 //     a thread.
-//   · AN ASK IS MARKED BY THE ACCENT "?" AND NOTHING ELSE — no card, no border, no tint.
+//   · AN ASK USES THE DESKTOP'S MUTED "?" — no card, no border, no tint on the row.
 //
 // AND FROM THE SECOND-DRAFT REVIEW (2026-09-30, scratch/mobile-simplify/v2.html § 1):
 //
@@ -65,99 +61,10 @@ import { ThreadActionsSheet } from "./MobileThreadActionsSheet.tsx"
 
 type Tab = "queue" | "snoozed" | "done"
 
-/** The rail's checkbox geometry (BoxSpinner's STATUS_BOX) as a ratio, so a mark keeps its SHAPE at any size. */
-const BOX_RADIUS_RATIO = 4 / 15
-
-function StatusBox({ children, tone = "border-muted/45", size = 18 }: { children?: React.ReactNode; tone?: string; size?: number }) {
-  return (
-    <span
-      className={`inline-flex shrink-0 items-center justify-center border ${tone}`}
-      style={{ width: size, height: size, borderRadius: size * BOX_RADIUS_RATIO }}
-    >
-      {children}
-    </span>
-  )
-}
-
-/** ▶ — in flight. Static, and optically centred: a triangle centred on its BOX always reads left-heavy. */
-function PlayMark({ size = 18 }: { size?: number }) {
-  return (
-    <StatusBox size={size}>
-      <svg width={Math.round(size * 0.52)} height={Math.round(size * 0.52)} viewBox="0 0 10 10" aria-hidden className="translate-x-[8%] text-muted-85">
-        <path d="M2.5 1.4 8.2 5 2.5 8.6Z" fill="currentColor" />
-      </svg>
-    </StatusBox>
-  )
-}
-
-/** ? — awaiting you, and the only mark on the board that spends the accent. */
-function AskMark({ size = 18 }: { size?: number }) {
-  return (
-    <StatusBox size={size} tone="border-accent/90">
-      <span className="font-sans font-bold leading-none text-accent" style={{ fontSize: (size * 10) / 15 }}>?</span>
-    </StatusBox>
-  )
-}
-
-function DoneMark({ size = 18 }: { size?: number }) {
-  return (
-    <StatusBox size={size} tone="border-muted/40">
-      <Check size={Math.round((size * 10) / 15)} strokeWidth={3} className="text-muted-85" />
-    </StatusBox>
-  )
-}
-
-function HourglassMark({ size = 18 }: { size?: number }) {
-  return (
-    <StatusBox size={size}>
-      <Hourglass size={Math.round((size * 10) / 15)} className="text-muted-75" />
-    </StatusBox>
-  )
-}
-
-/** The human's own wall-clock park: the rail's muted alarm clock (Sidebar.tsx alarmMark), drawn here at
- *  the phone's box size — the hourglass's own 10/15 ratio, since the two are one weight family on the
- *  rail (verify-rail-status-glyphs.mjs: 0.55 of the box each). Only `userSnoozed` rows take it — the
- *  `snoozed` kind also covers a worker's fenced park and the resting card's event-snooze, which stay on
- *  the hourglass and the dim. */
-function AlarmMark({ size = 18 }: { size?: number }) {
-  return (
-    <StatusBox size={size}>
-      <AlarmClock size={Math.round((size * 10) / 15)} className="text-muted/75" />
-    </StatusBox>
-  )
-}
-
-/** One kind → one mark. The kinds are the rail's; only the drawing is the phone's. `moving` is the rail's
- *  spinner question for an at-rest wait (inMotion below): a shell or PR rest plays only while its worker
- *  called it `working`, and stays at rest in the queue and the Snoozed tab. */
-function ThreadMark({ kind, userSnoozed, moving }: { kind: SessionIndicatorKind; userSnoozed?: boolean; moving?: boolean }) {
-  if (kind === "needs-input") return <AskMark />
-  if (kind === "stalled") {
-    return (
-      <StatusBox tone="border-accent/90">
-        <span className="font-sans text-[12px] font-bold leading-none text-accent">!</span>
-      </StatusBox>
-    )
-  }
-  if (kind === "working" || moving) return <PlayMark />
-  // Killed by a usage limit, auto-resume promised: the rail's yellow hourglass (see Sidebar), the
-  // phone's drawing — accent like the stalled [!] above, hourglass because a wake is coming.
-  if (kind === "limit") {
-    return (
-      <StatusBox tone="border-accent/90">
-        <Hourglass size={12} className="text-accent" />
-      </StatusBox>
-    )
-  }
-  // The human's own snooze rings for them: the alarm clock (2026-09-19; it shared the hourglass before).
-  if (kind === "snoozed" && userSnoozed) return <AlarmMark />
-  // Parked on the clock — a worker's Snoozed park, or a queued wait on a TIMER (2026-09-07; it read as
-  // `background` and drew the play mark before). The row's dim, not the mark, is what separates the two.
-  if (kind === "snoozed" || kind === "timer") return <HourglassMark />
-  if (kind === "done" || kind === "archived") return <DoneMark />
-  // Awaiting a PR: the rail draws GitHub's octocat; the phone has no mark for it yet and stays at rest.
-  return <StatusBox />
+/** Desktop's exact mark, with a spoken state instead of a hover-only tooltip on touch screens. */
+export function MobileThreadMark({ t }: { t: ThreadView }) {
+  const { node, tip } = sessionIndicatorFor(t)
+  return <span className="inline-flex" data-mobile-thread-indicator={sessionIndicatorKind(t)} role="img" aria-label={tip ?? "At rest"}>{node}</span>
 }
 
 
@@ -417,8 +324,8 @@ function MobileThreadRow({
         style={{ WebkitTouchCallout: "none", WebkitUserSelect: "none", userSelect: "none" }}
         className="flex w-full items-start gap-3 px-4 py-[11px] text-left active:bg-hover"
       >
-        <span className="flex h-[21px] shrink-0 items-center justify-center">
-          <ThreadMark kind={kind} userSnoozed={futureSnoozedUntil(t) !== undefined} moving={waitMoving} />
+        <span className="flex h-[21px] w-[18px] shrink-0 items-center justify-center">
+          <MobileThreadMark t={t} />
         </span>
         <span className="flex min-w-0 flex-1 flex-col gap-px">
           <span className="flex min-w-0 items-baseline gap-2.5">
