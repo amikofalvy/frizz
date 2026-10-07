@@ -127,7 +127,7 @@ export function QuestionBlockCard({
     return registerQuestionKeys(grid, {
       press: (n): QuestionKeyResult => {
         const k = keysRef.current
-        if (!k.interactive) return false
+        if (!k.interactive || k.count === 0) return false
         if (n === k.count + 1 && taRef.current) {
           taRef.current.focus()
           return "text"
@@ -136,6 +136,7 @@ export function QuestionBlockCard({
         k.interactive.onChip(n - 1, parsed.options[n - 1] ?? "")
         return k.isMulti ? "toggled" : "picked"
       },
+      keyed: () => keysRef.current.count > 0,
       answered: () => {
         const k = keysRef.current
         return k.isMulti ? k.chosenSet.length > 0 || !!k.freetext.trim() : k.chosen !== null || !!k.freetext.trim()
@@ -255,7 +256,7 @@ export function QuestionBlockCard({
             // the box's left padding so the box itself keeps its own border and focus treatment.
             <div className="relative col-span-full">
             {parsed.options.length > 0 && (
-              <span className="pointer-events-none absolute left-3 top-[7px] flex">
+              <span className="pointer-events-none absolute left-[13px] top-[7px] flex">
                 <OptionKey n={parsed.options.length + 1} live />
               </span>
             )}
@@ -509,7 +510,8 @@ function Chip({
 }
 
 // Where an option's TEXT starts: the row's 12px padding, the 16px keycap, the row's 8px gap. The
-// free-text row lays its keycap over its own padding, so it insets its text by the same sum to line up.
+// free-text row lays its keycap over its own padding, so it insets its text by the same sum to line up
+// (and places the cap at 13px, not 12: the cap sits outside the box's 1px border, a chip's inside it).
 const OPTION_TEXT_INSET = "pl-9"
 
 // An option's number in its gutter. LIVE (an answerable card) it is a KEYCAP — a key-shaped mark reads as
@@ -526,7 +528,7 @@ function OptionKey({ n, live, selected = false }: { n: number; live: boolean; se
   return (
     <span
       aria-hidden
-      className={`pointer-events-none flex h-4 min-w-4 shrink-0 items-center justify-center rounded-[4px] border border-b-2 px-1 text-[10.5px] font-medium leading-none tabular-nums transition-colors ${
+      className={`pointer-events-none flex size-4 shrink-0 items-center justify-center rounded-[4px] border border-b-2 text-[10.5px] font-medium leading-none tabular-nums transition-colors ${
         selected
           ? "border-accent bg-accent-fill text-on-accent"
           : "border-border-strong bg-panel text-muted group-focus-visible/qgrid:border-control-strong group-focus-visible/qgrid:text-fg"

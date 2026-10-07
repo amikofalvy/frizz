@@ -26,6 +26,9 @@ export interface QuestionKeyTarget {
   press: (n: number) => QuestionKeyResult
   /** Has this question a staged answer? Read at call time, so it sees the latest render. */
   answered: () => boolean
+  /** Does it offer options at all? A free-text-only question has nothing a digit can pick, so the
+   *  router passes over it rather than parking the keyboard where every key is dead. */
+  keyed: () => boolean
 }
 
 const targets = new Map<HTMLElement, QuestionKeyTarget>()
@@ -59,9 +62,9 @@ function inDomOrder(els: HTMLElement[]): HTMLElement[] {
   return els.sort((a, b) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1))
 }
 
-/** Registered grids that are mounted and laid out, in document order. */
+/** Registered grids that are mounted, laid out and offer options, in document order. */
 function liveGrids(): HTMLElement[] {
-  return inDomOrder([...targets.keys()].filter((el) => el.isConnected && el.getClientRects().length > 0))
+  return inDomOrder([...targets.keys()].filter((el) => el.isConnected && el.getClientRects().length > 0 && targets.get(el)?.keyed()))
 }
 
 function onScreen(el: HTMLElement): boolean {
