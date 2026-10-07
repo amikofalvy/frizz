@@ -265,9 +265,9 @@ export function QuestionBlockCard({
               data-1p-ignore
               rows={1}
               // Its own surface tag — deliberately NOT the queue card's `queueComposer`, which is the
-              // separate free-form prompt box at the bottom of the card. Escape BLURS (climb out, same
-              // semantics as the shared Composer) and stops here rather than reaching App's window
-              // handler. NOTE (verified in the real app 2026-07-26): stopping it does NOT keep an
+              // separate free-form prompt box at the bottom of the card. Escape climbs out onto this
+              // question's own options grid (where the number keys answer it) and stops here rather than
+              // reaching App's window handler. NOTE (verified in the real app 2026-07-26): stopping it does NOT keep an
               // enclosing thread drawer open — Radix's DismissableLayer takes Escape on the document
               // in the CAPTURE phase, so it has already dismissed the sheet before this bubble-phase
               // handler runs. The typed answer survives that (it lives in the draft store), but the
@@ -421,12 +421,13 @@ function Chip({
 }) {
   // Inline-only: the label line is one line, so no `<p>`/list block chrome. Raw `label` used to leak
   // `**bold**`/backticks. The body below it is the opposite — FULL markdown, blocks and all.
-  // The identifier comes OFF the label line and goes into the gutter, as the keycap that picks it. The
-  // keycap shows the label's own number when it has one — a settled card keeps only the picked options,
-  // and "3" must still say which one — else the position (a worker's lettered fence still answers to 1).
+  // The identifier comes OFF the label line and goes into the gutter, as the keycap that picks it. A live
+  // card's key is always the POSITION (the router presses `index + 1`), so its keycap must be too — a
+  // worker's fence numbered from 2, or lettered, still answers to 1. Only a READ-ONLY card shows the
+  // label's own number: a settled card keeps just the picked options, and "3" must still say which one.
   const { id, rest } = splitOptionId(label)
   const labelHtml = useInlineMarkdownHtml(rest)
-  const n = id && /^\d+$/.test(id) ? Number(id) : index + 1
+  const n = disabled && id && /^\d+$/.test(id) ? Number(id) : index + 1
   const bodyHtml = useMarkdownHtml(bodyMd ?? "")
   const labelId = useId()
   return (

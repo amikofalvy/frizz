@@ -100,7 +100,9 @@ function park(grid: HTMLElement) {
 }
 
 function onKey(e: KeyboardEvent) {
-  if (e.defaultPrevented || e.isComposing || e.metaKey || e.ctrlKey || e.altKey) return
+  // A HELD key auto-repeats: on a single-select each repeat would pick on the question the last pick
+  // just moved to, staging the same option down the whole rest. One press is one answer.
+  if (e.defaultPrevented || e.repeat || e.isComposing || e.metaKey || e.ctrlKey || e.altKey) return
   if (!/^[1-9]$/.test(e.key)) return
   const from = e.target instanceof Element ? e.target : null
   if (from && ownsKeys(from)) return
