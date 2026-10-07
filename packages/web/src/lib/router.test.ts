@@ -259,13 +259,37 @@ test("the store→URL sync never writes over the fullscreen page", async () => {
   }
 })
 
-// The phone thread header's ← pops history only when the entry under the thread is ours. react-router
-// numbers its entries from 0 at document load, so 0 (or no router state at all) is a cold link.
-test("appPushedCurrentEntry: only an entry the router pushed above the document's first counts", () => {
-  assert.equal(appPushedCurrentEntry({ usr: null, key: "a", idx: 1 }), true)
-  assert.equal(appPushedCurrentEntry({ usr: null, key: "b", idx: 4, frizzLayer: 9 }), true)
+test("appPushedCurrentEntry does not trust a persisted router index or an old sheet entry", () => {
+  assert.equal(appPushedCurrentEntry({ usr: null, key: "a", idx: 1 }), false)
+  assert.equal(appPushedCurrentEntry({ usr: null, key: "b", idx: 4, frizzLayer: 9 }), false)
+  assert.equal(appPushedCurrentEntry({ idx: 2, usr: { frizzNavigationSession: "previous-document" } }), false)
   assert.equal(appPushedCurrentEntry({ idx: 0 }), false)
   assert.equal(appPushedCurrentEntry({ usr: null, key: "c" }), false)
   assert.equal(appPushedCurrentEntry(null), false)
   assert.equal(appPushedCurrentEntry("not-an-object"), false)
+})
+
+test("thread pushes carry this document's identity, but closing to the board does not", async () => {
+  resetStore()
+  const globals = globalThis as typeof globalThis & { location?: Location }
+  const previous = globals.location
+  globals.location = { pathname: "/project/tenant" } as Location
+  const entries: unknown[] = []
+  const stop = startRouter((path, options) => {
+    entries.push({ idx: entries.length + 1, usr: options.state })
+    globals.location = { pathname: path } as Location
+  })
+  try {
+    store.drawers = [{ id: 1, kind: "thread", slug: "opened" } as never]
+    await new Promise(resolve => setTimeout(resolve, 0))
+    assert.equal(appPushedCurrentEntry(entries[0]), true)
+    assert.equal(appPushedCurrentEntry({ ...entries[0] as object, frizzLayer: 9 }), true, "a live sheet keeps the identity")
+    store.drawers = []
+    await new Promise(resolve => setTimeout(resolve, 0))
+    assert.equal(appPushedCurrentEntry(entries[1]), false)
+  } finally {
+    stop()
+    globals.location = previous
+    resetStore()
+  }
 })

@@ -19,7 +19,7 @@ import { ThreadActionsSheet, useModelEffortLabel } from "./MobileThreadActionsSh
 // popstate unwinds the drawer exactly as the browser's own Back or Android's edge swipe would. Reusing
 // the desktop ×'s close here instead REPLACED the thread's entry with the board, which left two board
 // entries in a row, so the next Back did nothing visible. Only a thread that arrived by a cold link (the
-// entry the document loaded on — nothing of ours below it) closes the ×'s way and lands on the board.
+// entry the document loaded on, including a reload) closes the ×'s way and lands on the board.
 // See `appPushedCurrentEntry` in lib/router.
 //
 // It does NOT take the drawer's initial focus the way × did (`data-dialog-initial-focus`): a

@@ -143,25 +143,28 @@ export function spaNavigate(path: string, options?: SpaNavigateOptions): void {
 /**
  * Did this app push the history entry the page is on, in this session?
  *
- * react-router numbers the entries it writes (`idx` in history.state): the entry a document loaded on
- * is 0, and every push counts up from there — including a push lib/router made when a thread opened.
- * So a thread page on an entry above 0 has an entry BELOW it that is ours (the board it was opened
- * from, or whatever the app showed before), and the platform's Back returns there. On 0 it arrived by
- * a cold link — a bookmark, a notification, a pasted URL — and what sits below it, if anything, is some
- * other site.
+ * A router index is not proof: history.state survives reload, including same-URL entries an actions
+ * sheet left behind. Back from a reloaded thread could therefore land on that SAME thread and do
+ * nothing visible. Tag thread pushes with this document's identity instead; an old entry, including
+ * one reached with Forward, cannot claim to have been opened in this document.
  *
  * The phone thread header's ← asks this to behave exactly like Back: pop when there is an entry of
  * ours to pop to, and only otherwise fall back to replacing the thread's entry with the board (the
  * desktop ×'s close). Replacing it always had left TWO board entries behind every ← — the board the
  * thread was opened from, and the thread's entry rewritten to it — so the next Back did nothing.
- * The same-URL entries lib/backDismiss pushes carry the router's state over, so they read the same.
+ * The same-URL entries lib/backDismiss pushes carry the router's state over, so live sheets retain the
+ * identity. Reload creates a fresh identity, making the thread's arrow use its project-board fallback.
  */
+// A discriminator, not a credential; works on LAN HTTP too, where crypto.randomUUID is unavailable.
+const navigationSession = `${Date.now()}-${Math.random().toString(36).slice(2)}`
+
 export function appPushedCurrentEntry(state: unknown = typeof history === "undefined" ? null : history.state): boolean {
-  const idx = state && typeof state === "object" ? (state as { idx?: unknown }).idx : undefined
-  return typeof idx === "number" && idx > 0
+  const usr = state && typeof state === "object" ? (state as { usr?: unknown }).usr : undefined
+  return !!usr && typeof usr === "object"
+    && (usr as { frizzNavigationSession?: unknown }).frizzNavigationSession === navigationSession
 }
 
-export function startRouter(navigate: (path: string, options: { replace: boolean }) => void): () => void {
+export function startRouter(navigate: (path: string, options: { replace: boolean; state?: { frizzNavigationSession: string } }) => void): () => void {
   // Boot: adopt whatever the address bar says (deep link / reload restores the state).
   primeRoute()
 
@@ -179,6 +182,9 @@ export function startRouter(navigate: (path: string, options: { replace: boolean
     // A NEW topmost thread pushes history; unwinding or non-thread transitions replace. `startsWith`
     // is checked against the INNER path: under a project prefix every path starts with `/project/`.
     const openingThread = currentPath().startsWith("/thread/")
-    navigate(path, { replace: !openingThread })
+    navigate(path, {
+      replace: !openingThread,
+      ...(openingThread ? { state: { frizzNavigationSession: navigationSession } } : {}),
+    })
   })
 }
