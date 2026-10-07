@@ -291,7 +291,7 @@ export function App() {
           the StatusRow along the top of the prompt box now (Sidebar.tsx, and TodosView's centered
           first-task box on a brand-new project). Everything flows; the PAGE is the one and only scroll
           container — a tall card simply runs off both edges. On a phone none of it renders at all: the
-          project and the way to settings are already in the mobile nav bar. */}
+          project is in the mobile nav bar; settings and update live in its board-actions sheet. */}
       {/* (The old fixed "New thread" pill moved INTO the sidebar's top — one entry point, same modal
           flow; the ⌘K palette's "New thread" item and the always-visible dispatch box are the
           other doors — deliberately NOT ⌘N, which belongs to the browser.) */}

@@ -458,8 +458,10 @@ export async function checkSurfaceStates({ page, url, font, palette, out, check,
   await contrast('phone-question')
   await shot('phone-question')
   await page.goto(url, { waitUntil: 'networkidle2' })
-  // The board's ⋯ sheet went away with the 2026-09-30 phone redesign; its gear opens the Settings
-  // page, which now carries the connection and quota readings the sheet held.
+  await page.click('[data-mobile-more]')
+  await page.waitForSelector('[data-mobile-more-sheet]')
+  await page.waitForFunction(() => document.querySelector('[data-mobile-more-sheet]').getBoundingClientRect().bottom <= innerHeight + .5)
+  // Settings still carries the connection and quota readings; board actions adds the update verb.
   await page.click('[data-mobile-settings]')
   await page.waitForFunction(() => {
     const panel = document.querySelector('[data-mobile-settings-page]')

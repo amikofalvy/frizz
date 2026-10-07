@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react"
 import { useSnapshot } from "valtio"
-import { AlarmClock, ArrowLeft, Check, Clock, Hourglass, Plus, Settings as SettingsIcon } from "lucide-react"
+import { AlarmClock, ArrowLeft, Check, Clock, Ellipsis, Hourglass, Plus } from "lucide-react"
 import { activeBandThread, boardAskThread, type ThreadView } from "@frizz/shared"
 import { openThread, store } from "../store.ts"
 import { asThreads, useBoard } from "../hooks.ts"
@@ -26,6 +26,9 @@ import { agentSuffix, liveAgentCount, rowSecondLine, wakeAt } from "../lib/mobil
 import { projectIdentity } from "./Sidebar.tsx"
 import { StatusListView } from "./StatusListView.tsx"
 import { ThreadActionsSheet } from "./MobileThreadActionsSheet.tsx"
+import { MobileBoardActionsSheet } from "./MobileBoardActionsSheet.tsx"
+import { canUpdateRestart } from "../api/restart.ts"
+import { useSupervisorStatus } from "../api/supervisorStatus.ts"
 
 // THE PHONE'S BOARD — a header, three text tabs, ONE list, and a "New thread" button.
 //
@@ -504,6 +507,8 @@ const TAB_COUNT = "text-[12.5px] font-medium tabular-nums text-muted"
 export function MobileBoard() {
   const board = useBoard()
   const snap = useSnapshot(store)
+  const updateAvailable = canUpdateRestart(useSupervisorStatus().data ?? null)
+  const [moreOpen, setMoreOpen] = useState(false)
   const [tab, setTab] = useState<Tab>("queue")
   // ONE row open at a time — two half-open rows read as a rendering fault.
   const [openSwipe, setOpenSwipe] = useState<string | null>(null)
@@ -574,12 +579,16 @@ export function MobileBoard() {
             ) : null}
           </div>
           <button
-            aria-label="Settings"
-            data-mobile-settings
-            onClick={() => (store.showSettings = true)}
-            className="flex size-[44px] shrink-0 items-center justify-center rounded-full text-fg/85 active:bg-hover-strong"
+            type="button"
+            aria-label={updateAvailable ? "Board actions, update available" : "Board actions"}
+            aria-expanded={moreOpen}
+            aria-haspopup="dialog"
+            data-mobile-more
+            onClick={() => setMoreOpen(true)}
+            className="relative flex size-[44px] shrink-0 items-center justify-center rounded-full text-fg/85 active:bg-hover-strong"
           >
-            <SettingsIcon size={21} strokeWidth={1.9} />
+            <Ellipsis size={20} />
+            {updateAvailable && <span data-mobile-update-notification aria-hidden="true" className="absolute right-[10px] top-[10px] size-[4px] rounded-full bg-accent" />}
           </button>
         </div>
         <div role="tablist" aria-label="Bands" className="flex gap-[22px] border-b border-border/70 px-[18px]">
@@ -647,6 +656,7 @@ export function MobileBoard() {
         New thread
       </button>
       {actionsFor ? <ThreadActionsSheet slug={actionsFor} onClose={() => setActionsFor(null)} /> : null}
+      {moreOpen ? <MobileBoardActionsSheet onClose={() => setMoreOpen(false)} /> : null}
     </div>
   )
 }

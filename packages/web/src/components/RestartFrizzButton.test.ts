@@ -77,8 +77,42 @@ test("Update and restart is one compact icon-only action with an accessible name
   assert.doesNotMatch(html, /cursor-wait/)
 })
 
-// Patch updates remain one click away, but the passive yellow interruption is reserved for a new
-// release line. Before 1.0 that means the next minor, e.g. 0.4.x -> 0.5.0.
+test("mobile update and restart are labeled menu rows with a phone-sized touch target", () => {
+  for (const update of [true, false]) {
+    const html = renderToStaticMarkup(createElement(RestartActionButton, { mobile: true, update, busy: true, onClick: () => undefined }))
+    assert.match(html, /min-h-\[48px\]/)
+    assert.match(html, /size-\[1em\]/)
+    assert.match(html, update ? />Update Frizz</ : />Restart Frizz</)
+    assert.match(html, /disabled=""/)
+    assert.match(html, /aria-busy="true"/)
+    assert.doesNotMatch(html, /-mx-1\.5|bg-accent|aria-describedby/)
+  }
+  const current = renderToStaticMarkup(createElement(RestartActionButton, { mobile: true, update: false, current: true, busy: false, onClick: () => undefined }))
+  assert.match(current, /Frizz is up to date/)
+  assert.match(current, /disabled=""/)
+})
+
+test("the mobile update row identifies the notification source, including patch updates", () => {
+  for (const updateVersion of ["0.13.9", "0.14.0", undefined]) {
+    const html = renderToStaticMarkup(createElement(RestartActionButton, { mobile: true, update: true, busy: false, version: "0.13.8", updateVersion, onClick: () => undefined }))
+    assert.match(html, /data-mobile-update-row-notification/)
+    assert.match(html, /bg-accent/)
+    assert.match(html, /aria-hidden="true"/)
+  }
+  for (const props of [{ update: false, busy: false }, { update: true, busy: true }]) {
+    const html = renderToStaticMarkup(createElement(RestartActionButton, { mobile: true, ...props, onClick: () => undefined }))
+    assert.doesNotMatch(html, /data-mobile-update-row-notification/)
+  }
+})
+
+test("mobile failures stay inline in the board-actions sheet, without a desktop arrow", () => {
+  const failure = renderToStaticMarkup(createElement(RestartFailureNotice, { mobile: true, update: true, message: "Demo failure", onDismiss: () => undefined }))
+  assert.match(failure, /mx-4 my-3/)
+  assert.doesNotMatch(failure, /fixed|absolute|sm:w-|rotate-45/)
+})
+
+// On desktop, patch updates remain one click away, but the passive yellow interruption is reserved
+// for a new release line. Before 1.0 that means the next minor, e.g. 0.4.x -> 0.5.0.
 test("the button wears an update dot only for a new release line", () => {
   const badged = renderToStaticMarkup(createElement(RestartActionButton, { update: true, busy: false, version: "0.4.2", updateVersion: "0.5.0", onClick: () => undefined }))
   assert.match(badged, /bg-accent/)

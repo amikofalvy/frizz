@@ -17,6 +17,7 @@ import {
 import { useSupervisorStatus } from "../api/supervisorStatus.ts"
 import { showToast, store } from "../store.ts"
 import { STATUS_ROW_ACTION, STATUS_ROW_ICON } from "../lib/statusRow.ts"
+import { MOBILE_MENU_ACTION, MOBILE_MENU_ICON, MOBILE_MENU_LABEL, MOBILE_MENU_NOTIFICATION } from "../lib/mobileMenu.ts"
 
 // RefreshCw's arrowheads advance clockwise, matching Tailwind's clockwise animate-spin keyframes.
 // Keep this exported contract covered by the focused component test when either icon or animation changes.
@@ -57,8 +58,7 @@ const currentCopy = "There is no newer version of Frizz to install."
 // (it was a z-20 chip until 2026-08-19), and the sidebar deliberately has no z-index, so z-50 is what
 // puts either panel over the rail and the composer.
 //
-// The `fixed left-3 right-3 top-12` full-width strip below `sm:` (640px) is unreachable and kept only
-// as a floor: this button renders only on the desktop shell, which the phone shell replaces at 700px.
+// Mobile renders the action and any failure inline in its board-actions sheet, not off this anchor.
 //
 // `sm:-left-[17px]` is DERIVED from the arrow, not chosen: PANEL_ARROW below carries the arithmetic
 // and the readings. It is not the offset that lines the panel's own edge up with anything — the panel
@@ -197,16 +197,18 @@ export function RestartFailureNotice({
   message,
   outcome = PREVIOUS_KEPT,
   onDismiss,
+  mobile = false,
 }: {
   update: boolean
   message: string
   /** Judged from the failed status's version against the version at click — api/restart.ts. */
   outcome?: RestartFailureOutcome
   onDismiss: () => void
+  mobile?: boolean
 }) {
   return (
-    <div role="alert" className={`${ANCHORED_PANEL} ${NOTICE_WIDTH} ${PANEL_SURFACE} border border-danger-fill/45`}>
-      <span aria-hidden="true" className={`${PANEL_ARROW} border-danger-fill/45`} />
+    <div role="alert" className={`${mobile ? "mx-4 my-3 text-left font-sans" : `${ANCHORED_PANEL} ${NOTICE_WIDTH}`} ${PANEL_SURFACE} border border-danger-fill/45`}>
+      {!mobile && <span aria-hidden="true" className={`${PANEL_ARROW} border-danger-fill/45`} />}
       <div className="relative flex items-center gap-2.5">
         <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-danger-fill/15 text-danger-soft">
           <AlertTriangle aria-hidden="true" size={14} strokeWidth={2.25} />
@@ -241,6 +243,7 @@ export function RestartActionButton({
   onFocus,
   onBlur,
   onClick,
+  mobile = false,
 }: {
   update: boolean
   busy: boolean
@@ -248,12 +251,35 @@ export function RestartActionButton({
   current?: boolean
   /** The running registry version, used with updateVersion to decide whether this is a new release line. */
   version?: string
-  /** A confirmed newer registry version. Patch updates stay actionable but do not earn the badge dot. */
+  /** A confirmed newer registry version. Patch updates do not earn the desktop badge dot. */
   updateVersion?: string
   onFocus?: () => void
   onBlur?: () => void
   onClick: () => void
+  mobile?: boolean
 }) {
+  if (mobile) {
+    const label = current ? "Frizz is up to date" : update ? "Update Frizz" : "Restart Frizz"
+    return (
+      <button
+        type="button"
+        data-mobile-update-row
+        aria-label={label}
+        disabled={busy || current}
+        aria-busy={busy || undefined}
+        className={MOBILE_MENU_ACTION}
+        onClick={onClick}
+      >
+        <span className={MOBILE_MENU_LABEL}>
+          <RefreshCw aria-hidden="true" className={`${MOBILE_MENU_ICON} text-muted-70 ${busy ? "animate-spin" : ""}`} />
+          <span className="flex items-baseline gap-2">
+            <span>{label}</span>
+            {update && !busy && <span data-mobile-update-row-notification aria-hidden="true" className={MOBILE_MENU_NOTIFICATION} />}
+          </span>
+        </span>
+      </button>
+    )
+  }
   return (
     <button
       type="button"
@@ -290,7 +316,7 @@ export function RestartActionButton({
  * 2026-09-25: hidden first, then "Actually, just gray it out"). A click in flight or a failure on screen
  * keeps it live, so neither greys out mid-read.
  */
-export function RestartFrizzButton() {
+export function RestartFrizzButton({ mobile = false }: { mobile?: boolean }) {
   const snap = useSnapshot(store)
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -397,6 +423,7 @@ export function RestartFrizzButton() {
   return (
     <div ref={controlRef} className="relative" onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
       <RestartActionButton
+        mobile={mobile}
         update={updateAvailable}
         busy={busy}
         current={current}
@@ -406,8 +433,8 @@ export function RestartFrizzButton() {
         onBlur={() => setOpen(false)}
         onClick={() => void updateAndRestart()}
       />
-      {shownError && <RestartFailureNotice update={updateAvailable} message={shownError} outcome={outcome} onDismiss={() => setDismissed(shownError)} />}
-      <UpdateRestartPopover open={open && !shownError} update={updateAvailable} current={current} version={versions.version} updateVersion={versions.updateVersion} />
+      {shownError && <RestartFailureNotice mobile={mobile} update={updateAvailable} message={shownError} outcome={outcome} onDismiss={() => setDismissed(shownError)} />}
+      {!mobile && <UpdateRestartPopover open={open && !shownError} update={updateAvailable} current={current} version={versions.version} updateVersion={versions.updateVersion} />}
     </div>
   )
 }
