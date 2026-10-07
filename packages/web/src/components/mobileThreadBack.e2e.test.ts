@@ -19,9 +19,17 @@ test("mobile thread Back returns direct/reloaded links to their project and pops
     const waitForThread = async () => {
       await page.waitForSelector("[data-mobile-thread-back]", { visible: true })
       await page.waitForFunction(() => {
-        const button = document.querySelector("[data-mobile-thread-back]")!
-        const r = button.getBoundingClientRect()
-        return !!document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)?.closest("[data-mobile-thread-back]")
+        const panel = document.querySelector("[data-mobile-thread-back]")?.closest("[role='dialog']")
+        // The Back arrow enters the viewport before the right-edge actions button. Wait for the
+        // entire drawer transition, not just the first control becoming hit-testable.
+        if (!panel || panel.getAnimations().some(animation => animation.playState === "running")) return false
+        return ["[data-mobile-thread-back]", "[data-mobile-thread-more]"].every(selector => {
+          const button = document.querySelector(selector)
+          if (!button) return false
+          const r = button.getBoundingClientRect()
+          return r.left >= 0 && r.right <= innerWidth
+            && !!document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)?.closest(selector)
+        })
       })
     }
     const backToBoard = async () => {
