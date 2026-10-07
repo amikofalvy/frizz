@@ -43,12 +43,9 @@ import { ThreadActionsSheet } from "./MobileThreadActionsSheet.tsx"
 //     screen showing eight rows, splitting them costs a tab switch to see work you already own — and
 //     `sectionThreads` already returns the two together, so the merge is the absence of a split rather
 //     than a new rule.
-//   · THREAD MARKS ARE THE DESKTOP'S: a travelling checkbox frame for running work, with the same inner
-//     symbols for shells, sub-agents and PRs. The shared renderer keeps state and motion consistent.
 //   · NOTHING IN THE NAVIGATION CHROME ANIMATES. The header and tabs stay still.
 //   · NO COMPOSER ON THIS SCREEN. Starting a thread is the "New thread" button; the reply box belongs to
 //     a thread.
-//   · AN ASK USES THE DESKTOP'S MUTED "?" — no card, no border, no tint on the row.
 //
 // AND FROM THE SECOND-DRAFT REVIEW (2026-09-30, scratch/mobile-simplify/v2.html § 1):
 //
@@ -58,13 +55,19 @@ import { ThreadActionsSheet } from "./MobileThreadActionsSheet.tsx"
 //   · ONE SECOND LINE PER ROW says what the thread wants; no provider marks, and no ⤷ sub-agent lines
 //     (a live count, "· 2 agents", replaces them).
 //   · THE SNOOZED TAB'S RIGHT COLUMN SAYS WHEN THE THREAD WAKES, not how long ago it rested.
+//
+// CHANGED 2026-10-07: mobile thread marks now reuse the desktop renderer, including its travelling
+// checkbox frames, inner symbols and muted "?". This replaces the original mockup review's static play
+// mark and accent ask; sharing the renderer keeps both surfaces' state and motion consistent.
 
 type Tab = "queue" | "snoozed" | "done"
 
 /** Desktop's exact mark, with a spoken state instead of a hover-only tooltip on touch screens. */
 export function MobileThreadMark({ t }: { t: ThreadView }) {
   const { node, tip } = sessionIndicatorFor(t)
-  return <span className="inline-flex" data-mobile-thread-indicator={sessionIndicatorKind(t)} role="img" aria-label={tip ?? "At rest"}>{node}</span>
+  // The popover's first paragraph describes the state (and park); its worker prose is not an icon label.
+  const label = tip?.split("\n\n")[0] ?? "At rest"
+  return <span className="inline-flex" data-mobile-thread-indicator={sessionIndicatorKind(t)} role="img" aria-label={label}>{node}</span>
 }
 
 

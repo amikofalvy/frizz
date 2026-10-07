@@ -39,9 +39,31 @@ for (const { name, over, glyph, spins } of cases) {
     const t = { ...base, ...over }
     const desktop = renderToStaticMarkup(sessionIndicatorFor(t).node)
     const mobile = renderToStaticMarkup(createElement(MobileThreadMark, { t }))
+    // Pin mobile's delegation to the desktop renderer, not a second copy of its glyph rules.
     assert.ok(mobile.includes(desktop), "the exact desktop glyph, geometry and tone")
     assert.ok(mobile.includes(glyph), "the expected state symbol")
     assert.equal(mobile.includes("<animate"), spins, "only moving work spins")
     assert.match(mobile, /role="img" aria-label="[^"]+"/, "the state is spoken on touch devices")
   })
 }
+
+for (const name of ["background shell", "running PR checks", "worker timer"]) {
+  test(`mobile label omits worker prose: ${name}`, () => {
+    const over = cases.find((c) => c.name === name)!.over
+    const t = { ...base, ...over, lastFence: { kind: "awaiting", body: "Read the **sample report**.\n\nThen choose a colour.", hints: [] } } as ThreadView
+    const tip = sessionIndicatorFor(t).tip!
+    assert.ok(tip.includes("Read the **sample report**."), "negative control: desktop popover includes prose")
+    const mobile = renderToStaticMarkup(createElement(MobileThreadMark, { t }))
+    assert.ok(!mobile.includes("sample report"), "the row's accessible name must not start with the whole handoff")
+    assert.ok(!mobile.includes("choose a colour"))
+    assert.match(mobile, /aria-label="At rest/)
+  })
+}
+
+test("mobile label keeps the state and park line", () => {
+  const t = { ...base, runtime: "running", needsYou: false, snoozedUntil: "2099-01-01T00:00:00Z" } as ThreadView
+  const tip = sessionIndicatorFor(t).tip!
+  assert.match(tip, /^Working\nSnoozed until/)
+  const mobile = renderToStaticMarkup(createElement(MobileThreadMark, { t }))
+  assert.ok(mobile.includes(`aria-label="${tip}"`))
+})
