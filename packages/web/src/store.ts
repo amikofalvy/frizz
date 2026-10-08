@@ -350,7 +350,9 @@ export function resolveRoutedThread(): void {
     if (typeof location !== "undefined") location.replace(standaloneThreadHref(slug))
     return
   }
-  if (route.kind === "found" && route.thread.needsYou && scrollToQueueCard(slug)) return
+  // `settlingRoute`: the address bar already holds this thread's entry, so the board URL that follows
+  // REPLACES it — a push would leave `/thread/<slug>` and the board behind each other as two entries.
+  if (route.kind === "found" && route.thread.needsYou && scrollToQueueCard(slug, { settlingRoute: true })) return
   pushDrawer("thread", slug, { routed: true })
 }
 
@@ -409,12 +411,22 @@ export function primeFullscreenReturn(routedSlug: string | undefined): void {
 // card, so every "show me this card" door — the rail, the palette, a deep link, a notification
 // click-through — wants it gone. The plain sheets also spread a full-screen scrim, which the click
 // would otherwise land on instead of the row.
-export function scrollToQueueCard(slug: string): boolean {
+//
+// And that dismissal is a NAVIGATION, so it PUSHES history (takeQueueCardNavigation). Every other
+// drawer close replaces — the router's rule — and this one used to as well: A's drawer, a link to queued
+// B, and A's `/thread/a` entry was rewritten to the board, sitting on top of the board it was opened
+// from. Back then did nothing visible and A was gone (desktop, 2026-10-08). Pushed, Back returns to A.
+// A routed `/thread/<slug>` settling here (resolveRoutedThread) is the exception: that entry already
+// names this thread, and the board replaces it.
+export function scrollToQueueCard(slug: string, opts?: { settlingRoute?: boolean }): boolean {
   const root = queueCardRoot(slug)
   if (!root) return false
   const targetY = queueCardTargetY(slug)
   const open = store.drawers.filter((drawer) => !drawer.closing).map((drawer) => drawer.id)
-  if (open.length) closeDrawersById(open)
+  if (open.length) {
+    queueCardNavigation = !opts?.settlingRoute
+    closeDrawersById(open)
+  }
   // Absolute scroll is intentional. A narrow layout may have just changed document geometry while a
   // drawer finished closing; a relative scroll in that transition can be applied to the old root and
   // strand the reader midway through a tall card. Land the bordered root atomically.
@@ -436,6 +448,17 @@ export function scrollToQueueCard(slug: string): boolean {
   holdQueueCardLanding(() => queueCardRoot(slug), () => queueCardTargetY(slug))
   flashQueueCard(slug, root)
   return true
+}
+
+// Set by scrollToQueueCard as it dismisses the stack for a door, read once by the store→URL sync on the
+// notification that carries that dismissal (lib/router startRouter). Taking it clears it, so a door
+// that changed no URL (a markdown reader over the board) leaves nothing armed for the next plain close.
+let queueCardNavigation = false
+
+export function takeQueueCardNavigation(): boolean {
+  const taken = queueCardNavigation
+  queueCardNavigation = false
+  return taken
 }
 
 // Pending ring teardowns, keyed by slug. A RE-CLICK inside the window must replay the ring and own the

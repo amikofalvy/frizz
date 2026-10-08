@@ -1,5 +1,5 @@
 import { subscribe } from "valtio"
-import { store, topThreadSlug, closeDrawersById, closeLayersDisplacedBy } from "../store.ts"
+import { store, topThreadSlug, closeDrawersById, closeLayersDisplacedBy, takeQueueCardNavigation } from "../store.ts"
 import { innerPath, outerPath, projectHref } from "./base-path.ts"
 import { parseStandaloneThreadPath } from "./standaloneThreadRoute.ts"
 
@@ -8,7 +8,9 @@ import { parseStandaloneThreadPath } from "./standaloneThreadRoute.ts"
 // standalone thread page), `/status/<status>` (URL-only lists).
 //
 // History contract (standard SPA): opening a thread layer PUSHES an entry so the browser Back
-// button unwinds it; other transitions REPLACE so transient state never buries the back stack.
+// button unwinds it; other transitions REPLACE so transient state never buries the back stack. One
+// close is a navigation and pushes too: a door to a QUEUED thread dismissing the stack to show that
+// thread's card (store scrollToQueueCard) — replacing there left two board entries and lost the drawer.
 //
 // (The focus machine this used to route through was deleted — the router writes store.view directly.)
 
@@ -177,6 +179,9 @@ export function startRouter(navigate: (path: string, options: { replace: boolean
   primeRoute()
 
   return subscribe(store, () => {
+    // Taken first, on every notification: it describes the change this notification carries, and an
+    // early return below must not leave it armed for a later one.
+    const queueCardNavigation = takeQueueCardNavigation()
     // The fullscreen page is NOT the board's URL to write. Its route lives outside RootLayout, but
     // valtio delivers this notification a microtask late: StandaloneRoute clears the drawer stack on
     // its first render (it moved there from the fullscreen door's click handler for the view
@@ -187,9 +192,10 @@ export function startRouter(navigate: (path: string, options: { replace: boolean
     if (parseStandaloneThreadPath(innerPath()) !== null) return
     const path = queueDestination(currentPath())
     if (path === location.pathname) return
-    // A NEW topmost thread pushes history; unwinding or non-thread transitions replace. `startsWith`
-    // is checked against the INNER path: under a project prefix every path starts with `/project/`.
+    // A NEW topmost thread pushes history, and so does a door dismissing the stack for a queue card;
+    // unwinding or non-thread transitions replace. `startsWith` is checked against the INNER path:
+    // under a project prefix every path starts with `/project/`.
     const openingThread = currentPath().startsWith("/thread/")
-    navigate(path, { replace: !openingThread })
+    navigate(path, { replace: !openingThread && !queueCardNavigation })
   })
 }

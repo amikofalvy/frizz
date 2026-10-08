@@ -1,7 +1,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import type { BoardSnapshot, ThreadView } from "@frizz/shared"
-import { markDrawerClosing, pushDrawer, resolveRoutedThread, store } from "../store.ts"
+import { markDrawerClosing, openThread, pushDrawer, resolveRoutedThread, scrollToQueueCard, store } from "../store.ts"
 import { appPushedCurrentEntry, primeRoute, queueDestination, startRouter } from "./router.ts"
 
 function resetStore(): void {
@@ -302,6 +302,79 @@ test("Back onto a thread a lateral move replaced pops without writing history", 
     await settle()
     assert.deepEqual(writes, [])
     assert.equal(store.drawers.filter((d) => !d.closing).length, 0)
+  } finally {
+    stop()
+    restore()
+    globals.location = previous
+    resetStore()
+  }
+})
+
+// A link (or a sidebar row, the palette, a notification) from inside thread A's drawer to a QUEUED
+// thread B: B's surface is its card in the main column, so the door dismisses A's drawer and scrolls
+// there. The URL then reads the board — but that is a NAVIGATION, not a close. Replacing A's entry with
+// the board left two board entries in a row, so the next Back did nothing visible and A was unreachable
+// (desktop, 2026-10-08). It must push, so Back returns to A; and settling a routed `/thread/<queued>`
+// URL onto its card must still REPLACE, or Back onto that entry would leave two boards behind it.
+test("following a door to a queued thread's card pushes, so Back returns to the drawer it left", async () => {
+  resetStore()
+  const globals = globalThis as typeof globalThis & { location?: Location }
+  const previous = globals.location
+  const writes: Array<{ path: string; replace: boolean }> = []
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
+  globals.location = { pathname: "/" } as unknown as Location
+  const stop = startRouter((path, { replace }) => {
+    writes.push({ path, replace })
+    globals.location = { pathname: path } as unknown as Location
+  })
+  const restore = mountQueueCard("queued-b")
+  try {
+    boardWith([{ id: "thread-a" }, { id: "queued-b", needsYou: true }])
+    openThread("thread-a")
+    await settle()
+    openThread("queued-b") // the delegated thread-link interceptor's door (lib/thread-links)
+    await settle()
+    assert.equal(store.drawers.filter((d) => !d.closing).length, 0, "the card is B's surface; A's drawer is dismissed")
+    assert.deepEqual(writes, [{ path: "/thread/thread-a", replace: false }, { path: "/", replace: false }])
+
+    // Back: the browser is on A's entry again, and A reopens with no further write.
+    writes.length = 0
+    globals.location = { pathname: "/thread/thread-a" } as unknown as Location
+    primeRoute("/thread/thread-a")
+    await settle()
+    resolveRoutedThread()
+    await settle()
+    assert.deepEqual(writes, [], "Back was a pop")
+    assert.deepEqual(store.drawers.filter((d) => !d.closing).map((d) => d.slug), ["thread-a"])
+
+    // The sidebar row calls the card door directly; the same push.
+    assert.equal(scrollToQueueCard("queued-b"), true)
+    await settle()
+    assert.deepEqual(writes, [{ path: "/", replace: false }])
+
+    // CONTROL — a routed `/thread/queued-b` settling onto the card replaces its own entry, as before.
+    writes.length = 0
+    pushDrawer("thread", "thread-a")
+    await settle()
+    writes.length = 0
+    globals.location = { pathname: "/thread/queued-b" } as unknown as Location
+    primeRoute("/thread/queued-b")
+    await settle()
+    resolveRoutedThread()
+    await settle()
+    assert.deepEqual(writes, [{ path: "/", replace: true }])
+
+    // And a door that finds no drawer to dismiss writes nothing, and leaves nothing armed for the
+    // next close to misread as a navigation.
+    writes.length = 0
+    assert.equal(scrollToQueueCard("queued-b"), true)
+    await settle()
+    assert.deepEqual(writes, [])
+    pushDrawer("thread", "thread-a")
+    await settle()
+    markDrawerClosing(store.drawers[0]!.id)
+    await settle()
+    assert.deepEqual(writes, [{ path: "/thread/thread-a", replace: false }, { path: "/", replace: true }], "a plain close still replaces")
   } finally {
     stop()
     restore()
