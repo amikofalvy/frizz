@@ -8,9 +8,7 @@ Durable Object holding that socket and framed down it.
 per name, so the 200-record ceiling that bounded the original design is gone. The [registrar](../registrar)
 records who owns a name; this serves it.
 
-**This IS on the data path**, unlike the registrar, and that is the trade the design makes
-deliberately: unlimited names cost us the traffic. Nothing in a board is trusted to the relay — a
-visitor still meets Frizz's own single-use access gate on the far side — but the bytes do pass through.
+**This IS on the data path**, unlike the registrar, and that is the trade the design makes deliberately: unlimited names cost us the traffic. A visitor still meets Frizz's own single-use access gate on the far side, but every byte passes through the relay in plaintext — the access code as it is redeemed, the session cookie on every later request, prompts, transcripts and terminal keystrokes. **Whoever can deploy this Worker controls every board behind it.** That happened between 2026-09-21 and 2026-10-08: a stolen Cloudflare token was used to deploy a build that copied all of it out and drove a board with a copied cookie. That is why deploys go through CI only (below), and [`plans/blind-relay.md`](../../plans/blind-relay.md) is the design that takes the plaintext away from this hop.
 
 ## What it carries
 
