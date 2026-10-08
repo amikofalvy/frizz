@@ -111,6 +111,7 @@ export function FrizzMdQuestionnaire({ status }: { status: FrizzMdStatus }) {
           <textarea
             id={notesId}
             data-frizz-md-notes
+            data-1p-ignore
             value={answers.notes}
             maxLength={FRIZZ_MD_NOTES_MAX}
             disabled={busy}
