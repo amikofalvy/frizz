@@ -462,9 +462,9 @@ export function recommendedIndex(recommendation: string | undefined, options: st
 
 // THE identifier every frizz-built option carries: `1.`, `2.`, `3.` (letters until 2026-10-07). Numbers
 // because a number is a KEY: the card binds 1–9 to its options, and the identifier on screen is the key
-// that picks it (maintainer: "use numbers rather than letters so that it is easy to just select the
-// option from the keyboard shortcut directly"). A worker-written fence keeps whatever it wrote — its
-// text is the worker's — and the card shows its POSITION on the keycap regardless (see splitOptionId).
+// that picks it (requested 2026-10-07, so an option can be picked straight from the keyboard). A
+// worker-written fence keeps whatever it wrote — its text is the worker's — and the card shows its
+// POSITION on the keycap regardless (see splitOptionId).
 export function optionNumber(index: number): string {
   return `${index + 1}.`
 }
