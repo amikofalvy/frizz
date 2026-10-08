@@ -163,6 +163,9 @@ export function spaNavigate(path: string, options?: SpaNavigateOptions): void {
  * desktop ×'s close). Replacing it always had left TWO board entries behind every ← — the board the
  * thread was opened from, and the thread's entry rewritten to it — so the next Back did nothing.
  * The same-URL entries lib/backDismiss pushes carry the router's state over, so they read the same.
+ * That includes one a reload left behind with no sheet to own it, which made ← pop onto the very same
+ * thread; main.tsx steps off such an entry at boot (backDismiss `stepOffStaleLayerEntries`), so the
+ * entry a page sits on is the router's own and this index stays truthful across a reload.
  */
 export function appPushedCurrentEntry(state: unknown = typeof history === "undefined" ? null : history.state): boolean {
   const idx = state && typeof state === "object" ? (state as { idx?: unknown }).idx : undefined
