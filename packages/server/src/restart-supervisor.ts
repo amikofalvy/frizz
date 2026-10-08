@@ -80,9 +80,14 @@ export interface RestartSupervisorProxyOptions {
   onCodeConsumed?: () => void
   /**
    * Persisted HMAC key for sessions. Without one, every restart signs out every device — which made a
-   * nominally year-long cookie last only until the next artifact update.
+   * nominally year-long cookie (30 days since 2026-10-08) last only until the next artifact update.
    */
   sessionKey?: Buffer
+  /**
+   * Write and return a replacement for `sessionKey`, for "sign every device out". Without one the new
+   * key lives in memory only and the next start revives every session it was meant to end.
+   */
+  rotateSessionKey?: () => Buffer
   /**
    * Where sign-outs are remembered. Supply a PERSISTED one, or a signed-out device comes back on the
    * next restart — and a board restarts on every artifact update and every ordinary ctrl-C.
@@ -267,6 +272,7 @@ export class RestartSupervisorProxy {
     this.access = new AccessStore({
       onConsumed: () => options.onCodeConsumed?.(),
       ...(options.sessionKey ? { signingKey: options.sessionKey } : {}),
+      ...(options.rotateSessionKey ? { rotateSigningKey: options.rotateSessionKey } : {}),
       ...(options.sessionDirectory ? { sessions: options.sessionDirectory } : {}),
     })
     this.policy = this.buildPolicy()
@@ -524,7 +530,10 @@ export class RestartSupervisorProxy {
       const body = await readJsonBody(req)
       const id = typeof body?.id === "string" ? body.id : undefined
       if (body?.all === true) {
-        responseJson(res, 200, { signedOut: this.access.sessions.revokeAll() })
+        // signOutAll, not the denylist alone: it also rotates the key, so a session the directory never
+        // recorded (minted before per-device ids, or by a server child's request after an epoch bump)
+        // dies too. See signOutOlderSessionEpoch.
+        responseJson(res, 200, { signedOut: this.access.signOutAll() })
         return
       }
       if (!id) {
@@ -722,6 +731,8 @@ export class RestartSupervisorProxy {
       return true
     }
     const cookie = `${SESSION_COOKIE}=${redeemed.session}`
+    // The browser forgets the cookie when the session it carries stops verifying, not a year later.
+    const maxAge = Math.max(0, Math.floor((redeemed.expiresAt - Date.now()) / 1000))
 
     url.searchParams.delete(ACCESS_CODE_PARAM)
     const target = `${url.pathname}${url.search}${url.hash}` || "/"
@@ -729,7 +740,7 @@ export class RestartSupervisorProxy {
     // top-level navigation that lands here while refusing cross-site writes.
     res.writeHead(302, {
       location: target,
-      "set-cookie": `${cookie}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=31536000`,
+      "set-cookie": `${cookie}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}`,
       "cache-control": "no-store",
     })
     res.end()
