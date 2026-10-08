@@ -1,5 +1,5 @@
 import { subscribe } from "valtio"
-import { store, topThreadSlug, closeDrawersById } from "../store.ts"
+import { store, topThreadSlug, closeDrawersById, closeLayersDisplacedBy } from "../store.ts"
 import { innerPath, outerPath, projectHref } from "./base-path.ts"
 import { parseStandaloneThreadPath } from "./standaloneThreadRoute.ts"
 
@@ -76,6 +76,14 @@ export function applyPath(path: string): void {
     // render the board is authoritative (store.resolveRoutedThread). Deciding here instead — the old
     // unconditional pushDrawer — is what rendered a queued thread's panel twice on `/thread/<slug>`:
     // its full card in the main column, plus the identical panel in a drawer half-covering it.
+    //
+    // What the destination DISPLACES is already known, though, and must go now. The commonest way here
+    // with a stack open is Back after a lateral move — thread A, then a link or a sidebar row to B: the
+    // one-drawer policy replaced A with B, so Back to A's entry finds B still on top. Leaving B up made
+    // the store→URL sync push B's URL back over A's, then resolveRoutedThread push A's over that — two
+    // new entries per Back press, flipping between the threads and never reaching the board. Closing B
+    // here is the same displacement opening A would do, a beat earlier, so the URL never disagrees.
+    closeLayersDisplacedBy({ kind: "thread", slug })
     store.routeThreadSlug = slug
     return
   }
