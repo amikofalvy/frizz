@@ -26,7 +26,6 @@ import { restartWorker } from "../lib/restartWorker.ts"
 import { useDevFrizzBuild } from "../lib/devBuild.ts"
 import { offersReloadPlugins, offersRestartWorker, reloadThreadPlugins } from "../lib/threadMaintenance.ts"
 import { profileGridDisplayParts } from "../lib/profileGrid.ts"
-import { ownedByThisPage } from "../lib/projectOwnership.ts"
 import { contextLine, displayUrl, effortWord, isLoopbackUrl } from "../lib/mobileThread.ts"
 import { useBackDismiss } from "../lib/backDismiss.ts"
 import { MobileBottomSheet } from "./MobileBottomSheet.tsx"
@@ -465,12 +464,10 @@ function RenameView({ thread, back, dismiss }: { thread: ThreadView; back: () =>
  *  `runningModelLabel`, not whatever its family resolves to now). */
 export function useModelEffortLabel(thread: ThreadView | undefined): string | null {
   const owned = Boolean(thread && !thread.foreign && thread.kind === "session")
-  // Same gate as useThreadComposerControls: no fetch while a project switch still holds the old board.
-  const boardProject = useSnapshot(store).board?.projectSlug
   const profiles = useQuery({
     queryKey: ["threadProfileOptions", thread?.id ?? ""],
     queryFn: () => rpc.threadProfileOptions({ slug: thread!.id }),
-    enabled: owned && ownedByThisPage(boardProject),
+    enabled: owned,
     staleTime: 5_000,
   })
   if (!thread) return null
