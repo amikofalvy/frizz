@@ -102,11 +102,21 @@ test("the empty-message predicates take the settled case", () => {
   }
   const blank = source.match(/function blankText\([\s\S]*?\n}/)?.[0]
   assert.ok(blank, "blankText must exist")
-  assert.match(
-    blank.replace(/^\s*\/\/.*$/gm, ""),
-    /if \(!m\.fenceRefused && !staleAwaiting\) return !text\.trim\(\)/,
-    "a settled fence must be stripped exactly as a refused one is",
-  )
+  const code = blank.replace(/^\s*\/\/.*$/gm, "")
+  assert.match(code, /if \(!m\.fenceRefused && !staleAwaiting\) \{\n\s*if \(!text\.includes\("```awaiting"\)\) return !text\.trim\(\)/, "a settled fence must be stripped exactly as a refused one is")
+  // …and a LIVE fence that names questions with no prose is as empty: renderText draws nothing for it.
+  assert.match(code, /awaitingDefersToQuestions\(s\.hints\) && !awaitingProseBlock\(s\.body\)/)
+})
+
+// A FENCE THAT NAMES QUESTIONS DRAWS NO CARD (maintainer 2026-10-08: "if there are questions that are
+// getting rendered, we don't even need to bother rendering the awaiting card"). Its prose stays as the
+// message's own text, and the branch sits before the card push so no slot is spent on a card.
+test("a fence that names questions renders its prose and no card", () => {
+  const render = renderText()
+  const branch = render.indexOf('if (fseg.fenceKind === "awaiting" && awaitingDefersToQuestions(fseg.hints))')
+  assert.ok(branch >= 0, "the branch must exist")
+  assert.ok(branch < render.indexOf("<FenceCard"), "it must come before the card push")
+  assert.match(render.slice(branch), /^[^]*?const prose = awaitingProseBlock\(fseg\.body\)\n\s*if \(prose\) push\(<ProseHtml [^\n]*\/>\)\n\s*continue/)
 })
 
 // ONE CUT, SHARED. The renderer marks a fence settled by comparing its index against the last assistant

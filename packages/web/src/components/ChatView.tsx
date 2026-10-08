@@ -76,6 +76,7 @@ import { CHILD_OPEN_TITLE, CHILD_RESTED_DOT_CLASS, CHILD_RESTED_TITLE, CHILD_STA
 import { childOpDismisser } from "../lib/dismissChildOp.ts"
 import { agentCompletionCall, subAgentCompletionOutcome } from "../lib/subAgentCompletion.ts"
 import { agentReading } from "../lib/agentReading.ts"
+import { awaitingDefersToQuestions, awaitingProseBlock } from "../lib/awaitingPresentation.ts"
 import { ChildOpRow } from "./ChildOpRow.tsx"
 import { ThreadLinks } from "./ThreadLinks.tsx"
 import { MessageRow, MessageStamp } from "./MessageTimestamp.tsx"
@@ -1915,8 +1916,13 @@ export function rendersNothingIn<T extends { message: ChatMessage; messageIndex:
 // it. That was already true of a REFUSED fence; it became true of a SETTLED one when the settled body
 // stopped rendering, and 99 of the 6,999 awaiting fences in this machine's transcripts are fence-only,
 // so the case is ordinary rather than theoretical.
+// A LIVE fence that names questions with no prose of its own draws nothing as well (renderText, 2026-10-08):
+// its card is gone and the question cards render after the message, not inside it.
 function blankText(m: ChatMessage, text: string, staleAwaiting?: boolean): boolean {
-  if (!m.fenceRefused && !staleAwaiting) return !text.trim()
+  if (!m.fenceRefused && !staleAwaiting) {
+    if (!text.includes("```awaiting")) return !text.trim()
+    return splitFenceBlocks(text).every((s) => s.kind === "fence" && s.fenceKind === "awaiting" && awaitingDefersToQuestions(s.hints) && !awaitingProseBlock(s.body))
+  }
   // splitFenceBlocks already drops whitespace-only prose runs, so "every segment is an awaiting fence"
   // is the whole test. A ```done fence still draws its card and keeps the message visible.
   return splitFenceBlocks(text).every((s) => s.kind === "fence" && s.fenceKind === "awaiting")
@@ -3584,6 +3590,14 @@ export const Message = memo(function Message({ m, answering, dense, paired, text
         // goes too, for the spacer reason above: FenceCard returning null would still leave its slot's
         // spacer standing between the prose and that card.
         if (fseg.fenceKind === "awaiting" && (m.fenceRefused || staleAwaiting || restingCardShown)) continue
+        // A FENCE THAT NAMES QUESTIONS DRAWS NO CARD — the question cards after this rest are its ending
+        // (lib/awaitingPresentation awaitingDefersToQuestions). Its prose is the worker's handoff, so it
+        // stays, as the message's own text.
+        if (fseg.fenceKind === "awaiting" && awaitingDefersToQuestions(fseg.hints)) {
+          const prose = awaitingProseBlock(fseg.body)
+          if (prose) push(<ProseHtml key={`${keyBase}-f${fi}`} md={prose} wrap={dense} />)
+          continue
+        }
         push(
           <FenceCard
             key={`${keyBase}-f${fi}`}

@@ -181,9 +181,9 @@ reasoning around the ask, never a copy of it (see Questions for the human).
 **AT EVERY LATER REST, SAY WHERE EACH OLD QUESTION STANDS.** A question still open from an EARLIER rest
 is not your new rest's sign-off, and frizz does NOT redraw its card under your new handoff — it stays
 where you asked it. So a later rest either NAMES each one you still need under \`questions:\` in an
-\` \`\`\`awaiting \` fence — its card is then drawn at this rest, under your fence — or WITHDRAWS it with
-\`unask\`. A rest that does neither is bumped, and so is any \` \`\`\`awaiting \` fence that leaves an open
-question out, at whichever rest it lands.
+\` \`\`\`awaiting \` fence — its card is then drawn at this rest, under your fence's prose — or WITHDRAWS
+it with \`unask\`. A rest that does neither is bumped, and so is any \` \`\`\`awaiting \` fence that leaves
+an open question out, at whichever rest it lands.
 
 Use at most ONE fenced signal block, at the very END (a question's PLACEMENT marker is not a signal
 block — see Questions for the human). The fence language is the state; the body is the card the human
@@ -407,8 +407,11 @@ exactly ONE of them.
     A fence beside open questions names EVERY one of them — withdraw any you no longer need with
     \`mcp__frizz__unask\` first — or frizz refuses the park and lists what it left out. Each named card is
     drawn at THIS rest, under your fence; to set it inside your prose instead, add its placement marker
-    (see Questions for the human). Like \`steps:\`, questions name the human as the wait: no other name
-    and no \`for:\` needed, and the thread stays in their queue.
+    (see Questions for the human). A fence that names questions draws NO awaiting card of its own: the
+    question cards are the rest's ending, its prose under \`---\` reads as plain handoff text, and the
+    work it also names is listed beside the human's prompt box (a fence with \`steps:\` keeps its card).
+    Like \`steps:\`, questions name the human as the wait: no other name and no \`for:\` needed, and the
+    thread stays in their queue.
   - **REGISTERING IS NOT PARKING, AND PARKING IS NOT REGISTERING.** Your shells, sub-agents, timers
     and PR watchers are watched AUTOMATICALLY, fence or no fence — frizz wakes you when one finishes,
     every time. The fence only declares that you have STOPPED, names which of them you stopped for,
