@@ -80,3 +80,22 @@ export function railRevealDelta(
   if (itemBottom > railBottom - margin) return itemBottom - railBottom + margin
   return 0
 }
+
+// The queue cards on the board, as the reading rule above measures them: each slot that is not leaving,
+// by its BORDERED ROOT rather than the slot (the slot is the fade wrapper and also spans the root's bottom
+// scroll-reserve margin). Shared by the rail (Sidebar) and the number keys (lib/questionKeys.ts), so the
+// card a bare digit answers is the card the rail marks.
+export function queueCardGeometry(): SidebarSectionGeometry[] {
+  return [...document.querySelectorAll<HTMLElement>("[data-queue-card][data-queue-leaving=\"false\"]")].flatMap((element) => {
+    const id = element.dataset.queueCard
+    if (!id) return []
+    const { top, bottom } = (element.querySelector<HTMLElement>("[data-queue-card-root]") ?? element).getBoundingClientRect()
+    return [{ id, top, bottom }]
+  })
+}
+
+// Has the document run out of scroll? The reading rule's `atDocumentBottom` argument.
+export function scrolledToDocumentBottom(): boolean {
+  const maxScrollY = Math.max(0, document.documentElement.scrollHeight - window.innerHeight)
+  return maxScrollY > 0 && window.scrollY >= maxScrollY - 1
+}

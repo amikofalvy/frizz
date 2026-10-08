@@ -22,7 +22,7 @@ const STORE: AskedQuestion = {
 
 test("options letter and join their trade-off exactly as a fence's option lines do", () => {
   const { question, optionLabels } = toParsedQuestion(STORE)
-  assert.deepEqual(question.options, ["A. SQLite — transactional", "B. A JSON file — zero deps"])
+  assert.deepEqual(question.options, ["1. SQLite — transactional", "2. A JSON file — zero deps"])
   // The RAW labels are what an answer submits — the letter and the trade-off are display only.
   assert.deepEqual(optionLabels, ["SQLite", "A JSON file"])
   assert.equal(question.recommendedIdx, 0)
@@ -32,7 +32,7 @@ test("options letter and join their trade-off exactly as a fence's option lines 
 
 test("an option with no description carries no dangling dash", () => {
   const { question } = toParsedQuestion({ question: "Which?", kind: "question", options: [{ label: "One" }] })
-  assert.deepEqual(question.options, ["A. One"])
+  assert.deepEqual(question.options, ["1. One"])
 })
 
 test("a question with no options is free text, and the card renders its box unconditionally", () => {
@@ -47,7 +47,7 @@ test("bodies ride the options array, and are absent entirely when no option has 
   assert.equal(question.optionBodies, undefined)
   // A MULTI-LINE description is the option's body — the label line carries no em-dash join for it.
   const rich = toParsedQuestion({ ...STORE, options: [{ label: "SQLite", description: "transactional\n\n- one more table in `ui.db`" }, { label: "JSON" }] })
-  assert.deepEqual(rich.question.options, ["A. SQLite", "B. JSON"])
+  assert.deepEqual(rich.question.options, ["1. SQLite", "2. JSON"])
   assert.deepEqual(rich.question.optionBodies, ["transactional\n\n- one more table in `ui.db`", undefined])
 })
 
@@ -61,7 +61,7 @@ test("a legacy preview folds into the body — after a body-shaped description, 
     options: [{ label: "SQLite", description: "transactional", preview: "```sql\nCREATE …\n```" }],
   })
   // The one-line description keeps its em-dash join; the preview is the body under it.
-  assert.deepEqual(both.question.options, ["A. SQLite — transactional"])
+  assert.deepEqual(both.question.options, ["1. SQLite — transactional"])
   assert.deepEqual(both.question.optionBodies, ["```sql\nCREATE …\n```"])
 })
 
@@ -129,7 +129,7 @@ test("an unanswered ROOT yields nothing at all, whatever is staged below it", ()
   assert.equal(registeredAnswer({ id: "qst_1", spec: TREE }, answers), undefined)
 })
 
-test("the payload restates the question and carries the worker's OWN label, not the lettered chip", () => {
+test("the payload restates the question and carries the worker's OWN label, not the numbered chip", () => {
   const built = registeredAnswer({ id: "qst_1", spec: STORE }, new Map([[ROOT_PATH, pick(0)]]))
   assert.deepEqual(built, { questionId: "qst_1", question: "Where should the settings live?", chosen: ["SQLite"] })
 })
@@ -201,12 +201,12 @@ const BRANCHED: AskedQuestion = {
   ],
 }
 
-test("a settled card keeps ONLY the picked option, lettered as it was, and the branch it opened", () => {
+test("a settled card keeps ONLY the picked option, numbered as it was, and the branch it opened", () => {
   const answer = registeredAnswer({ id: "qst_a", spec: BRANCHED }, new Map([[ROOT_PATH, pick(1)], [childPath(ROOT_PATH, 1, 0), pick(1)]]))!
   const nodes = settledQuestionNodes(BRANCHED, answer)
   assert.deepEqual(nodes.map((n) => [n.depth, n.question.options, n.settled]), [
-    [1, ["B. Ship — cut the release"], { chosenIdxs: [0] }],
-    [2, ["B. next"], { chosenIdxs: [0] }],
+    [1, ["2. Ship — cut the release"], { chosenIdxs: [0] }],
+    [2, ["2. next"], { chosenIdxs: [0] }],
   ])
   // The recommendation follows the kept option to its new index rather than pointing at a dropped one.
   assert.equal(nodes[0].question.recommendedIdx, 0)
@@ -216,7 +216,7 @@ test("a settled card whose answer took the other branch drops the recommendation
   const answer = registeredAnswer({ id: "qst_a", spec: BRANCHED }, new Map([[ROOT_PATH, pick(0)]]))!
   const nodes = settledQuestionNodes(BRANCHED, answer)
   assert.equal(nodes.length, 1)
-  assert.deepEqual(nodes[0].question.options, ["A. Hold — nothing moves"])
+  assert.deepEqual(nodes[0].question.options, ["1. Hold — nothing moves"])
   assert.equal(nodes[0].question.recommendedIdx, null)
 })
 
@@ -225,7 +225,7 @@ test("free text settles as text with no option chips, and a multi keeps every to
   assert.deepEqual([free[0].question.options, free[0].settled], [[], { chosenIdxs: [], text: "Postgres" }])
   const MULTI: AskedQuestion = { question: "Which platforms?", kind: "multi", options: [{ label: "macOS" }, { label: "Linux" }, { label: "Windows" }] }
   const multi = settledQuestionNodes(MULTI, registeredAnswer({ id: "qst_b", spec: MULTI }, new Map([[ROOT_PATH, { chosen: null, chosenSet: [2, 0], text: "ARM too" }]]))!)
-  assert.deepEqual([multi[0].question.options, multi[0].settled], [["A. macOS", "C. Windows"], { chosenIdxs: [0, 1], text: "ARM too" }])
+  assert.deepEqual([multi[0].question.options, multi[0].settled], [["1. macOS", "3. Windows"], { chosenIdxs: [0, 1], text: "ARM too" }])
 })
 
 test("a chosen label the spec no longer names is kept as text rather than lost", () => {
