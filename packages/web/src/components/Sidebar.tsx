@@ -28,7 +28,7 @@ import { formatCompactElapsed } from "../lib/durationLabels.ts"
 import { awaitingProse, awaitingWaitClause } from "../lib/awaitingPresentation.ts"
 import { useOptimisticallySteered } from "../lib/steering.ts"
 import { useOptimisticallyArchived } from "../lib/optimisticArchive.ts"
-import { activeSidebarSection, queueNavigationSettled, railRevealDelta, type SidebarSectionGeometry } from "../lib/sidebarScrollspy.ts"
+import { activeSidebarSection, queueCardGeometry, queueNavigationSettled, railRevealDelta, scrolledToDocumentBottom } from "../lib/sidebarScrollspy.ts"
 import type { ReactElement, ReactNode, RefObject } from "react"
 
 // THE LEFT SIDEBAR — the thread list as a FLOATING column (no border, no fill: it floats in the
@@ -113,18 +113,7 @@ export function Sidebar() {
   const pendingNavigation = useRef<{ id: string; landedY: number } | null>(null)
 
   const syncActiveSection = useCallback(() => {
-    const items = [...document.querySelectorAll<HTMLElement>("[data-queue-card][data-queue-leaving=\"false\"]")]
-      .map((element) => {
-        const id = element.dataset.queueCard
-        if (!id) return null
-        // The BORDERED ROOT, not the slot: the slot is the fade wrapper and also spans the root's
-        // bottom scroll-reserve margin, and the reading rule below is decided by how much of a CARD is
-        // on screen.
-        const card = element.querySelector<HTMLElement>("[data-queue-card-root]") ?? element
-        const { top, bottom } = card.getBoundingClientRect()
-        return { id, top, bottom } satisfies SidebarSectionGeometry
-      })
-      .filter((item): item is SidebarSectionGeometry => item !== null)
+    const items = queueCardGeometry()
     const pending = pendingNavigation.current
     if (pending) {
       const target = items.find((item) => item.id === pending.id)
@@ -134,9 +123,7 @@ export function Sidebar() {
         return
       }
     }
-    const maxScrollY = Math.max(0, document.documentElement.scrollHeight - window.innerHeight)
-    const atDocumentBottom = maxScrollY > 0 && window.scrollY >= maxScrollY - 1
-    const nextActiveId = activeSidebarSection(items, window.innerHeight, atDocumentBottom)
+    const nextActiveId = activeSidebarSection(items, window.innerHeight, scrolledToDocumentBottom())
     // Scroll/resize observations can fire several times per frame. Preserve the same primitive
     // state value to avoid a needless row-tree update when the selected card has not changed.
     setActiveId((current) => current === nextActiveId ? current : nextActiveId)

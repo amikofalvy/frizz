@@ -5,7 +5,7 @@
 //   2. a NATIVE AskUserQuestion tool call from the Claude session broker, whose interaction record is
 //      converted to the same model by lib/interactionQuestion.ts.
 //
-// They share a data model, which is why they can share a component: a question, lettered options each
+// They share a data model, which is why they can share a component: a question, numbered options each
 // with a one-line trade-off, an optional "select several" mode, and a free-text box at the bottom. The
 // tool call's `multiSelect` IS the fence's `multi` tag; its `options[].label/description` ARE the
 // fence's option lines. Anything that reads as a difference between them is a bug in a producer, not a
@@ -137,6 +137,12 @@ export function QuestionBlockCard({
         return k.isMulti ? "toggled" : "picked"
       },
       keyed: () => keysRef.current.count > 0,
+      row: (n) => {
+        const k = keysRef.current
+        if (!k.interactive || k.count === 0) return null
+        if (n === k.count + 1) return taRef.current?.parentElement ?? null
+        return n <= k.count ? grid.querySelectorAll<HTMLElement>(":scope > [data-question-option]")[n - 1] ?? null : null
+      },
       answered: () => {
         const k = keysRef.current
         return k.isMulti ? k.chosenSet.length > 0 || !!k.freetext.trim() : k.chosen !== null || !!k.freetext.trim()
