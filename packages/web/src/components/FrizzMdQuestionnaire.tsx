@@ -11,6 +11,7 @@ import {
 } from "@frizz/shared"
 import { rpc } from "../api/rpc.ts"
 import { showToast } from "../store.ts"
+import { projectSlug } from "../lib/base-path.ts"
 import { StatusRow } from "./StatusRow.tsx"
 
 // THE FIRST-RUN QUESTIONNAIRE — what a brand-new project shows before its first prompt box: how this
@@ -31,14 +32,27 @@ export function useFrizzMdQuestionnaire(): { ask: boolean | undefined; status: F
   const status = useQuery({ queryKey: FRIZZ_MD_STATUS_KEY, queryFn: () => rpc.frizzMdStatus(), staleTime: Infinity })
   // A server that cannot answer (an older one without the procedure, a read error) must never strand a
   // new project behind a questionnaire it cannot save: fall through to the prompt box.
-  if (status.isError) return { ask: false, status: undefined }
-  if (!status.data) return { ask: undefined, status: undefined }
+  if (status.isPending) return { ask: undefined, status: undefined }
+  if (status.isError || !status.data) return { ask: false, status: undefined }
   return { ask: !status.data.exists && !status.data.skipped, status: status.data }
 }
 
+// The half-answered form, per project, for the life of the page. Crossing the phone breakpoint swaps
+// the desktop board for the phone one and unmounts this screen — a window dragged narrower and back, or
+// puppeteer's full-page screenshot, which shrinks the window to 1×1 for a frame — and component state
+// alone would hand the operator back the defaults.
+const drafts = new Map<string, FrizzMdAnswers>()
+
 export function FrizzMdQuestionnaire({ status }: { status: FrizzMdStatus }) {
   const queryClient = useQueryClient()
-  const [answers, setAnswers] = useState<FrizzMdAnswers>(FRIZZ_MD_DEFAULT_ANSWERS)
+  const draftKey = projectSlug() ?? ""
+  const [answers, setAnswersState] = useState<FrizzMdAnswers>(() => drafts.get(draftKey) ?? FRIZZ_MD_DEFAULT_ANSWERS)
+  const setAnswers = (update: (prev: FrizzMdAnswers) => FrizzMdAnswers) =>
+    setAnswersState((prev) => {
+      const next = update(prev)
+      drafts.set(draftKey, next)
+      return next
+    })
   const [error, setError] = useState<string | null>(null)
   const notesId = useId()
   const preview = useMemo(() => composeFrizzMd(answers, status.defaultBranch), [answers, status.defaultBranch])
@@ -46,8 +60,9 @@ export function FrizzMdQuestionnaire({ status }: { status: FrizzMdStatus }) {
   const settle = (next: Partial<FrizzMdStatus>) =>
     queryClient.setQueryData<FrizzMdStatus>(FRIZZ_MD_STATUS_KEY, (prev) => ({ ...(prev ?? status), ...next }))
   const save = useMutation({
-    mutationFn: () => rpc.frizzMdCreate(answers),
+    mutationFn: (next: FrizzMdAnswers) => rpc.frizzMdCreate(next),
     onSuccess: () => {
+      drafts.delete(draftKey)
       settle({ exists: true })
       showToast("Saved FRIZZ.md — agents Frizz starts here will follow it")
     },
@@ -131,7 +146,7 @@ export function FrizzMdQuestionnaire({ status }: { status: FrizzMdStatus }) {
             disabled={busy}
             onClick={() => {
               setError(null)
-              save.mutate()
+              save.mutate(answers)
             }}
             className="rounded-md border border-accent-fill bg-accent-fill px-3 py-1.5 text-[12.5px] font-medium text-on-accent outline-none hover:brightness-110 focus-visible:ring-1 focus-visible:ring-focus-accent-60 disabled:opacity-50"
           >
