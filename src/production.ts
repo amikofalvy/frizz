@@ -15,7 +15,8 @@ import { SUPERVISOR_ACCESS_CODE_PATH } from "@frizz/server/restart-supervisor";
 import { createAccessPane, type AccessPane } from "./access-pane.ts";
 import { installPaneHost, type PaneHost } from "./pane-host.ts";
 import { createRemoteController, type RemoteController } from "./remote-controller.ts";
-import { probeCloudflared, probeGithub, probeTailscale } from "./remote-detect.ts";
+import { githubDeviceFlow } from "./github-device-flow.ts";
+import { probeCloudflared, probeTailscale } from "./remote-detect.ts";
 import { createRemotePane } from "./remote-pane.ts";
 import { LOOPBACK_BIND_HOST } from "@frizz/server/local-origin";
 import {
@@ -599,9 +600,11 @@ async function runSupervisor(port: number, token: string, onPrepared: () => void
     port,
     current: () => remote?.current() ?? null,
     apply: (next, applyOptions) => remote!.apply(next, applyOptions),
-    claim: (name) => establishCloudConfig(name, port),
+    // The pane shows the GitHub device code itself: a console line would land under its alternate screen.
+    claim: (name, signIn) =>
+      establishCloudConfig(name, port, undefined, undefined, githubDeviceFlow({ onPrompt: signIn.onDeviceCode, signal: signIn.signal })),
     issueLink: () => supervisor.issueAccessLink(),
-    probes: { github: probeGithub, cloudflared: probeCloudflared, tailscale: probeTailscale },
+    probes: { cloudflared: probeCloudflared, tailscale: probeTailscale },
     onChanged: (config) => logger.info("remote", config ? `reached at https://${config.hostname}` : "loopback only"),
     sandbox: sandbox !== null,
   });
