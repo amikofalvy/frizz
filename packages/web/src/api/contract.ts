@@ -20,6 +20,8 @@ import type {
   DropOwnLinkResult,
   BoardSnapshot,
   Settings,
+  FrizzMdAnswers,
+  FrizzMdStatus,
   DispatchInput,
   AdoptThreadInput,
   AdoptThreadResult,
@@ -350,6 +352,11 @@ export interface Api {
   // Takes an empty object, not nothing: the router declares `input: z.object({})` (a mutation always
   // has an input schema), and the transport posts `{}` for it.
   settingsReset(input: Record<never, never>): Promise<Settings>
+  // The first-run questionnaire: whether to ask (no FRIZZ.md, not skipped), write the answers as
+  // FRIZZ.md, or remember a skip for this project.
+  frizzMdStatus(): Promise<FrizzMdStatus>
+  frizzMdCreate(input: FrizzMdAnswers): Promise<{ path: string }>
+  frizzMdSkip(input: Record<never, never>): Promise<{ skipped: true }>
   dispatchPreferencesGet(): Promise<DispatchPreferences>
   dispatchPreferenceSet(input: SetDispatchPreferenceInput): Promise<DispatchPreferences>
   // The shipped GitHub batch-dispatch prompt template — the Settings UI prefills its editor from this
@@ -470,6 +477,9 @@ export const PROCEDURES = {
   settingsGet: "query",
   settingsSet: "mutation",
   settingsReset: "mutation",
+  frizzMdStatus: "query",
+  frizzMdCreate: "mutation",
+  frizzMdSkip: "mutation",
   dispatchPreferencesGet: "query",
   dispatchPreferenceSet: "mutation",
   githubPromptDefaults: "query",
