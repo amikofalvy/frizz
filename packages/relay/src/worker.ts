@@ -141,7 +141,10 @@ export class Board {
   private readonly adapters = new WeakMap<WorkerWebSocket, { send: (data: string) => void; close: (code?: number, reason?: string) => void }>()
   private restored = false
 
-  constructor(private readonly state: DurableObjectState) {
+  private readonly state: DurableObjectState
+
+  constructor(state: DurableObjectState) {
+    this.state = state
     // The board's keep-alive is answered by the RUNTIME, not by this object: an exact-match
     // auto-response works while the object is hibernated and does not wake it. Answering in
     // webSocketMessage instead would bill a wake per beat — thousands a day per idle board.

@@ -26,18 +26,17 @@ someone else asks for it, and by a daily sweep for names nobody wants.
 
 ## Deploying
 
-Relay mode — the default — creates no Cloudflare resources, so it needs no API token. The secrets
-below are read only when `CLOUD_MODE=tunnel` puts the old per-name tunnel path back.
+Only GitHub Actions deploys this Worker, never a laptop. Dispatch [`workers-deploy.yml`](../../.github/workflows/workers-deploy.yml) from `main`; it waits for a maintainer's approval on the `workers-deploy` environment, typechecks, runs the unit tests below and deploys:
 
 ```sh
-cd packages/registrar
-
-# 1. the registry: one small JSON row per claimed name
-wrangler kv namespace create CLAIMS      # paste the id into wrangler.toml
-
-# 2. ship it
-wrangler deploy
+gh workflow run workers-deploy.yml --ref main -f target=both
 ```
+
+`target` takes `relay`, `registrar` or `both`. [`workers-drift.yml`](../../.github/workflows/workers-drift.yml) checks every 30 minutes that everything this Worker runs came from a real run of that workflow, and a failed check is the alarm, emailed by GitHub. From 2026-09-21 to 2026-10-08 an attacker holding a Cloudflare token ran a build of this Worker that copied the GitHub token every named claim sends, and those uploads looked exactly like a laptop deploy. See the [relay README](../relay/README.md#deploying) for how the check works.
+
+**A secret change raises the alarm too.** `wrangler secret put` and `wrangler secret delete` each create a version and a deployment that CI did not make, and the check cannot tell the maintainer's from an attacker's. After changing a secret, dispatch the deploy workflow; the alarm clears once the CI deployment is active and the secret change is more than two hours old. Relay mode, the default, reads no secrets: the ones in `wrangler.toml` are read only when `CLOUD_MODE=tunnel` puts the old per-name tunnel path back.
+
+The registry is one KV namespace, created once and already in `wrangler.toml`. To recreate it, run `wrangler kv namespace create CLAIMS`, paste the new id into both this package's and the relay's `wrangler.toml`, and deploy through the workflow.
 
 Three things that will waste your time otherwise:
 
