@@ -259,10 +259,15 @@ export function QuestionBlockCard({
               rather than a one-line input, so a long "something else…" answer stays fully visible. */}
           {interactive && (
             // The free-text row takes the next number's keycap when the question has options, laid over
-            // the box's left padding so the box itself keeps its own border and focus treatment.
-            <div className="relative col-span-full">
+            // the box's left padding so the box itself keeps its own border and focus treatment. It sits
+            // on the BASELINE of the box's first line (a textarea is a baseline item in Chrome and
+            // Safari), the same rule the option rows use, so the browser places the digit and the text on
+            // one line at every zoom. A hand-set `top-[7px]` measured 0.8px high at 110% zoom and 0.4px
+            // low at 600%: the two snapped to device pixels independently. The -mr cancels the cap's
+            // 13px + 16px, so the box still starts at the row's left edge.
+            <div className={`relative col-span-full${parsed.options.length > 0 ? " flex items-baseline" : ""}`}>
             {parsed.options.length > 0 && (
-              <span className="pointer-events-none absolute left-[13px] top-[7px] flex">
+              <span className="pointer-events-none relative z-10 ml-[13px] -mr-[29px] flex">
                 <OptionKey n={parsed.options.length + 1} live />
               </span>
             )}
@@ -359,7 +364,7 @@ export function QuestionBlockCard({
               // with no chip chosen (a chosen chip beats the text, so text beside one is an unselected
               // draft and the box goes quiet, exactly like an unselected chip). Focus always shows the
               // accent border — the selection moves here the moment the box is entered.
-              className={`block w-full resize-none overflow-hidden rounded-md border py-1.5 pr-3 ${parsed.options.length > 0 ? OPTION_TEXT_INSET : "pl-3"} text-[12px] leading-snug text-fg/90 outline-none placeholder:text-muted-80 transition-colors ${
+              className={`block w-full min-w-0 flex-1 resize-none overflow-hidden rounded-md border py-1.5 pr-3 ${parsed.options.length > 0 ? OPTION_TEXT_INSET : "pl-3"} text-[12px] leading-snug text-fg/90 outline-none placeholder:text-muted-80 transition-colors ${
                 freetext.trim() && (isMulti || chosen === null) ? "border-selection-border bg-selection" : "border-border bg-transparent hover:bg-panel-2 focus:border-accent"
               }`}
             />
@@ -493,7 +498,7 @@ function Chip({
         if (window.getSelection()?.toString()) return
         onClick()
       }}
-      className={`relative flex items-start gap-2 rounded-md border px-3 py-1.5 text-[12px] leading-snug transition-colors ${
+      className={`relative flex items-baseline gap-2 rounded-md border px-3 py-1.5 text-[12px] leading-snug transition-colors ${
         selected
           ? "border-selection-border bg-selection text-fg"
           : settledPick
@@ -520,7 +525,7 @@ function Chip({
       {multi && (
         <span
           aria-hidden
-          className={`mt-px flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[3px] border ${
+          className={`mt-px flex h-3.5 w-3.5 shrink-0 self-start items-center justify-center rounded-[3px] border ${
             selected ? "border-accent bg-accent-fill text-on-accent" : settledPick ? "border-control-strong text-fg" : "border-control-strong"
           }`}
         >
@@ -567,10 +572,14 @@ const OPTION_TEXT_INSET = "pl-9"
 // those stay plain too. On a touch screen there is no keyboard to point at, so the cap drops its border
 // and fill and reads as a plain number. The SELECTED cap fills with the accent, the same fill the multi
 // checkbox uses, so a keyboard pick shows where it landed. Inside the focused options grid every cap
-// steps up a tone: the question that holds the keyboard says so.
+// steps up a tone: the question that holds the keyboard says so. The row is `items-baseline`, so the
+// digit stands on the label's baseline and the browser does the aligning, with the same result at every
+// zoom (measured in sans at 1x, 1.1x, 2x, 2.2x and 6x: the digit's foot on the label's baseline in every
+// row, the free-text row included). Leave the cap's own padding alone: a `pt-px` that lifts the cap half
+// a pixel rounded up in the option rows and down in the free-text row, 1px apart.
 function OptionKey({ n, live, selected = false }: { n: number; live: boolean; selected?: boolean }) {
   if (!live || n > 9) {
-    return <span aria-hidden className="mt-px w-4 shrink-0 text-center text-[11px] tabular-nums text-muted">{n}.</span>
+    return <span aria-hidden className="w-4 shrink-0 text-center text-[11px] tabular-nums text-muted">{n}.</span>
   }
   return (
     <span
