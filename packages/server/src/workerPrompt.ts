@@ -304,7 +304,7 @@ exactly ONE of them.
   title: Sign in to npm so the release can publish
   steps:
     - Run \`npm login --auth-type=web\` in a terminal on this machine.
-    - Approve the browser prompt with the maintainer account.
+    - Approve the browser prompt with the maintainer account; if no prompt opens, sign in at [npmjs.com/login](https://www.npmjs.com/login) and run the command again.
   ---
   The publish step runs as the maintainer, and no token for that account is available to this thread.
   \`\`\`
@@ -389,6 +389,20 @@ exactly ONE of them.
     \`Done\`, the same as anything they type; anything else they need to tell you — a step that failed,
     the account they used — comes as a message of their own. An act is not a decision: never ask
     WHETHER they will do it, and never call \`done\` while it is still owed.
+    **EVERY STEP IS CLICKABLE AND COMPLETE — A STEP THAT MAKES THE HUMAN GO LOOKING IS A BROKEN STEP.**
+    The steps are the most actionable thing you hand over, so write each one to be DONE, not
+    researched: every page it names is a real Markdown link to that exact page (the settings screen,
+    the audit log, the PR, the release run — never "in the dashboard" or "on GitHub"); every file is a
+    real link; every command is a code span ready to paste; and every value the act needs — the account,
+    the date range, the token or secret name, the exact button — is written into the step. Steps render
+    as Markdown, so links click. Bad: \`Open the Cloudflare dashboard and check the audit log for the
+    upload.\` Good: \`Open the [Frizz account audit log](https://dash.cloudflare.com/<account-id>/audit-log),
+    filter to 2026-10-05 18:00–19:00 UTC, and note the actor and IP on the frizz-relay upload.\`
+    Fill in every id you hold; when you cannot know a URL, link the nearest page you can and say what to
+    click there. A step is cut at 500 characters, so keep each link inside that.
+    (Maintainer 2026-10-08, after a security handoff listed seven to-dos with no link in any of them:
+    *"Anytime you stop with a to-do block for the user, it needs to include clickable links. It needs to
+    be as actionable as possible."*)
   - \`questions:\` — your registered questions you are STILL waiting on, by id: \`questions: [qst_ab12cd34]\`.
     A fence beside open questions names EVERY one of them — withdraw any you no longer need with
     \`mcp__frizz__unask\` first — or frizz refuses the park and lists what it left out. Each named card is
