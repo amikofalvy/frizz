@@ -1,7 +1,10 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { createRoot } from "react-dom/client"
+import { useSnapshot } from "valtio"
 import type { BoardSnapshot, RegisteredQuestionView, ThreadView as ThreadViewModel, TranscriptMessage } from "@frizz/shared"
 import { TodosView } from "./components/TodosView.tsx"
+import { SettingsDrawer } from "./components/SettingsDrawer.tsx"
+import { CommandPalette } from "./components/CommandPalette.tsx"
 import { TooltipProvider } from "./components/Tooltip.tsx"
 import { store } from "./store.ts"
 import "./styles.css"
@@ -26,11 +29,16 @@ import "./styles.css"
 //                 stand down (the registered card carries its own).
 //   ?table=1    — an option whose body carries a TABLE, a blockquote and a code fence: the blocks whose
 //                 opaque panel fills clashed with a selected chip's accent tint (screenshot 2026-09-02).
-//   ?wide=1     — a `multi` over THIRTY options: no count cap (2026-09-03), and lettering past `Z.`.
+//   ?wide=1     — a `multi` over THIRTY options: no count cap (2026-09-03), and numbering past the 1–9 keys.
 //   ?placed=1   — PER-QUESTION PLACEMENT (2026-09-11): two questions open at one rest; the handoff carries
 //                 an empty ```question qst_… marker for ONE of them, mid-prose. That card must render in
 //                 the marker's slot, its sibling at the tail, and ONE "Send answers" at the tail must send
 //                 both — the marker's card carries no Send of its own.
+//   ?keys=1     — the NUMBER KEYS (lib/questionKeys.ts): TWO queue cards, the first asking the settings
+//                 store and the land-it tree, the second the commit gates, with the real Settings drawer
+//                 and ⌘K palette mounted off the store (`window.fixtureStore` opens them). What it is for
+//                 is WHICH question a bare digit answers, and above all that it never answers one the
+//                 operator cannot see.
 //   ?font=sans  — the other of the two fonts this app renders in; mono is the default and the wider.
 const params = new URLSearchParams(location.search)
 document.documentElement.dataset.font = params.get("font") === "sans" ? "sans" : "mono"
@@ -107,8 +115,9 @@ const GATES: RegisteredQuestionView = {
 }
 
 // A `multi` over a LONG list — thirty options, past the `.max(8)` the schema carried until 2026-09-03
-// and past the 26 the card letters `A.`–`Z.`, so the tail reads `AA.`…`AD.`. What is worth looking at is
-// that the run stays one even column and the free-text row still follows the last option.
+// and past the 9 the keys can name, so rows 10…30 read as plain `10.`…`30.` beside the 1–9 keycaps.
+// What is worth looking at is that the run stays one even column and the free-text row still follows
+// the last option.
 const WIDE: RegisteredQuestionView = {
   id: "qst_0006ffff",
   askedAt: ago(4),
@@ -163,7 +172,9 @@ const TABLE: RegisteredQuestionView = {
 }
 
 const placed = params.get("placed") === "1"
+const keys = params.get("keys") === "1"
 const questions = params.get("danger") === "1" ? [GATE]
+  : keys ? [SETTINGS, TREE]
   : placed ? [SETTINGS, GATES]
   : params.get("wide") === "1" ? [WIDE]
   : params.get("tree") === "1" ? [TREE]
@@ -229,7 +240,11 @@ const thread = {
   lastActivityAt: ago(1),
 } as unknown as ThreadViewModel
 
-store.board = { projectDir: "/fixture/frizz", threads: [thread] } as BoardSnapshot
+// ?keys=1's second card: the same rest, asking only the commit gates.
+const gatesThread = { ...thread, id: "registered-question-gates", title: "Pick the commit gates", questions: [GATES], lastActivityAt: ago(2) } as ThreadViewModel
+
+store.board = { projectDir: "/fixture/frizz", threads: keys ? [thread, gatesThread] : [thread] } as BoardSnapshot
+Object.assign(window, { fixtureStore: store })
 
 const transcriptPage = { messages, transcriptKey: "fixture-key", hasEarlier: past, historyLoaded: false }
 const originalFetch = window.fetch
@@ -240,17 +255,32 @@ window.fetch = async (input, init) => {
   }
   // The two writes the card makes, echoed onto the window so a probe can assert the exact payload the
   // worker would receive — above all that an answer RESTATES the question and carries the option's own
-  // label rather than the lettered chip text.
+  // label rather than the numbered chip text.
   if (url.pathname === "/_frizz/rpc/answerQuestions" || url.pathname === "/_frizz/rpc/dismissQuestions") {
     const body = JSON.parse(String(init?.body ?? "{}"))
     window.dispatchEvent(new CustomEvent("fixture-rpc", { detail: { rpc: url.pathname.split("/").pop(), body } }))
     const ids: string[] = body.ids ?? (body.answers ?? []).map((a: { questionId: string }) => a.questionId)
     return new Response(JSON.stringify({ result: { answered: ids, dismissed: ids, open: [] } }), { headers: { "content-type": "application/json" } })
   }
+  // The Settings drawer (?keys=1) reads the machine's settings; any plausible object will do.
+  if (url.pathname === "/_frizz/rpc/settingsGet") {
+    return new Response(JSON.stringify({ result: { permissionMode: "auto", notifications: false, projectRail: false } }), { headers: { "content-type": "application/json" } })
+  }
   if (url.pathname.startsWith("/_frizz/rpc/")) {
     return new Response(JSON.stringify({ result: null }), { headers: { "content-type": "application/json" } })
   }
   return originalFetch(input, init)
+}
+
+// Settings and the palette mount the way App mounts them: off the store flags.
+function Overlays() {
+  const snap = useSnapshot(store)
+  return (
+    <>
+      {snap.showSettings && <SettingsDrawer />}
+      <CommandPalette />
+    </>
+  )
 }
 
 createRoot(document.getElementById("root")!).render(
@@ -259,6 +289,7 @@ createRoot(document.getElementById("root")!).render(
       <div className="mx-auto w-[min(680px,calc(100%-32px))] py-8">
         <TodosView />
       </div>
+      {keys && <Overlays />}
     </TooltipProvider>
   </QueryClientProvider>,
 )
