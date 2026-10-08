@@ -158,7 +158,7 @@ export function QuestionBlockCard({
   const KindIcon = isDanger ? AlertTriangle : undefined
   // Sentence case, because the shared chrome renders this as a real TITLE now rather than as an
   // uppercased eyebrow — a lowercase "question" beside the card's glyph reads as a typo.
-  const kindLabel = label ?? (isMulti ? "Select multiple" : "Question")
+  const kindLabel = label ?? (parsed.secret ? "Secret" : isMulti ? "Select multiple" : "Question")
   // `risk`, not `danger`: the neutral border with a red title. A destructive gate is a question nobody
   // has answered wrongly yet, not a thing that has broken, and it wore the same lit red border as a dead
   // sign-in until 2026-08-26 (maintainer: they "look way too scary"). The tag's CRITERIA are unchanged
@@ -266,6 +266,45 @@ export function QuestionBlockCard({
                 <OptionKey n={parsed.options.length + 1} live />
               </span>
             )}
+            {parsed.secret ? (
+              // A SECRET IS A PASSWORD FIELD, not a masked textarea: `type="password"` is what tells a
+              // phone keyboard to stop predicting and learning what is typed, and a password manager to
+              // offer a fill. One line, because a code or a token is one line. Its value lives in the
+              // answering state's memory, never the draft store (RegisteredQuestionCards).
+              <>
+                <input
+                  type="password"
+                  data-secret-answer
+                  data-surface="questionAnswer"
+                  autoComplete="off"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
+                  aria-label="Secret value"
+                  value={freetext}
+                  onChange={(e) => interactive.onText(e.target.value)}
+                  onKeyDown={(e) => {
+                    e.stopPropagation()
+                    if (e.key === "Escape") {
+                      e.preventDefault()
+                      gridRef.current?.focus()
+                      return
+                    }
+                    if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                      e.preventDefault()
+                      interactive.onSubmit()
+                    }
+                  }}
+                  placeholder="Paste the value…"
+                  className={`block w-full rounded-md border py-1.5 pl-3 pr-3 text-[12px] leading-snug text-fg/90 outline-none placeholder:text-muted-80 transition-colors ${
+                    freetext.trim() ? "border-selection-border bg-selection" : "border-border bg-transparent hover:bg-panel-2 focus:border-accent"
+                  }`}
+                />
+                <div className="mt-1.5 text-[11px] leading-snug text-muted-70">
+                  Saved to a private file on the machine running Frizz. The worker gets the file's path, not the value.
+                </div>
+              </>
+            ) : (
             <textarea
               ref={taRef}
               data-1p-ignore
@@ -324,6 +363,7 @@ export function QuestionBlockCard({
                 freetext.trim() && (isMulti || chosen === null) ? "border-selection-border bg-selection" : "border-border bg-transparent hover:bg-panel-2 focus:border-accent"
               }`}
             />
+            )}
             </div>
           )}
         </div>

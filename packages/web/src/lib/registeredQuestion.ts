@@ -58,6 +58,7 @@ export function toParsedQuestion(spec: AskedQuestion): { question: ParsedQuestio
     question: {
       kind: spec.kind,
       danger: spec.danger === true,
+      ...(spec.secret ? { secret: true } : {}),
       contextMd: spec.question,
       options: parts.map((p) => p.line),
       recommendedIdx: recommendedIdx === -1 ? null : recommendedIdx,

@@ -653,6 +653,41 @@ const UNASK = {
   },
 }
 
+const SECRET = {
+  name: "secret",
+  description:
+    "ASK THE HUMAN FOR A SECRET VALUE — a one-time 2FA code, an API token, a password — that a command " +
+    "needs and you must never see. The human may be on a phone, far from this machine: this is how a " +
+    "code reaches a command without anyone typing into a terminal here.\n\n" +
+    "It registers a question like `ask`, drawn as a card with ONE MASKED BOX. What the human pastes is " +
+    "written to a private file (0600, outside the repo) whose path this tool returns NOW, and it never " +
+    "enters the transcript, the database or your context: the answer you are woken with names the path, " +
+    "not the value.\n\n" +
+    "USE IT INSIDE THE COMMAND, NEVER ON ITS OWN: `npm publish --otp \"$(cat <path>)\"`, " +
+    "`TOKEN=\"$(cat <path>)\" ./deploy.sh`, `<cmd> < <path>`. Never `cat` it bare, echo it, write it " +
+    "into a file in the repo, or paste it into a message — any of those puts the value in the " +
+    "transcript. Delete the file (`rm <path>`) once the command has used it.\n\n" +
+    "A one-time code expires in about thirty seconds, so have the command ready BEFORE you rest: when the " +
+    "answer wakes you, run it at once.\n\n" +
+    "Like a question, it is your rest's sign-off and it gates `done` until answered; name it under " +
+    "`questions:` at later rests, withdraw it with `unask`. It is allowed on an autonomous thread — a " +
+    "credential is not something you can decide.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      question: {
+        type: "string",
+        description:
+          "What to paste, said so the human can answer cold: which account or service, which kind of " +
+          "value, and what it unlocks — \"The npm one-time code for the maintainer account, to publish " +
+          "frizz 0.16.0.\" NO \"I\" AND NO \"you\": name the actor outright.",
+      },
+      header: { type: "string", description: "A very short chip label for the card, 12 characters or so — \"npm OTP\", \"API token\"." },
+    },
+    required: ["question"],
+  },
+}
+
 const DONE = {
   name: "done",
   description:
@@ -783,7 +818,7 @@ const UNLINK = {
 
 // WATCH_ISSUE rides at the END (2026-09-14): the tool list is read by position in frizz-mcp.test.ts, and a
 // worker's runtime reads it by name, so the order costs nothing and appending breaks nothing.
-const TOOLS = [SPAWN_THREAD, GOAL, TIMER, WATCH_PR, WATCH, UNWATCH, ASK, UNASK, DONE, TITLE, ACTIVITY, LINK, UNLINK, WATCH_ISSUE]
+const TOOLS = [SPAWN_THREAD, GOAL, TIMER, WATCH_PR, WATCH, UNWATCH, ASK, UNASK, DONE, TITLE, ACTIVITY, LINK, UNLINK, WATCH_ISSUE, SECRET]
 
 /** @type {Record<string, (args: Record<string, unknown>) => Promise<string>>} */
 const HANDLERS = {
@@ -795,6 +830,7 @@ const HANDLERS = {
   [WATCH.name]: watch,
   [ASK.name]: ask,
   [UNASK.name]: unask,
+  [SECRET.name]: secret,
   [DONE.name]: done,
   [TITLE.name]: title,
   [UNWATCH.name]: unwatch,
@@ -1562,6 +1598,32 @@ async function ask(args) {
     "wake, restating what was asked.\n\n" +
     "WITHDRAW ONE THE MOMENT IT STOPS MATTERING (`unask`), above all if you work the answer out " +
     `yourself.\n\n${openQuestionList(result)}`
+  )
+}
+
+/** The `secret` handler: register ONE masked question, and hand back the file its value will land in.
+ *  It rides the `ask` RPC with `secret: true` — the card, the wake, the `done` gate and the `questions:`
+ *  naming are all a question's — and the server is what keeps the value out of every one of them.
+ * @param {Record<string, unknown>} args @returns {Promise<string>} */
+async function secret(args) {
+  const slug = threadSlug()
+  const question = typeof args.question === "string" ? args.question.trim() : ""
+  if (!question) throw new Error("`question` is required — say what the human should paste, and for what")
+  const header = typeof args.header === "string" && args.header.trim() ? args.header.trim() : undefined
+  const result = (await callRpc("ask", { slug, questions: [{ question, kind: "question", secret: true, ...(header ? { header } : {}) }] }))?.result
+  const registered = Array.isArray(result?.registered) ? result.registered[0] : undefined
+  const path = typeof registered?.secretPath === "string" ? registered.secretPath : ""
+  if (!registered?.id || !path) throw new Error("Frizz did not return the secret's file — this server predates `secret`; restart Frizz and retry")
+  // Quoted, because the macOS state dir is `~/Library/Application Support/…` and an unquoted path
+  // splits at the space.
+  const quoted = `'${path.replace(/'/g, `'\\''`)}'`
+  return (
+    `Registered secret request ${registered.id}. The human sees a masked box on the board.\n\n` +
+    `The value will be written to:\n  ${path}\n\n` +
+    `Use it INSIDE the command — \`--otp "$(cat ${quoted})"\` — and never cat, echo or copy it on its own. ` +
+    `Delete it with \`rm ${quoted}\` once used. Get the command ready now: the answer wakes you, and a ` +
+    "one-time code expires within a minute.\n\n" +
+    `${openQuestionList(result)}`
   )
 }
 

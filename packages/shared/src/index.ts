@@ -2541,6 +2541,12 @@ export interface AskedQuestion {
    *  things: the card wears the `risk` tone, and the human's × cannot reach it. A generic close icon is
    *  not consent for something irreversible; declining is an OPTION inside the question. */
   danger?: boolean
+  /** A SECRET request (`mcp__frizz__secret`): a free-text question whose answer is a credential — a
+   *  one-time code, a token, a password. The card masks the box and keeps the typed value out of every
+   *  draft cache; the server writes the value to a private file (`secretFilePath`) and stores and
+   *  delivers only `secretAnswerText`, so the value never reaches the database, the transcript or the
+   *  model. Root questions only, and never with options. */
+  secret?: boolean
   /** Absent or empty ⇒ a free-text question. */
   options?: AskedOption[]
 }
@@ -2579,6 +2585,7 @@ export const AskedQuestionSchema: z.ZodType<AskedQuestion> = z.lazy(() => z.obje
   header: z.string().trim().max(24).optional(),
   kind: AskQuestionKind,
   danger: z.boolean().optional(),
+  secret: z.boolean().optional(),
   // UNBOUNDED, deliberately. This carried `.max(8)` from launch until 2026-09-03, when the maintainer
   // asked for the cap to go ("allow arbitrary numbers of options"): a `multi` over a long list — which
   // gates to run, which of twenty findings to act on — is a real shape, and the card numbers past 9
@@ -2601,6 +2608,12 @@ export function askedQuestionFaults(q: AskedQuestion): string[] {
   const faults: string[] = []
   const walk = (node: AskedQuestion, path: string) => {
     const options = node.options ?? []
+    // A SECRET IS A VALUE, NOT A CHOICE: its card is one masked box, and the server swaps that box's
+    // text for a file path — a picked label would reach the worker unmasked beside it.
+    if (node.secret && options.length > 0) faults.push(`${path}: a secret request takes no options — it is one masked box`)
+    // …and it is its own registration. A follow-up's answer rides inside its parent's, and the server
+    // redacts at the root, so a secret branch would deliver the value in the clear.
+    if (node.secret && path !== "question") faults.push(`${path}: a secret request cannot be a follow-up — register it on its own`)
     // A MULTI-SELECT WITH NO OPTIONS IS A FREE-TEXT BOX WEARING THE WRONG LABEL, and it renders as one —
     // silently, so the worker never learns its `multi` did nothing.
     if (node.kind === "multi" && options.length === 0) faults.push(`${path}: \`kind: "multi"\` needs options — a question with none is free text`)
@@ -2637,8 +2650,25 @@ export const RegisteredQuestionView = z.object({
   id: z.string(),
   spec: AskedQuestionSchema,
   askedAt: z.string(),
+  /** A `secret` question only: the file its value will be written to. Known at registration, so the
+   *  worker can prepare the command that reads it before the human has answered. */
+  secretPath: z.string().optional(),
 }).strict()
 export type RegisteredQuestionView = z.infer<typeof RegisteredQuestionView>
+
+/** What a SECRET answer is stored and delivered as, in place of the value: where the value went, and
+ *  how to use it without printing it. ONE wording, because the settled card, the in-flight card and the
+ *  worker's wake all read this same stored text — which is also why it is SHORT: the human reads it on
+ *  the Answers card, often on a phone, and the `secret` tool already handed the worker the recipe. */
+export function secretAnswerText(path: string): string {
+  return `(secret saved to ${quotePath(path)} — never print it)`
+}
+
+/** POSIX single-quoting, so the path pastes into a command as-is. The macOS state dir is
+ *  `~/Library/Application Support/…`, and an unquoted `$(cat <path>)` splits at the space. */
+function quotePath(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`
+}
 
 export const AskResult = z.object({
   registered: z.array(RegisteredQuestionView),

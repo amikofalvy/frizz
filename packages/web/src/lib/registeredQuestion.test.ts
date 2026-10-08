@@ -232,3 +232,8 @@ test("a chosen label the spec no longer names is kept as text rather than lost",
   const nodes = settledQuestionNodes(STORE, { questionId: "qst_a", question: STORE.question, chosen: ["Postgres"] })
   assert.deepEqual(nodes[0].settled, { chosenIdxs: [], text: "Postgres" })
 })
+
+test("a SECRET question carries its flag into the card model, and an ordinary one does not", () => {
+  assert.equal(toParsedQuestion({ question: "Token?", kind: "question", secret: true }).question.secret, true)
+  assert.equal("secret" in toParsedQuestion({ question: "Name?", kind: "question" }).question, false)
+})

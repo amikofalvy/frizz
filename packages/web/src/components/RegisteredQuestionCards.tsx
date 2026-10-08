@@ -68,6 +68,11 @@ export function useRegisteredAnswering(thread: ThreadView | undefined): Register
   const questions = thread?.questions ?? []
   const projectDir = useProjectDir()
   const [picks, setPicks] = useState<Picks>(() => new Map())
+  // A SECRET's typed value, keyed by question id. In React state and nowhere else: the draft store
+  // mirrors into sessionStorage, and a pasted credential must not outlive the tab in a cache (lib/drafts
+  // says so for the typed interaction cards too). The cost is that a reload loses a half-pasted code,
+  // which is the right way round for a one-time code.
+  const [secrets, setSecrets] = useState<ReadonlyMap<string, string>>(() => new Map())
   const [error, setError] = useState<string>()
   // THE QUEUE CARD DISSOLVES ON SEND, like every other action on it. Answering is the same commitment as
   // a fenced Send answers or a composer steer — both of which take the card out of the queue the instant
@@ -80,12 +85,13 @@ export function useRegisteredAnswering(thread: ThreadView | undefined): Register
   // Every free-text box of every question, subscribed as one batch — the draft store's own hook takes a
   // key list, and the set only changes when a question is registered or settled.
   const textKeys = useMemo(
-    () => (slug ? questions.flatMap((q) => allPaths(q).map((path) => draftKey.question(projectDir, slug, q.id, path))) : []),
+    () => (slug ? questions.flatMap((q) => (q.spec.secret ? [] : allPaths(q).map((path) => draftKey.question(projectDir, slug, q.id, path)))) : []),
     [projectDir, slug, questions],
   )
   const persistedText = useDraftValues(textKeys)
   const answerFor = (q: RegisteredQuestionView, path: string): BlockAnswer => {
     const pick = picks.get(pickKey(q.id, path))
+    if (q.spec.secret) return { chosen: null, chosenSet: [], text: secrets.get(q.id) ?? "" }
     return {
       chosen: pick?.chosen ?? null,
       chosenSet: pick?.chosenSet ?? [],
@@ -116,7 +122,12 @@ export function useRegisteredAnswering(thread: ThreadView | undefined): Register
           return next
         })
         const q = questions.find((entry) => entry.id === id)
-        if (q && slug) for (const path of allPaths(q)) draftStore.set(draftKey.question(projectDir, slug, q.id, path), "")
+        if (q?.spec.secret) setSecrets((prev) => {
+          const next = new Map(prev)
+          next.delete(id)
+          return next
+        })
+        else if (q && slug) for (const path of allPaths(q)) draftStore.set(draftKey.question(projectDir, slug, q.id, path), "")
       }
     },
     onError: (cause) => {
@@ -159,7 +170,12 @@ export function useRegisteredAnswering(thread: ThreadView | undefined): Register
     const ids = new Set(stagedPairs.map((pair) => pair.q.id))
     queryClient.setQueryData<SettledQuestion[]>(key, (prev) => [
       ...(prev ?? []).filter((s) => !ids.has(s.id)),
-      ...stagedPairs.map(({ q, answer }): SettledQuestion => ({ id: q.id, spec: q.spec, askedAt: q.askedAt, settledAt, answer, pending: true })),
+      // A secret's settled card never draws the value, not even for the beat before the server's own
+      // stored text (where the file went) replaces this.
+      ...stagedPairs.map(({ q, answer }): SettledQuestion => ({
+        id: q.id, spec: q.spec, askedAt: q.askedAt, settledAt, pending: true,
+        answer: q.spec.secret ? { ...answer, text: "(secret sent)" } : answer,
+      })),
     ])
     send.mutate(staged)
   }
@@ -190,6 +206,10 @@ export function useRegisteredAnswering(thread: ThreadView | undefined): Register
     },
     onText: (q, path, isMulti, text) => {
       if (!slug) return
+      if (q.spec.secret) {
+        setSecrets((prev) => (prev.get(q.id) === text ? prev : new Map(prev).set(q.id, text)))
+        return
+      }
       draftStore.set(draftKey.question(projectDir, slug, q.id, path), text)
       // SINGLE: the free-text box taking over — a keystroke OR just focusing it — drops the chosen chip,
       // as the fence producer does. The card's onFocus calls this with the text unchanged for exactly
@@ -269,7 +289,7 @@ export function SettledQuestionCard({ s, wrap }: { s: SettledQuestion; wrap?: bo
       question={node.question}
       // "Question" even for a `multi`: its own title, "Select multiple", is an instruction nobody can act
       // on any more.
-      label={node.depth > 1 ? "Follow-up" : "Question"}
+      label={node.depth > 1 ? "Follow-up" : node.question.secret ? "Secret" : "Question"}
       settled={node.settled}
       wrap={wrap}
     />
