@@ -560,7 +560,7 @@ function questionSchema(depth) {
           "Declining must therefore be one of your own options.",
       },
       // No `maxItems`: the count is the worker's to choose (maintainer 2026-09-03 — "allow arbitrary
-      // numbers of options"). A `multi` over a long list is a real shape, and the card letters past 26.
+      // numbers of options"). A `multi` over a long list is a real shape; the card numbers every row (1–9 are its keys).
       options: {
         type: "array",
         description:

@@ -103,7 +103,13 @@ export function SettingsDrawer({ offerUpdate = false }: {
       className={`${SHEET_SCRIM_CLASS} z-50 flex justify-end ${shown ? "opacity-100" : "opacity-0"}`}
       onMouseDown={(e) => e.target === e.currentTarget && close()}
     >
+      {/* A real modal dialog, not just a panel that looks like one: assistive tech reads it as one, and
+          the number keys (lib/questionKeys.ts) treat an open `aria-modal` dialog with no question in it
+          as owning the keyboard, so a digit cannot answer a card behind the scrim. */}
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Settings"
         className={`${SHEET_PANEL_CLASS} w-[560px] max-w-[94vw] ${shown ? "translate-x-0" : "translate-x-full"}`}
       >
         <SheetHeader title="Settings" actions={<SaveStatus state={saveState} />} onClose={close} />
@@ -318,6 +324,10 @@ function MobileSettingsPage({
   return (
     <div
       data-mobile-settings-page
+      // A modal dialog for the same reasons as the desktop drawer's panel (see SettingsDrawer).
+      role="dialog"
+      aria-modal="true"
+      aria-label="Settings"
       className={`fixed inset-0 z-50 flex flex-col bg-bg pt-[env(safe-area-inset-top)] transition-transform duration-200 ease-out motion-reduce:transition-none ${
         shown ? "translate-x-0" : "translate-x-full"
       }`}

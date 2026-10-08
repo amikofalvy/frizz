@@ -59,7 +59,7 @@ function CompactQuestion({ q, n }: { q: RegisteredQuestionView; n: number }) {
       </div>
       {options.map((option, i) => (
         <div key={i} data-compact-option className="flex gap-2 py-0.5 pl-[30px] pr-3.5 text-muted">
-          <span className="w-3 shrink-0 font-bold">{letter(i)}</span>
+          <span className="w-3 shrink-0 font-bold tabular-nums">{i + 1}</span>
           <span className="min-w-0">
             {option.label}
             {option.recommended && <span className="ml-1 text-[11px] font-semibold text-accent">RECOMMENDED</span>}
@@ -76,13 +76,6 @@ function CompactQuestion({ q, n }: { q: RegisteredQuestionView; n: number }) {
  *  paragraphs or a list. `md-inline` keeps inline code monospace. Shared with the sheet. */
 export const QUESTION_PROSE =
   "md-inline break-words [&_p+*]:mt-2 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_li+li]:mt-1 [&_pre]:overflow-x-auto [&_pre]:text-[0.85em] [&_code]:text-[0.9em] [&_a]:underline"
-
-/** `A`, `B`, … then `AA` past 26 — the letters every other question surface uses. */
-export function letter(index: number): string {
-  let n = index, out = ""
-  do { out = String.fromCharCode(65 + (n % 26)) + out; n = Math.floor(n / 26) - 1 } while (n >= 0)
-  return out
-}
 
 /** THE BOTTOM BAR'S THIRD STATE (mockup v2 §2–3): on a thread with open questions the resting row is
  *  [keyboard] + "Answer N questions". The keyboard button is for a free reply instead — it switches the
