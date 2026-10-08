@@ -24,6 +24,8 @@ import { agentSuffix, liveAgentCount, rowSecondLine, wakeAt } from "../lib/mobil
 import { projectIdentity, sessionIndicatorFor } from "./Sidebar.tsx"
 import { StatusListView } from "./StatusListView.tsx"
 import { ThreadActionsSheet } from "./MobileThreadActionsSheet.tsx"
+import { showsUpdateBadge } from "./RestartFrizzButton.tsx"
+import { useSupervisorStatus } from "../api/supervisorStatus.ts"
 
 // THE PHONE'S BOARD — a header, three text tabs, ONE list, and a "New thread" button.
 //
@@ -53,6 +55,8 @@ import { ThreadActionsSheet } from "./MobileThreadActionsSheet.tsx"
 //   · THE BANDS ARE UNDERLINE TABS UNDER THE HEADER, not an iOS tab bar at the bottom: the bottom edge
 //     belongs to the thumb's primary verb. Still three bands, still tabs — the 2026-08-17 call stands.
 //   · THE ⋯ SHEET IS GONE. Its readings (connection, quota) open Settings now, behind a gear.
+//     Settings also holds "Update Frizz" (2026-10-08, maintainer on #52, which proposed a ⋯ sheet
+//     again to carry it); the gear wears a dot when a new release line is out, by the desktop's rule.
 //   · ONE SECOND LINE PER ROW says what the thread wants; no provider marks, and no ⤷ sub-agent lines
 //     (a live count, "· 2 agents", replaces them).
 //   · THE SNOOZED TAB'S RIGHT COLUMN SAYS WHEN THE THREAD WAKES, not how long ago it rested.
@@ -409,6 +413,15 @@ function BandTab({
   )
 }
 
+// The gear's update dot. Placed from the gear's PAINTED ink, not its box (dsf-8 pixel scan, dark,
+// 2026-10-08): lucide's six-tooth Settings at 21px paints 17.4 × 19.1px, and its upper-right teeth sit
+// at 0° and 60°, so the 45° notch between them is empty. A 5px dot at right/top 9.5/10.5px sits in that
+// notch with 1.73px of clearance to the nearest tooth, about one pen width (1.9 × 21/24 = 1.66px), so it
+// reads as attached to the gear without touching it. 6px out-weighed the gear's stroke; 4px read as a
+// speck at this glyph size; a bg-coloured ring to cut it out of the teeth notched a tooth instead.
+// Re-measure if the gear's size or stroke moves.
+const GEAR_DOT = "pointer-events-none absolute right-[9.5px] top-[10.5px] size-[5px] rounded-full bg-accent"
+
 const TAB_COUNT = "text-[12.5px] font-medium tabular-nums text-muted"
 
 // The restart overlay, the drawer stack and the modals stay the App's: they are identical on both
@@ -416,6 +429,10 @@ const TAB_COUNT = "text-[12.5px] font-medium tabular-nums text-muted"
 export function MobileBoard() {
   const board = useBoard()
   const snap = useSnapshot(store)
+  // The desktop badge rule exactly (`isBadgeRelease`): a new release line lights the gear, a patch
+  // does not — frizz-server ships those most days, and a dot that is always on says nothing. A frizz-dev
+  // build names no version and never lights it. The update itself, patch or not, is in Settings.
+  const updateBadge = showsUpdateBadge(useSupervisorStatus().data ?? null)
   const [tab, setTab] = useState<Tab>("queue")
   // ONE row open at a time — two half-open rows read as a rendering fault.
   const [openSwipe, setOpenSwipe] = useState<string | null>(null)
@@ -486,12 +503,15 @@ export function MobileBoard() {
             ) : null}
           </div>
           <button
-            aria-label="Settings"
+            aria-label={updateBadge ? "Settings, update available" : "Settings"}
             data-mobile-settings
             onClick={() => (store.showSettings = true)}
-            className="flex size-[44px] shrink-0 items-center justify-center rounded-full text-fg/85 active:bg-hover-strong"
+            className="relative flex size-[44px] shrink-0 items-center justify-center rounded-full text-fg/85 active:bg-hover-strong"
           >
             <SettingsIcon size={21} strokeWidth={1.9} />
+            {updateBadge ? (
+              <span data-mobile-update-notification aria-hidden className={GEAR_DOT} />
+            ) : null}
           </button>
         </div>
         <div role="tablist" aria-label="Bands" className="flex gap-[22px] border-b border-border/70 px-[18px]">

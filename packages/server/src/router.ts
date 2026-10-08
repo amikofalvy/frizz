@@ -178,7 +178,8 @@ import { projectRetiredBackgroundOps, retiredOpsFor } from "./transcript.ts"
 import { clearProjectIcon, customIconPath, findById, forgetProject, ICON_SCAN_VERSION, listProjects, moveProjectDirectory, renameProject, reorderProjects, setProjectIcon, type RegistryEntry } from "./project-registry.ts"
 import { basename, dirname } from "node:path"
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
-import { activeBandThread, boardAskThread, ProjectCard, ProjectRailCounts, PROJECT_ICON_EXTENSIONS, PROJECT_ICON_MAX_BASE64_CHARS, queuedThread } from "@frizz/shared"
+import { activeBandThread, boardAskThread, FrizzMdAnswers, FrizzMdStatus, ProjectCard, ProjectRailCounts, PROJECT_ICON_EXTENSIONS, PROJECT_ICON_MAX_BASE64_CHARS, queuedThread } from "@frizz/shared"
+import { createFrizzMd, frizzMdStatus, skipFrizzMd } from "./frizz-md.ts"
 import { imageDimensions } from "./image-header.ts"
 import { homedir } from "node:os"
 import { chosenProjectRoot, ensureProjectIdFile, existingProjectId, isHomeDirectory, writeProjectIdFile } from "./project-root.ts"
@@ -4013,6 +4014,29 @@ export function createRouter(ctx: AppContext) {
       input: z.object({}),
       output: Settings,
       handler: async () => ctx.resetSettings(),
+    }),
+
+    // The first-run questionnaire (shared/frizz-md.ts): a project with no threads and no FRIZZ.md asks
+    // how its workers should land work and how independently they should act, and writes the answers
+    // as FRIZZ.md — which only Frizz workers ever read. Skipping is remembered per project.
+    frizzMdStatus: query({
+      output: FrizzMdStatus,
+      handler: async () => frizzMdStatus(ctx.project.dir, ctx.storage),
+    }),
+
+    frizzMdCreate: mutation({
+      input: FrizzMdAnswers,
+      output: z.object({ path: z.string() }),
+      handler: async ({ input }) => createFrizzMd(ctx.project.dir, input),
+    }),
+
+    frizzMdSkip: mutation({
+      input: z.object({}).strict(),
+      output: z.object({ skipped: z.literal(true) }),
+      handler: async () => {
+        skipFrizzMd(ctx.storage)
+        return { skipped: true as const }
+      },
     }),
 
     dispatchPreferencesGet: query({
