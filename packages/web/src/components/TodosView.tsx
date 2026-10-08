@@ -870,10 +870,10 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
   const lastAgentIdx = useMemo(() => lastAssistantIndex(messages), [messages])
   const isStaleAwaiting = (idx: number) => lastAgentIdx >= 0 && idx < lastAgentIdx
   // …and the LAST message's fence draws nothing either while the resting banner below states it (the
-  // banner opens on that fence's body). Message takes the two reasons as separate props; the emptiness
-  // predicates take their union, because a fence-only last message is then an empty slot.
+  // banner opens on that fence's body). Message takes the two reasons as separate props, and so do the
+  // emptiness predicates: a settled fence that handed the human steps keeps its card, a stated one does not.
   const restingShown = showsRestingCard(thread)
-  const hidesAwaiting = (idx: number) => isStaleAwaiting(idx) || (idx === lastAgentIdx && restingShown)
+  const hidesAwaiting = (idx: number) => [isStaleAwaiting(idx), idx === lastAgentIdx && restingShown] as const
   // Question↔answer pairing for "Answers:" user messages, precomputed over the FULL list (the lookback
   // may need messages above the visible window). Indexed by GLOBAL message index — the same one the
   // Message key uses. null at ordinary indices keeps the memoized Message's props stable.
@@ -897,7 +897,7 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
       if (messages[i].boundary !== "rest") continue
       for (let g = i + 1; g < messages.length; g++) {
         const after = messages[g]
-        if (after.queued || after.boundary === "rest" || messageRendersNothing(after, hidesAwaiting(g))) continue
+        if (after.queued || after.boundary === "rest" || messageRendersNothing(after, ...hidesAwaiting(g))) continue
         return i + 1
       }
     }
@@ -949,7 +949,7 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
   // The per-message facts the segment walk needs, evaluated here because they need the transcript schema
   // and this card's own render predicates. The walk itself is pure — see lib/queueCollapse.
   const collapseSteps = useMemo(() => messages.map((m, g) => {
-    if (!m || m.queued || messageRendersNothing(m, hidesAwaiting(g))) return { skip: true }
+    if (!m || m.queued || messageRendersNothing(m, ...hidesAwaiting(g))) return { skip: true }
     // A PINNED background op (`pinnedFromSourceId`) is the server's synthetic copy of a still-pending
     // launch whose own message scrolled out of the latest window, appended AFTER the real tail
     // (latestTranscriptWindow). It belongs to no run, and walking it as one minted a phantom run behind
@@ -969,9 +969,9 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
     const completion = agentCompletionCall(m)
     const tools = completion ? 0 : m.tools.length
     return {
-      text: messageHasRenderableText(m, hidesAwaiting(g)),
+      text: messageHasRenderableText(m, ...hidesAwaiting(g)),
       tools,
-      countable: messageHasRenderableText(m, hidesAwaiting(g)) || tools > 0 || completion !== undefined || m.kind !== undefined,
+      countable: messageHasRenderableText(m, ...hidesAwaiting(g)) || tools > 0 || completion !== undefined || m.kind !== undefined,
       // A middle message that survives the collapse keeps its own row (see the render loop) — counting it
       // as a hidden step would promise the expansion a message it already shows.
       survives: survivesQueueCollapse(m, g, supersededAsks),
@@ -1478,7 +1478,7 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
               let middleEmitted = false
               coalescedVisible.forEach(({ message: m, messageIndex: globalIdx }, i) => {
                 if (m.queued) return
-                if (messageRendersNothing(m, hidesAwaiting(globalIdx))) return
+                if (messageRendersNothing(m, ...hidesAwaiting(globalIdx))) return
                 // "Agent rested" is the queue card's own PREMISE, not news: every card here is a rested
                 // thread, the row states how long ago it rested, and the window is already cut at the
                 // previous rest — so the rule can only ever restate the frame around it (maintainer
@@ -1603,7 +1603,7 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
                   if (!isFirst || (loneProse && seg.hiddenBeforeOpen)) emitBar()
                   // A first/last message that is pure batched tool calls (no prose) contributes no row —
                   // its calls are already folded into the divider — so skip it and leave no dangling spacer.
-                  if (!messageHasRenderableText(m, hidesAwaiting(globalIdx))) return
+                  if (!messageHasRenderableText(m, ...hidesAwaiting(globalIdx))) return
                   if (prevTailIsMeta !== null) out.push(<VSpace key={`s${i}`} h={STEP} />)
                   const textKey = m.sourceId ?? `legacy-${globalIdx}`
                   out.push(

@@ -4,7 +4,7 @@ import { useSnapshot } from "valtio"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useVirtualizer } from "@tanstack/react-virtual"
 import { AlertTriangle, ArrowDown, ArrowUp, Bot, Check, ChevronRight, FileText, HelpCircle, Hourglass, KeyRound, ListChecks, Loader2, Radar, TerminalSquare, X, type LucideIcon } from "lucide-react"
-import { awaitingFenceTitle, parseRecurringPrompt, questionFencesLive } from "@frizz/shared"
+import { awaitingFenceTitle, awaitingSteps, parseRecurringPrompt, questionFencesLive } from "@frizz/shared"
 import type { AskQuestion, AwaitingHint, BgShellView, PendingAsk, RegisteredQuestionView, SubAgentView, ThreadView as ThreadViewData, TranscriptEdit, TranscriptMessage, TranscriptPart, TranscriptTodo, TranscriptToolCall } from "@frizz/shared"
 import { store, threadBySlug, pushDrawer, pushSubAgentDrawer, pushBackgroundShellDrawer, showToast } from "../store.ts"
 import { useBackgroundShellLines, useBoard, useProjectDir, useTranscript, type ChatMessage, type TranscriptData } from "../hooks.ts"
@@ -1862,10 +1862,10 @@ export function messageGap(previous: ChatMessage, next: ChatMessage): number {
 }
 // Matches exactly when Message returns null (an empty/thinking-only assistant turn) — such a message
 // takes no slot, so the adjacency-spacer walk must SKIP it (else two spacers stack into a double gap).
-export function messageRendersNothing(m: ChatMessage, staleAwaiting?: boolean): boolean {
+export function messageRendersNothing(m: ChatMessage, staleAwaiting?: boolean, restingCardShown?: boolean): boolean {
   if (m.kind === "event" || m.kind === "reasoning" || m.role === "user") return false
-  if (m.parts && m.parts.length > 0) return m.parts.every((p) => (p.kind === "tools" ? p.tools.length === 0 : blankText(m, p.text, staleAwaiting)))
-  return (m.tools?.length ?? 0) === 0 && blankText(m, m.text, staleAwaiting)
+  if (m.parts && m.parts.length > 0) return m.parts.every((p) => (p.kind === "tools" ? p.tools.length === 0 : blankText(m, p.text, staleAwaiting, restingCardShown)))
+  return (m.tools?.length ?? 0) === 0 && blankText(m, m.text, staleAwaiting, restingCardShown)
 }
 // THE LAST THING THE AGENT SAID. Any ```awaiting fence above it states a wait that has already resolved —
 // the worker spoke again, so whatever it named came back or was given up on — and draws nothing at all
@@ -1893,7 +1893,8 @@ export function lastAssistantIndex(messages: readonly ChatMessage[]): number {
 //
 // `restingCardShown` is the same cut from the other side: when the resting card at the tail states the
 // LAST message's wait (showsRestingCard), that message's fence draws nothing either — the card owns it —
-// so a fence-only last message is as empty as a settled one. Same set, one more member.
+// so a fence-only last message is as empty as a settled one. Its own set rather than one more member of
+// `stale`, because the two differ on one shape: a settled steps fence keeps its card, a stated one does not.
 //
 // `awaitingCut` is the index a fence goes stale BELOW — past every message while the thread is running,
 // else the last assistant message (ChatView's `awaitingCut`).
@@ -1903,13 +1904,14 @@ export function rendersNothingIn<T extends { message: ChatMessage; messageIndex:
   restingCardShown = false,
 ): (message: ChatMessage) => boolean {
   const stale = new WeakSet<ChatMessage>()
+  const stated = new WeakSet<ChatMessage>()
   if (awaitingCut >= 0) for (const entry of entries) if (entry.messageIndex < awaitingCut) stale.add(entry.message)
-  if (awaitingCut >= 0 && restingCardShown) for (const entry of entries) if (entry.messageIndex === awaitingCut) stale.add(entry.message)
-  return (message) => messageRendersNothing(message, stale.has(message))
+  if (awaitingCut >= 0 && restingCardShown) for (const entry of entries) if (entry.messageIndex === awaitingCut) stated.add(entry.message)
+  return (message) => messageRendersNothing(message, stale.has(message), stated.has(message))
 }
 // Does this text draw NOTHING? Ordinarily that is "is it blank", but an ```awaiting fence that is not a
 // LIVE wait draws nothing either (see renderText) — and neither does a live one whose thread is at rest
-// on it, because the resting card below states it; callers fold that case into `staleAwaiting` too —
+// on it, because the resting card below states it; callers pass that case as `restingCardShown` —
 // and the contract invites a worker to reply with the
 // fence ALONE, so a whole message can be one such fence and no prose. Left un-stripped it reports as
 // visible, which spends an adjacency spacer on an empty slot and saves a rest divider with nothing under
@@ -1918,22 +1920,30 @@ export function rendersNothingIn<T extends { message: ChatMessage; messageIndex:
 // so the case is ordinary rather than theoretical.
 // A LIVE fence that names questions with no prose of its own draws nothing as well (renderText, 2026-10-08):
 // its card is gone and the question cards render after the message, not inside it.
-function blankText(m: ChatMessage, text: string, staleAwaiting?: boolean): boolean {
-  if (!m.fenceRefused && !staleAwaiting) {
+//
+// A SETTLED fence that handed the human `steps:` keeps its card (renderText), so it is not blank — unless
+// the resting card states it, which is why that reason arrives as its own flag rather than folded in.
+function blankText(m: ChatMessage, text: string, staleAwaiting?: boolean, restingCardShown?: boolean): boolean {
+  if (!m.fenceRefused && !staleAwaiting && !restingCardShown) {
     if (!text.includes("```awaiting")) return !text.trim()
     return splitFenceBlocks(text).every((s) => s.kind === "fence" && s.fenceKind === "awaiting" && awaitingDefersToQuestions(s.hints) && !awaitingProseBlock(s.body))
   }
   // splitFenceBlocks already drops whitespace-only prose runs, so "every segment is an awaiting fence"
   // is the whole test. A ```done fence still draws its card and keeps the message visible.
-  return splitFenceBlocks(text).every((s) => s.kind === "fence" && s.fenceKind === "awaiting")
+  return splitFenceBlocks(text).every((s) => s.kind === "fence" && s.fenceKind === "awaiting" && (m.fenceRefused || restingCardShown || !settledFenceDraws(s.hints)))
+}
+// Does a SETTLED ```awaiting fence still draw its card? Only one that handed the human steps — they are a
+// record of what the human did, not a wait (renderText).
+function settledFenceDraws(hints: readonly AwaitingHint[]): boolean {
+  return awaitingSteps(hints).length > 0
 }
 // Would this message render anything under `textOnly` (tool bands dropped)? Mirrors messageRendersNothing
 // but counts ONLY text parts — the queue card uses it to decide whether a first/last agent message that
 // is pure batched tool calls (no prose) contributes a visible row, or folds entirely into the bar.
-export function messageHasRenderableText(m: ChatMessage, staleAwaiting?: boolean): boolean {
+export function messageHasRenderableText(m: ChatMessage, staleAwaiting?: boolean, restingCardShown?: boolean): boolean {
   if (m.kind === "event" || m.kind === "reasoning" || m.role === "user") return false
-  if (m.parts && m.parts.length > 0) return m.parts.some((p) => p.kind === "text" && !blankText(m, p.text, staleAwaiting))
-  return typeof m.text === "string" && !blankText(m, m.text, staleAwaiting)
+  if (m.parts && m.parts.length > 0) return m.parts.some((p) => p.kind === "text" && !blankText(m, p.text, staleAwaiting, restingCardShown))
+  return typeof m.text === "string" && !blankText(m, m.text, staleAwaiting, restingCardShown)
 }
 
 // The leading gap for the shimmer that tails a live transcript. The shimmer is a quiet single-line row
@@ -3589,6 +3599,17 @@ export const Message = memo(function Message({ m, answering, dense, paired, text
         // by the resting card at the tail (AwaitingBackgroundCard opens on this very body), so this block
         // goes too, for the spacer reason above: FenceCard returning null would still leave its slot's
         // spacer standing between the prose and that card.
+        //
+        // EXCEPT A SETTLED FENCE THAT HANDED THE HUMAN STEPS (2026-10-08, maintainer: "We need to continue
+        // showing the to do instructions even after they are complete & the thread has moved on"). Its
+        // steps are a record of what the human DID — the sign-in, the approval — not a wait, and its card
+        // is the only place they were ever written down. So it keeps the card, stated with no thread: no
+        // live rows, and no Done (nobody is waiting on these steps any more, and a later fence restating
+        // the same steps must not grow a second verb). A refused fence still goes — its re-fence restates it.
+        if (fseg.fenceKind === "awaiting" && staleAwaiting && !m.fenceRefused && !restingCardShown && settledFenceDraws(fseg.hints)) {
+          push(<AwaitingBackgroundCard key={`${keyBase}-f${fi}`} fence={{ body: fseg.body, hints: fseg.hints }} />)
+          continue
+        }
         if (fseg.fenceKind === "awaiting" && (m.fenceRefused || staleAwaiting || restingCardShown)) continue
         // A FENCE THAT NAMES QUESTIONS DRAWS NO CARD — the question cards after this rest are its ending
         // (lib/awaitingPresentation awaitingDefersToQuestions). Its prose is the worker's handoff, so it

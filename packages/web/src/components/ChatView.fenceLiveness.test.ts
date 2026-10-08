@@ -46,10 +46,11 @@ test("a fence the resting card states never reaches the card either", () => {
   const helper = source.match(/export function rendersNothingIn[\s\S]*?\n}/)?.[0]
   assert.ok(helper, "rendersNothingIn must exist")
   assert.match(helper, /restingCardShown = false/, "it takes the resting-card reason")
-  assert.match(helper, /entry\.messageIndex === awaitingCut\) stale\.add\(entry\.message\)/, "…and folds the last message in")
+  assert.match(helper, /entry\.messageIndex === awaitingCut\) stated\.add\(entry\.message\)/, "…and marks the last message as stated")
+  assert.match(helper, /messageRendersNothing\(message, stale\.has\(message\), stated\.has\(message\)\)/, "…as its own reason, not one more stale member")
   assert.equal(chat.match(/rendersNothingIn\([a-zA-Z]+, awaitingCut, restingShown\)/g)?.length, 3, "every rendersNothingIn call passes it")
-  assert.match(todos, /const hidesAwaiting = \(idx: number\) => isStaleAwaiting\(idx\) \|\| \(idx === lastAgentIdx && restingShown\)/)
-  assert.doesNotMatch(todos, /message(?:RendersNothing|HasRenderableText)\([a-z]+, isStaleAwaiting\(/, "the queue card's predicates take the union")
+  assert.match(todos, /const hidesAwaiting = \(idx: number\) => \[isStaleAwaiting\(idx\), idx === lastAgentIdx && restingShown\] as const/)
+  assert.doesNotMatch(todos, /message(?:RendersNothing|HasRenderableText)\([a-z]+, isStaleAwaiting\(/, "the queue card's predicates take both reasons")
 })
 
 // THE TAIL MOUNTS WITH THE TRANSCRIPT, NOT BEFORE IT. The board lands first, so the queue card used to
@@ -97,15 +98,18 @@ test("every awaiting-fence body renders through the block markdown sheet", () =>
 // under it, which is the exact bug the refused-fence strip was added for.
 test("the empty-message predicates take the settled case", () => {
   for (const fn of ["messageRendersNothing", "messageHasRenderableText"]) {
-    const re = new RegExp(`export function ${fn}\\(m: ChatMessage, staleAwaiting\\?: boolean\\)`)
-    assert.match(source, re, `${fn} must accept the message's staleness`)
+    const re = new RegExp(`export function ${fn}\\(m: ChatMessage, staleAwaiting\\?: boolean, restingCardShown\\?: boolean\\)`)
+    assert.match(source, re, `${fn} must accept the message's staleness, and the resting card's claim on it`)
   }
   const blank = source.match(/function blankText\([\s\S]*?\n}/)?.[0]
   assert.ok(blank, "blankText must exist")
   const code = blank.replace(/^\s*\/\/.*$/gm, "")
-  assert.match(code, /if \(!m\.fenceRefused && !staleAwaiting\) \{\n\s*if \(!text\.includes\("```awaiting"\)\) return !text\.trim\(\)/, "a settled fence must be stripped exactly as a refused one is")
+  assert.match(code, /if \(!m\.fenceRefused && !staleAwaiting && !restingCardShown\) \{\n\s*if \(!text\.includes\("```awaiting"\)\) return !text\.trim\(\)/, "a settled fence must be stripped exactly as a refused one is")
   // …and a LIVE fence that names questions with no prose is as empty: renderText draws nothing for it.
   assert.match(code, /awaitingDefersToQuestions\(s\.hints\) && !awaitingProseBlock\(s\.body\)/)
+  // …except a settled fence that handed the human steps, which keeps its card (renderText) — and is
+  // stripped again only when it is refused or the resting card states it.
+  assert.match(code, /\(m\.fenceRefused \|\| restingCardShown \|\| !settledFenceDraws\(s\.hints\)\)/)
 })
 
 // A FENCE THAT NAMES QUESTIONS DRAWS NO CARD (maintainer 2026-10-08: "if there are questions that are
@@ -117,6 +121,19 @@ test("a fence that names questions renders its prose and no card", () => {
   assert.ok(branch >= 0, "the branch must exist")
   assert.ok(branch < render.indexOf("<FenceCard"), "it must come before the card push")
   assert.match(render.slice(branch), /^[^]*?const prose = awaitingProseBlock\(fseg\.body\)\n\s*if \(prose\) push\(<ProseHtml [^\n]*\/>\)\n\s*continue/)
+})
+
+// A SETTLED STEPS FENCE KEEPS ITS CARD (2026-10-08, maintainer: "We need to continue showing the to do
+// instructions even after they are complete & the thread has moved on"). Drawn with NO thread, so it
+// carries no live rows and no Done; settledSteps.e2e.test.ts drives it in the real drawer.
+test("a settled fence that handed the human steps keeps its card, with no thread behind it", () => {
+  const render = renderText()
+  const keep = render.indexOf("settledFenceDraws(fseg.hints)")
+  assert.ok(keep >= 0, "the exception must exist")
+  assert.ok(keep < render.indexOf("(m.fenceRefused || staleAwaiting || restingCardShown)) continue"), "…ahead of the skip it excepts")
+  assert.match(render, /staleAwaiting && !m\.fenceRefused && !restingCardShown && settledFenceDraws\(fseg\.hints\)/, "never for a refused fence, nor one the resting card states")
+  assert.match(render, /push\(<AwaitingBackgroundCard key=\{`[^`]+`\} fence=\{\{ body: fseg\.body, hints: fseg\.hints \}\} \/>\)/, "no `thread`, so no rows and no verb")
+  assert.match(source, /function settledFenceDraws\(hints: readonly AwaitingHint\[\]\): boolean \{\n\s*return awaitingSteps\(hints\)\.length > 0\n\}/)
 })
 
 // ONE CUT, SHARED. The renderer marks a fence settled by comparing its index against the last assistant
