@@ -166,23 +166,11 @@ export function ThreadSheet({ id, slug, depth, widthDepth, initiallyOpen }: { id
     }
   }, [initiallyOpen])
 
-  // Interaction-opened sheets paint their frame before the heavy thread body. Focus the frame for
-  // that first paint, then move to the explicit close affordance once the body arrives. For a cold
-  // route (body already present), Radix focuses the close affordance immediately.
+  // The SHEET takes focus — on open and whenever the stack hands focus back to this layer — never its
+  // close button. A programmatically focused button matches :focus-visible, so focusing the X lit a
+  // ring around it whenever a drawer opened from the keyboard or a link (see SheetClose).
   useEffect(() => {
-    const el = scrollerRef.current
-    if (!bodyReady || !el || document.activeElement !== el) return
-    const frame = requestAnimationFrame(() => {
-      el.querySelector<HTMLElement>("[data-dialog-initial-focus]")?.focus({ preventScroll: true })
-    })
-    return () => cancelAnimationFrame(frame)
-  }, [bodyReady])
-
-  useEffect(() => {
-    registerDrawerFocus(id, () => {
-      const initial = scrollerRef.current?.querySelector<HTMLElement>("[data-dialog-initial-focus]") ?? scrollerRef.current
-      initial?.focus({ preventScroll: true })
-    })
+    registerDrawerFocus(id, () => scrollerRef.current?.focus({ preventScroll: true }))
     return () => registerDrawerFocus(id, null)
   }, [id])
 
@@ -261,9 +249,7 @@ export function ThreadSheet({ id, slug, depth, widthDepth, initiallyOpen }: { id
           }}
           onOpenAutoFocus={(event) => {
             event.preventDefault()
-            const el = scrollerRef.current
-            const initial = el?.querySelector<HTMLElement>("[data-dialog-initial-focus]") ?? el
-            initial?.focus({ preventScroll: true })
+            scrollerRef.current?.focus({ preventScroll: true })
           }}
           // data-vt-chat: the fullscreen door tags this panel as the view transition's shared element
           // on the way to /full (see ExpandThreadLink) — the panel is what visibly becomes the page's
@@ -301,7 +287,7 @@ export function ThreadSheet({ id, slug, depth, widthDepth, initiallyOpen }: { id
 function MissingThread({ slug, onClose }: { slug: string; onClose: () => void }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <SheetHeader title="Thread unavailable" onClose={onClose} initialFocus />
+      <SheetHeader title="Thread unavailable" onClose={onClose} />
       <div className="flex flex-1 items-center justify-center px-6 text-center text-sm text-muted" role="status">
         Thread “{slug}” was not found in this project.
       </div>

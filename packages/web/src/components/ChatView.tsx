@@ -3,7 +3,7 @@ import { createPortal } from "react-dom"
 import { useSnapshot } from "valtio"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useVirtualizer } from "@tanstack/react-virtual"
-import { AlertTriangle, ArrowDown, ArrowUp, Bot, Check, ChevronRight, FileText, HelpCircle, Hourglass, KeyRound, ListChecks, Loader2, Radar, TerminalSquare, X, type LucideIcon } from "lucide-react"
+import { AlertTriangle, ArrowDown, ArrowUp, Bot, Check, ChevronRight, FileText, HelpCircle, Hourglass, KeyRound, ListChecks, Loader2, Radar, TerminalSquare, type LucideIcon } from "lucide-react"
 import { awaitingFenceTitle, awaitingSteps, parseRecurringPrompt, questionFencesLive } from "@frizz/shared"
 import type { AskQuestion, AwaitingHint, BgShellView, PendingAsk, RegisteredQuestionView, SubAgentView, ThreadView as ThreadViewData, TranscriptEdit, TranscriptMessage, TranscriptPart, TranscriptTodo, TranscriptToolCall } from "@frizz/shared"
 import { store, threadBySlug, pushDrawer, pushSubAgentDrawer, pushBackgroundShellDrawer, showToast } from "../store.ts"
@@ -58,7 +58,7 @@ import { getThemeSnapshot, subscribeTheme } from "../lib/theme.ts"
 import { isVisualizationThemeAck, visualizationThemeMessage } from "../lib/visualizationThemeProtocol.ts"
 import { canAdoptThread } from "../lib/adoption.ts"
 import { THREAD_HEADER_CLASS, THREAD_HEADER_CONTROLS_CLASS, THREAD_HEADER_TITLE_CLASS } from "../lib/threadHeaderLayout.ts"
-import { SHEET_CLOSE_BUTTON_CLASS } from "./ui/SheetHeader.tsx"
+import { SheetClose } from "./ui/SheetHeader.tsx"
 import { ThreadActionBar } from "./ThreadActionBar.tsx"
 import { MobileThreadHeader } from "./MobileThreadHeader.tsx"
 import { HeaderActions } from "./HeaderActions.tsx"
@@ -1698,24 +1698,13 @@ export function ThreadHeader({ slug, onStatusApplied, onClose, showReturnToQueue
             "previous page" about a control whose job is to change how this thread is SHOWN. It is now
             the closing half of the fullscreen door, in the door's own slot in the action strip below
             (HeaderActions `collapse`).
-            The drawer's Close-X is the one thing that does stand here, because it is not a thread verb:
-            it is the sheet's own chrome, the same leading X every drawer's SheetHeader draws. The sheet
-            slides out to the right, so the X sits at the edge it leaves from, and the right end is left
-            to the thread's verbs alone — which also keeps a near miss on Close off Mark as done.
-            Wired to the SAME animated close() as the backdrop/Esc path (markDrawerClosing + the 210ms
-            slide-out), never an instant unmount. Absent in the main workpane (no onClose → no drawer to
-            close). Inside the title group, so the ≤640px wrap keeps it on the title's line. */}
-        {onClose && (
-          <button
-            type="button"
-            aria-label="Close"
-            data-dialog-initial-focus
-            onClick={onClose}
-            className={SHEET_CLOSE_BUTTON_CLASS}
-          >
-            <X size={15} />
-          </button>
-        )}
+            The drawer's close is the one thing that does stand here, because it is not a thread verb:
+            it is the sheet's own chrome, the same SheetClose every drawer's SheetHeader leads with (see
+            there for why it leads, and for its spacing). Wired to the SAME animated close() as the
+            backdrop/Esc path (markDrawerClosing + the 210ms slide-out), never an instant unmount.
+            Absent in the main workpane (no onClose → no drawer to close). Inside the title group, so
+            the ≤640px wrap keeps it on the title's line. */}
+        {onClose && <SheetClose onClose={onClose} />}
         <div className="min-w-0 flex-1 leading-tight">
           {/* The name and both rename verbs — click to type, hover for the Claude refresh — are the
               shared ThreadTitle, the same element the queue card's header renders. */}
