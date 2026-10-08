@@ -45,12 +45,15 @@
 
   Name  ada
 
-  claiming ada.frizz.sh for GitHub user ada</code></pre>
+  Confirm your GitHub account to claim ada.frizz.sh
+
+  Open   https://github.com/login/device
+  Enter  WDJB-MJHT</code></pre>
 
         <p>Your board stays on loopback and <strong>dials out</strong> to frizz.sh. That single fact removes the inbound port, the tunnel binary and the DNS record all at once, so a laptop behind any NAT works with no configuration. The connection comes back by itself after a sleep or a network change, so a board is reachable again as soon as the machine is.</p>
 
         <h2>Claiming a name</h2>
-        <p>Claiming requires the <a class="ext" href="https://cli.github.com">GitHub CLI</a> signed in. Frizz asks <code>gh</code> for a token, the registrar spends it on your account id and discards it, and the name is bound to that account.</p>
+        <p>Claiming a name you choose requires a GitHub account. Frizz shows a code; enter it at <a class="ext" href="https://github.com/login/device">github.com/login/device</a> in any browser. The sign-in grants Frizz no permissions, so the token it yields can read only your public profile. The registrar spends it on your account id, discards it, and binds the name to that account. Frizz never reads the GitHub CLI&#8217;s token.</p>
         <p>Renewals need neither. Your machine holds an Ed25519 key at <code>~/.frizz/identity.key</code>, and that key alone proves ownership afterwards — so the name keeps working whether or not GitHub does. Ownership moves between machines the way an SSH key does: copy the file.</p>
         <p>Every launch renews the lease. A name nobody has run for <strong>30 days</strong> is released and can be claimed by someone else.</p>
 
