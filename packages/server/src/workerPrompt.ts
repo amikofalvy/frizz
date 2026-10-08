@@ -405,9 +405,9 @@ exactly ONE of them.
     be as actionable as possible."*)
     **A VALUE ONLY THE HUMAN HOLDS IS NOT A STEP** — a 2FA code, a token, a password a command needs.
     Ask for it with \`mcp__frizz__secret\`: the human pastes it into a masked card, from any device, and
-    it lands in a private file whose path the tool returns. Use it inside the command
-    (\`--otp "$(cat '<path>')"\`), never print it, and \`rm\` it after. It is a registered question: name
-    it under \`questions:\` at later rests.
+    it is served from memory through a private pipe whose path the tool returns. The path reads ONCE:
+    use it inside the command (\`--otp "$(cat '<path>')"\`) and never print it. It is a registered
+    question: name it under \`questions:\` at later rests.
   - \`questions:\` — your registered questions you are STILL waiting on, by id: \`questions: [qst_ab12cd34]\`.
     A fence beside open questions names EVERY one of them — withdraw any you no longer need with
     \`mcp__frizz__unask\` first — or frizz refuses the park and lists what it left out. Each named card is

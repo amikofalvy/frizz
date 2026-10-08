@@ -8,7 +8,8 @@
 // not do that, and these tests are about the ways a question could still go missing.
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs"
+import { existsSync, lstatSync, mkdtempSync, rmSync, statSync } from "node:fs"
+import { execFile } from "node:child_process"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { AskedQuestion, BoardSnapshot, Settings } from "@frizz/shared"
@@ -567,18 +568,23 @@ test("questions asked in ONE call keep their order — the tiebreak is insertion
 // that reads the answer row (the settled card, the in-flight card, the worker's wake) sees only where
 // it went. These pin the one property that matters: the value is in the file and NOWHERE in the row.
 
+/** Read a secret's path the way a worker's `$(cat …)` does: a real `cat`, blocking on the pipe until the
+ *  server's writer finds it. */
+const catPath = (path: string) => new Promise<string>((resolve, reject) =>
+  execFile("cat", [path], { timeout: 5_000 }, (error, stdout) => (error ? reject(error) : resolve(stdout))))
+
 const secretAsk = (question = "The npm one-time code for the maintainer account."): AskedQuestion => ({ question, kind: "question", secret: true })
 
-test("a SECRET answer is written to its private file, and the row keeps only the path", async () => {
+test("a SECRET answer is served once from memory through its pipe, and the row keeps only the path", async () => {
   const h = harness()
   try {
     h.storage.upsertSession(row("t"))
     const asked = await h.router.ask.handler({ input: { slug: "t", questions: [secretAsk()] } })
     const q = asked.registered[0]
     // The path is known at REGISTRATION, so the worker can prepare its command before the answer.
-    assert.ok(q.secretPath, "the ask result names the file")
+    assert.ok(q.secretPath, "the ask result names the path")
     assert.equal(q.secretPath, join(h.stateDir, "secrets", "t", q.id))
-    assert.equal(existsSync(q.secretPath!), false, "nothing is written until the human answers")
+    assert.equal(existsSync(q.secretPath!), false, "nothing exists until the human answers")
     assert.equal(asked.open[0].secretPath, q.secretPath, "the read-back names it too")
 
     const value = "493817"
@@ -586,9 +592,11 @@ test("a SECRET answer is written to its private file, and the row keeps only the
       { questionId: q.id, question: q.spec.question, chosen: [], text: `  ${value}\n` },
     ] } })
     assert.deepEqual(result.answered, [q.id])
-    assert.equal(readFileSync(q.secretPath!, "utf8"), value, "the file holds the value, trimmed")
-    assert.equal(statSync(q.secretPath!).mode & 0o777, 0o600, "readable by this user alone")
+    const stat = lstatSync(q.secretPath!)
+    assert.ok(stat.isFIFO(), "a named pipe, not a file: the value is never on disk")
+    assert.equal(stat.mode & 0o777, 0o600, "readable by this user alone")
     assert.equal(statSync(join(h.stateDir, "secrets")).mode & 0o777, 0o700)
+    assert.equal(await catPath(q.secretPath!), value, "the reader gets the value, trimmed")
 
     const stored = h.storage.getThreadQuestion(q.id)!
     assert.equal(stored.state, "answered")
@@ -598,7 +606,8 @@ test("a SECRET answer is written to its private file, and the row keeps only the
     // The wake is composed from the row, so it cannot carry the value either — and it says how to use it.
     const wake = questionAnswerMessage([answer])
     assert.ok(!wake.includes(value))
-    assert.ok(wake.includes(`secret saved to '${q.secretPath}'`), "the path is single-quoted for the shell")
+    assert.ok(wake.includes(`secret ready at '${q.secretPath}'`), "the path is single-quoted for the shell")
+    assert.match(wake, /read ONCE, within 15m/)
   } finally { h.close() }
 })
 
@@ -648,22 +657,5 @@ test("a secret request takes no options and cannot be a follow-up", async () => 
       /a secret request cannot be a follow-up/,
     )
     assert.deepEqual(h.storage.listThreadQuestions("t", { openOnly: true }), [])
-  } finally { h.close() }
-})
-
-test("writing a secret sweeps files past the TTL", async () => {
-  const h = harness()
-  try {
-    const stale = join(h.stateDir, "secrets", "old-thread", "qst_old")
-    mkdirSync(join(h.stateDir, "secrets", "old-thread"), { recursive: true })
-    writeFileSync(stale, "expired")
-    const day = 24 * 60 * 60_000
-    utimesSync(stale, new Date(Date.now() - day - 60_000), new Date(Date.now() - day - 60_000))
-    h.storage.upsertSession(row("t"))
-    const q = (await h.router.ask.handler({ input: { slug: "t", questions: [secretAsk()] } })).registered[0]
-    await h.router.answerQuestions.handler({ input: { slug: "t", answers: [{ questionId: q.id, question: q.spec.question, chosen: [], text: "fresh" }] } })
-    assert.equal(existsSync(stale), false, "the expired file is gone")
-    assert.equal(existsSync(join(h.stateDir, "secrets", "old-thread")), false, "and so is the directory it emptied")
-    assert.equal(readFileSync(q.secretPath!, "utf8"), "fresh")
   } finally { h.close() }
 })

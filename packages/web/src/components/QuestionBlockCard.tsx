@@ -301,7 +301,7 @@ export function QuestionBlockCard({
                   }`}
                 />
                 <div className="mt-1.5 text-[11px] leading-snug text-muted-70">
-                  Saved to a private file on the machine running Frizz. The worker gets the file's path, not the value.
+                  Held in memory on the machine running Frizz and handed to one command, once. The worker never sees it.
                 </div>
               </>
             ) : (

@@ -273,7 +273,7 @@ function SecretText({ a, step, text }: { a: RegisteredAnswering; step: AnswerSte
         className="block w-full rounded-[12px] border border-border-strong bg-bg px-3 py-[11px] text-[16px] leading-[22px] text-fg outline-none placeholder:text-faint focus:border-fg/40"
       />
       <div className="mt-2 text-[13px] leading-[18px] text-muted">
-        Saved to a private file on the machine running Frizz. The worker gets the file's path, not the value.
+        Held in memory on the machine running Frizz and handed to one command, once. The worker never sees it.
       </div>
     </div>
   )

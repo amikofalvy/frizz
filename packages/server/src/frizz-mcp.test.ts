@@ -1031,7 +1031,7 @@ test("`ask` and `unask` register and withdraw the CALLING thread's questions, tr
   }
 })
 
-test("`secret` registers ONE masked question on the CALLING thread and hands back the quoted file path", async () => {
+test("`secret` registers ONE masked question on the CALLING thread and hands back the quoted pipe path", async () => {
   const seen: Array<{ url: string; body: any }> = []
   const path = "/Users/x/Library/Application Support/Frizz/projects/p/secrets/asking-thread/qst_sec111"
   const spec = { question: "The npm one-time code for the maintainer account.", kind: "question", secret: true, header: "npm OTP" }
@@ -1063,7 +1063,7 @@ test("`secret` registers ONE masked question on the CALLING thread and hands bac
     assert.match(text, /Registered secret request qst_sec111/)
     // QUOTED: the macOS state dir has a space in it, and an unquoted `$(cat …)` splits there.
     assert.ok(text.includes(`"$(cat '${path}')"`), text)
-    assert.ok(text.includes(`rm '${path}'`), text)
+    assert.match(text, /read ONCE, within 15 minutes/)
 
     const before = seen.length
     rpc.send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "secret", arguments: { question: "  " } } })

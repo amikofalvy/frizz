@@ -2543,9 +2543,9 @@ export interface AskedQuestion {
   danger?: boolean
   /** A SECRET request (`mcp__frizz__secret`): a free-text question whose answer is a credential — a
    *  one-time code, a token, a password. The card masks the box and keeps the typed value out of every
-   *  draft cache; the server writes the value to a private file (`secretFilePath`) and stores and
-   *  delivers only `secretAnswerText`, so the value never reaches the database, the transcript or the
-   *  model. Root questions only, and never with options. */
+   *  draft cache; the server serves the value once, from memory, through a named pipe
+   *  (`secret-files.ts`) and stores and delivers only `secretAnswerText`, so the value never reaches
+   *  the disk, the database, the transcript or the model. Root questions only, and never with options. */
   secret?: boolean
   /** Absent or empty ⇒ a free-text question. */
   options?: AskedOption[]
@@ -2650,19 +2650,23 @@ export const RegisteredQuestionView = z.object({
   id: z.string(),
   spec: AskedQuestionSchema,
   askedAt: z.string(),
-  /** A `secret` question only: the file its value will be written to. Known at registration, so the
+  /** A `secret` question only: the path its value will be served at. Known at registration, so the
    *  worker can prepare the command that reads it before the human has answered. */
   secretPath: z.string().optional(),
 }).strict()
 export type RegisteredQuestionView = z.infer<typeof RegisteredQuestionView>
 
-/** What a SECRET answer is stored and delivered as, in place of the value: where the value went, and
- *  how to use it without printing it. ONE wording, because the settled card, the in-flight card and the
+/** What a SECRET answer is stored and delivered as, in place of the value: where to read it, and the
+ *  terms it is served on. ONE wording, because the settled card, the in-flight card and the
  *  worker's wake all read this same stored text — which is also why it is SHORT: the human reads it on
  *  the Answers card, often on a phone, and the `secret` tool already handed the worker the recipe. */
 export function secretAnswerText(path: string): string {
-  return `(secret saved to ${quotePath(path)} — never print it)`
+  return `(secret ready at ${quotePath(path)} — it can be read ONCE, within ${SECRET_TTL_MS / 60_000}m; never print it)`
 }
+
+/** How long a secret waits to be read before the server drops it (`secret-files.ts`). Here rather than
+ *  beside the server, because the stored answer text names it to the worker. */
+export const SECRET_TTL_MS = 15 * 60_000
 
 /** POSIX single-quoting, so the path pastes into a command as-is. The macOS state dir is
  *  `~/Library/Application Support/…`, and an unquoted `$(cat <path>)` splits at the space. */

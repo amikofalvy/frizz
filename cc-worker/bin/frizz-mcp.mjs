@@ -660,13 +660,15 @@ const SECRET = {
     "needs and you must never see. The human may be on a phone, far from this machine: this is how a " +
     "code reaches a command without anyone typing into a terminal here.\n\n" +
     "It registers a question like `ask`, drawn as a card with ONE MASKED BOX. What the human pastes is " +
-    "written to a private file (0600, outside the repo) whose path this tool returns NOW, and it never " +
-    "enters the transcript, the database or your context: the answer you are woken with names the path, " +
-    "not the value.\n\n" +
-    "USE IT INSIDE THE COMMAND, NEVER ON ITS OWN: `npm publish --otp \"$(cat <path>)\"`, " +
-    "`TOKEN=\"$(cat <path>)\" ./deploy.sh`, `<cmd> < <path>`. Never `cat` it bare, echo it, write it " +
-    "into a file in the repo, or paste it into a message — any of those puts the value in the " +
-    "transcript. Delete the file (`rm <path>`) once the command has used it.\n\n" +
+    "held in Frizz's memory — never on disk — and served through a private named pipe whose path this " +
+    "tool returns NOW. It never enters the transcript, the database or your context: the answer you are " +
+    "woken with names the path, not the value.\n\n" +
+    "THE PATH CAN BE READ ONCE, within 15 minutes of the answer; then it is gone. So read it INSIDE the " +
+    "command that uses it: `npm publish --otp \"$(cat '<path>')\"`, `<cmd> < '<path>'`. A value several " +
+    "commands need goes into a variable at the start of ONE Bash call: " +
+    "`T=\"$(cat '<path>')\"; cmd1 --token \"$T\"; cmd2 --token \"$T\"`. Never `cat` it bare, echo it, " +
+    "copy it into a file, or paste it into a message — any of those spends the one read and puts the " +
+    "value in the transcript. To discard an unread value, `rm` the path.\n\n" +
     "A one-time code expires in about thirty seconds, so have the command ready BEFORE you rest: when the " +
     "answer wakes you, run it at once.\n\n" +
     "Like a question, it is your rest's sign-off and it gates `done` until answered; name it under " +
@@ -1601,7 +1603,7 @@ async function ask(args) {
   )
 }
 
-/** The `secret` handler: register ONE masked question, and hand back the file its value will land in.
+/** The `secret` handler: register ONE masked question, and hand back the pipe its value will be read from.
  *  It rides the `ask` RPC with `secret: true` — the card, the wake, the `done` gate and the `questions:`
  *  naming are all a question's — and the server is what keeps the value out of every one of them.
  * @param {Record<string, unknown>} args @returns {Promise<string>} */
@@ -1619,10 +1621,11 @@ async function secret(args) {
   const quoted = `'${path.replace(/'/g, `'\\''`)}'`
   return (
     `Registered secret request ${registered.id}. The human sees a masked box on the board.\n\n` +
-    `The value will be written to:\n  ${path}\n\n` +
-    `Use it INSIDE the command — \`--otp "$(cat ${quoted})"\` — and never cat, echo or copy it on its own. ` +
-    `Delete it with \`rm ${quoted}\` once used. Get the command ready now: the answer wakes you, and a ` +
-    "one-time code expires within a minute.\n\n" +
+    `Once answered, the value can be read ONCE, within 15 minutes, at:\n  ${path}\n\n` +
+    `Read it INSIDE the command that uses it — \`--otp "$(cat ${quoted})"\` — and never cat, echo or copy ` +
+    "it on its own: that spends the one read. Several commands share it through a variable set at the " +
+    "start of ONE Bash call. Get the command ready now: the answer wakes you, and a one-time code expires " +
+    "within a minute.\n\n" +
     `${openQuestionList(result)}`
   )
 }

@@ -135,7 +135,7 @@ import {
   AcpAgentModelsInput,
 } from "@frizz/shared"
 import { type AppContext } from "./context.ts"
-import { secretFilePath, writeSecretFile } from "./secret-files.ts"
+import { secretFilePath, serveSecret } from "./secret-files.ts"
 import { listAcpAgents } from "./backend/acp-agents.ts"
 import { sessionTitleLocked } from "./storage.ts"
 import { mayHaveLiveBackgroundWork, needsFreshProcessForLimit } from "./backend/usage-limit.ts"
@@ -3196,14 +3196,14 @@ export function createRouter(ctx: AppContext) {
           const q = ctx.storage.getThreadQuestion(answer.questionId)
           if (!q || q.thread_slug !== input.slug || q.state !== "open") continue
           let stored = answer
-          // A SECRET'S VALUE STOPS HERE. It goes to its private file, and the row — which the settled
-          // card, the in-flight card and the worker's wake all read — keeps only where it went. Nothing
-          // below this line ever holds the value. A blank one answers nothing: the request stays open
-          // rather than waking the worker to an empty file.
+          // A SECRET'S VALUE STOPS HERE. It is served once, from memory, through its pipe
+          // (secret-files.ts), and the row — which the settled card, the in-flight card and the worker's
+          // wake all read — keeps only the path. Nothing below this line ever holds the value. A blank one
+          // answers nothing: the request stays open rather than waking the worker to an empty read.
           if (parseQuestionSpec(q.spec)?.secret) {
             const value = answer.text?.trim() ?? ""
             if (!value) continue
-            const path = writeSecretFile(ctx.project.stateDir, input.slug, q.id, value, now)
+            const path = serveSecret(ctx.project.stateDir, input.slug, q.id, value)
             stored = { questionId: answer.questionId, question: answer.question, chosen: [], text: secretAnswerText(path) }
           }
           if (ctx.storage.answerThreadQuestion(answer.questionId, JSON.stringify(stored), now)) answered.push(answer.questionId)
