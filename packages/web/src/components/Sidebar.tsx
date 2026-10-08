@@ -8,7 +8,7 @@ import { store, openThread, scrollToQueueCard, queueCardTargetY, pushSubAgentDra
 import { rpc } from "../api/rpc.ts"
 import { useBoard, asThreads } from "../hooks.ts"
 import { prefs } from "../lib/prefs.ts"
-import { sectionThreads, externalThreads, orderByInteraction, partitionActive, needsAction, displayTitle, titleIsProvisional, isPinned, isSnoozed, parkedAwaitingHint, sessionIndicatorKind, offersRetry, futureSnoozedUntil, lastActiveLabelAt, waitNamesPr, prChecksRunning, restingOnSubAgents, restIsWorking } from "../groups.ts"
+import { sectionThreads, externalThreads, orderByInteraction, partitionActive, needsAction, displayTitle, titleIsProvisional, isPinned, isSnoozed, parkedAwaitingHint, sessionIndicatorKind, offersRetry, futureSnoozedUntil, lastActiveLabelAt, waitNamesPr, prChecksRunning, restingOnSubAgents, restIsWorking, workingWithOpenQuestion } from "../groups.ts"
 import { ageSpan, relativeAge, limitResumeClock } from "../lib/activityTime.ts"
 import { useNowMs } from "../lib/liveClock.ts"
 import { BoxSpinner, STATUS_BOX } from "./BoxSpinner.tsx"
@@ -1197,6 +1197,9 @@ function sessionStateIndicatorFor(t: ThreadView): { node: ReactElement; tip: str
     // says a child's return will re-invoke it, the ellipsis says the parent itself has stopped. Same
     // kind, same band — only the mark inside changes — because the motion is real either way and the
     // kind is what offersRetry and the band read. A thread whose own turn is running keeps the empty box.
+    // A REGISTERED QUESTION STILL OPEN puts the "?" in that frame instead (groups.workingWithOpenQuestion,
+    // 2026-10-08): the worker kept going after it asked, and the answer would steer what it does next.
+    if (workingWithOpenQuestion(t)) return { node: <BoxSpinner><Glyph ch="?" muted /></BoxSpinner>, tip: "Working — a question is waiting on your answer" }
     if (restingOnSubAgents(t)) return { node: <BoxSpinner>{ellipsisGlyph}</BoxSpinner>, tip: "At rest — waiting on its sub-agents" }
     return { node: <BoxSpinner />, tip: "Working" }
   }
