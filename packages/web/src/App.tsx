@@ -362,7 +362,7 @@ export function App() {
       {/* The side-drawer STACK — and the Escape chain that unwinds it — lives in <DrawerStack> so the
           standalone `/thread/<slug>/full` page can mount the identical thing. See DrawerStack.tsx. */}
       <DrawerStack />
-      {snap.showSettings && <SettingsDrawer />}
+      {snap.showSettings && <SettingsDrawer offerUpdate />}
       {snap.showNewThread && <NewThreadDialog onClose={() => { store.showNewThread = false }} />}
       {snap.showGithubPicker && <GithubPickerModal onClose={closeGithubPicker} />}
       <CommandPalette />
