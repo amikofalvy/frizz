@@ -20,6 +20,12 @@ test("drawer thread header reserves a separate, unbroken control row before the 
   assert.match(THREAD_HEADER_TITLE_CLASS, /min-w-0/)
   assert.match(THREAD_HEADER_TITLE_CLASS, /max-\[640px\]:basis-full/)
   assert.match(THREAD_HEADER_CONTROLS_CLASS, /max-\[640px\]:w-full/)
-  assert.match(THREAD_HEADER_CONTROLS_CLASS, /max-\[640px\]:justify-between/)
   assert.doesNotMatch(THREAD_HEADER_CLASS, /provider/i)
+})
+
+// The drawer's Close-X leads the title rather than closing the action strip, so the title group must
+// lay it out on the title's own line — at ≤640px too, where the group wraps onto a row of its own.
+test("the title group lays the drawer's leading close button out on the title's line", () => {
+  assert.match(THREAD_HEADER_TITLE_CLASS, /(^|\s)flex(\s|$)/)
+  assert.match(THREAD_HEADER_TITLE_CLASS, /(^|\s)items-center(\s|$)/)
 })

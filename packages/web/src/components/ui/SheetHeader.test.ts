@@ -11,11 +11,24 @@ test("SheetHeader renders the title and a lucide close button (never a typograph
   }))
   assert.match(html, /Fix the flip-surface width/)
   assert.match(html, /aria-label="Close"/)
-  // The lucide <X> renders an <svg class="lucide lucide-x"> sized to 15; never the bare × glyph the
-  // MissingThread fallback still uses (D12 follow-up).
+  // The lucide <X> renders an <svg class="lucide lucide-x"> sized to 15; never a bare × glyph.
   assert.match(html, /lucide-x/)
   assert.match(html, /width="15"/)
   assert.doesNotMatch(html, /×/)
+})
+
+// Every sheet slides out to the right, so its X leads the bar and the right end belongs to `actions`.
+test("SheetHeader leads with the close button and ends with the actions", () => {
+  const html = renderToStaticMarkup(createElement(SheetHeader, {
+    title: "Settings",
+    actions: createElement("span", { "data-testid": "actions" }, "● unsaved"),
+    onClose: () => undefined,
+  }))
+  const close = html.indexOf('aria-label="Close"')
+  const title = html.indexOf("Settings")
+  const actions = html.indexOf('data-testid="actions"')
+  assert.ok(close >= 0 && close < title, "the close button comes before the title")
+  assert.ok(title < actions, "the actions come after the title")
 })
 
 test("SheetHeader renders subtitle, icon, meta, and actions when provided", () => {

@@ -11,7 +11,7 @@ import { SHEET_PANEL_CLASS, SHEET_SCRIM_CLASS, sheetWidth } from "../lib/sheet.t
 import { resolveThreadRoute } from "../lib/threadRouteState.ts"
 import { handleDialogEscape } from "../lib/selectOverlay.ts"
 import { DrawerInitialScrollCoordinator } from "../lib/drawerInitialScroll.ts"
-import { PANE_HEADER_HEIGHT_CLASS } from "../lib/paneHeaderHeight.ts"
+import { SheetHeader } from "./ui/SheetHeader.tsx"
 import { ThreadView } from "./ChatView.tsx"
 import { useIsMobile } from "../lib/mobile.ts"
 
@@ -301,12 +301,7 @@ export function ThreadSheet({ id, slug, depth, widthDepth, initiallyOpen }: { id
 function MissingThread({ slug, onClose }: { slug: string; onClose: () => void }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <header className={`flex ${PANE_HEADER_HEIGHT_CLASS} shrink-0 items-center gap-3 border-b border-border bg-panel px-4`}>
-        <span className="min-w-0 flex-1 truncate font-medium">Thread unavailable</span>
-        <button type="button" aria-label="Close" data-dialog-initial-focus onClick={onClose} className="p-1 text-muted hover:text-fg">
-          ×
-        </button>
-      </header>
+      <SheetHeader title="Thread unavailable" onClose={onClose} initialFocus />
       <div className="flex flex-1 items-center justify-center px-6 text-center text-sm text-muted" role="status">
         Thread “{slug}” was not found in this project.
       </div>

@@ -58,6 +58,7 @@ import { getThemeSnapshot, subscribeTheme } from "../lib/theme.ts"
 import { isVisualizationThemeAck, visualizationThemeMessage } from "../lib/visualizationThemeProtocol.ts"
 import { canAdoptThread } from "../lib/adoption.ts"
 import { THREAD_HEADER_CLASS, THREAD_HEADER_CONTROLS_CLASS, THREAD_HEADER_TITLE_CLASS } from "../lib/threadHeaderLayout.ts"
+import { SHEET_CLOSE_BUTTON_CLASS } from "./ui/SheetHeader.tsx"
 import { ThreadActionBar } from "./ThreadActionBar.tsx"
 import { MobileThreadHeader } from "./MobileThreadHeader.tsx"
 import { HeaderActions } from "./HeaderActions.tsx"
@@ -1691,12 +1692,30 @@ export function ThreadHeader({ slug, onStatusApplied, onClose, showReturnToQueue
       className={THREAD_HEADER_CLASS}
     >
       <div className={THREAD_HEADER_TITLE_CLASS}>
-        {/* NOTHING BEFORE THE TITLE. The way out of /full used to be an ArrowLeft standing here, which
-            put a whole-thread verb at the one end of the header no other verb lives at, and said
+        {/* NO THREAD VERB BEFORE THE TITLE. The way out of /full used to be an ArrowLeft standing here,
+            which put a whole-thread verb at the one end of the header no other verb lives at, and said
             "previous page" about a control whose job is to change how this thread is SHOWN. It is now
             the closing half of the fullscreen door, in the door's own slot in the action strip below
-            (HeaderActions `collapse`). */}
-        <div className="min-w-0 leading-tight">
+            (HeaderActions `collapse`).
+            The drawer's Close-X is the one thing that does stand here, because it is not a thread verb:
+            it is the sheet's own chrome, the same leading X every drawer's SheetHeader draws. The sheet
+            slides out to the right, so the X sits at the edge it leaves from, and the right end is left
+            to the thread's verbs alone — which also keeps a near miss on Close off Mark as done.
+            Wired to the SAME animated close() as the backdrop/Esc path (markDrawerClosing + the 210ms
+            slide-out), never an instant unmount. Absent in the main workpane (no onClose → no drawer to
+            close). Inside the title group, so the ≤640px wrap keeps it on the title's line. */}
+        {onClose && (
+          <button
+            type="button"
+            aria-label="Close"
+            data-dialog-initial-focus
+            onClick={onClose}
+            className={SHEET_CLOSE_BUTTON_CLASS}
+          >
+            <X size={15} />
+          </button>
+        )}
+        <div className="min-w-0 flex-1 leading-tight">
           {/* The name and both rename verbs — click to type, hover for the Claude refresh — are the
               shared ThreadTitle, the same element the queue card's header renders. */}
           <ThreadTitle thread={thread} />
@@ -1727,29 +1746,6 @@ export function ThreadHeader({ slug, onStatusApplied, onClose, showReturnToQueue
           {onClose && <ExpandThreadLink slug={slug} />}
           <ThreadLifecycleActions thread={thread} onArchived={onStatusApplied} />
         </div>
-        {/* Close-X for the DRAWER context (onClose passed by ThreadSheet) — parity with the Settings,
-            sub-agent, and Doc drawers, all of which carry a corner "Close". Wired to the SAME animated
-            close() as the backdrop/Esc path (markDrawerClosing + the 210ms slide-out), never an instant
-            unmount. Absent in the main workpane (no onClose → no drawer to close). */}
-        {/* RULED OFF from the thread's verbs: the drawer's own chrome, not the thread's. Mark as done
-            closes the strip to its left, and with only `ml-0.5` between them the two squares sat 2px
-            apart — a near miss on Close archived the thread and shut the drawer, which looks exactly
-            like a close. Hidden at 640px and below, where the row spreads and the X already sits alone
-            at its far end. `ml-3`, not the lifecycle rule's `mx-2.5`: that one also gets the strip's
-            `gap-0.5`, which this one, outside the strip, does not. Ink, dsf 4: 19.75px from the check and
-            19px to the X, against the lifecycle rule's 20 and 19.5 (scripts/ink-gaps.mjs, 2026-10-05). */}
-        {onClose && <span aria-hidden data-close-rule className="ml-3 mr-2.5 h-4 w-px shrink-0 bg-border max-[640px]:hidden" />}
-        {onClose && (
-          <button
-            type="button"
-            aria-label="Close"
-            data-dialog-initial-focus
-            onClick={onClose}
-            className="icon-hover-outline shrink-0 rounded-md p-1.5 text-muted outline-none transition-colors hover:bg-panel-2 hover:text-fg"
-          >
-            <X size={15} />
-          </button>
-        )}
       </div>
     </header>
   )

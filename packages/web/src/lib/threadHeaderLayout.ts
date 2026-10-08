@@ -8,5 +8,5 @@ import { PANE_HEADER_HEIGHT_CLASS } from "./paneHeaderHeight.ts"
 // 52.75px beside a 48px file viewer (lib/paneHeaderHeight.ts). Only the two-row wrap below 640px
 // lets the height go back to auto, with its own padding, because two rows cannot fit in one bar.
 export const THREAD_HEADER_CLASS = `sticky top-0 z-10 flex min-w-0 shrink-0 items-center gap-2.5 border-b border-border bg-panel px-3 ${PANE_HEADER_HEIGHT_CLASS} max-[640px]:h-auto max-[640px]:min-h-12 max-[640px]:flex-wrap max-[640px]:items-start max-[640px]:gap-y-2 max-[640px]:px-4 max-[640px]:py-2.5`
-export const THREAD_HEADER_TITLE_CLASS = "min-w-0 flex-1 pl-1 max-[640px]:basis-full"
-export const THREAD_HEADER_CONTROLS_CLASS = "flex shrink-0 items-center max-[640px]:w-full max-[640px]:justify-between"
+export const THREAD_HEADER_TITLE_CLASS = "flex min-w-0 flex-1 items-center gap-2.5 pl-1 max-[640px]:basis-full"
+export const THREAD_HEADER_CONTROLS_CLASS = "flex shrink-0 items-center max-[640px]:w-full"
