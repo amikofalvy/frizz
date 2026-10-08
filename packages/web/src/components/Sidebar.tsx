@@ -1036,9 +1036,8 @@ export function ThreadIndicator({ t, legacy }: { t: ThreadView; legacy?: boolean
 //   […] at rest     — an ordinary rest with no concrete ask, INCLUDING a queued thread whose own
 //                     dispatched sub-agents are still running (they spin on their own child rows)
 // Attention (needs-input / stalled) wears the accent; everything else is muted.
-/** Exported for TESTS ONLY. The tip is a Radix tooltip, so it renders nothing until it opens — static
- *  markup cannot see it, and asserting on the icon alone would pass a popover that said the wrong thing.
- *  This is the seam that lets the popover's TEXT be pinned directly. */
+/** Shared mark and state description: desktop uses a hover tooltip, mobile speaks the state as its
+ *  accessible label. Tests can also pin the text directly without opening a tooltip. */
 export function sessionIndicatorFor(t: ThreadView): { node: ReactElement; tip: string | null } {
   const base = sessionStateIndicatorFor(t)
   // The tooltip is now the ONLY place a snooze is legible on the rail (the subtitle no longer names it),

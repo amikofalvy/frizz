@@ -21,7 +21,7 @@ export function mobileThreadState(t: ThreadView): MobileThreadState {
   if (t.runtime === "running" || t.runtime === "spawning") return "working"
   if (kind === "archived") return "done"
   // Only the operator's own wall-clock park. A worker's fenced park and the resting card's event-snooze
-  // are rests, and read as one — the same split the board's AlarmMark draws.
+  // are rests, and read as one — the same alarm/hourglass split the shared thread mark draws.
   if (kind === "snoozed" && futureSnoozedUntil(t) !== undefined) return "snoozed"
   return "rested"
 }
