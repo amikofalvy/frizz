@@ -5,7 +5,7 @@
 //
 // The two shapes line up one-for-one, which is why one component can serve both:
 //     AskUserQuestion   { question, header, options:[{label, description}], multiSelect }  + free text
-//     ```question fence   a question line, lettered options with one-line trade-offs, an optional
+//     ```question fence   a question line, numbered options with one-line trade-offs, an optional
 //                         `multi` tag, and a free-text box at the bottom
 // `multiSelect` IS `multi`; `options[].label — description` IS an option line.
 //

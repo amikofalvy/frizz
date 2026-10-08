@@ -129,7 +129,7 @@ test("an unanswered ROOT yields nothing at all, whatever is staged below it", ()
   assert.equal(registeredAnswer({ id: "qst_1", spec: TREE }, answers), undefined)
 })
 
-test("the payload restates the question and carries the worker's OWN label, not the lettered chip", () => {
+test("the payload restates the question and carries the worker's OWN label, not the numbered chip", () => {
   const built = registeredAnswer({ id: "qst_1", spec: STORE }, new Map([[ROOT_PATH, pick(0)]]))
   assert.deepEqual(built, { questionId: "qst_1", question: "Where should the settings live?", chosen: ["SQLite"] })
 })

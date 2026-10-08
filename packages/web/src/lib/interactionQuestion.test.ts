@@ -22,7 +22,7 @@ const PLATFORMS: AskQuestion = {
   options: [{ label: "macOS" }, { label: "Linux" }, { label: "Windows" }],
 }
 
-test("options render lettered, with the description riding the line as a fence trade-off does", () => {
+test("options render numbered, with the description riding the line as a fence trade-off does", () => {
   const view = settledAskView(BANNER, null)
   assert.equal(view.question.kind, "question")
   assert.equal(view.question.contextMd, "Which colour should the banner be?")
