@@ -456,7 +456,7 @@ export function restingOnSubAgents(t: ThreadView): boolean {
  *  sessionIndicatorKind deliberately resolves this to `working`, and the server keeps it out of the queue
  *  until it rests, so before 2026-10-08 the ask was visible only to someone who opened the thread: the
  *  rail drew the plain spinner for the whole stretch the worker spent on work that did not depend on the
- *  answer (maintainer 2026-10-08: "There were questions I could answer to influence the agent but it
+ *  answer (reported 2026-10-08: "There were questions I could answer to influence the agent but it
  *  looks like it is still working on other things in the bg"). The `working` arm now draws the "?"
  *  INSIDE the spinner — the motion is real and the band does not change, only the mark inside it says
  *  that an answer would steer the work. Outranks the sub-agent ellipsis: the ask is what the human can act on. */
