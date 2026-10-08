@@ -254,7 +254,7 @@ Frizz has its own small vocabulary. Most of it names a feature, so this doubles 
 | **Snooze** | Hide a card until later — an hour, tomorrow morning, or a date you pick — optionally with a follow-up prompt attached. |
 | **Goal** | A standing prompt a thread receives on its own — every time it rests, on a clock, or both — until you switch it off or the agent says it's done. |
 | **Scratchpad** | A thread's durable working memory, readable under its **Doc** tab. Where a worker keeps what a summary would otherwise lose: the approach, the alternatives it rejected, the decisions you made and reversed. |
-| **`FRIZZ.md`** | An optional file at your repo root whose contents are injected into every thread, for when you want agents to follow your repo's own norms. |
+| **`FRIZZ.md`** | An optional file at your repo root whose contents are injected into every thread, for when you want agents to follow your repo's own norms. Only agents Frizz starts read it. A project with no threads and no `FRIZZ.md` opens on a short questionnaire — how agents land work, how independently they act, anything else they should know — that writes one for you. |
 
 <br/>
 
