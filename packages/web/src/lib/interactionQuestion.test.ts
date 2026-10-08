@@ -26,7 +26,7 @@ test("options render lettered, with the description riding the line as a fence t
   const view = settledAskView(BANNER, null)
   assert.equal(view.question.kind, "question")
   assert.equal(view.question.contextMd, "Which colour should the banner be?")
-  assert.deepEqual(view.question.options, ["A. Red — warm and loud", "B. Blue — calm and cool"])
+  assert.deepEqual(view.question.options, ["1. Red — warm and loud", "2. Blue — calm and cool"])
 })
 
 test("a single-select answer matches its option by label", () => {

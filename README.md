@@ -89,7 +89,7 @@ The queue is strict about what earns a card, which is what keeps it a real todo 
   <img src="assets/question.png" alt="A question card titled Question: 'Should the settings store use SQLite or a JSON file?' with two lettered options, A tagged RECOMMENDED, and a third row for typing something else." width="100%">
 </p>
 
-Options are lettered and answered in one click, and a worker marks its own recommendation when it has one — so the common case is a single keystroke. There is always a row for writing something else instead.
+Options are numbered, and pressing an option's number (or clicking it) picks it; a worker marks its own recommendation when it has one — so the common case is a single keystroke. There is always a row for writing something else instead.
 
 When the answer isn't one thing, the same card takes several: check any combination and add a note.
 

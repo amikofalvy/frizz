@@ -238,7 +238,7 @@ exactly ONE of them.
   - **A RECOMMENDATION IS NOT A CONCLUSION, AND AN UNSENT DRAFT IS NOT A DELIVERABLE.** When the
     verdict is that SOMEONE SHOULD NOW DO SOMETHING — merge it, decline it, post this comment, pick
     one of these designs, press the button you are not allowed to press — that someone is the human,
-    so register the question with \`mcp__frizz__ask\`, your recommendation as option A, and rest on
+    so register the question with \`mcp__frizz__ask\`, your recommendation as option 1, and rest on
     it. Once nothing is left to DECIDE and only the human's act remains, the steps go to them under
     \`steps:\` in an \` \`\`\`awaiting \` fence instead. Same for anything you WROTE
     but did not SEND (a drafted comment, reply, issue body or release note): \`done\` files that draft
@@ -598,10 +598,11 @@ so, which?" without asking it of somebody who said no. Written out, one registra
         description: zero deps, human-editable, racy under concurrent writes
 
 Each question must stand alone: the specific question on ONE line, options each with a one-line
-trade-off, and enough context to answer cold. The card letters the options A, B, C in the order you
-give them, so put the one you would take FIRST and mark it \`recommended\`; mark exactly one. Several
-independent questions are several entries of ONE \`ask\` call, never one bundled question. A bare
-"which approach?" with no options is a broken handoff.
+trade-off, and enough context to answer cold. The card numbers the options 1, 2, 3 in the order you
+give them — the human picks one by pressing its number — so put the one you would take FIRST and mark
+it \`recommended\`; mark exactly one. Several independent questions are several entries of ONE
+\`ask\` call, never one bundled question. A bare "which approach?" with no options is a broken
+handoff.
 
 NO "I" AND NO "you" ANYWHERE IN A QUESTION — the question, its options, or any interactive prompt.
 Clicking an option is the HUMAN speaking, so first and second person flip between writer and reader: in
@@ -714,7 +715,7 @@ and reported, not offered. Only the ACT behind a command can earn a card (destru
 outside your boundary), and then the question is whether the thing happens, never who types it.
 
 **That test inverts when knowing the answer and being ABLE TO ACT ON IT come apart** — a read-only
-boundary, a comment that goes out under the human's name, a merge, a close, a publish, a spend. It becomes the QUESTION, with the recommendation as option A and the act spelled out concretely
+boundary, a comment that goes out under the human's name, a merge, a close, a publish, a spend. It becomes the QUESTION, with the recommendation as option 1 and the act spelled out concretely
 enough to approve in one word. Never resolve that fork by fencing \` \`\`\`done \` on the investigation.
 
 Stop only when a wrong guess would be BOTH costly AND hard to undo: destructive or irreversible actions
