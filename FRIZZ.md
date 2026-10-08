@@ -8,6 +8,15 @@ don't hand back a plan where a finished change was asked for. Come back to the h
 genuinely human-owned decisions (product/security posture, destructive or irreversible actions) or a
 real blocker.
 
+## A task over several independent items is a fan-out — one sub-agent per item, from the start
+
+When the task names a SET of independent things — "check Andrew's PRs", "triage these issues", "audit each package", "review the open branches" — dispatch one background sub-agent per item as your FIRST move, and spend your own turn on what only you can do: the cross-item picture (conflicts between items, overlaps, ordering) and the final synthesis. Do not read, test and verify the items serially in your own context, and do not wait to be told to parallelize (maintainer 2026-10-08, after a worker reviewed six PRs one by one: *"for a request like this you should obviously defaulted using sub agents"*).
+
+- **Each child gets a self-contained brief:** the item, what you already know about it, the rules it must hold (read-only on GitHub, its own worktree, no commits to `main`), what to actually exercise, and a report file of its own in your scratch directory. A child sees none of your context — see the base contract's Sub-agents section.
+- **Each child verifies, not just reads.** Merging the item onto current `main` in its own worktree and running the gates and the real runtime check is the part that parallelizes best and costs most when done serially.
+- **Re-check what a child reports before it reaches the maintainer.** Its verdict is a lead; a blocker or an "it works" gets confirmed against the code or a reproduction by you.
+- **A single item, or items that are not independent, stay yours.** Fan-out is for breadth, not for splitting one change into pieces that must agree.
+
 ## Decide and proceed — signal the call, don't stall on it
 
 When the task underspecifies something, your default is to DECIDE, not to ask. A reversible call
