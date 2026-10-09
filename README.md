@@ -219,7 +219,7 @@ shows a single-use sign-in link as a QR; press L for a fresh one, or run --link 
 
 > Same answer: press **R** and pick a private frizz.sh name (unguessable, no account), a Cloudflare Tunnel, or Tailscale. (Custom frizz.sh names are paused for now; a board that already holds one keeps it.) Each is reachable from anywhere the transport is — a frizz.sh name and a Cloudflare Tunnel from the open internet, Tailscale from your own devices.
 >
-> Frizz has no accounts, so the single-use sign-in link **is** the door: a phone that scans it gets a session; nobody else gets in. Sessions are per device and can be listed and revoked with `npx frizz --sessions` and `npx frizz --sign-out`.
+> Frizz has no accounts, so the single-use sign-in link **is** the door: a phone that scans it gets a session; nobody else gets in. Sessions are per device and can be listed and revoked with `npx frizz --sessions` and `npx frizz --sign-out`. Every project added or removed, thread started, message sent and question answered is recorded in `logs/audit.jsonl` under Frizz's data folder, with the session id of the device that did it and whether it came through that public address.
 
 </details>
 
