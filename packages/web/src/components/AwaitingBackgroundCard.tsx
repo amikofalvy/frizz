@@ -376,10 +376,17 @@ export function watchStatusLine(status: GithubWatchStatus | undefined): string {
 // should all consistently use the chevron […] and right justify the status label, the light gray status
 // label."
 //
-// So: mark · name · light-gray status right-justified · chevron. Four tracks shared by every row through
-// `grid-cols-subgrid`, so the statuses line up down ONE edge across the group headings instead of
-// starting wherever each name happened to end. The same right-justified light-gray reading the child-op
-// rows already use under the prompt box (ChildOpRow, maintainer 2026-07-27) — one language, two surfaces.
+// So: mark · name · light-gray status right-justified · chevron. Every status ends against its chevron
+// (or a chevron-wide spacer), so the statuses line up down ONE right edge across the group headings. The
+// same right-justified light-gray reading the child-op rows already use under the prompt box (ChildOpRow,
+// maintainer 2026-07-27) — one language, two surfaces.
+//
+// EACH ROW IS ITS OWN FLEX LINE, not a subgrid row (2026-10-08). The four tracks were shared by every
+// row from 2026-08-15, and a shared status track is as wide as the WIDEST status in the table: one red
+// PR's check summary took half the rail, and every sub-agent and saved file under it got the other half
+// — 107px — for its title, wrapping each one onto three lines. On its own line a row's name gives up only
+// its OWN status's width. Nothing visible was bought by the sharing: the statuses are right-justified, so
+// their one edge is the chevron's, and every mark is a 12px box, so the names start on one column anyway.
 //
 // THE CHEVRON IS THE SAME GLYPH ON EVERY ROW even though the destinations differ (GitHub in a new tab,
 // the shell's output drawer, the sub-agent's transcript). An earlier draft split it — an external arrow
@@ -391,25 +398,18 @@ export function watchStatusLine(status: GithubWatchStatus | undefined): string {
 // disabled control (which announces an affordance that is not there) and never a dropped row (which
 // hides live work). That is ChildOpRow's settled policy for an id-less child, applied here.
 
-// NO `gap-x` ON THE ROW, and that is the whole reason the margins below exist. One grid gap sets ONE
+// NO `gap-x` ON THE ROW, and that is the whole reason the margins below exist. One gap sets ONE
 // distance, and this row's three boundaries want three: the mark belongs to the name (tight), the name
-// and the status are opposite ends of the row (the 1fr owns that space), and the chevron is the status's
-// handle (medium). A gap is also a BOX distance, and two of the four cells are mostly empty box — so the
-// numbers here are INK, measured with the row's own probe at dsf 6, sans and mono.
+// and the status are opposite ends of the row (the flex-1 name owns that space), and the chevron is the
+// status's handle (medium). A gap is also a BOX distance, and two of the four cells are mostly empty box
+// — so the numbers here are INK, measured with the row's own probe at dsf 6, sans and mono.
 //
 // `px-2` INSETS every mark from the row's hover fill, and WaitGrid's `-mx-2` gives that inset back, so
 // the ink stays on the content edge it always sat on while the fill reaches 8px past it on both sides.
 // Without it the chevron's ink ran to 1.88px from the fill's right edge and the mark sat flush on its
-// left (maintainer 2026-10-08: "the chevron goes all the way to the very edge"). On a subgrid row the
-// padding folds into the two edge tracks, identically on every row, so the columns still agree.
-const ROW = "group relative col-span-4 grid grid-cols-subgrid items-baseline rounded-sm px-2 text-[12px] leading-5"
-// The same row laid out by FLEX, for a row that INDENTS (the rail's edited-files tree). Subgrid could
-// not do it: a subgrid item's padding is folded into the shared edge track, so one deep row would
-// have widened the mark column for every row and none of the names would have moved. In flex the
-// name is the `1fr` (flex-1), the status keeps its own width, and the chevron sits at the end —
-// the same four marks in the same order, at the same right edge.
-// Its left inset is the row's `indent` plus the same 8px (set inline, since it varies by depth).
-const ROW_FLEX = "group relative col-span-4 flex items-baseline rounded-sm pr-2 text-[12px] leading-5"
+// left (maintainer 2026-10-08: "the chevron goes all the way to the very edge"). A row in a TREE (the
+// rail's edited files) indents by setting its left padding inline: its `indent` plus the same 8px.
+const ROW = "group relative flex items-baseline rounded-sm px-2 text-[12px] leading-5"
 /** The inset every row keeps inside its hover fill, in px — ROW's `px-2`, for the tree rows that set
  *  their left padding inline. */
 export const ROW_INSET = 8
@@ -418,18 +418,28 @@ export const ROW_INSET = 8
 // so it behaves like a text run and needs no trim of its own.
 //
 // THE NAME WRAPS rather than truncating (maintainer 2026-10-08, choosing it off a mockup sheet: every
-// title on the /full rail had been cut to two or three words). The status track takes up to half the
-// grid, so a one-line name got 107px of a 308px rail. Wrapped, it keeps its whole width and the row
-// simply grows; `items-baseline` keeps the mark, the status and the chevron on its FIRST line. Three
+// title on the /full rail had been cut to two or three words, a one-line name getting 107px of a 308px
+// rail). Wrapped, it keeps its whole width and the row simply grows; `items-baseline` keeps the mark, the
+// status and the chevron on its FIRST line. Three
 // lines is a backstop for a timer's prompt, which can run to a paragraph — no row label reaches it.
 // A tree row (the edited files) still truncates: a basename is one token and wrapping it breaks a word.
-const NAME = "ml-1.5 min-w-0 font-medium text-fg/90"
+// No `min-w-*` here: each use sets its own, and two in one class list resolve by stylesheet order.
+const NAME = "ml-1.5 font-medium text-fg/90"
 const NAME_WRAP = `${NAME} line-clamp-3 break-words`
-const NAME_TREE = `${NAME} flex-1 truncate`
-/** The light-gray status column. `text-right` right-justifies it inside its own track; the name's `1fr`
- *  eats the slack, so the status lands against the chevron at the card's right edge. `ml-3` is only a
- *  floor — the distance the reader actually sees is whatever the truncating name leaves. */
+const NAME_TREE = `${NAME} min-w-0 flex-1 truncate`
+/** The light-gray status. It keeps its own width and the name's `flex-1` eats the slack, so the status
+ *  lands against the chevron at the card's right edge; `text-right` matters only once it truncates.
+ *  `ml-3` is only a floor — the distance the reader actually sees is whatever the name leaves.
+ *
+ *  THE NAME KEEPS HALF THE ROW (NAME_FLOOR), and a longer status is the one that truncates: one red
+ *  PR's "2 failing, 1 in progress, 9 successful · view failures" would otherwise take the whole row (it
+ *  took 271px of the 308px rail as a shared grid track, maintainer 2026-09-02). Truncated, it keeps its
+ *  severity-first opening, which is what checkCountLine orders it for. The floor sits on the NAME rather
+ *  than a 50% cap on the status because a cap left the name 112px on the rail, and `colinhacks/frizz#412`
+ *  wrapped mid-token at `#4`. */
 const STATUS = "ml-3 min-w-0 truncate text-right text-muted-70"
+/** Half the row for the name — or for the name and its ×, which travel together. See STATUS. */
+const NAME_FLOOR = "min-w-1/2 flex-1"
 
 /** The whole row is the target, so the name's link stretches over it (`after:inset-0` against the row's
  *  `relative`). A real <a>/<button> rather than a click handler on the div: right-click, middle-click and
@@ -467,8 +477,8 @@ export function WaitRow({ mark, name, status, onOpen, onPrewarm, href, ghRef, ti
    *  sub-agents and shells (maintainer 2026-07-30: "the X button to stop a sub-agent should show up
    *  everywhere sub-agents are listed"). Absent ⇒ no ×; the card leaves it to the strip beneath it. */
   dismiss?: { onDismiss: () => void; title: string; label: string }
-  /** Left inset in px for a row in a TREE (the rail's edited files). Switches the row from the shared
-   *  subgrid to its own flex line — see ROW_FLEX for why subgrid cannot indent. */
+  /** Left inset in px for a row in a TREE (the rail's edited files), added to the row's own 8px. A tree
+   *  row's name truncates rather than wraps (see NAME). */
   indent?: number
   /** Fired when a pointer rests on the row, or the row's control takes focus — the row's chance to
    *  fetch what the click is about to need. Must be idempotent and silent: it runs on a HOVER. */
@@ -484,7 +494,9 @@ export function WaitRow({ mark, name, status, onOpen, onPrewarm, href, ghRef, ti
   testId: string
 }) {
   const tree = indent !== undefined
-  const nameClass = tree ? NAME_TREE : NAME_WRAP
+  // The name is the row's `flex-1` — unless a × follows it, when the pair is, so the × sits directly
+  // after the name rather than at the far end of the slack.
+  const nameClass = tree ? NAME_TREE : dismiss ? `${NAME_WRAP} min-w-0` : `${NAME_WRAP} ${NAME_FLOOR}`
   const open = href
     ? (
       <a
@@ -529,7 +541,7 @@ export function WaitRow({ mark, name, status, onOpen, onPrewarm, href, ghRef, ti
       onMouseDown={(e) => e.stopPropagation()}
       title={dismiss.title}
       aria-label={dismiss.label}
-      className="relative ml-0.5 shrink-0 self-center rounded-sm p-0.5 text-muted-45 outline-none transition-colors hover:text-fg focus-visible:text-fg focus-visible:ring-1 focus-visible:ring-focus-ink-60"
+      className="relative ml-0.5 shrink-0 self-start mt-[2.5px] rounded-sm p-0.5 text-muted-45 outline-none transition-colors hover:text-fg focus-visible:text-fg focus-visible:ring-1 focus-visible:ring-focus-ink-60"
     >
       <X size={11} />
     </button>
@@ -541,12 +553,14 @@ export function WaitRow({ mark, name, status, onOpen, onPrewarm, href, ghRef, ti
       onMouseEnter={onPrewarm}
       onFocus={onPrewarm}
       style={tree ? { paddingLeft: ROW_INSET + indent } : undefined}
-      className={`${tree ? ROW_FLEX : ROW} ${interactive ? "cursor-pointer transition-colors hover:bg-fg/[0.045]" : ""}`}
+      className={`${ROW} ${interactive ? "cursor-pointer transition-colors hover:bg-fg/[0.045]" : ""}`}
     >
       <span className="flex shrink-0">{mark}</span>
-      {x ? <span className="flex min-w-0 items-baseline">{open}{x}</span> : open}
+      {x ? <span className={`flex items-baseline ${NAME_FLOOR}`}>{open}{x}</span> : open}
       <span data-wait-status className={STATUS}>{status}</span>
-      {interactive ? <Chevron /> : <span />}
+      {/* A row with nothing to open keeps the chevron's footprint (13px box, +3px, −4px = 12px), so its
+          status still ends on the one right edge every other status ends on. */}
+      {interactive ? <Chevron /> : <span aria-hidden className="w-3 shrink-0" />}
     </div>
   )
 }
@@ -575,7 +589,7 @@ export function issueStatusLine(status: GithubIssueStatus | undefined): string {
 }
 
 export function GithubWatchRow({ watch }: { watch: ThreadWatchView }) {
-  // AN ISSUE ROW is the same four tracks with GitHub's issue marks in the first and no CI in the third:
+  // AN ISSUE ROW is the same four cells with GitHub's issue marks in the first and no CI in the third:
   // its subject has no checks, and a "No checks" reading off it would be a PR fact stated about a thing
   // that has none.
   if (watch.subject === "issue") return <GithubIssueWatchRow watch={watch} />
@@ -913,7 +927,7 @@ export interface WaitGroup {
 // mono 8.10 / 7.42px. `ml-[3px]` read 6.10px in sans, visibly tighter than the gap before it.
 function GroupHeading({ group, first }: { group: WaitGroup; first: boolean }) {
   // `px-2`: the rows' inset (ROW), so a heading's first letter stays on the column of marks below it.
-  const cls = `col-span-4 px-2 text-[10.5px] uppercase tracking-wide text-muted-45 ${first ? "" : "mt-2.5"}`
+  const cls = `px-2 text-[10.5px] uppercase tracking-wide text-muted-45 ${first ? "" : "mt-2.5"}`
   if (!group.onToggle) return <div className={cls}>{group.head}</div>
   return (
     <button
@@ -938,28 +952,20 @@ export function WaitGrid({ groups, divider }: { groups: ReadonlyArray<WaitGroup>
           (maintainer 2026-08-24). It comes and goes with the prose: a card with rows alone (a bare
           sub-agent rest) needs no seam, and a seam over nothing reads as a scratch. */}
       {divider && <div aria-hidden className="-mx-4 mt-3 border-t border-border" />}
-      {/* THE TABLE — the card's real content, not an appendix to a sentence.
-          ONE grid for every group, so `grid-cols-subgrid` on each row shares FOUR tracks across the whole
-          card and the light-gray statuses line up down one edge even across a heading. Per-group grids
-          would each size their own name column and the statuses would step.
-
-          THE STATUS TRACK IS CAPPED AT HALF THE GRID — `fit-content(50%)`, not `auto` — because the
-          tracks are sized before the `1fr` name gets anything: a bare `auto` grows to the WIDEST status
-          in the whole shared grid, so one red PR's "2 failing, 1 in progress, 9 successful · view
-          failures" measured the track at 271px on the 308px fullscreen rail and truncated every file
-          name in the grid to its ellipsis (maintainer 2026-09-02, screenshot of a 22-file rail reading
-          "b…" down the column). Under the cap the wide status is the one that truncates — the reading
-          checkCountLine already orders severity-first for — and the names keep the other half.
+      {/* THE TABLE — the card's real content, not an appendix to a sentence. One column of rows for
+          every group; each row is its own flex line (see ROW), and every status ends on the chevron's
+          edge, so the statuses line up down one edge even across a heading.
 
           mt-3 UNCONDITIONALLY — 12px, and it is the WHOLE gap rather than an addition: CardContent's own
           mt-1 collapses into it, which is why an earlier mt-2 measured 8px and put the first row closer
-          to the card title than to the row beneath it (measured, sans and mono, dsf 3). */}
-      {/* `-mx-2` hands back the rows' own `px-2` inset (ROW), so the ink keeps its edge and only the
+          to the card title than to the row beneath it (measured, sans and mono, dsf 3).
+
+          `-mx-2` hands back the rows' own `px-2` inset (ROW), so the ink keeps its edge and only the
           hover fill grows past it. */}
-      <div className="-mx-2 mt-3 grid grid-cols-[auto_1fr_fit-content(50%)_auto] gap-y-px">
+      <div className="-mx-2 mt-3 flex flex-col gap-y-px">
         {groups.map((g, i) => (
           <Fragment key={g.head}>
-            {/* The heading spans all four tracks. `mt-*` on every group but the first: the gap between
+            {/* `mt-*` on every group's heading but the first: the gap between
                 a group and the one above it has to beat the gap between two rows, or the heading reads
                 as belonging to the rows above rather than the ones below. */}
             <GroupHeading group={g} first={i === 0} />

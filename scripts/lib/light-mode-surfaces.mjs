@@ -425,7 +425,7 @@ export async function checkSurfaceStates({ page, url, font, palette, out, check,
     await shot(`integrated-renderers-${width}`)
     // The trailing chevron deliberately overhangs its box by 4px to align its ink. Check the
     // single-line contract and document overflow, not that intentional box-level overhang.
-    assert.ok(rows.every(row => row.height < 32 && row.children.every(child => child.top >= 0 && child.top + child.height <= row.height)), 'Issue watches retain their real single-line subgrid layout')
+    assert.ok(rows.every(row => row.height < 32 && row.children.every(child => child.top >= 0 && child.top + child.height <= row.height)), 'Issue watches retain their real single-line layout')
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, 'Integrated controls do not overflow the viewport')
     await contrast(`integrated-renderers-${width}`)
     result[`${name}-acp-model-${width}-ink`] = await measureAppearanceInk(page, '[aria-label="Model for OpenCode"]')

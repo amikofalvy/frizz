@@ -37,9 +37,8 @@ import { transcriptBackgroundShells } from "./ChatView.tsx"
 // THE FILES ARE A TREE (maintainer 2026-09-03), not a list: a directory row above the files it
 // holds, a small indent per level, and a chain of single-child directories folded into one row the
 // way GitHub's tree draws `packages/web/src` (lib/editedFileTree.ts). The flat list showed basenames
-// alone and twenty-two of them read as twenty-two names from nowhere. The tree's rows lay out by FLEX
-// inside one cell of the shared grid rather than as subgrid rows, because a subgrid cannot indent —
-// see ROW_FLEX in AwaitingBackgroundCard — and the file rows are still the card's own WaitRow.
+// alone and twenty-two of them read as twenty-two names from nowhere. The file rows are still the
+// card's own WaitRow, indented through its `indent`.
 //
 // IT REPLACES THE OPS STRIP UNDER THE PROMPT BOX while it is on screen (maintainer 2026-10-02: "it's
 // already showing up in the sidebar to the right"), so it has to carry every row that strip did — or
@@ -84,10 +83,9 @@ function EditedFileTree({ files }: { files: readonly EditedFile[] }) {
   const homeDir = useHomeDir()
   const rows = flattenEditedFileTree(editedFileTree(files, projectDir, homeDir))
   return (
-    // ONE cell of the shared grid, holding its own column of rows: the tree's rows must not share the
-    // grid's tracks (the indent is the whole point), and a `gap-y-px` between them keeps the rhythm
-    // WaitGrid draws between its own rows.
-    <div data-edited-file-tree className="col-span-4 flex flex-col gap-y-px">
+    // One entry of the table, holding its own column of rows; a `gap-y-px` between them keeps the
+    // rhythm WaitGrid draws between its own rows.
+    <div data-edited-file-tree className="flex flex-col gap-y-px">
       {rows.map((node) =>
         node.kind === "dir"
           ? <DirRow key={`d:${node.path}`} name={node.name} depth={node.depth} />
@@ -166,9 +164,9 @@ function SavedLinkRow({ link }: { link: ThreadLinkView }) {
     <WaitRow
       testKind="link"
       testId={link.id}
-      // No ink trim, unlike FileRow's: that row lays out by flex, and this one sits in the shared
-      // subgrid, whose mark track puts every name on one column whatever the glyph inks. Measured
-      // there (ink-gaps, dsf 6): mark→name 8.00px, the shell row's own 8.00; the URL row's 7.67.
+      // No ink trim, unlike FileRow's: that one matches the directory rows of its tree, and this one
+      // matches the rows around it, whose names all start one 12px mark box in. Measured (ink-gaps,
+      // dsf 6): mark→name 8.00px, the shell row's own 8.00; the URL row's 7.67.
       mark={<FileText size={12} className={`${ON_CAP} text-muted-60`} />}
       name={link.label}
       onOpen={() => openLocalPath(link.target)}
@@ -262,7 +260,7 @@ export function FocusRail({ thread }: { thread: ThreadView }) {
     { head: "Files and links", rows: (thread.links ?? []).map((l) => <SavedLinkRow key={l.id} link={l} />) },
     {
       head: "Edited files",
-      // One row of the grid, holding the whole tree (its own column, its own indents).
+      // One entry of the table, holding the whole tree (its own column, its own indents).
       rows: files.length > 0 ? [<EditedFileTree key="tree" files={files} />] : [],
       count: files.length,
       collapsed: railFilesCollapsed,
