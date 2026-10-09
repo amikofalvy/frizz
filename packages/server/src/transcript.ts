@@ -628,12 +628,14 @@ export function createTranscriptFold(identityPrefix = "claude"): TranscriptFold 
   // drains in order), falling back to the oldest registered one because the remove/attachment pair
   // deliberately leaves an entry registered after un-graying it, so the attachment can re-resolve the
   // SAME object instead of pushing a second copy. For a unique key this is exactly the old Map.get.
-  // Keys are compared TRIMMED: an ordinary user record is read through `userText`, which trims, while the
+  // The comparison is TRIMMED: an ordinary user record is read through `userText`, which trims, while the
   // enqueue and the attachment carry the raw text. A dispatched prompt ending in "\n" therefore never
   // matched its own delivery and rendered twice — once delivered, once stuck gray at the thread's tail.
+  // The stored key stays RAW: coalescedQueuedKeys and peerSessionQueuedKey match keys against the
+  // delivered text's interior, where each message keeps its own whitespace.
   function findQueued(key: string): QueuedEntry | undefined {
     const k = key.trim()
-    return queuedPending.find((e) => e.key === k && e.message.queued) ?? queuedPending.find((e) => e.key === k)
+    return queuedPending.find((e) => e.key.trim() === k && e.message.queued) ?? queuedPending.find((e) => e.key.trim() === k)
   }
   function dropQueued(entry: QueuedEntry): void {
     const i = queuedPending.indexOf(entry)
@@ -757,12 +759,13 @@ export function createTranscriptFold(identityPrefix = "claude"): TranscriptFold 
         // Undelivered → a grayed "queued" user bubble (queued:true reuses the client's optimistic-send
         // styling). Do NOT reset lastAssistantId: this bubble is transient (it may be spliced out on
         // delivery), and the assistant-merge tail-role check already blocks merging across a live bubble.
-        // `text` stays the RAW queued content and the key is that content trimmed (see findQueued), so a
-        // wake token riding a queued follow-up is dropped only for display.
+        // `text` stays the RAW queued content — it is the key `queuedPending` matches the delivery
+        // against (trimmed only at comparison, see findQueued) — so a wake token riding a queued
+        // follow-up is dropped only for display.
         const queuedProjection = userProjection(content, out.length === 0)
         const m: TranscriptMessage = { sourceId, role: "user", text: content, ...queuedProjection, tools: [], parts: [], at: thisTs, queued: true }
         out.push(m)
-        queuedPending.push({ key: content.trim(), message: m })
+        queuedPending.push({ key: content, message: m })
       } else if ((op === "remove" || op === "dequeue" || op === "popAll") && content.trim()) {
         // A content-bearing removal is Claude Code DEQUEUEING the message into the turn. Resolve the
         // bubble IN PLACE — un-gray it where the human sent it — and leave it registered so the

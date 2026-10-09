@@ -2386,6 +2386,19 @@ test("the SDK path coalesces two queued messages into one record — both resolv
   assert.equal(users[0].at, "2026-07-01T00:00:05.000Z", "each keeps the moment the human sent it")
 })
 
+// The coalesced record keeps each message's own whitespace in its INTERIOR — only its outer ends are
+// trimmed — so the walk needs the queued keys byte-exact even though a single delivery is matched trimmed.
+test("a coalesced delivery whose earlier message ends in a newline still resolves both", () => {
+  const a = "first message\n"
+  const b = "second message"
+  const drain = JSON.stringify({ type: "queue-operation", timestamp: "2026-07-01T00:00:09.000Z", operation: "dequeue", content: "" })
+  const msgs = parseTranscript(
+    [enqueueLine(a, "2026-07-01T00:00:05.000Z"), enqueueLine(b, "2026-07-01T00:00:07.000Z"), drain, drain, userLine(`${a}\n${b}`)].join("\n"),
+  )
+  const users = msgs.filter((m) => m.role === "user")
+  assert.deepEqual(users.map((m) => m.queued), [false, false], "both resolve, and no merged third copy")
+})
+
 // The broker/SDK path writes NO `origin` on its queued_command attachments — measured over this
 // machine's corpus, all 78 sdk prompt attachments carry none while 1664 pre-broker CLI ones carry
 // origin.kind "human", and every sdk one carries `source_uuid` instead. Requiring origin made the
