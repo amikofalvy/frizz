@@ -7,7 +7,7 @@ import { TooltipProvider } from "./components/Tooltip.tsx"
 import { store } from "./store.ts"
 import "./styles.css"
 
-// Browser QA for the QUEUED TAIL. Three things live here:
+// Browser QA for the QUEUED TAIL. Two things live here:
 //  · SPACING — successive queued (optimistic) user bubbles must carry the same STEP rhythm as any other
 //    pair of messages.
 //  · THE PUSH-NOW CONTROL — the ↑ that appears left of a queued bubble on hover and preempts the turn
@@ -15,11 +15,6 @@ import "./styles.css"
 //    "running"` on a claude thread plus queued bubbles. `deliveryId`s are set so the bubbles are also
 //    UNQUEUEABLE, which is the real-app shape and the only way to see that the hover lift still fires
 //    from the group rather than the bubble.
-//  · THE HOVER READING under a queued bubble (`MessageStamp`, host `bubble`). Every message carries an
-//    `at` for it — without one the reading renders nothing, which is why this fixture watched the queued
-//    row for a month and never saw its reading land ON the bubble's bottom edge (2026-08-31). The row
-//    is built by ChatView's own QUEUED branch, so what is photographed here is the shipped call site,
-//    not a rebuilt copy of it.
 // Both surfaces that render the queued tail are mounted — the drawer (ThreadView/ChatView) and the
 // queue card (TodosView) — because the pinned queued group is built separately in each.
 
@@ -133,9 +128,7 @@ function Fixture() {
         <div className="mx-auto flex h-screen w-[760px] max-w-full flex-col border-x border-border">
           {/* `virtualized`, as BOTH production callers mount it (StandaloneThreadPage, the drawer).
               Without it this fixture rendered ChatView's eager fallback — a branch whose own comment
-              says no production surface reaches it, and which wraps no message in `MessageRow` at all.
-              So the queued rows here carried no hover reading to photograph, and the offset that was
-              wrong on the shipped path could not be seen from this fixture (2026-08-31). */}
+              says no production surface reaches it. */}
           <ThreadView slug={SLUG} virtualized />
         </div>
       </div>

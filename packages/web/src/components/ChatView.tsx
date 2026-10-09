@@ -50,7 +50,6 @@ import { SessionMessageLine } from "./SessionMessageLine.tsx"
 import { useLocalFileCodeLinks } from "../lib/localFileCode.ts"
 import { shouldSubmitStagedEnter } from "../lib/composerKeyboard.ts"
 import { lastAskIndex, messagePresentationText } from "../lib/messagePresentation.ts"
-import { stampHostFor } from "../lib/stampHost.ts"
 import { snoozePresetInstant, formatSnoozeWake } from "../lib/snooze.ts"
 import { noteGithubRefs } from "../lib/githubHovercards.ts"
 import { ICON_LABEL_NUDGE } from "../lib/iconAlign.ts"
@@ -80,7 +79,6 @@ import { agentReading } from "../lib/agentReading.ts"
 import { awaitingDefersToQuestions, awaitingProseBlock } from "../lib/awaitingPresentation.ts"
 import { ChildOpRow } from "./ChildOpRow.tsx"
 import { ThreadLinks } from "./ThreadLinks.tsx"
-import { MessageRow, MessageStamp } from "./MessageTimestamp.tsx"
 import { TRANSCRIPT_META_LABEL_CLASS, transcriptMetaChevronClass } from "../lib/transcriptMetaLabels.ts"
 import { InteractionStack } from "./InteractionCards.tsx"
 import { RegisteredAnsweringProvider, RegisteredQuestionCard, RegisteredQuestionStack, SettledQuestionCard, SettledQuestionStack, openQuestionsOf, useSettledQuestions, type SettledQuestion } from "./RegisteredQuestionCards.tsx"
@@ -110,7 +108,7 @@ import { takeFullscreenEnterAnchor } from "../lib/fullscreenHandoff.ts"
 import { prependEarlierPage } from "../lib/transcriptPagination.ts"
 import { buildVirtualTranscriptMessageRows, earlierLoadGate, nextTailFollow, TAIL_FOLLOW_PX, type VirtualTranscriptMessageRow } from "../lib/virtualTranscript.ts"
 import { withoutRedundantRestDividers } from "../lib/restDividers.ts"
-import { coalesceToolActivityMessages, editedFileCount, historicalToolActivityMessages, isPictureTool, isSettledAsk, isToolActivityException, liveRuntimeStartedAt, liveToolActivityRun, liveToolActivityTail, settledToolActivityLabel, thinkingToolActivityLabel, toolActivityLabel, toolActivityStampAt } from "../lib/toolActivity.ts"
+import { coalesceToolActivityMessages, editedFileCount, historicalToolActivityMessages, isPictureTool, isSettledAsk, isToolActivityException, liveRuntimeStartedAt, liveToolActivityRun, liveToolActivityTail, settledToolActivityLabel, thinkingToolActivityLabel, toolActivityLabel } from "../lib/toolActivity.ts"
 import { CodexDirectiveCard, MermaidDiagram } from "./CodexRichOutput.tsx"
 import { LightboxGallery } from "./Lightbox.tsx"
 import { META_CARD_STEP, PICTURE_STEP, STEP, USER_TAIL_EXTRA, VSpace } from "./rhythm.tsx"
@@ -722,7 +720,7 @@ type VirtualThreadRow =
   | { key: string; kind: "settled-questions"; questions: SettledQuestion[] }
   | { key: "transport-fallback"; kind: "transport-fallback" }
   | { key: string; kind: "earlier-history" }
-  | ({ kind: "message"; stampAt: string | undefined } & VirtualTranscriptMessageRow)
+  | ({ kind: "message" } & VirtualTranscriptMessageRow)
   | { key: "runtime-status"; kind: "runtime-status" }
   | { key: string; kind: "queued"; message: ChatMessage; messageIndex: number; gap: number }
 
@@ -941,10 +939,7 @@ function VirtualizedThreadTranscript({
       activityMessages.map((entry) => entry.message),
       rendersNothingIn(activityMessages, awaitingCut, restingShown),
       messageGap,
-    ).map((row) => {
-      const entry = activityMessages[row.messageIndex]
-      return { ...row, messageIndex: entry.messageIndex, stampAt: toolActivityStampAt(entry) }
-    })
+    ).map((row) => ({ ...row, messageIndex: activityMessages[row.messageIndex].messageIndex }))
   }, [activityMessages, awaitingCut, restingShown])
   const lastUserIdx = useMemo(() => lastAskIndex(messages), [messages])
   // A completion the worker REGISTERED rather than fenced: the last rung of the ladder below, drawn here
@@ -1517,23 +1512,7 @@ function VirtualizedThreadTranscript({
             data-index={virtualRow.index}
             data-transcript-row-key={row.key}
             data-transcript-source-id={row.kind === "message" ? row.message.sourceId : undefined}
-            // `hover:z-[1]` is what lets a row's hover-revealed timestamp (MessageRow) survive being
-            // drawn past this row's own bottom edge. Every row here is transform-positioned, so each
-            // is its OWN stacking context and a z-index INSIDE one cannot lift anything above the
-            // next row — among siblings at z-auto, the later one always wins. The reveal sits in the
-            // gap below its message, and that gap is as little as META_CARD_STEP (6px) against a
-            // 16px reading, so without this the reading is painted under the following row exactly
-            // on the tight rows where it overflows most.
-            //
-            // ONE, not the 20 this first shipped with. The pinned current-ask row thirty lines up is a
-            // SIBLING in this same container at `z-[9]`, and that 9 is the only thing holding it above
-            // the scrolling transcript. At 20 a hovered row painted OVER the pinned card — and since the
-            // band is click-through everywhere except its bubble, a pointer resting in its transparent
-            // strip hovered the row behind it, which then covered the bubble's own rectangle and
-            // swallowed hover-to-expand. 1 is both sufficient and 9-safe: a transform-positioned sibling
-            // participates in the parent as if `z-index: 0` whatever its DOM order, so any positive
-            // value beats it.
-            className="absolute left-0 top-0 w-full hover:z-[1]"
+            className="absolute left-0 top-0 w-full"
             style={{ transform: `translateY(${virtualRow.start}px)` }}
           >
             {row.kind === "head-anchor" ? null
@@ -1589,11 +1568,7 @@ function VirtualizedThreadTranscript({
                 )}
               </div>
             ) : row.kind === "message" ? (
-              // `stampHostFor`, NOT `role === "user"`. The role records which SIDE of the conversation
-              // a turn was recorded on, and three shapes recorded as the human's end on text ink
-              // rather than a bubble: a frizz wake, a recurring-prompt line and a sub-agent's report,
-              // all three hairline dividers. See lib/stampHost.ts.
-              <MessageRow at={row.stampAt} host={stampHostFor(row.message, paired[row.messageIndex])} gap={row.gap}>
+              <div className="relative flex flex-col px-6" style={{ paddingTop: row.gap }}>
                 <Message
                   m={row.message}
                   answering={fencesLive ? answeringForMessage(row.message) : undefined}
@@ -1606,7 +1581,7 @@ function VirtualizedThreadTranscript({
                   settledPlaced={settledPlacement.placed.get(row.messageIndex)}
                   thread={thread}
                 />
-              </MessageRow>
+              </div>
             ) : row.kind === "runtime-status" ? (
               <div className="px-6" style={{ paddingTop: runtimeStatusGap }}>
                 <RuntimeStatusLadder
@@ -1628,19 +1603,10 @@ function VirtualizedThreadTranscript({
                 ) : null}
               </div>
             ) : (
-              // The QUEUED branch. Its rows are built straight from `messages`, never through the
-              // tool-activity coalescer, so no run can have walked `at` forward and the message's own
-              // instant is the only reading there is.
-              //
-              // The host went unstated until 2026-08-31, so the reading fell back to the PROSE offset
-              // and its cap tops landed on the device row directly under the bubble's bottom edge —
-              // zero clearance against a hard filled edge, measured off the maintainer's own
-              // screenshot. It takes the same `stampHostFor` as the branch above rather than a flat
-              // "bubble": a queued send is the human's, but answering a question composes one of these
-              // too, and that lands as an answers card.
-              <MessageRow at={row.message.at} host={stampHostFor(row.message, paired[row.messageIndex])} gap={row.gap}>
+              // The QUEUED branch: built straight from `messages`, never through the tool-activity coalescer.
+              <div className="relative flex flex-col px-6" style={{ paddingTop: row.gap }}>
                 <Message m={row.message} paired={paired[row.messageIndex]} />
-              </MessageRow>
+              </div>
             )}
           </div>
         )
