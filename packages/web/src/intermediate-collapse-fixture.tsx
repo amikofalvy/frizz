@@ -36,15 +36,16 @@ import "./styles.css"
 //                           visible — a trailing event must NOT pull it into the collapsed range.
 //   ?variant=bgshells  three background shells launched in three SEPARATE assistant records across the
 //                      collapsed run (the real shape from thread `started-three-frizz-in-quick-succession`),
-//                      one of them already finished. They FOLD IN like any other call (2026-08-12) — the
-//                      card is a triage surface, a live task is already listed under its prompt box from
-//                      board telemetry, and a finished one is history the fold carries. The THREAD VIEW
-//                      still gives each its own card with the pulsing live mark.
+//                      one of them already finished. The finished one FOLDS IN like any other call
+//                      (2026-08-12) — the card is a triage surface and it is history the fold carries. The
+//                      two still running leave the transcript for the ops line over the prompt box, as
+//                      they do in the thread view (2026-10-09).
 //   ?variant=dispatches  two sub-agent dispatches inside the collapsed run, one still running (tracked in
 //                      thread.subAgents) and one resolved. Same rule as background tasks: both fold in.
 //   ?variant=codexpolls a codex long-poll run: ten unpaired `Wait`/`Poll process` cards (pending +
-//                      `backgroundState: "unknown"`) around ONE real detached shell. All of it folds; the
-//                      variant survives as the guard that 888 poll rows can never reach the card.
+//                      `backgroundState: "unknown"`) around ONE real detached shell. The polls fold, and
+//                      the still-running shell leaves for the ops line; the variant survives as the guard
+//                      that 888 poll rows can never reach the card.
 //   ?variant=buriedask  a ```question in the MIDDLE of the run, with tool work and a closing summary after
 //                      it. Two guards at once: the ask is lifted OUT of the collapse (a decision the human
 //                      owes is not disposable chatter), and its chips are LIVE even though a newer ask is

@@ -7,7 +7,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { queueCardTargetY, showToast, store } from "../store.ts"
 import { pageScrollY } from "../lib/pageScrollLock.ts"
 import { rpc } from "../api/rpc.ts"
-import { useBoard, asThreads, useTranscript } from "../hooks.ts"
+import { useBoard, asThreads, useProjectDir, useTranscript } from "../hooks.ts"
 import { orderQueue, queued } from "../groups.ts"
 import { tailAskIdx, useLiveAnswering } from "../lib/answering.ts"
 import { shouldSubmitStagedEnter } from "../lib/composerKeyboard.ts"
@@ -22,11 +22,11 @@ import { isOptimisticallySteering, useSteeredAt } from "../lib/steering.ts"
 import { questionsByAnchor } from "../lib/questionAnchor.ts"
 import { allFencesShadowed, placedFrom, placedRestEnds, placeQuestions, questionsAtCurrentRest, registeredStandingAt } from "../lib/questionShadow.ts"
 import { settledQuestionPositions } from "../lib/settledQuestions.ts"
-import { Message, PermPolicyDenialCard, transcriptBackgroundShells, RuntimeStatusLadder, VSpace, STEP, PICTURE_STEP, runtimeStatusRung, type RuntimeStatusState, messageGap, messageHeadIsPicture, messageRendersNothing, messageHasRenderableText, lastAssistantIndex } from "./ChatView.tsx"
+import { Message, PermPolicyDenialCard, TranscriptSyncFallbackBanner, transcriptBackgroundShells, withoutLiveTranscriptBackgroundTools, runtimeStatusGapFor, RuntimeStatusLadder, VSpace, STEP, PICTURE_STEP, runtimeStatusRung, type RuntimeStatusState, messageGap, messageHeadIsPicture, messageRendersNothing, messageHasRenderableText, lastAssistantIndex } from "./ChatView.tsx"
 import { BLOCK_RADIUS, BLOCK_RADIUS_TOP, BLOCK_RADIUS_INNER_BOTTOM } from "./TranscriptCard.tsx"
 import { showsRestingCard } from "./AwaitingBackgroundCard.tsx"
 import { agentCompletionCall } from "../lib/subAgentCompletion.ts"
-import { coalesceToolActivityMessages } from "../lib/toolActivity.ts"
+import { coalesceToolActivityMessages, historicalToolActivityMessages, liveRuntimeStartedAt, liveToolActivityRun, liveToolActivityTail, toolActivityLabel } from "../lib/toolActivity.ts"
 import { prefs } from "../lib/prefs.ts"
 import { ThreadComposerBox } from "./ThreadComposerBox.tsx"
 import { ThreadSlugContext, QueueDismissContext } from "./ChatView.tsx"
@@ -846,14 +846,26 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
   })
   // Raw server order — each message renders its `parts` in block order (fidelity). Memoized so the
   // windowing/useLiveAnswering below line up on identity.
-  const messages = useMemo(() => transcript?.messages ?? [], [transcript])
+  const rawMessages = useMemo(() => transcript?.messages ?? [], [transcript])
+  // A STILL-RUNNING background call (a shell, a Monitor) leaves the transcript and is counted in the ops
+  // line over the prompt box instead — the drawer's rule (ChatView presentationMessages), which this card
+  // broke until 2026-10-09 by drawing the same call as a tool card here AND counting it there. The shells
+  // the ops line counts are read off the RAW transcript, before they are taken out. Index-preserving, so
+  // every global index below still addresses server truth.
+  const liveTranscriptShells = useMemo(() => transcriptBackgroundShells(rawMessages), [rawMessages])
+  const messages = useMemo(() => withoutLiveTranscriptBackgroundTools(rawMessages), [rawMessages])
+  // A RUNNING thread can hold a card (one with an open question keeps working), and it reads as the
+  // drawer reads it: the Working… line with its live tool run at the tail, that run out of history, and
+  // no awaiting fence in the window, since a spinning thread is not resting on anything.
+  const running = thread.runtime === "running" || thread.runtime === "spawning"
+  const projectDir = useProjectDir()
   // THE LAST THING THE AGENT SAID, for the same reason the thread view computes it: any ```awaiting fence
   // above it states a wait that has already resolved, and draws nothing at all. Hoisted to the top of the
   // component because the collapse walk below needs it too, and a settled fence-only message renders
   // nothing — so the walk has to skip it rather than spend a step on an empty slot.
   const lastAgentIdx = useMemo(() => lastAssistantIndex(messages), [messages])
-  const liveTranscriptShells = useMemo(() => transcriptBackgroundShells(messages), [messages])
-  const isStaleAwaiting = (idx: number) => lastAgentIdx >= 0 && idx < lastAgentIdx
+  const awaitingCut = running ? messages.length : lastAgentIdx
+  const isStaleAwaiting = (idx: number) => awaitingCut >= 0 && idx < awaitingCut
   // …and the LAST message's fence draws nothing either while the resting banner below states it (the
   // banner opens on that fence's body). Message takes the two reasons as separate props, and so do the
   // emptiness predicates: a settled fence that handed the human steps keeps its card, a stated one does not.
@@ -941,7 +953,9 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
     // the agent's final rest: three "runs" put the run the agent signed off in into the MIDDLE, and
     // collapseMiddleRuns swallowed the whole sign-off behind "1 more round" (maintainer 2026-10-02, lando
     // `we-ve-got-to-start-working`: a Monitor left `pending` two days earlier hid a 5,163-char write-up).
-    // Skipped here, it renders on the ordinary path at the foot of the card, exactly where it sat before.
+    // Skipped here. While it is still running it draws nothing on the card at all — the ops line over the
+    // prompt box counts it (withoutLiveTranscriptBackgroundTools) — and once it settles it renders on the
+    // ordinary path at the foot of the card, where the server put it.
     if (m.pinnedFromSourceId) return { skip: true }
     // THE REST DIVIDER: dropped by the render loop outright, expanded or not (see below) — the card's own
     // premise, so it may not anchor a run's opening or closing prose and may not count as a hidden step,
@@ -1028,6 +1042,15 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
     () => coalesceToolActivityMessages(visible).map((entry) => ({ ...entry, messageIndex: entry.messageIndex + visibleStart })),
     [visible, visibleStart],
   )
+  // While the thread runs, its live tool run is the Working… line's, not history's (ChatView).
+  const activityVisible = useMemo(
+    () => (running ? historicalToolActivityMessages(coalescedVisible) : coalescedVisible),
+    [coalescedVisible, running],
+  )
+  const liveToolRun = running ? liveToolActivityRun(coalescedVisible) : undefined
+  const liveToolActivity = running ? liveToolActivityTail(coalescedVisible) : undefined
+  const liveActivityLabel = liveToolActivity ? toolActivityLabel(liveToolActivity, projectDir) : undefined
+  const liveRuntimeStart = running ? liveRuntimeStartedAt(coalescedVisible) : undefined
   // WHERE EACH OPEN QUESTION SITS: at the newest rest that CLAIMS it — the rest that asked it, or a later
   // one whose ```awaiting fence names it under `questions:` (lib/questionAnchor) — keyed by index into the
   // FULL message list (the loop below carries that index as `globalIdx`). `tail` is the ordinary case —
@@ -1256,15 +1279,13 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
   // the memoized value below never churns and context consumers don't re-render each frame.
   const dismissThisCard = useCallback(() => onResolve(thread.id), [onResolve, thread.id])
   const cancelThisCard = useCallback(() => onUnresolve(thread.id), [onUnresolve, thread.id])
-  // What the drawer's runtime-status ladder needs to pick this card's tail (ChatView runtimeStatusRung).
-  // `showWorking` is false: a queue card is a triage surface for a REST, and the live Working… rung is
-  // drawn from a tool tail and a run clock only the drawer computes — a thread that starts working while
-  // it holds a card is one hover from its drawer. `errorVisible` reads the window this card draws, where
-  // a provider-error row survives the fold (lib/queueCollapse), so the card and that row never double up.
+  // What the drawer's runtime-status ladder needs to pick this card's tail (ChatView runtimeStatusRung),
+  // Working… rung included. `errorVisible` reads the window this card draws, where a provider-error row
+  // survives the fold (lib/queueCollapse), so the card and that row never double up.
   const lastAgentText = lastAgentIdx >= 0 ? messages[lastAgentIdx]?.text : undefined
   const queueStatus: RuntimeStatusState = {
     thread,
-    showWorking: false,
+    showWorking: running,
     registeredDone: showsRegisteredDoneCard(thread, lastAgentText),
     restedCard: showsRestedCard(thread, lastAgentText, questionsHere),
     errorVisible: providerErrorVisible(visible, thread.providerError),
@@ -1411,6 +1432,9 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
           bigger gap for the prompt box under it. At the standard pb-5 the button floated midway and read
           as an appendage of the prompt box instead. */}
       <div className={`px-5 pt-5 ${showSendAnswers ? "pb-2" : "pb-5"}`}>
+        {q.transportFallback && (
+          <TranscriptSyncFallbackBanner fallback={q.transportFallback} isFetching={q.isFetching} onRefresh={() => void q.refetch()} onRetryLive={q.retryLiveUpdates} className="mb-3.5" />
+        )}
         {messages.length === 0 ? (
           <p className="text-[13px] text-muted">{q.isLoading ? "Loading…" : thread.statusText || "No message yet."}</p>
         ) : (
@@ -1484,7 +1508,7 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
               // against the work it caused. The pinned ask and loaded-earlier history render in full.
               const barEmitted = new Set<number>()
               let middleEmitted = false
-              coalescedVisible.forEach(({ message: m, messageIndex: globalIdx }, i) => {
+              activityVisible.forEach(({ message: m, messageIndex: globalIdx }, i) => {
                 if (m.queued) return
                 if (messageRendersNothing(m, ...hidesAwaiting(globalIdx))) return
                 // "Agent rested" is the queue card's own PREMISE, not news: every card here is a rested
@@ -1692,15 +1716,15 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
                 (maintainer 2026-08-28). */}
             {queueRung !== null && (
               <>
-                <VSpace />
+                <VSpace h={runtimeStatusGapFor(queueStatus, activityVisible.map((entry) => entry.message))} />
                 <RuntimeStatusLadder
                   state={queueStatus}
                   slug={thread.id}
                   retryText={lastAskIdx >= 0 ? messages[lastAskIdx]?.text : undefined}
                   onTerminal={copyTerminalCommand}
-                  liveRuntimeStart={undefined}
-                  liveActivityLabel={undefined}
-                  liveToolRun={undefined}
+                  liveRuntimeStart={liveRuntimeStart}
+                  liveActivityLabel={liveActivityLabel}
+                  liveToolRun={liveToolRun}
                   // The resting card's snooze and its steps reply leave the queue optimistically, and
                   // come back if the server declines — the queue's one addition to the ladder.
                   onRestingExit={dismissThisCard}

@@ -193,11 +193,15 @@ test("the collapsed intermediate run is a hairline divider that names its tool c
       [],
       "…and nothing escapes as a batched activity band either",
     )
+    // The FINISHED launch is history the fold counts; the two still RUNNING leave the transcript for the
+    // ops line over the prompt box, as they do in the drawer (2026-10-09) — so the fold counts 6, not 8.
     assert.equal(
       await page.$eval(SEL, (n) => (n as HTMLElement).innerText.replace(/\s+/g, " ").trim()),
-      "8 tool calls · Click to expand",
-      "every launch is counted by the divider instead",
+      "6 tool calls · Click to expand",
+      "every finished call is counted by the divider instead",
     )
+    // (The ops line's count of them is pinned by the pinned-op test below: these fixture records carry no
+    // `at`, which the transcript's shell reader requires, so they cannot be counted here.)
 
     // ---- 6. sub-agent dispatches get exactly the same treatment ----
     await page.goto(variant("dispatches"), { waitUntil: "networkidle0" })
@@ -217,8 +221,9 @@ test("the collapsed intermediate run is a hairline divider that names its tool c
     // A codex long-poll gate emits `wait`/`write_stdin` calls the projector cannot pair with a launch, so
     // each reaches the client pending + `backgroundState: "unknown"` — which used to buy it a dedicated
     // card. A real rollout produced 888 of them, and the queue card was a wall of `Wait · cell 30 ·
-    // unknown` rows counting up forever (maintainer 2026-08-09). Everything in the run folds now, polls
-    // and the genuinely detached shell alike, so the count is the whole assertion.
+    // unknown` rows counting up forever (maintainer 2026-08-09). The polls fold now, so the count is the
+    // whole assertion. The one genuinely detached shell is still RUNNING, so it leaves the transcript for
+    // the ops line, as in the drawer (2026-10-09), and the fold counts 12 rather than 13.
     await page.goto(variant("codexpolls"), { waitUntil: "networkidle0" })
     await page.waitForSelector(SEL, { timeout: 10_000 })
     assert.deepEqual(
@@ -228,7 +233,7 @@ test("the collapsed intermediate run is a hairline divider that names its tool c
     )
     assert.equal(
       await page.$eval(SEL, (n) => (n as HTMLElement).innerText.replace(/\s+/g, " ").trim()),
-      "13 tool calls · Click to expand",
+      "12 tool calls · Click to expand",
       "the ten polls are counted by the divider rather than drawn",
     )
 
@@ -498,9 +503,13 @@ test("a pinned background op after the final rest does not push the sign-off int
     const card = await page.evaluate(() => document.body.innerText)
     assert.match(card, /Jest and the docs site are committed/, "the first run's rest")
     assert.match(card, /Everything is done in five commits/, "the sign-off the agent rested on renders in full")
-    // The pin still draws, at the foot of the card where the server put it.
+    // The pin is a STILL-RUNNING background call, so it leaves the transcript and is counted in the ops
+    // line over the prompt box instead — the drawer's rule, which the card follows since 2026-10-09. It
+    // drew as the card's last row until then, the same call shown twice.
     const order = await page.$$eval("[data-transcript-source-id]", (ns) => ns.map((n) => n.getAttribute("data-transcript-source-id")))
-    assert.equal(order.at(-1), "pinned-bg:demo", `the pinned card renders last, got ${order.join(", ")}`)
+    assert.ok(!order.includes("pinned-bg:demo"), `the pinned call leaves the transcript, got ${order.join(", ")}`)
+    const ops = await page.$eval("[data-queue-ops-summary]", (n) => (n as HTMLElement).innerText.replace(/\s+/g, " ").trim())
+    assert.match(ops, /\b1 shell\b/, `the ops line counts it, got ${ops}`)
 
     assert.deepEqual(errors, [])
   } finally {

@@ -480,36 +480,7 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
           things the human still owes an answer to, and neither may scroll out of reach. */}
       <RegisteredQuestionStack thread={thread} inFlight={inFlightAnswers} className="px-6 pt-5" />
       {q.transportFallback && (
-        <div
-          data-transcript-sync-fallback
-          className={`mx-6 mt-3 flex flex-wrap items-center gap-2.5 ${BLOCK_RADIUS} border border-border-strong bg-panel-2 px-4 py-2.5 text-[12px]`}
-          title={q.transportFallback.kind === "payload-too-large"
-            ? `Live payload ${q.transportFallback.actualBytes} bytes; socket limit ${q.transportFallback.maxBytes} bytes`
-            : `Transcript read budget reached (${q.transportFallback.scope}); retry after about ${q.transportFallback.retryAfterMs}ms`}
-        >
-          <AlertTriangle size={13} className="shrink-0 text-muted" />
-          <div className="min-w-[180px] flex-1 leading-snug text-fg/85">
-            <span className="font-medium">Live transcript updates paused.</span>{" "}
-            {q.transportFallback.kind === "payload-too-large"
-              ? "The transcript is too large for push; it refreshes over HTTP each time the thread moves."
-              : "The live read budget was reached; the last complete copy remains visible. Retry in a moment."}
-          </div>
-          <button
-            type="button"
-            disabled={q.isFetching}
-            onClick={() => void q.refetch()}
-            className="shrink-0 rounded-md border border-border px-2 py-1 text-[11px] text-fg/90 transition-colors hover:bg-panel disabled:opacity-40"
-          >
-            {q.isFetching ? "Refreshing…" : "Refresh once"}
-          </button>
-          <button
-            type="button"
-            onClick={q.retryLiveUpdates}
-            className="shrink-0 rounded-md border border-border px-2 py-1 text-[11px] text-fg/90 transition-colors hover:bg-panel"
-          >
-            Retry live
-          </button>
-        </div>
+        <TranscriptSyncFallbackBanner fallback={q.transportFallback} isFetching={q.isFetching} onRefresh={() => void q.refetch()} onRetryLive={q.retryLiveUpdates} className="mx-6 mt-3" />
       )}
       {/* No flex GAP: between-message spacing is adjacency-based explicit spacers (two tool-only
           messages → the tight 6px run; anything involving prose/a bubble/an event → STEP 14px), so a
@@ -706,6 +677,42 @@ const DEBUG_SCROLL = (() => {
 })()
 
 type TranscriptTransportFallback = ReturnType<typeof useTranscript>["transportFallback"]
+
+// LIVE UPDATES PAUSED — the transcript fell back from push to HTTP, so what is on screen may lag. ONE
+// banner for every surface that draws a transcript: the drawer's two paths and the queue card, which drew
+// none until 2026-10-09 and so went quietly stale with no way to refresh (maintainer: "Queue card gets
+// the 'Live transcript updates paused' banner"). `className` is the caller's placement.
+export function TranscriptSyncFallbackBanner({ fallback, isFetching, onRefresh, onRetryLive, className = "" }: {
+  fallback: NonNullable<TranscriptTransportFallback>
+  isFetching: boolean
+  onRefresh: () => void
+  onRetryLive: () => void
+  className?: string
+}) {
+  return (
+    <div
+      data-transcript-sync-fallback
+      className={`flex flex-wrap items-center gap-2.5 ${BLOCK_RADIUS} border border-border-strong bg-panel-2 px-4 py-2.5 text-[12px] ${className}`}
+      title={fallback.kind === "payload-too-large"
+        ? `Live payload ${fallback.actualBytes} bytes; socket limit ${fallback.maxBytes} bytes`
+        : `Transcript read budget reached (${fallback.scope}); retry after about ${fallback.retryAfterMs}ms`}
+    >
+      <AlertTriangle size={13} className="shrink-0 text-muted" />
+      <div className="min-w-[180px] flex-1 leading-snug text-fg/85">
+        <span className="font-medium">Live transcript updates paused.</span>{" "}
+        {fallback.kind === "payload-too-large"
+          ? "The transcript is too large for push; it refreshes over HTTP each time the thread moves."
+          : "The live read budget was reached; the last complete copy remains visible. Retry in a moment."}
+      </div>
+      <button type="button" disabled={isFetching} onClick={onRefresh} className="shrink-0 rounded-md border border-border px-2 py-1 text-[11px] text-fg/90 transition-colors hover:bg-panel disabled:opacity-40">
+        {isFetching ? "Refreshing…" : "Refresh once"}
+      </button>
+      <button type="button" onClick={onRetryLive} className="shrink-0 rounded-md border border-border px-2 py-1 text-[11px] text-fg/90 transition-colors hover:bg-panel">
+        Retry live
+      </button>
+    </div>
+  )
+}
 type VirtualThreadRow =
   // A zero-height sentinel that is ALWAYS row 0, so `getItemKey(0)` is a constant for the list's whole
   // life. That is load-bearing, not decoration — see the head-trim realignment below, which is only
@@ -807,7 +814,7 @@ export function runtimeStatusRung({ thread, showWorking, registeredDone, restedC
 
 /** The SPACE above the slot. Only the Working… rung is a quiet meta line rather than a card, so only it
  *  joins the tight run under a meta tail; every card rung keeps STEP. */
-function runtimeStatusGapFor(state: RuntimeStatusState, messages: readonly ChatMessage[]): number {
+export function runtimeStatusGapFor(state: RuntimeStatusState, messages: readonly ChatMessage[]): number {
   return runtimeStatusRung(state) === "working" ? workingIndicatorGap(messages) : STEP
 }
 
@@ -1560,27 +1567,11 @@ function VirtualizedThreadTranscript({
             : row.kind === "settled-questions" ? (
               <SettledQuestionStack questions={row.questions} className="px-6 pt-5" />
             ) : row.kind === "transport-fallback" ? (
-              transportFallback ? <div className="px-6 pt-3"><div
-                data-transcript-sync-fallback
-                className={`flex flex-wrap items-center gap-2.5 ${BLOCK_RADIUS} border border-border-strong bg-panel-2 px-4 py-2.5 text-[12px]`}
-                title={transportFallback.kind === "payload-too-large"
-                  ? `Live payload ${transportFallback.actualBytes} bytes; socket limit ${transportFallback.maxBytes} bytes`
-                  : `Transcript read budget reached (${transportFallback.scope}); retry after about ${transportFallback.retryAfterMs}ms`}
-              >
-                <AlertTriangle size={13} className="shrink-0 text-muted" />
-                <div className="min-w-[180px] flex-1 leading-snug text-fg/85">
-                  <span className="font-medium">Live transcript updates paused.</span>{" "}
-                  {transportFallback.kind === "payload-too-large"
-                    ? "The transcript is too large for push; it refreshes over HTTP each time the thread moves."
-                    : "The live read budget was reached; the last complete copy remains visible. Retry in a moment."}
+              transportFallback ? (
+                <div className="px-6 pt-3">
+                  <TranscriptSyncFallbackBanner fallback={transportFallback} isFetching={isFetching} onRefresh={refresh} onRetryLive={retryLiveUpdates} />
                 </div>
-                <button type="button" disabled={isFetching} onClick={refresh} className="shrink-0 rounded-md border border-border px-2 py-1 text-[11px] text-fg/90 transition-colors hover:bg-panel disabled:opacity-40">
-                  {isFetching ? "Refreshing…" : "Refresh once"}
-                </button>
-                <button type="button" onClick={retryLiveUpdates} className="shrink-0 rounded-md border border-border px-2 py-1 text-[11px] text-fg/90 transition-colors hover:bg-panel">
-                  Retry live
-                </button>
-              </div></div> : null
+              ) : null
             ) : row.kind === "earlier-history" ? (
               <div className="flex min-h-10 items-center justify-center px-6 text-[11px] text-muted" role="status">
                 {earlierError ? (
@@ -1741,7 +1732,10 @@ export function ThreadHeader({ slug, onStatusApplied, onClose, showReturnToQueue
             doneBusy={markComplete.isPending}
             onStatusApplied={onStatusApplied}
           />
-          <ThreadLifecycleActions thread={thread} onArchived={onStatusApplied} />
+          {/* Snooze leaves the drawer the way Mark as done does — both take the thread off the reader's
+              plate, and the queue card leaves on both (maintainer 2026-10-09). The snooze left the drawer
+              open until then. */}
+          <ThreadLifecycleActions thread={thread} onArchived={onStatusApplied} onSnoozed={onStatusApplied} />
         </div>
       </div>
     </header>
