@@ -1,4 +1,4 @@
-import { ANSWER_CONTINUATION_INDENT, ANSWER_FOLLOW_UP_MARKER, BURIED_ANSWERS_HEADER, DISMISSED_ANSWER } from "@frizz/shared"
+import { ANSWER_CONTINUATION_INDENT, ANSWER_FOLLOW_UP_MARKER, ANSWER_PICK_PREFIX, BURIED_ANSWERS_HEADER, DISMISSED_ANSWER } from "@frizz/shared"
 import { splitQuestionBlocks, parseQuestionBlock, type MessageSegment } from "./questionBlocks.ts"
 
 // Detect + parse OUR OWN composed-answer format, so a user message that is a multi-block answer renders
@@ -185,6 +185,20 @@ export function parseAnswersCard(text: string): PairedAnswer[] | null {
 // server composes that as the cancellation wake, a different message.
 export function answersForDisplay(answers: readonly PairedAnswer[]): PairedAnswer[] {
   return answers.filter((a) => a.answer !== DISMISSED_ANSWER)
+}
+
+// One answer's PICKS and NOTE, as the card draws them: each `- [x] ` line the writer put first
+// (answerPicksText) is one picked option, and whatever follows the blank line is what the human typed.
+// An answer with no such lines — a single pick, free text, every answer written before 2026-10-08 — is
+// all note, and draws as the one chip it always was.
+export function splitAnswerPicks(answer: string): { picks: string[]; note: string } {
+  const lines = answer.split("\n")
+  const picks: string[] = []
+  while (picks.length < lines.length && lines[picks.length].startsWith(ANSWER_PICK_PREFIX)) {
+    picks.push(lines[picks.length].slice(ANSWER_PICK_PREFIX.length))
+  }
+  if (picks.length === 0) return { picks, note: answer }
+  return { picks, note: lines.slice(picks.length).join("\n").trim() }
 }
 
 // The minimal structural slice of a transcript message the pairing needs — role/kind/text plus the

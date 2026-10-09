@@ -1,7 +1,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { ANSWER_FOLLOW_UP_MARKER, BURIED_ANSWERS_HEADER, DISMISSED_ANSWER, questionAnswerMessage } from "@frizz/shared"
-import { answersForDisplay, parseAnswersMessage, parseBuriedAnswersMessage, parseAnswersCard, pairAnswersMessage, pairAllAnswers, unrenderedAnswers, isAnswersMessage, type MsgLike } from "./answersMessage.ts"
+import { answersForDisplay, splitAnswerPicks, parseAnswersMessage, parseBuriedAnswersMessage, parseAnswersCard, pairAnswersMessage, pairAllAnswers, unrenderedAnswers, isAnswersMessage, type MsgLike } from "./answersMessage.ts"
 import { composeAnswerWire } from "./answering.ts"
 
 test("parses the multi-block composed-answer format into numbered rows", () => {
@@ -117,6 +117,22 @@ test("a typed answer that is itself a numbered list cannot forge rows — the wr
   assert.deepEqual(parseAnswersMessage("Answers:\n1. because\nof this"), [{ n: 1, answer: "because\nof this" }])
 })
 
+test("a multi-select's picks travel one per line, and the card gets each pick and the note back apart", () => {
+  // 2026-10-08: five picks and a note went out as `A, B, C — note` and the card drew one run-on chip.
+  // A comma cannot be split back out — a label can hold one, as the second pick here does.
+  const wire = questionAnswerMessage([
+    { questionId: "qst_a", question: "Which gates?", chosen: ["lint", "tests, unit and e2e"], text: "skip the flaky one\n1. really" },
+    { questionId: "qst_b", question: "Ship it?", chosen: ["Yes"] },
+  ])
+  assert.equal(wire, `${BURIED_ANSWERS_HEADER}\n1. “Which gates?” → - [x] lint\n  - [x] tests, unit and e2e\n  \n  skip the flaky one\n  1. really\n2. “Ship it?” → Yes`)
+  const [multi, single] = parseAnswersCard(wire)!
+  assert.deepEqual(splitAnswerPicks(multi.answer), { picks: ["lint", "tests, unit and e2e"], note: "skip the flaky one\n1. really" })
+  // A lone pick stays the bare label it always was, and so does every answer written before the change.
+  assert.deepEqual(splitAnswerPicks(single.answer), { picks: [], note: "Yes" })
+  assert.deepEqual(splitAnswerPicks("lint, tests — skip it"), { picks: [], note: "lint, tests — skip it" })
+  assert.deepEqual(splitAnswerPicks(parseAnswersCard(questionAnswerMessage([{ questionId: "q", question: "Q?", chosen: ["a", "b"] }]))![0].answer), { picks: ["a", "b"], note: "" })
+})
+
 test("a question that spans lines still closes at its quote-arrow — the registered path restates it verbatim", () => {
   // 2026-09-23: a registered question walked the human through adding an SSH key and carried the key
   // on its own line, so the row spanned five lines. The single-line row pattern missed it and the whole
@@ -128,7 +144,7 @@ test("a question that spans lines still closes at its quote-arrow — the regist
   ])
   assert.deepEqual(parseAnswersCard(wire), [
     { n: 1, answer: "Yes, added", question },
-    { n: 2, answer: "No — later", question: "And restart?" },
+    { n: 2, answer: "- [x] No\n\nlater", question: "And restart?" },
   ])
   assert.equal(isAnswersMessage({ role: "user", kind: "wake", text: wire }), true, "it is the human's turn, not frizz's card")
 })
@@ -169,7 +185,7 @@ test("the SERVER's composed answer round-trips through this reader — the one t
     },
   ], [{ question: "Ship the banner this week?" }])
   assert.deepEqual(parseAnswersCard(wire), [
-    { n: 1, answer: "SQLite — and vacuum on boot", question: "SQLite or a JSON file?" },
+    { n: 1, answer: "- [x] SQLite\n\nand vacuum on boot", question: "SQLite or a JSON file?" },
     { n: 2, answer: "Yes, at boot", question: "Migrate the existing rows?", followUp: true },
     { n: 3, answer: DISMISSED_ANSWER, question: "Ship the banner this week?" },
   ])

@@ -2797,6 +2797,22 @@ export const ANSWER_FOLLOW_UP_MARKER = "⤷"
 export const ANSWER_CONTINUATION_INDENT = "  "
 export const indentAnswerContinuation = (text: string): string => text.replace(/\n/g, `\n${ANSWER_CONTINUATION_INDENT}`)
 
+/** ONE PICKED OPTION PER LINE, as a checked task-list item, when an answer carries several picks or a
+ *  pick and a note. They were joined onto one line until 2026-10-08 (`A, B, C — note`), which the
+ *  Answers card could only print as a run-on paragraph — five long labels and the human's note fused
+ *  into one wall of text, with nothing saying where a label ended (maintainer: "the answers block to a
+ *  multiple selection question look like shit"). A comma cannot be split back out, since a label can
+ *  hold one. The `- [x] ` line can: the card draws each as its own checked chip and the note below
+ *  them (the web's `splitAnswerPicks`), and the worker reads a checked list as plainly as it read the
+ *  commas. A lone pick with no note stays a bare label — a single-select's answer is exactly that. */
+export const ANSWER_PICK_PREFIX = "- [x] "
+export function answerPicksText(chosen: readonly string[], text: string | undefined): string {
+  const note = text?.trim() ?? ""
+  if (chosen.length === 0) return note
+  if (chosen.length === 1 && !note) return chosen[0]
+  return [chosen.map((label) => `${ANSWER_PICK_PREFIX}${label}`).join("\n"), note].filter(Boolean).join("\n\n")
+}
+
 /** What a DISMISSED question carries in place of an answer. One row like any other (see below), so it
  *  cannot be swallowed into the answer above it, and it tells the worker what to do with it. It is the
  *  WORKER's row only: the human's Answers card leaves it out (the web's `answersForDisplay`), because
@@ -2841,7 +2857,7 @@ export function questionAnswerMessage(answers: readonly QuestionAnswer[], dismis
   if (answers.length === 0) return questionsCancelledWakeMessage(dismissed.length)
   const rows: string[] = []
   const push = (a: QuestionAnswer, followUp: boolean): void => {
-    const said = [a.chosen.join(", "), a.text].filter(Boolean).join(" — ")
+    const said = answerPicksText(a.chosen, a.text)
     rows.push(`${followUp ? `${ANSWER_FOLLOW_UP_MARKER} ` : ""}“${a.question}” → ${indentAnswerContinuation(said || "(no answer)")}`)
     for (const child of a.followUps ?? []) push(child, true)
   }
