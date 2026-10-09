@@ -4732,6 +4732,52 @@ export function parseAgentMessage(text: string): { from: string; body: string } 
   return { from, body }
 }
 
+// ---- A MESSAGE FROM ANOTHER CLAUDE SESSION (a peer thread, not a sub-agent) ----------------------
+// What one top-level session's `SendMessage({to:"frizz-75"})` delivers into ANOTHER session — a
+// coordinator thread steering a thread it spawned, say. Claude Code writes it in two places, and both
+// carry the same wrapper:
+//
+//   • the queue enqueue, the `queued_command` attachment and the removal: the bare wrapper;
+//   • the delivery record of an idle session: the wrapper behind a fixed preamble and in front of a
+//     paragraph of handling guidance addressed to the receiving agent.
+//
+//   <cross-session-message from="uds:/tmp/cc-socks/2908.sock" from-name="frizz-11" from-mode="bypass">
+//   …the body…
+//   </cross-session-message>
+//
+// Left alone it renders as the operator's own bubble with the XML showing. `from` is the sender's
+// messaging socket, `from-name` its Claude Code session name (`<cwd basename>-<2 hex>`, which is not a
+// Frizz thread name and is not unique). The server turns the socket into the sending THREAD (see
+// session-peer.ts); this parser only takes the wrapper apart. Anchored at both ends, so prose that quotes
+// a wrapper stays prose.
+const CROSS_SESSION_PREAMBLE = /^Another Claude session sent a message(?: while you were working)?:\n/
+const CROSS_SESSION_WRAPPER = /^<cross-session-message\b([^>]*)>\n?([\s\S]*?)\n?<\/cross-session-message>/
+const CROSS_SESSION_GUIDANCE = "This came from another Claude session"
+const XML_ATTRIBUTE = /([a-z][a-z-]*)="([^"]*)"/g
+
+function decodeXmlAttribute(value: string): string {
+  return value.replace(/&quot;/g, "\"").replace(/&apos;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&")
+}
+
+export function parseCrossSessionMessage(text: string): { name?: string; socket?: string; body: string } | undefined {
+  let rest = text.trim()
+  const preamble = CROSS_SESSION_PREAMBLE.exec(rest)
+  if (preamble) rest = rest.slice(preamble[0].length)
+  const m = CROSS_SESSION_WRAPPER.exec(rest)
+  if (!m) return undefined
+  // After the wrapper: nothing, or the delivery record's guidance paragraph — never more of the human's
+  // own words, which would mean this is prose that happens to open on a quoted wrapper.
+  const after = rest.slice(m[0].length).trim()
+  if (after && !after.startsWith(CROSS_SESSION_GUIDANCE)) return undefined
+  const attributes = new Map<string, string>()
+  for (const [, key, value] of m[1].matchAll(XML_ATTRIBUTE)) attributes.set(key, decodeXmlAttribute(value).trim())
+  const body = m[2].trim()
+  if (!body) return undefined
+  const name = attributes.get("from-name") || undefined
+  const socket = attributes.get("from") || undefined
+  return { ...(name ? { name } : {}), ...(socket ? { socket } : {}), body }
+}
+
 // ---- THE PR-WATCHER WAKE STEER (scheduler ↔ chat card) -------------------------------------------
 // FORMATTER AND PARSER LIVE TOGETHER, for the same reason the token and its stripper do. The scheduler
 // composes this string and pastes it into a worker's composer; the chat then has nothing BUT that
@@ -5548,6 +5594,21 @@ export const TranscriptMessage = z.object({
   // pairing, and `projectTranscriptPeerNames` uses this id to ask it. Never a drawer key on its own —
   // that is `peerDispatchId`, which the same pass can also supply once this resolves.
   peerSenderTaskId: z.string().optional(),
+  // ANOTHER TOP-LEVEL SESSION wrote this user turn — a thread messaging this one through Claude Code's
+  // cross-session channel (see parseCrossSessionMessage), most often the coordinator thread that spawned
+  // it. Not the human, and not a sub-agent either: the body is an instruction the reader needs to see,
+  // so the chat draws it as a card with the body in it, headed by the sending thread. `displayText`
+  // carries the unwrapped body.
+  //
+  // `name` is the sender's Claude Code session name, the fallback label. `thread` is the Frizz thread
+  // behind it, filled in by the server from the sender's socket (session-peer.ts) — absent when the
+  // sender is not a Frizz thread or is gone without having been resolved, and then the card names the
+  // session without a link. `project` is the URL slug of the sender's project.
+  sessionPeer: z.object({
+    name: z.string().optional(),
+    socket: z.string().optional(),
+    thread: z.object({ project: z.string().optional(), slug: z.string(), title: z.string() }).optional(),
+  }).optional(),
   // FRIZZ REFUSED the ```awaiting fence this message ends in — it named something that is not running,
   // or named nothing at all, or used a retired line kind (see `isParkCorrection`). The fence is not a
   // park, so the chat draws nothing for it: an hourglass card with a park button asserts a wait that

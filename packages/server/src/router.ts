@@ -1472,7 +1472,7 @@ export function createRouter(ctx: AppContext) {
         // Registry row → its session's transcript; foreign slug (a session id) → resolved directly; else [].
         // backendFor routes a codex thread through the codex rollout reader (else it renders empty).
         const page = readLatestThreadTranscriptPage(ctx.project, ctx.storage, input.slug, ctx.backendFor)
-        return retireOpsInPage(input.slug, projectTranscriptPageAgentLifecycles(page, (id) => ctx.tailer.subAgent(input.slug, id), (taskId) => ctx.tailer.subAgentByTaskId?.(input.slug, taskId)))
+        return retireOpsInPage(input.slug, projectTranscriptPageAgentLifecycles(page, (id) => ctx.tailer.subAgent(input.slug, id), (taskId) => ctx.tailer.subAgentByTaskId?.(input.slug, taskId), ctx.sessionPeerThread))
       },
     }),
 
@@ -1483,7 +1483,7 @@ export function createRouter(ctx: AppContext) {
       output: TranscriptPage,
       handler: async ({ input }) => {
         const page = readEarlierThreadTranscriptPage(ctx.project, ctx.storage, input.slug, input.cursor, ctx.backendFor)
-        return retireOpsInPage(input.slug, projectTranscriptPageAgentLifecycles(page, (id) => ctx.tailer.subAgent(input.slug, id), (taskId) => ctx.tailer.subAgentByTaskId?.(input.slug, taskId)))
+        return retireOpsInPage(input.slug, projectTranscriptPageAgentLifecycles(page, (id) => ctx.tailer.subAgent(input.slug, id), (taskId) => ctx.tailer.subAgentByTaskId?.(input.slug, taskId), ctx.sessionPeerThread))
       },
     }),
 

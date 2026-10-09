@@ -46,10 +46,10 @@ export interface BubbleMessageLike {
  * `kind:"event"` or `kind:"reasoning"` row goes the same way, and for the same reason — Message tests
  * those before it looks at the role at all, and either draws a quiet line.
  *
- * Two shapes that are NOT the bubble still count as one, because the constant is about the EDGE and
+ * Three shapes that are NOT the bubble still count as one, because the constant is about the EDGE and
  * theirs is just as hard: an ANSWERS card (bordered, filled, right-justified — the human's composed
- * reply to a question block) and an ATTACHMENT-ONLY send, which skips the bubble and ends on a framed
- * picture or a row of file pills.
+ * reply to a question block), an ATTACHMENT-ONLY send, which skips the bubble and ends on a framed
+ * picture or a row of file pills, and a message from ANOTHER THREAD (`sessionPeer`), a bordered card.
  *
  * THIS MIRRORS `Message`'s BRANCH ORDER (components/ChatView.tsx) AND MUST MOVE WITH IT — a shape that
  * stops drawing a bubble, or a new one that starts, belongs in both. It is a separate function rather

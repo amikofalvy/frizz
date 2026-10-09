@@ -12,19 +12,20 @@ export function messagePresentationText(message: Pick<TranscriptMessage, "text" 
 // which the transcript also uses for machine-written turns.
 //
 // Excluded: a QUEUED/optimistic follow-up (it has not landed yet), a SUB-AGENT's upward report
-// (`peerFrom`), and a coordinator/peer instruction delivered into a CHILD (`agentInstruction`). None is
+// (`peerFrom`), a coordinator/peer instruction delivered into a CHILD (`agentInstruction`), and another
+// thread messaging this one (`sessionPeer`). None is
 // an ask or anything to retry; a fault retry would resend another agent's words as the human's.
 // -1 when the transcript holds no human turn yet.
-export function lastAskIndex(messages: readonly Pick<TranscriptMessage, "role" | "queued" | "peerFrom" | "agentInstruction">[]): number {
+export function lastAskIndex(messages: readonly Pick<TranscriptMessage, "role" | "queued" | "peerFrom" | "agentInstruction" | "sessionPeer">[]): number {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]
-    if (m.role === "user" && !m.queued && !m.peerFrom && !m.agentInstruction) return i
+    if (m.role === "user" && !m.queued && !m.peerFrom && !m.agentInstruction && !m.sessionPeer) return i
   }
   return -1
 }
 
 export type HumanTurnLike = Pick<TranscriptMessage, "role" | "text"> &
-  Partial<Pick<TranscriptMessage, "displayText" | "kind" | "queued" | "wake" | "peerFrom" | "agentInstruction">>
+  Partial<Pick<TranscriptMessage, "displayText" | "kind" | "queued" | "wake" | "peerFrom" | "agentInstruction" | "sessionPeer">>
 
 // THE MOST RECENT INTERACTION — the last turn the human themself put into the thread. The QUEUE CARD
 // opens here, so it is stricter than the ask above: the card does not merely quote this message, it
@@ -36,7 +37,7 @@ export type HumanTurnLike = Pick<TranscriptMessage, "role" | "text"> &
 // 2026-08-12: "queue cards STILL need to go all the way back to the last user message. that's important
 // context that needs to be surfaced"). A `peerFrom` record is a SUB-AGENT reporting up, which is the
 // same defect with a different writer. An `agentInstruction` is a coordinator/peer speaking into a
-// CHILD, not the operator speaking here. A QUEUED send has not been delivered, so nothing after it is a
+// CHILD, not the operator speaking here, and a `sessionPeer` is another thread messaging this one. A QUEUED send has not been delivered, so nothing after it is a
 // reply to it.
 //
 // …EXCEPT THE ONE TURN FRIZZ DELIVERS THAT THE HUMAN WROTE: the answer to a REGISTERED question
@@ -51,7 +52,7 @@ export type HumanTurnLike = Pick<TranscriptMessage, "role" | "text"> &
 export function lastHumanTurnIndex(messages: readonly HumanTurnLike[]): number {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]
-    if (m.role !== "user" || m.queued || m.peerFrom || m.agentInstruction) continue
+    if (m.role !== "user" || m.queued || m.peerFrom || m.agentInstruction || m.sessionPeer) continue
     if (m.wake && !isAnswersMessage(m)) continue
     return i
   }

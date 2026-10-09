@@ -5,7 +5,7 @@ import { promisify } from "node:util"
 import { basename, join, win32 } from "node:path"
 import { homedir, tmpdir } from "node:os"
 import type { AskQuestion, AwaitingHint, CodexModel, LiveTool } from "@frizz/shared"
-import { insideFence, isAllInjectedNoise, isInterruptMarker, parseAskUserQuestionInput, PermissionMode, questionFencesLive, saysAllDone, splitAwaitingFrontmatter } from "@frizz/shared"
+import { insideFence, isAllInjectedNoise, isInterruptMarker, parseAskUserQuestionInput, parseCrossSessionMessage, PermissionMode, questionFencesLive, saysAllDone, splitAwaitingFrontmatter } from "@frizz/shared"
 import type { Bus } from "./bus.ts"
 import { permMarkerPath, type Project } from "./project.ts"
 import { isBrokerClaudeRow, isHeadlessRow } from "./storage.ts"
@@ -2736,6 +2736,10 @@ export interface TailerDeps {
   // thread's rendered transcript may have changed. The /ws transcript producer uses it to push updates
   // to subscribed clients (replacing the client's 1.5s poll). Optional: unset = no transcript push.
   onTranscriptChange?: (slugs: string[]) => void
+  // A message from ANOTHER Claude session landed in one of this project's threads. Called on the
+  // record the moment it is tailed, while the sender is still running — the only time its socket can
+  // be traced to a thread (see session-peer.ts). Optional: unset = resolved only when a reader asks.
+  onCrossSessionMessage?: (peer: { socket?: string; name?: string }) => void
   now?: () => number // injectable clock (tests)
   // Injectable MONOTONIC clock, distinct from `now` because it measures ELAPSED work rather than
   // naming an instant — it is what PRIME_BUDGET_MS is spent against. Defaults to `performance.now`.
@@ -4282,6 +4286,23 @@ export function createTailer(deps: TailerDeps): Tailer {
   // The delivery-ledger fold and the codex sub-agent tracker were mutually exclusive while the ledger
   // was claude-only; a codex row now runs BOTH, so the single per-line hook `consume` accepts has to
   // carry them together. Returns undefined when neither applies, so the common path is unchanged.
+  // The enqueue is the first record either delivery shape writes (session-peer.ts), so it is the one
+  // watched; the substring test keeps every other line to one `includes`.
+  const crossSessionOnLine = deps.onCrossSessionMessage
+    ? (line: string) => {
+        if (!line.includes("cross-session-message")) return
+        let rec: { type?: unknown; operation?: unknown; content?: unknown }
+        try {
+          rec = JSON.parse(line)
+        } catch {
+          return
+        }
+        if (rec.type !== "queue-operation" || rec.operation !== "enqueue" || typeof rec.content !== "string") return
+        const peer = parseCrossSessionMessage(rec.content)
+        if (peer) deps.onCrossSessionMessage!(peer)
+      }
+    : undefined
+
   function chainOnLine(
     a: ((line: string) => void) | undefined,
     b: ((line: string) => void) | undefined,
@@ -5128,7 +5149,7 @@ export function createTailer(deps: TailerDeps): Tailer {
       const rowLedger = row.delivery_ledger ?? null
       const ledgerDrifted = rowLedger !== (state.deliveryLedgerSeen ?? null) // a router write with no JSONL advance
       const ledger = ledgerFold(row, nowMs, state)
-      consume(state, backend, chainOnLine(ledger.onLine, codexSubAgentOnLine(row, state)))
+      consume(state, backend, chainOnLine(chainOnLine(ledger.onLine, codexSubAgentOnLine(row, state)), crossSessionOnLine))
       // Child rollouts advance on their OWN clock, so poll every tick — not only when the parent
       // appended. This is what flips a finished codex child out of the live set (and, once every
       // child is done, releases the thread from Active into the queue).

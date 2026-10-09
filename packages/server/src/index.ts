@@ -608,7 +608,7 @@ export async function startServer(opts: StartOptions = {}): Promise<StartedServe
   // What every context answers "which projects are open here" with — the map below, read lazily so
   // the launching project's own context (built before the map is populated) sees the same live list.
   const activeTenants: NonNullable<AppContext["activeTenants"]> = () =>
-    tenants.active().map(({ project: open, ctx: openCtx }) => ({ project: open, board: openCtx.board }))
+    tenants.active().map(({ project: open, ctx: openCtx }) => ({ project: open, board: openCtx.board, storage: openCtx.storage }))
   /**
    * Take one project apart while the rest keep serving — the resource half of deleting a project.
    *
@@ -700,6 +700,7 @@ export async function startServer(opts: StartOptions = {}): Promise<StartedServe
       // The /ws producer is the one the live UI actually renders, so a dead owner has to reach it
       // too — projecting only the RPC is the exact half-fix the × already had to correct once.
       (slug) => c.tailer.ownerGone?.(slug) ?? false,
+      c.sessionPeerThread,
     ),
     // A reader's live watch on the file it shows. Gated as the read is (one set of openable roots for
     // both readers, plus the Markdown reader's canonical-extension check) and watched by CANONICAL

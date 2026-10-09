@@ -7,9 +7,12 @@ import {
   type DispatchPreferences,
   type SetDispatchPreferenceInput,
   type Settings,
+  type TranscriptMessage,
   acpModelIdFromModel,
 } from "@frizz/shared"
 import { Bus, Emitter } from "./bus.ts"
+import { frizzRoots } from "./frizz-paths.ts"
+import { findById as findProjectById } from "./project-registry.ts"
 import { resolveProject, permRequestDir, type Project } from "./project.ts"
 import { createStorage, isBrokerClaudeRow, isHeadlessRow, type Storage } from "./storage.ts"
 import { clearSecrets } from "./secret-files.ts"
@@ -18,7 +21,8 @@ import { getSettings, setSettings, resetSettings } from "./settings.ts"
 import { getDispatchPreferences, setDispatchPreference } from "./dispatch-preferences.ts"
 import { readQuota } from "./quota.ts"
 import { refreshClaudeQuotaInBackground } from "./backend/claude-quota.ts"
-import { createBoard, type BoardManager } from "./board.ts"
+import { createBoard, resolveSessionTitle, type BoardManager } from "./board.ts"
+import { createSessionPeerResolver, type SessionPeerThread } from "./session-peer.ts"
 import { createTailer, defaultLogDir, type Tailer } from "./tailer.ts"
 import { createDispatcher, loadWorkerPrompt, scratchpadOrientation, frizzConfigBlock, claudeMcpConfig, resolveFrizzMcp, workerPluginDir, coldResumePermission, type Dispatcher, type FrizzMcpTarget } from "./dispatch.ts"
 import { createScheduler, type Scheduler, probeIssueReadable, probePrReadable, type PrRef, type PrProbe } from "./scheduler.ts"
@@ -190,7 +194,13 @@ export interface AppContext {
    * project nobody has opened has no honest count, and this deliberately does not activate one to get
    * it. Absent under a test context or a one-project server, which read as "only this project".
    */
-  activeTenants?: () => ReadonlyArray<{ project: Project; board: BoardManager }>
+  activeTenants?: () => ReadonlyArray<{ project: Project; board: BoardManager; storage?: Storage }>
+  /**
+   * The Frizz thread that sent a cross-session message into one of THIS project's threads, for the
+   * chat card that heads the message (see session-peer.ts). Absent under a test context, and then the
+   * card names the sender's session without a link.
+   */
+  sessionPeerThread?: (peer: NonNullable<TranscriptMessage["sessionPeer"]>) => SessionPeerThread | undefined
   /**
    * Take ONE project apart while every other project keeps serving — the resource half of deleting a
    * project (router `projectRemove`). The registry half is a machine-level index file the router
@@ -871,10 +881,34 @@ function createContextUnchecked(opts: ContextOptions, resources: PartialContextR
   // here was the source of multi-second RPC stalls). Late-bound `board` breaks the cycle.
   // It ALSO reports, per tick, which sessions' JSONL advanced → fanned out on transcriptChange so the
   // /ws transcript producer can push (no board dependency; the two signals are independent).
+  // The thread behind a cross-session message's sender socket (session-peer.ts), searched across every
+  // project this process has open — a coordinator in one repo can steer a thread in another.
+  const sessionPeerResolver = createSessionPeerResolver({
+    findThread: (sessionId) => {
+      // This project first and always: the launching project's context is built before the tenant map
+      // holds anything, so the map alone would not list it.
+      const open = [{ project, storage }, ...(opts.activeTenants?.() ?? []).filter((t) => t.project.id !== project.id)]
+      for (const tenant of open) {
+        const rows = tenant.storage?.allSessions() ?? []
+        const row = rows.find((r) => r.session_id === sessionId || r.agent_session_id === sessionId || r.transcript_id === sessionId)
+        if (!row) continue
+        const shown = resolveSessionTitle(row, undefined)
+        return {
+          projectId: tenant.project.id,
+          project: findProjectById(tenant.project.id, home)?.slug,
+          slug: row.slug,
+          title: shown.aiTitle || shown.title || row.slug,
+        }
+      }
+      return undefined
+    },
+    memoryFile: join(frizzRoots().state, "session-peers.json"),
+  })
   const tailer = createTailer({
     project,
     storage,
     bus,
+    onCrossSessionMessage: (peer) => void sessionPeerResolver(peer, project.id),
     backendFor,
     codexModels: () => readCodexModels(undefined, opts.codexVersion),
     onChange: () => board.refresh(),
@@ -1099,6 +1133,7 @@ function createContextUnchecked(opts: ContextOptions, resources: PartialContextR
     setDispatchPreference: (update, codexModels) =>
       setDispatchPreference(storage, getSettings(storage, home), home, update, codexModels),
     activeTenants: opts.activeTenants,
+    sessionPeerThread: (peer) => sessionPeerResolver(peer, project.id),
     teardownProject: opts.teardownProject,
     launchProjectId: opts.launchProjectId,
     claudeBin: opts.claudeBin,
