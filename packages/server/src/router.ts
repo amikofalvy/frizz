@@ -164,6 +164,7 @@ import { readCodexModels } from "./backend/codex-models.ts"
 import { peekClaudeModels, readClaudeModels } from "./backend/claude-models.ts"
 import { claudeModelStanding, claudeModelUpgradeBlock, claudeModelUpgradeDue, claudeModelUpgradeRefusal, claudeUpgradeCandidate, SERVER_STARTED_AT_MS } from "./backend/claude-model-upgrade.ts"
 import { log as frizzLog } from "./logging.ts"
+import { audited, textDigest, type AuditAction, type AuditFields } from "./audit.ts"
 import { codexSandbox } from "./backend/codex.ts"
 import type { CodexSandboxMode } from "./backend/codex-app-server.ts"
 import { readQuota } from "./quota.ts"
@@ -702,6 +703,11 @@ export function addProjectAtPath(input: string, home = homedir()): ProjectCard {
   return projectCard(registered.entry, false)
 }
 
+/** The audit fields for a project the add or the pick registered: the card names the real root. */
+function addedProject(card: ProjectCard): AuditFields {
+  return { project: { id: card.id, dir: card.path } }
+}
+
 /**
  * Store an icon's BYTES for a project, whatever chose them.
  *
@@ -800,6 +806,17 @@ export function createRouter(ctx: AppContext) {
   // Roots for the file-OPEN action + the inline-code path classifier (see openableFileRoots): shared so
   // a path the resolver blesses is exactly a path the open action will accept.
   const openRoots = openableFileRoots(ctx.project)
+
+  // THE AUDIT TRAIL (audit.ts): every procedure that adds or removes a project, starts a worker, or
+  // puts words in front of one records who asked — through this, so each records the same way. This
+  // project is the one whose board answered; an add or a remove names the project it acted on instead.
+  const thisProject = { id: ctx.project.id, dir: ctx.project.dir }
+  const audit = <T>(
+    action: AuditAction,
+    base: AuditFields | (() => AuditFields),
+    run: () => T | Promise<T>,
+    onResult?: (result: T) => AuditFields,
+  ): Promise<T> => audited(ctx.audit, action, base, run, { onResult, servedBy: ctx.project.id })
 
   // An auto-titled registry row is session-first authority. A same-slug `.frizz/<slug>.md` may have
   // been planted independently and is never a readable or writable extension of that session.
@@ -965,6 +982,20 @@ export function createRouter(ctx: AppContext) {
       return parsed.success ? parsed.data : undefined
     } catch {
       return undefined
+    }
+  }
+
+  // One answer as the audit trail records it (audit.ts): what was chosen and typed, as digests. A
+  // SECRET's value is not recorded at all, not even hashed — a short credential's SHA-256 would only
+  // hand whoever reads the log something to brute-force.
+  function answerDigest(slug: string, answer: AnswerQuestionsInput["answers"][number]): Record<string, unknown> {
+    const q = ctx.storage.getThreadQuestion(answer.questionId)
+    if (q?.thread_slug === slug && parseQuestionSpec(q.spec)?.secret) return { questionId: answer.questionId, secret: true }
+    return {
+      questionId: answer.questionId,
+      ...(answer.chosen.length > 0 ? { chosen: textDigest(answer.chosen.join("\n")) } : {}),
+      ...(answer.text ? { text: textDigest(answer.text) } : {}),
+      ...(answer.followUps?.length ? { followUps: answer.followUps.length } : {}),
     }
   }
 
@@ -1534,36 +1565,47 @@ export function createRouter(ctx: AppContext) {
     interactionResolve: mutation({
       input: ResolveInteractionInput,
       output: ResolveInteractionResult,
-      handler: async ({ input }) => {
-        const scope = interactionScope(input.slug, input.sessionId)
-        const delivery = ctx.interactions.providerDelivery(scope, input.interactionId)
-        let result
-        if (delivery) {
-          if (!ctx.codexAppServer || !ctx.codexAppServer.ownsInteraction(scope, input.interactionId)) {
-            throw new Error("provider-backed interaction is unavailable until its provider bridge reconnects")
+      handler: ({ input }) => audit(
+        "interactionResolve",
+        {
+          project: thisProject,
+          thread: input.slug,
+          // The decision the operator picked and how many values rode with it — never the values, which
+          // can be a secret the interaction asked for.
+          detail: { interactionId: input.interactionId, decisionId: input.decisionId, values: Object.keys(input.values ?? {}).length },
+        },
+        async () => {
+          const scope = interactionScope(input.slug, input.sessionId)
+          const delivery = ctx.interactions.providerDelivery(scope, input.interactionId)
+          let result
+          if (delivery) {
+            if (!ctx.codexAppServer || !ctx.codexAppServer.ownsInteraction(scope, input.interactionId)) {
+              throw new Error("provider-backed interaction is unavailable until its provider bridge reconnects")
+            }
+            const providerResult = await ctx.codexAppServer.resolveInteraction(scope, input)
+            if (!providerResult) throw new Error("provider-backed interaction lost its durable delivery owner")
+            result = {
+              effect: providerResult.effect === "already-sent" ? "already-queued" as const : providerResult.effect,
+              interaction: providerResult.interaction,
+            }
+          } else {
+            result = ctx.interactions.resolve(scope, input)
           }
-          const providerResult = await ctx.codexAppServer.resolveInteraction(scope, input)
-          if (!providerResult) throw new Error("provider-backed interaction lost its durable delivery owner")
-          result = {
-            effect: providerResult.effect === "already-sent" ? "already-queued" as const : providerResult.effect,
-            interaction: providerResult.interaction,
+          // The journal result contains only the persisted/redacted response. Secret input values are
+          // never echoed by this RPC (and are absent from SQLite before this function returns). Re-read
+          // after provider I/O: its acknowledgement may have won the race and terminalized the journal
+          // while the bridge still holds the pending object returned by its earlier queue transaction.
+          const latest = ctx.interactions.get(scope, result.interaction.id) ?? result.interaction
+          return {
+            effect: latest.lifecycle === "resolved" &&
+                (result.effect === "queued" || result.effect === "already-queued")
+              ? "resolved" as const
+              : result.effect,
+            interaction: interactionForRead(scope, latest),
           }
-        } else {
-          result = ctx.interactions.resolve(scope, input)
-        }
-        // The journal result contains only the persisted/redacted response. Secret input values are
-        // never echoed by this RPC (and are absent from SQLite before this function returns). Re-read
-        // after provider I/O: its acknowledgement may have won the race and terminalized the journal
-        // while the bridge still holds the pending object returned by its earlier queue transaction.
-        const latest = ctx.interactions.get(scope, result.interaction.id) ?? result.interaction
-        return {
-          effect: latest.lifecycle === "resolved" &&
-              (result.effect === "queued" || result.effect === "already-queued")
-            ? "resolved" as const
-            : result.effect,
-          interaction: interactionForRead(scope, latest),
-        }
-      },
+        },
+        (result) => ({ detail: { effect: result.effect } }),
+      ),
     }),
 
     interactionCancel: mutation({
@@ -1639,35 +1681,39 @@ export function createRouter(ctx: AppContext) {
     subAgentSteer: mutation({
       input: z.object({ slug: ThreadSlug, id: z.string(), message: z.string().min(1), deliveryId: z.string().min(1).max(200).optional() }).strict(),
       output: z.object({ delivered: z.boolean() }),
-      handler: async ({ input }) => {
-        const target = subAgentSteerable(input.slug, input.id)
-        if (target.sessionId === null) {
-          throw new Error(target.note ?? "This sub-agent is no longer running, so it can't be steered")
-        }
-        const bridge = ctx.claudeBroker
-        if (!bridge) throw new Error("Claude session broker is unavailable; cannot steer this sub-agent")
-        const deliveryId = input.deliveryId ?? randomUUID()
-        const sentAtMs = Date.now()
-        await bridge.steerSubAgent({
-          threadSlug: input.slug,
-          sessionId: target.sessionId,
-          subAgentId: input.id,
-          text: input.message,
-          deliveryId,
-        })
-        // The provider deliberately does not write addressed input into the child's transcript. Frizz
-        // has the plaintext here, so journal it only after delivery succeeds and merge it into future
-        // drawer reads. INSERT OR IGNORE makes a retried transport id one visible message.
-        ctx.storage.recordSubAgentSteer({
-          slug: input.slug,
-          subAgentId: input.id,
-          deliveryId,
-          message: input.message,
-          sentAtMs,
-        })
-        ctx.board.refresh()
-        return { delivered: true }
-      },
+      handler: ({ input }) => audit(
+        "subAgentSteer",
+        { project: thisProject, thread: input.slug, detail: { subAgent: input.id, message: textDigest(input.message) } },
+        async () => {
+          const target = subAgentSteerable(input.slug, input.id)
+          if (target.sessionId === null) {
+            throw new Error(target.note ?? "This sub-agent is no longer running, so it can't be steered")
+          }
+          const bridge = ctx.claudeBroker
+          if (!bridge) throw new Error("Claude session broker is unavailable; cannot steer this sub-agent")
+          const deliveryId = input.deliveryId ?? randomUUID()
+          const sentAtMs = Date.now()
+          await bridge.steerSubAgent({
+            threadSlug: input.slug,
+            sessionId: target.sessionId,
+            subAgentId: input.id,
+            text: input.message,
+            deliveryId,
+          })
+          // The provider deliberately does not write addressed input into the child's transcript. Frizz
+          // has the plaintext here, so journal it only after delivery succeeds and merge it into future
+          // drawer reads. INSERT OR IGNORE makes a retried transport id one visible message.
+          ctx.storage.recordSubAgentSteer({
+            slug: input.slug,
+            subAgentId: input.id,
+            deliveryId,
+            message: input.message,
+            sentAtMs,
+          })
+          ctx.board.refresh()
+          return { delivered: true }
+        },
+      ),
     }),
 
     subAgentStop: mutation({
@@ -1831,20 +1877,42 @@ export function createRouter(ctx: AppContext) {
       // Omitted ⇒ the dispatcher defaults to "claude", so an old client (no backend field) is
       // byte-identical. The resume path needs NO analog — resume reads the backend from the row's
       // `backend` column (backendFor(row.backend)), which dispatch already stamped for a codex thread.
-      handler: ({ input }) => ctx.dispatcher.dispatch(input, { backend: input.backend }),
+      handler: ({ input }) => audit(
+        "dispatch",
+        {
+          project: thisProject,
+          detail: { prompt: textDigest(input.prompt), backend: input.backend ?? "claude", model: input.model ?? null, effort: input.effort ?? null },
+        },
+        () => ctx.dispatcher.dispatch(input, { backend: input.backend }),
+        (result) => ({ thread: result.slug, detail: { sessionId: result.sessionId } }),
+      ),
     }),
 
     // Cold-adopt a pre-existing thread (no session row): spawn a fresh worker on its file.
     adoptThread: mutation({
       input: AdoptThreadInput,
       output: AdoptThreadResult,
-      handler: ({ input }) => ctx.dispatcher.adopt(input.slug, input.message),
+      handler: ({ input }) => audit(
+        "adoptThread",
+        { project: thisProject, thread: input.slug, detail: input.message ? { message: textDigest(input.message) } : undefined },
+        () => ctx.dispatcher.adopt(input.slug, input.message),
+        (result) => ({ detail: { sessionId: result.sessionId } }),
+      ),
     }),
 
     followUp: mutation({
       input: FollowUpInput,
       // Wrapped so a delivery that throws keeps the operator's words — see keepFailedFollowUp.
-      handler: ({ input }) => keepFailedFollowUp(input, async (openWriteAhead) => {
+      handler: ({ input }) => audit("followUp", {
+        project: thisProject,
+        thread: input.slug,
+        detail: {
+          sessionId: input.sessionId,
+          message: textDigest(input.message),
+          ...(input.freshProcess ? { freshProcess: true } : {}),
+          ...(input.interrupt ? { interrupt: true } : {}),
+        },
+      }, () => keepFailedFollowUp(input, async (openWriteAhead) => {
         // Every follow-up crosses a TYPED CONTROL CHANNEL now, never a terminal: a codex row goes to the
         // app-server bridge and a claude row to the session broker, each of which owns its own
         // steer-vs-start decision and reconnects or cold-resumes a dead session itself. Nothing types
@@ -2185,7 +2253,7 @@ export function createRouter(ctx: AppContext) {
           appendDelivery(ctx.storage, input.slug, { id: input.deliveryId, text: input.message })
         }
         ctx.board.refresh()
-      }),
+      })),
     }),
 
     // The × on a FAILED send's bubble, and the second half of its Edit (the client has already put the
@@ -3190,42 +3258,47 @@ export function createRouter(ctx: AppContext) {
     answerQuestions: mutation({
       input: AnswerQuestionsInput,
       output: AnswerQuestionsResult,
-      handler: async ({ input }) => {
-        const now = Date.now()
-        const answered: string[] = []
-        for (const answer of input.answers) {
-          // Scoped by reading the row first: an id belonging to another thread answers nothing here.
-          const q = ctx.storage.getThreadQuestion(answer.questionId)
-          if (!q || q.thread_slug !== input.slug || q.state !== "open") continue
-          let stored = answer
-          // A SECRET'S VALUE STOPS HERE. It is served once, from memory, through its pipe
-          // (secret-files.ts), and the row — which the settled card, the in-flight card and the worker's
-          // wake all read — keeps only the path. Nothing below this line ever holds the value. A blank one
-          // answers nothing: the request stays open rather than waking the worker to an empty read.
-          if (parseQuestionSpec(q.spec)?.secret) {
-            const value = answer.text?.trim() ?? ""
-            if (!value) continue
-            const path = serveSecret(ctx.project.stateDir, input.slug, q.id, value)
-            stored = { questionId: answer.questionId, question: answer.question, chosen: [], text: secretAnswerText(path) }
+      handler: ({ input }) => audit(
+        "answerQuestions",
+        () => ({ project: thisProject, thread: input.slug, detail: { answers: input.answers.map((answer) => answerDigest(input.slug, answer)) } }),
+        async () => {
+          const now = Date.now()
+          const answered: string[] = []
+          for (const answer of input.answers) {
+            // Scoped by reading the row first: an id belonging to another thread answers nothing here.
+            const q = ctx.storage.getThreadQuestion(answer.questionId)
+            if (!q || q.thread_slug !== input.slug || q.state !== "open") continue
+            let stored = answer
+            // A SECRET'S VALUE STOPS HERE. It is served once, from memory, through its pipe
+            // (secret-files.ts), and the row — which the settled card, the in-flight card and the worker's
+            // wake all read — keeps only the path. Nothing below this line ever holds the value. A blank one
+            // answers nothing: the request stays open rather than waking the worker to an empty read.
+            if (parseQuestionSpec(q.spec)?.secret) {
+              const value = answer.text?.trim() ?? ""
+              if (!value) continue
+              const path = serveSecret(ctx.project.stateDir, input.slug, q.id, value)
+              stored = { questionId: answer.questionId, question: answer.question, chosen: [], text: secretAnswerText(path) }
+            }
+            if (ctx.storage.answerThreadQuestion(answer.questionId, JSON.stringify(stored), now)) answered.push(answer.questionId)
           }
-          if (ctx.storage.answerThreadQuestion(answer.questionId, JSON.stringify(stored), now)) answered.push(answer.questionId)
-        }
-        // ANSWERING IS NOT DELIVERING. The row is stored answered-but-undelivered and the scheduler
-        // hands it over (evalQuestionAnswers), so an answer given while the worker's process is down
-        // survives the gap instead of being lost in the same silence the fence lost the question in.
-        //
-        // BUT THE HUMAN IS RIGHT HERE, so the sweep runs NOW rather than up to a whole tick from now.
-        // Waiting for it cost a mean five seconds in which the question card was already gone and the
-        // answer had not arrived, and the thread — at rest, with nothing registered any more — drew the
-        // residual "Rested without a sign-off" card in the hole (maintainer 2026-08-27: "I get a little
-        // card that, for like 5+ seconds, just says that the thread rested without a sign-off before it
-        // shows up my answer"). The durable path is unchanged: this only skips the wait.
-        if (answered.length > 0) {
-          ctx.board.refresh()
-          ctx.scheduler.kick()
-        }
-        return { answered, open: openQuestionViews(input.slug) }
-      },
+          // ANSWERING IS NOT DELIVERING. The row is stored answered-but-undelivered and the scheduler
+          // hands it over (evalQuestionAnswers), so an answer given while the worker's process is down
+          // survives the gap instead of being lost in the same silence the fence lost the question in.
+          //
+          // BUT THE HUMAN IS RIGHT HERE, so the sweep runs NOW rather than up to a whole tick from now.
+          // Waiting for it cost a mean five seconds in which the question card was already gone and the
+          // answer had not arrived, and the thread — at rest, with nothing registered any more — drew the
+          // residual "Rested without a sign-off" card in the hole (maintainer 2026-08-27: "I get a little
+          // card that, for like 5+ seconds, just says that the thread rested without a sign-off before it
+          // shows up my answer"). The durable path is unchanged: this only skips the wait.
+          if (answered.length > 0) {
+            ctx.board.refresh()
+            ctx.scheduler.kick()
+          }
+          return { answered, open: openQuestionViews(input.slug) }
+        },
+        (result) => ({ detail: { answered: result.answered } }),
+      ),
     }),
 
     dismissQuestions: mutation({
@@ -3817,24 +3890,30 @@ export function createRouter(ctx: AppContext) {
         /** Live worker daemons this actually killed — 0 unless `deleteData`. Reported, not guessed at. */
         stoppedWorkers: z.number().int().nonnegative(),
       }),
-      handler: async ({ input }) => {
-        const entry = findById(input.id)
-        if (!entry) return { removed: false, deletedData: false, stoppedWorkers: 0 }
-        // The message deliberately does NOT name the project: the confirmation's title already does,
-        // and naming it here reads "Frizz is running from frizz" in this very repository.
-        if (ctx.launchProjectId === entry.id) {
-          throw new Error("Frizz is serving from this project, so it cannot be deleted. Restart Frizz from another folder first.")
-        }
-        const deleteData = input.deleteData === true
-        // The resources go FIRST and in one call, because their order matters and the server owns it:
-        // a worker is stopped through its own tenant's broker, and `ui.db` is released before the
-        // directory holding it is unlinked (see AppContext.teardownProject).
-        const { stoppedWorkers } = (await ctx.teardownProject?.(entry.id, { stopWorkers: deleteData, deleteState: deleteData }))
-          ?? { closed: false, stoppedWorkers: 0 }
-        // The registry entry goes LAST, and deliberately: it is how anything finds this project again,
-        // so dropping it first would strand whatever the teardown above missed.
-        return { removed: forgetProject(entry.id), deletedData: deleteData, stoppedWorkers }
-      },
+      handler: async ({ input }) => audit(
+        "projectRemove",
+        // Read BEFORE the removal, which forgets the very entry that names the folder.
+        () => ({ project: { id: input.id, dir: findById(input.id)?.path ?? null }, detail: { deleteData: input.deleteData === true } }),
+        async () => {
+          const entry = findById(input.id)
+          if (!entry) return { removed: false, deletedData: false, stoppedWorkers: 0 }
+          // The message deliberately does NOT name the project: the confirmation's title already does,
+          // and naming it here reads "Frizz is running from frizz" in this very repository.
+          if (ctx.launchProjectId === entry.id) {
+            throw new Error("Frizz is serving from this project, so it cannot be deleted. Restart Frizz from another folder first.")
+          }
+          const deleteData = input.deleteData === true
+          // The resources go FIRST and in one call, because their order matters and the server owns it:
+          // a worker is stopped through its own tenant's broker, and `ui.db` is released before the
+          // directory holding it is unlinked (see AppContext.teardownProject).
+          const { stoppedWorkers } = (await ctx.teardownProject?.(entry.id, { stopWorkers: deleteData, deleteState: deleteData }))
+            ?? { closed: false, stoppedWorkers: 0 }
+          // The registry entry goes LAST, and deliberately: it is how anything finds this project again,
+          // so dropping it first would strand whatever the teardown above missed.
+          return { removed: forgetProject(entry.id), deletedData: deleteData, stoppedWorkers }
+        },
+        (result) => ({ detail: result }),
+      ),
     }),
 
     /**
@@ -3969,7 +4048,13 @@ export function createRouter(ctx: AppContext) {
         // the next panel is built while this one's board loads. One that is never asked for dies idle.
         if (picked.kind !== "unavailable") warmDirectoryPicker()
         if (picked.kind !== "picked") return picked
-        return { kind: "picked" as const, project: addProjectAtPath(picked.path) }
+        const project = await audit(
+          "projectPick",
+          { project: { id: null, dir: picked.path }, detail: { path: picked.path } },
+          () => addProjectAtPath(picked.path),
+          addedProject,
+        )
+        return { kind: "picked" as const, project }
       },
     }),
 
@@ -3994,7 +4079,8 @@ export function createRouter(ctx: AppContext) {
     projectAdd: mutation({
       input: z.object({ path: z.string().min(1) }),
       output: ProjectCard,
-      handler: async ({ input }) => addProjectAtPath(input.path),
+      handler: async ({ input }) =>
+        audit("projectAdd", { project: { id: null, dir: input.path }, detail: { path: input.path } }, () => addProjectAtPath(input.path), addedProject),
     }),
 
     /**
@@ -4163,7 +4249,13 @@ export function createRouter(ctx: AppContext) {
             const hydrated = it.kind === "issue" ? await hydrateIssue(repo, it.number) : await hydratePr(repo, it.number)
             const prompt = renderGithubPrompt(template, repo, hydrated, slug, it.kind)
             const request = githubDispatcherRequest(input, { prompt, title, slug })
-            const res = await ctx.dispatcher.dispatch(request.payload, request.options)
+            // One record per thread the batch starts, so each reads like an ordinary dispatch.
+            const res = await audit(
+              "githubDispatch",
+              { project: thisProject, detail: { repo, kind: it.kind, number: it.number, prompt: textDigest(prompt) } },
+              () => ctx.dispatcher.dispatch(request.payload, request.options),
+              (result) => ({ thread: result.slug, detail: { sessionId: result.sessionId } }),
+            )
             dispatched.push({ number: it.number, kind: it.kind, slug: res.slug })
           } catch (e) {
             failed.push({ number: it.number, kind: it.kind, error: (e as Error).message.slice(0, 120) })

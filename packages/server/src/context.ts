@@ -23,6 +23,7 @@ import { readQuota } from "./quota.ts"
 import { refreshClaudeQuotaInBackground } from "./backend/claude-quota.ts"
 import { createBoard, resolveSessionTitle, type BoardManager } from "./board.ts"
 import { createSessionPeerResolver, type SessionPeerThread } from "./session-peer.ts"
+import { auditLogPathForStateDir, fileAuditLog, type AuditLog } from "./audit.ts"
 import { createTailer, defaultLogDir, type Tailer } from "./tailer.ts"
 import { createDispatcher, loadWorkerPrompt, scratchpadOrientation, frizzConfigBlock, claudeMcpConfig, resolveFrizzMcp, workerPluginDir, coldResumePermission, type Dispatcher, type FrizzMcpTarget } from "./dispatch.ts"
 import { createScheduler, type Scheduler, probeIssueReadable, probePrReadable, type PrRef, type PrProbe } from "./scheduler.ts"
@@ -230,6 +231,12 @@ export interface AppContext {
    * context, where there is no launcher to protect.
    */
   launchProjectId?: string
+  /**
+   * Where high-impact board actions are recorded (audit.ts): project add and remove, dispatch,
+   * follow-ups and answers, each with the request origin and board session behind it. The real
+   * context writes the machine's `audit.jsonl`; a test context leaves it out and records nothing.
+   */
+  audit?: AuditLog
   // GitHub detection (installed/inRepo/nameWithOwner) resolved ONCE at boot via initGithub() — stable
   // for the process lifetime. `authed` is NOT cached here; the githubStatus query re-checks it live so
   // a mid-session `gh auth login` reflects immediately. Undefined until initGithub() resolves (the
@@ -1136,6 +1143,9 @@ function createContextUnchecked(opts: ContextOptions, resources: PartialContextR
     sessionPeerThread: (peer) => sessionPeerResolver(peer, project.id),
     teardownProject: opts.teardownProject,
     launchProjectId: opts.launchProjectId,
+    // Derived from the state dir, never from `homedir()`, so a sandboxed server audits into its own
+    // sandbox (the reason serverAddressPathForStateDir exists).
+    audit: fileAuditLog(auditLogPathForStateDir(project.stateDir)),
     claudeBin: opts.claudeBin,
     codexBin: opts.codexBin,
     codexVersion: opts.codexVersion,

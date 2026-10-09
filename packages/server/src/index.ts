@@ -359,6 +359,9 @@ export async function pipeToApp(
       duplex: "half",
       signal: controller.signal,
     }),
+    // The peer this server actually accepted, for a request the launcher's proxy did not stamp — the
+    // only place it is known once the request becomes a Web Request (app.ts, the audit attribution).
+    { remoteAddress: req.socket?.remoteAddress },
   )
   res.writeHead(response.status, Object.fromEntries(response.headers.entries()))
   if (response.body) {
