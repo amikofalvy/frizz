@@ -1,5 +1,5 @@
 import { createContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react"
-import { ArrowUp, FileText, Loader2, Paperclip, Plus, X } from "lucide-react"
+import { ArrowUp, FileText, Loader2, Mic, Paperclip, Plus, X } from "lucide-react"
 import { ATTACHMENT_ACCEPT, ATTACHMENT_MAX_BYTES, isAllowedAttachmentName, type ThreadSkill } from "@frizz/shared"
 import { showToast } from "../store.ts"
 import { joinComposerValue, splitComposerValue } from "../lib/imagePaths.ts"
@@ -7,7 +7,8 @@ import { splitProseByTokens } from "../lib/composerContext.ts"
 import { shouldInterruptSubmitComposerEnter, shouldRestoreOptionEnterNewline, shouldSubmitComposerEnter } from "../lib/composerKeyboard.ts"
 import { queueComposerHandlesOptionEnter } from "../lib/queueComposerKeyboard.ts"
 import { focusQuestionFrom } from "../lib/questionKeys.ts"
-import { RAIL_ACTION_OFFSET, RAIL_LEAD_OFFSET, RAIL_LEAD_WITH_ACTION_OFFSET, RAIL_PAPERCLIP_OFFSET, RAIL_PAPERCLIP_PLAIN_OFFSET, RAIL_RESERVE_PLAIN, RAIL_RESERVE_WITH_ACTION, RAIL_RESERVE_WITH_BOTH, RAIL_SEND_OFFSET } from "../lib/iconRhythm.ts"
+import { composerRail } from "../lib/iconRhythm.ts"
+import { useDictation } from "../lib/dictation.ts"
 import { apiBase } from "../lib/base-path.ts"
 import { localImageUrl } from "../lib/markdownTargets.ts"
 import { basename } from "../lib/paths.ts"
@@ -470,6 +471,27 @@ export function Composer({
     requestAnimationFrame(() => taRef.current?.setSelectionRange(next.length, next.length))
   }
 
+  // DICTATION (lib/dictation.ts): the microphone beside Send, on the desktop layout only — a phone's
+  // keyboard carries its own. It writes into the prose at the caret (or at the end, when the box was
+  // not focused), and any edit that is not its own ends it: typing, sending, Escape.
+  const dictation = useDictation({
+    read: () => {
+      const el = taRef.current
+      const current = el?.value ?? prose
+      const focused = el !== null && document.activeElement === el
+      return { prose: current, start: focused ? el.selectionStart : current.length, end: focused ? el.selectionEnd : current.length }
+    },
+    write: (next, caret) => {
+      setProse(next)
+      requestAnimationFrame(() => taRef.current?.setSelectionRange(caret, caret))
+    },
+  })
+  const micShown = !phone && dictation.state !== "unsupported"
+  const submit = () => {
+    dictation.cancel()
+    onSubmit()
+  }
+
   const hasContent = value.trim().length > 0
   // ONE rail slot. Reserving it must track what is actually rendered — the padding/offset classes below
   // key off `railAction`, and a truthy element that renders null would carve out an empty hole (the bug
@@ -477,8 +499,8 @@ export function Composer({
   // (the dispatch composer's GitHub picker); interrupt-and-send gave up its button here and kept only
   // ⌘/Ctrl-Enter — see the `onInterruptSubmit` prop doc.
   const railAction = leftAction ?? null
-  // The padding every text row keeps clear of the absolutely-placed rail, from its leftmost button.
-  const railReserve = railAction && railLead ? RAIL_RESERVE_WITH_BOTH : railAction || railLead ? RAIL_RESERVE_WITH_ACTION : RAIL_RESERVE_PLAIN
+  // Where each rail mark sits, and the padding every text row keeps clear of the absolutely-placed rail.
+  const rail = composerRail({ action: Boolean(railAction), lead: Boolean(railLead), mic: micShown })
 
   function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     const el = e.currentTarget
@@ -556,7 +578,7 @@ export function Composer({
       // native textarea behavior, so they cannot accidentally submit or lose their newline.
       e.preventDefault()
       e.stopPropagation()
-      onSubmit()
+      submit()
       return
     }
     // ⌘/Ctrl-Enter — the FORCED send. With a worker mid-turn it preempts what the worker is doing so
@@ -566,6 +588,7 @@ export function Composer({
     if (shouldInterruptSubmitComposerEnter(keyboardEvent, canSend)) {
       e.preventDefault()
       e.stopPropagation()
+      dictation.cancel()
       ;(onInterruptSubmit ?? onSubmit)()
       return
     }
@@ -583,6 +606,13 @@ export function Composer({
       })
     }
     if (e.key === "Escape" && !e.nativeEvent.isComposing) {
+      // While dictating, the first Escape only stops listening — the box keeps focus and the text.
+      if (dictation.state === "listening") {
+        e.preventDefault()
+        e.stopPropagation()
+        dictation.cancel()
+        return
+      }
       // On the /full page the key is not ours: Escape there always leaves fullscreen (DrawerStack's
       // `onEscapeAtRest`), and a blur first would make the reader press it twice with nothing visible
       // happening the first time. The draft is persisted, so the drawer or card it lands in shows it.
@@ -901,7 +931,8 @@ export function Composer({
             ref={contextRef}
             aria-hidden
             data-composer-context-backdrop
-            className={`pointer-events-none absolute inset-0 select-none overflow-hidden whitespace-pre-wrap [overflow-wrap:break-word] px-3.5 ${footer ? "py-2.5 pb-3" : `py-2.5 ${railReserve}`} text-[13px] leading-relaxed text-transparent`}
+            className={`pointer-events-none absolute inset-0 select-none overflow-hidden whitespace-pre-wrap [overflow-wrap:break-word] px-3.5 ${footer ? "py-2.5 pb-3" : "py-2.5"} text-[13px] leading-relaxed text-transparent`}
+            style={footer ? undefined : { paddingRight: rail.reserve }}
           >
             {backdropSegments}
           </div>
@@ -920,7 +951,11 @@ export function Composer({
           value={prose}
           autoFocus={autoFocus}
           disabled={busy}
-          onChange={(e) => setProse(e.target.value)}
+          onChange={(e) => {
+            // Typing takes the box back from dictation (lib/dictation.ts).
+            dictation.cancel()
+            setProse(e.target.value)
+          }}
           onKeyDown={onKeyDown}
           onPaste={(e) => {
             // Any file item claims the whole paste (preventDefault) — deliberately. An image paste
@@ -936,13 +971,13 @@ export function Composer({
           placeholder={placeholder}
           rows={1}
           spellCheck={false}
-          style={{ minHeight, maxHeight }}
+          style={{ minHeight, maxHeight, paddingRight: footer ? undefined : rail.reserve }}
           // With a footer strip the box is an INSET-FOOTER layout: the strip below already reserves the
           // vertical band the floating buttons occupy, so the text runs FULL width (no right rail carved
           // out of every line). Without a footer the box is a single compact row and the right padding is
           // what keeps text from sliding under the floating paperclip/send buttons. `relative` keeps the
           // caret and text painting above the marker backdrop behind it.
-          className={`relative block w-full resize-none bg-transparent px-3.5 ${footer ? "py-2.5 pb-3" : `py-2.5 ${railReserve}`} text-[13px] leading-relaxed text-fg outline-none placeholder:text-muted scrollbar-none disabled:opacity-60`}
+          className={`relative block w-full resize-none bg-transparent px-3.5 ${footer ? "py-2.5 pb-3" : "py-2.5"} text-[13px] leading-relaxed text-fg outline-none placeholder:text-muted scrollbar-none disabled:opacity-60`}
         />
       </div>
       {/* Attachment chips along the bottom row — one square tile per attached file (image thumbnail or
@@ -950,7 +985,7 @@ export function Composer({
           instead of the raw absolute-path text. Reserve the right rail so tiles never slip under the
           paperclip/send buttons on the last row. */}
       {attachments.length > 0 && (
-        <div className={`flex flex-wrap gap-1.5 px-3 pb-2 ${railReserve}`}>
+        <div className="flex flex-wrap gap-1.5 px-3 pb-2" style={{ paddingRight: rail.reserve }}>
           {attachments.map((a, i) => (
             <AttachmentChip
               key={`${a.path}-${i}`}
@@ -968,10 +1003,10 @@ export function Composer({
           inside the box arc and read misaligned. */}
       {/* Reserve the right-side action rail. Without this, three shrinkable readouts can extend under
           the absolutely positioned GitHub/send buttons on narrow composers. */}
-      {footer && <div className={`flex min-w-0 flex-wrap items-center gap-1 pl-1.5 pb-1.5 ${railReserve}`}>{footer}</div>}
+      {footer && <div className="flex min-w-0 flex-wrap items-center gap-1 pl-1.5 pb-1.5" style={{ paddingRight: rail.reserve }}>{footer}</div>}
       {/* Outlined controls keep 8px between edges; prose reserves the same clearance. */}
-      {railAction && <div className={`absolute bottom-2 ${RAIL_ACTION_OFFSET} flex items-center`}>{railAction}</div>}
-      {railLead && <div className={`absolute bottom-2 ${railAction ? RAIL_LEAD_WITH_ACTION_OFFSET : RAIL_LEAD_OFFSET} flex items-center`}>{railLead}</div>}
+      {railAction && <div className="absolute bottom-2 flex items-center" style={{ right: rail.right.action }}>{railAction}</div>}
+      {railLead && <div className="absolute bottom-2 flex items-center" style={{ right: rail.right.lead }}>{railLead}</div>}
       {/* Attach: a hidden file input driven by the paperclip. Sits in the right rail LEFT of the send
           button (and left of any railAction), so it never overlaps the mode/model footer or the send
           affordance. Accept is the shared extension allowlist; the /attach route re-validates. */}
@@ -994,23 +1029,65 @@ export function Composer({
         aria-label="Attach files"
         // With no rail action the paperclip TAKES the rail-action slot — at its OWN offset, not the
         // rail action’s, because it paints 1px less dead space on that side (lib/iconRhythm.ts).
-        className={`icon-hover-outline absolute bottom-2 ${railAction ? RAIL_PAPERCLIP_OFFSET : RAIL_PAPERCLIP_PLAIN_OFFSET} flex h-7 w-7 items-center justify-center rounded-lg text-muted transition-[color,background-color] enabled:hover:bg-panel-2/70 enabled:hover:text-fg disabled:opacity-50`}
+        style={{ right: rail.right.paperclip }}
+        className={`icon-hover-outline absolute bottom-2 flex h-7 w-7 items-center justify-center rounded-lg text-muted transition-[color,background-color] enabled:hover:bg-panel-2/70 enabled:hover:text-fg disabled:opacity-50`}
       >
         {uploading ? <Loader2 size={15} strokeWidth={2} className="animate-spin" /> : <Paperclip size={15} strokeWidth={2} />}
       </button>
+      {micShown && (
+        <button
+          type="button"
+          data-dictation={dictation.state}
+          // Keep the caret where it is: dictation inserts there (the send button's own rule).
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => {
+            // Starting from outside the box: dictate at the end of the draft, with the caret there, so
+            // whatever is typed next follows the spoken words.
+            const el = taRef.current
+            if (dictation.state === "idle" && el && document.activeElement !== el) {
+              el.focus({ preventScroll: true })
+              el.setSelectionRange(el.value.length, el.value.length)
+            }
+            void dictation.toggle()
+          }}
+          disabled={busy || dictation.state === "installing"}
+          aria-pressed={dictation.state === "listening"}
+          title={
+            dictation.state === "listening"
+              ? "Stop dictation"
+              : dictation.state === "installing"
+                ? "Downloading the on-device speech model…"
+                : "Dictate — transcribed on this device"
+          }
+          aria-label={dictation.state === "listening" ? "Stop dictation" : "Dictate"}
+          style={{ right: rail.right.mic }}
+          // Listening is the GLYPH turning red and breathing, never a fill: a filled square is ink edge to
+          // edge, and at this slot's box gap it would sit ~6px off the paperclip's ink instead of ~14.
+          className={`icon-hover-outline absolute bottom-2 flex h-7 w-7 items-center justify-center rounded-lg transition-[color,background-color] enabled:hover:bg-panel-2/70 disabled:opacity-50 ${
+            dictation.state === "listening" ? "text-danger" : "text-muted enabled:hover:text-fg"
+          }`}
+        >
+          {dictation.state === "installing" ? (
+            <Loader2 size={15} strokeWidth={2} className="animate-spin" />
+          ) : (
+            <Mic size={15} strokeWidth={2} className={dictation.state === "listening" ? "animate-pulse" : undefined} />
+          )}
+        </button>
+      )}
       <button
         type="button"
         // Prevent the mousedown default so clicking Send never blurs the textarea (the repo's idiom for
         // every submit affordance that sits beside a live input). Focus then never leaves the box on the
         // click path, so there is nothing to restore — and a surface that blurs on send stays in charge.
         onMouseDown={(e) => e.preventDefault()}
-        onClick={onSubmit}
+        onClick={submit}
         // `uploading` mirrors the Enter gate above: sending mid-upload dropped the pending attachment.
         disabled={!hasContent || busy || uploading}
         title="Send (Enter · ⌘⏎ sends now)"
         aria-label="Send"
         // Never `transition-all`: it animates box-shadow, which holds the hover edge back (styles.css).
-        className={`icon-hover-outline absolute bottom-2 ${RAIL_SEND_OFFSET} flex h-7 w-7 items-center justify-center rounded-lg transition-[color,background-color,opacity,scale] ${
+        style={{ right: rail.right.send }}
+        className={`icon-hover-outline absolute bottom-2 flex h-7 w-7 items-center justify-center rounded-lg transition-[color,background-color,opacity,scale] ${
           // Primary actions use neutral contrast; the accent marks focus.
           hasContent && !busy && !uploading
             ? "bg-fg text-bg hover:opacity-90 active:scale-95"
