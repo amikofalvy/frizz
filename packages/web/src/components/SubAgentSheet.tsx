@@ -185,8 +185,9 @@ export function SubAgentSheet({
             note={q.data?.steerNote ?? null}
             stoppable={q.data?.stoppable === true}
             stopNote={q.data?.stopNote ?? null}
-            // The same anchored strip the thread's prompt box carries, scoped to THIS child's own
-            // subtree. Without it a sub-agent that fanned out read as idle in its own drawer while its
+            // The ops strip, scoped to THIS child's own subtree, as rows under its box — the thread's
+            // drawer counts its ops on one line instead (QueueOpsSummary), but a scoped reading has no
+            // counts of its own, and a child's subtree is short. Without it a sub-agent that fanned out read as idle in its own drawer while its
             // grandchildren were still working — the one surface where that fan-out is the whole story.
             ops={(className) => (
               <BackgroundOpsStrip slug={slug} parentAgentId={subId} transcriptShells={liveTranscriptShells} className={className} />

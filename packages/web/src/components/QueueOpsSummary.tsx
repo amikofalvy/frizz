@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react"
 import { ExternalLink, FileText } from "lucide-react"
-import type { ThreadView } from "@frizz/shared"
-import { CHILD_RESTED_DOT_CLASS, CHILD_STALE_DOT_CLASS } from "../lib/childOps.ts"
+import type { BgShellView, ThreadView } from "@frizz/shared"
+import { CHILD_RESTED_DOT_CLASS, CHILD_STALE_DOT_CLASS, type TranscriptShellRecord } from "../lib/childOps.ts"
 import { isRunningOperation } from "../lib/operationIndicators.ts"
 import { queueOpsCounts, type QueueOpsKind } from "../lib/queueOpsCounts.ts"
 import { BackgroundOpsStrip } from "./ChatView.tsx"
@@ -25,14 +25,21 @@ import { Popover, PopoverAnchor, PopoverContent } from "./ui/Popover.tsx"
 // way it did. The COUNTS are taken from the same lists those components render, by the same filters, so
 // the line and the panel cannot disagree about how many there are (lib/queueOpsCounts.ts).
 //
+// THE DRAWER DRAWS THE SAME LINE, since 2026-10-09 (maintainer: "We should be using the condensed
+// activity summary in the queue cards as well as in the drawer view"). Until then the drawer kept the
+// ⤷ column under its prompt box, so one thread read as counts on its card and as a column of rows in
+// its drawer. The drawer hands in the shells it reads off the transcript (`transcriptShells`, as it
+// handed them to the strip), which the board does not report for a Codex thread. The phone and /full
+// beside its rail draw neither: the ⋯ sheet and the rail already list every row (ChatView).
+//
 // THE MARK IS THE ROWS' OWN LIVENESS DOT, in the row's hue (yellow agent, blue shell, violet watch), and
 // it pulses only while at least one row of that kind is running. Otherwise it is the rows' own settled
 // mark (lib/childOps.ts): the hollow ring when one of them rested, the flat dot when they went stale.
-export function QueueOpsSummary({ thread }: { thread: ThreadView }) {
+export function QueueOpsSummary({ thread, transcriptShells = [] }: { thread: ThreadView; transcriptShells?: readonly (BgShellView & TranscriptShellRecord)[] }) {
   const [open, setOpen] = useState(false)
   const closeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   useEffect(() => () => clearTimeout(closeTimer.current), [])
-  const groups = queueOpsCounts(thread)
+  const groups = queueOpsCounts(thread, transcriptShells)
   const panelRef = useRef<HTMLDivElement>(null)
   const buttonRef = useRef<HTMLButtonElement>(null)
   // The last op can end, or be stopped from its × in the panel, while the panel is open — and nothing
@@ -66,8 +73,9 @@ export function QueueOpsSummary({ thread }: { thread: ThreadView }) {
     requestAnimationFrame(() => panelRef.current?.querySelector<HTMLElement>("button, a[href], [tabindex]:not([tabindex='-1'])")?.focus())
   }
   return (
-    // `-mt-2`: the dock's top inset is 12px, the same as its bottom; with this line in it the line takes
-    // the top of that inset, so the prompt box sits 28px + 4px under the dock's rule rather than 40px.
+    // `-mt-2`: the dock's top inset is 12px, the same as its bottom (the drawer's footer pads 12px too);
+    // with this line in it the line takes the top of that inset, so the prompt box sits 28px + 4px under
+    // the rule rather than 40px.
     <div data-queue-ops-summary className="-mt-2 flex h-7 min-w-0 items-center justify-end">
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverAnchor asChild>
@@ -133,7 +141,7 @@ export function QueueOpsSummary({ thread }: { thread: ThreadView }) {
           className="flex w-[440px] max-w-[calc(100vw-1.5rem)] flex-col px-3 py-2"
         >
           <QueueSubAgentLines slug={thread.id} subAgents={thread.subAgents ?? []} className="" />
-          <BackgroundOpsStrip slug={thread.id} includeAgents={false} className={hasQueueSubAgentLines(thread.subAgents ?? []) ? "pt-0.5" : ""} />
+          <BackgroundOpsStrip slug={thread.id} includeAgents={false} transcriptShells={transcriptShells} className={hasQueueSubAgentLines(thread.subAgents ?? []) ? "pt-0.5" : ""} />
         </PopoverContent>
       </Popover>
     </div>

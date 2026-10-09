@@ -1,5 +1,5 @@
-import type { ThreadView } from "@frizz/shared"
-import { mergeBackgroundShells, visibleChildOps } from "./childOps.ts"
+import type { BgShellView, ThreadView } from "@frizz/shared"
+import { mergeBackgroundShells, visibleChildOps, type TranscriptShellRecord } from "./childOps.ts"
 
 export type QueueOpsKind = "agent" | "shell" | "pr" | "issue" | "file" | "link"
 
@@ -13,16 +13,18 @@ export interface QueueOpsCount {
   readonly states: readonly (string | undefined)[]
 }
 
-// The counts on the line above a queue card's docked prompt box (QueueOpsSummary), in display order,
-// with the empty kinds dropped. Taken from the same lists the rows in its panel render, by the same
-// filters, so the line and the panel cannot disagree about how many there are.
+// The counts on the line above a thread's prompt box — the queue card's docked one and the drawer's
+// (QueueOpsSummary) — in display order, with the empty kinds dropped. Taken from the same lists the rows
+// in its panel render, by the same filters, so the line and the panel cannot disagree about how many
+// there are. `transcriptShells` is the drawer's: it holds the transcript, whose Codex background execs
+// the board reports none of (see mergeBackgroundShells); a queue card passes none, as its panel does.
 //
 // ONLY GITHUB WATCHES COUNT. A shell watch is not a second object: the shell it waits on is already a
 // shell, from the board's own shell list, and counting the watch too would name one process twice — the
 // double-naming the lifecycle footer's watcher readout was removed for (2026-08-14).
-export function queueOpsCounts(thread: ThreadView): QueueOpsCount[] {
+export function queueOpsCounts(thread: ThreadView, transcriptShells: readonly (BgShellView & TranscriptShellRecord)[] = []): QueueOpsCount[] {
   const agents = visibleChildOps(thread.subAgents ?? [], "card")
-  const shells = mergeBackgroundShells(thread.bgShells ?? [], [])
+  const shells = mergeBackgroundShells(thread.bgShells ?? [], transcriptShells)
   const watches = (thread.watches ?? []).filter((watch) => watch.kind === "github")
   const prs = watches.filter((watch) => watch.subject !== "issue")
   const issues = watches.filter((watch) => watch.subject === "issue")

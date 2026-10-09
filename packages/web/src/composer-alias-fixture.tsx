@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { createRoot } from "react-dom/client"
 import type { BoardSnapshot, ThreadView as ThreadViewModel, TranscriptMessage } from "@frizz/shared"
-import { BackgroundOpsStrip } from "./components/ChatView.tsx"
+import { QueueOpsSummary } from "./components/QueueOpsSummary.tsx"
 import { ThreadActionBar } from "./components/ThreadActionBar.tsx"
 import { TodosView } from "./components/TodosView.tsx"
 import { TooltipProvider } from "./components/Tooltip.tsx"
@@ -129,7 +129,7 @@ function QueueSurface() {
 }
 
 // The drawer's real footer arrangement (ChatView renders exactly this pair): the chat footer frame,
-// with ThreadActionBar inside it and the background-ops strip passed as its `ops`.
+// with ThreadActionBar inside it and the line of op counts passed as its `above`.
 function DrawerSurface() {
   return (
     <div data-fixture-drawer className="my-5 flex h-[420px] w-[560px] max-w-full min-w-0 flex-col rounded-lg border border-border bg-panel">
@@ -142,7 +142,7 @@ function DrawerSurface() {
         ))}
       </div>
       <div data-thread-chat-footer className="z-10 shrink-0 border-t border-border/60 bg-panel">
-        <ThreadActionBar slug={SLUG} ops={<BackgroundOpsStrip slug={SLUG} className="px-1 pt-1.5" />} />
+        <ThreadActionBar slug={SLUG} above={<QueueOpsSummary thread={thread} />} />
       </div>
     </div>
   )

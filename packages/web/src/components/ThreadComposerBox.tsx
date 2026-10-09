@@ -33,9 +33,8 @@ import type { PhoneBarApi } from "./Composer.tsx"
 //   · the {controls.status} line under the box.
 //
 // The two call sites keep their DELIBERATE differences as props, never as a forked tree: the padding
-// wrapper (`className`), the running-operations reading (`ops` under the box — the drawer passes
-// BackgroundOpsStrip — or `above` it — the queue card's one line of counts), and the send itself
-// (`submitOverride`). Everything else is identical by construction, the Goal in the rail included.
+// wrapper (`className`), whether the running-operations reading (`above` the box, the one line of
+// counts) is drawn at all, and the send itself (`submitOverride`). Everything else is identical by construction, the Goal in the rail included.
 // The skills typeahead's per-thread cache, shared by BOTH composer surfaces (the drawer and the queue
 // card render the same thread) so opening either only ever asks the harness once. A failure is NOT
 // cached: the common failure is "the session is not running yet", and the next `/` should ask again
@@ -61,7 +60,6 @@ export function ThreadComposerBox({
   placeholder,
   className,
   id,
-  ops,
   above,
   submitOverride,
   phoneBarOverride,
@@ -77,11 +75,9 @@ export function ThreadComposerBox({
   className?: string
   // DOM id for the textarea. The drawer's is "followup-input".
   id?: string
-  // Running background operations, rendered INSIDE the padded box under the prompt so those rows hang
-  // tight off it. Composed by the caller — this component does not decide which ops a surface shows.
-  ops?: ReactNode
-  // Rendered INSIDE the padded box ABOVE the prompt: the queue card's line of live-op counts, which
-  // rides its docked prompt box rather than hanging rows beneath it.
+  // Rendered INSIDE the padded box ABOVE the prompt: the line of live-op counts (QueueOpsSummary) the
+  // queue card's docked box and the drawer's both carry, rather than rows hanging beneath it. Composed
+  // by the caller — this component does not decide which ops a surface shows.
   above?: ReactNode
   // Replaces the default eager follow-up send. The queue card passes its useLiveAnswering `sendMessage`,
   // so the card's free-form reply and its "Send answers" reply are literally the same send — one
@@ -215,7 +211,6 @@ export function ThreadComposerBox({
           }}
         />
         {controls.status}
-        <div className="ops-column-optical-inset empty:hidden">{ops}</div>
         {signInFor && <SignInModal backend={signInFor} onClose={() => setSignInFor(null)} onAuthed={() => setSignInFor(null)} />}
         {logoutFor && <LogoutConfirmModal backend={logoutFor} onClose={() => setLogoutFor(null)} />}
       </div>
@@ -251,11 +246,6 @@ export function ThreadComposerBox({
         railLead={goal}
       />
       {controls.status}
-      {/* The ops column's OPTICAL bottom inset, in ONE place for every surface that renders one — the
-          amount and the reasoning live beside the font switch in styles.css, because it is
-          font-dependent. `empty:hidden` is load-bearing: with no live ops React renders nothing here,
-          and a bare negative margin would then eat into the composer's own 12px inset. */}
-      <div className="ops-column-optical-inset empty:hidden">{ops}</div>
       {signInFor && <SignInModal backend={signInFor} onClose={() => setSignInFor(null)} onAuthed={() => setSignInFor(null)} />}
       {logoutFor && <LogoutConfirmModal backend={logoutFor} onClose={() => setLogoutFor(null)} />}
     </div>

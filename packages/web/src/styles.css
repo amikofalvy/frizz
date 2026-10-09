@@ -191,8 +191,8 @@ body {
   font-family: var(--font-mono);
 }
 
-/* The prompt box frames its composer with 12px on all four sides. When the ⤷ running-ops column is
-   present the last thing above that bottom 12px is a line of TEXT rather than the composer's hard
+/* The sub-agent drawer's steer box frames its composer with 12px on all four sides. When the ⤷
+   running-ops column under it is present the last thing above that bottom 12px is a line of TEXT rather than the composer's hard
    border, so the box measure and the optical one stop agreeing: the row's baseline parks above its own
    box bottom by the line box's half-leading, and the frame reads as that much MORE air. Left
    uncorrected the column sat ~16px off the footer — and it used to add another 8px of its own on top,
@@ -203,8 +203,8 @@ body {
    below is, and measured the same way (a zero-size inline probe inside the row's own label span, on
    the real app via scripts/seed-queue-ops-column.mjs): an 11.5px/17.25px row leaves 4.25px under its
    baseline in the sans stack and 6.25px in mono. One shared value would leave the other mode ~2px out.
-   Applied by ThreadComposerBox (and SubAgentSheet's steer footer) to a wrapper around the column,
-   which stays `empty:hidden` — with no live ops the composer's own 12px must survive intact. */
+   Applied by SubAgentSheet's steer footer, the one surface that still hangs the column under its box:
+   the thread's drawer and the queue card count their ops over the box instead (QueueOpsSummary). */
 :root {
   --ops-column-optical-inset: -4.25px;
 }
@@ -223,9 +223,9 @@ body {
   margin-left: 17.5px;
 }
 
-/* In the queue card's ops panel (QueueOpsSummary) the saved files and links can be the panel's first
-   rows. ThreadLinks rules itself off from the rows above it, which is right in the drawer's strip and
-   a stray line across the panel's top edge here, where nothing is above it. */
+/* In the ops panel (QueueOpsSummary, on the queue card and in the drawer) the saved files and links can be the panel's first
+   rows. ThreadLinks rules itself off from the rows above it, which is right below the panel's agent
+   rows and a stray line across the panel's top edge, where nothing is above it. */
 [data-queue-ops-panel] > [data-background-ops]:first-child > [data-thread-links]:first-child {
   margin-top: 0;
   border-top-width: 0;

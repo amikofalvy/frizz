@@ -5,15 +5,15 @@ import { ThreadComposerBox } from "./ThreadComposerBox.tsx"
 import type { PhoneBarApi } from "./Composer.tsx"
 
 // The bar under the chat/terminal is now JUST the follow-up composer — the Done button and the
-// ⋯ menu live in the workpane header (ThreadHeaderActions) next to the tabs. `ops` (the live
-// background-operations strip) renders INSIDE the padded box rather than beside it, so those rows
-// hang tight off the prompt and the box's own pb becomes their gap to the drawer's bottom edge.
+// ⋯ menu live in the workpane header (ThreadHeaderActions) next to the tabs. `above` (the live ops'
+// one line of counts, QueueOpsSummary) renders INSIDE the padded box, over the prompt, the way the
+// queue card's does. The rows hung under the prompt until 2026-10-09; they are one hover away now.
 //
 // This is now a THIN wrapper around <ThreadComposerBox> — the same block the queue card renders.
 // Everything the two surfaces must agree on (the draft key, the `/login`/`/logout` intercept, the
 // model/effort footer, the status line) lives in that component.
 // `phoneBarOverride` passes straight through to the phone bar's answer seam (ThreadComposerBox).
-export function ThreadActionBar({ slug, ops, phoneBarOverride, phoneChrome }: { slug: string; onTerminal?: () => void; ops?: ReactNode; phoneBarOverride?: (api: PhoneBarApi) => ReactNode; phoneChrome?: boolean }) {
+export function ThreadActionBar({ slug, above, phoneBarOverride, phoneChrome }: { slug: string; onTerminal?: () => void; above?: ReactNode; phoneBarOverride?: (api: PhoneBarApi) => ReactNode; phoneChrome?: boolean }) {
   const snap = useSnapshot(store)
   const thread = snap.board?.threads.find((t) => t.id === slug)
 
@@ -39,7 +39,7 @@ export function ThreadActionBar({ slug, ops, phoneBarOverride, phoneChrome }: { 
       // as a 2px rule instead of the queue card's single hairline. Same shape as the queue card's
       // own call site (TodosView: `shrink-0 px-5 pb-3 pt-0`) and as drawer-composer-footer-fixture.
       className="shrink-0 px-3 py-3"
-      ops={ops}
+      above={above}
       phoneBarOverride={phoneBarOverride}
       phoneChrome={phoneChrome}
     />

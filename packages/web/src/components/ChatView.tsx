@@ -60,6 +60,7 @@ import { canAdoptThread } from "../lib/adoption.ts"
 import { THREAD_HEADER_CLASS, THREAD_HEADER_CONTROLS_CLASS, THREAD_HEADER_TITLE_CLASS } from "../lib/threadHeaderLayout.ts"
 import { SheetClose } from "./ui/SheetHeader.tsx"
 import { ThreadActionBar } from "./ThreadActionBar.tsx"
+import { QueueOpsSummary } from "./QueueOpsSummary.tsx"
 import { MobileThreadHeader } from "./MobileThreadHeader.tsx"
 import { HeaderActions } from "./HeaderActions.tsx"
 import { ThreadLifecycleActions, StateButton } from "./ThreadLifecycle.tsx"
@@ -641,8 +642,6 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
       />
       </div>
       {/* This entire footer is deliberately non-scrolling: transcript history alone overflows. */}
-      {/* Prompt box FIRST, then the background-ops strip UNDERNEATH it at the very bottom (maintainer
-          2026-07-09): running sub-agents / shells / monitors sit below the composer, not above it. */}
       {/* ONE hairline, at the queue card's weight. `border-border/60` is exactly the rule the queue
           card draws under its header (TodosView); the chat footer used to draw full-strength
           `border-border` AND have ThreadActionBar draw a second one under it, which stacked into a
@@ -655,13 +654,16 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
         <ThreadActionBar
           slug={slug}
           onTerminal={copyTerminalCommand}
-          // The phone draws no ops rows under the prompt (mockup v2 §2): a sub-agent is already a row
-          // in the transcript and on the board, and the registered files and links are the ⋯ sheet's.
-          // Nor does /full while its rail stands beside the column (maintainer 2026-10-02: "in the full
-          // screen view we don't need to show … the active shells and subagents and all of that beneath
-          // the prompt box anymore 'cause it's already showing up in the sidebar to the right"). The
-          // rail (FocusRail) lists every row this strip would, its saved links and Codex shells included.
-          ops={phone || railBeside ? undefined : <BackgroundOpsStrip slug={slug} transcriptShells={liveTranscriptShells} className="px-1 pt-1.5" />}
+          // THE LIVE OPS AS ONE LINE OF COUNTS over the prompt box, their rows one hover away — the
+          // queue card's line (QueueOpsSummary), so a thread reads the same in its drawer as on its card
+          // (maintainer 2026-10-09). The rows hung under the prompt box until then (2026-07-09).
+          // The phone draws no ops at all (mockup v2 §2): a sub-agent is already a row in the transcript
+          // and on the board, and the registered files and links are the ⋯ sheet's. Nor does /full while
+          // its rail stands beside the column (maintainer 2026-10-02: "in the full screen view we don't
+          // need to show … the active shells and subagents and all of that beneath the prompt box anymore
+          // 'cause it's already showing up in the sidebar to the right"). The rail (FocusRail) lists every
+          // row the line counts, its saved links and Codex shells included.
+          above={phone || railBeside || !thread ? undefined : <QueueOpsSummary thread={thread} transcriptShells={liveTranscriptShells} />}
           phoneBarOverride={phone && openQuestions.length > 0
             ? (api) => <PhoneAnswerBar count={openQuestions.length} onAnswer={() => setAnswerSheetOpen(true)} onReply={api.editReply} />
             : undefined}
@@ -4217,15 +4219,17 @@ export function PermPolicyDenialCard({ policy, denies }: { policy: NonNullable<T
   )
 }
 
-// The persistent BACKGROUND-OPS strip, anchored below the composer: one quiet row per LIVE op the
-// worker is running across rests — sub-agents (drill-in) and background shells (display-only) — so a
-// worker that "launched a CI watcher then came to rest" never reads as idle, and a final message like
-// "waiting for the watcher to complete" has a visible home. Visible whenever ops are live, INCLUDING
-// mid-turn (it folds in the old at-rest SubAgentBanner — one surface beats two, and the anchored
-// position under the composer reads as ambient status rather than transcript content). A 30s tick keeps
+// The BACKGROUND-OPS strip: one quiet row per LIVE op the worker is running across rests — sub-agents
+// (drill-in) and background shells (display-only) — so a worker that "launched a CI watcher then came
+// to rest" never reads as idle, and a final message like "waiting for the watcher to complete" has a
+// visible home. Visible whenever ops are live, INCLUDING mid-turn (it folds in the old at-rest
+// SubAgentBanner — one surface beats two, and ambient status beside the composer reads as status
+// rather than transcript content). A 30s tick keeps
 // elapsed fresh even when no board push arrives (a steadily-running op changes nothing to re-push).
 // Saved links/files follow their own divider; they keep the strip visible without starting that tick.
-// The /full page draws none of it while its rail is on screen: the rail carries the same rows.
+// Since 2026-10-09 the thread's own rows live in the hover panel of the op counts over its prompt box
+// (QueueOpsSummary), on the queue card and in the drawer alike; only the sub-agent drawer still hangs
+// a scoped strip under its box. The /full page draws none of it while its rail is on screen.
 export function BackgroundOpsStrip({
   slug,
   className = "px-4 pb-2 pt-1",
