@@ -33,6 +33,7 @@ test("a recurring prompt is a wake, so it reads as prose by the same test", () =
 
 test("a sub-agent's report up to its parent reads as prose", () => {
   assert.equal(stampHostFor(msg({ peerFrom: "reviewer", text: "Found the root cause." })), "prose")
+  assert.equal(stampHostFor(msg({ sessionPeer: { name: "frizz-11" }, text: "Remove sfltool from the pass." })), "prose")
 })
 
 test("an event or reasoning row reads as prose whichever side it is recorded on", () => {

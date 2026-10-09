@@ -24,32 +24,34 @@ export interface BubbleMessageLike {
   displayText?: string
   wake?: boolean
   peerFrom?: string
+  sessionPeer?: unknown
 }
 
 /**
  * Does this row end on the hard edge of something the HUMAN said?
  *
  * NOT `role === "user"`, which is what the transcript asked until 2026-08-31 and is a proxy that is
- * wrong three ways. The role records which side of the conversation a turn was recorded on — not who
- * wrote it, and not what it draws. Three shapes carry `role: "user"` and end on text ink instead:
+ * wrong four ways. The role records which side of the conversation a turn was recorded on — not who
+ * wrote it, and not what it draws. Four shapes carry `role: "user"` and end on text ink instead:
  *
  *   · a FRIZZ WAKE — a scheduler delivery pasted into the worker's composer. Frizz wrote it, not the
  *     human, so it must not wear the human's bubble (Message says exactly that, one branch up);
  *   · a RECURRING PROMPT line — the same thing on a repeat, collapsed to one line because it restates
  *     itself every few minutes;
- *   · a SUB-AGENT REPORT — a background child pushing a message up through `SendMessage({to:"main"})`.
+ *   · a SUB-AGENT REPORT — a background child pushing a message up through `SendMessage({to:"main"})`;
+ *   · a message from ANOTHER THREAD (`sessionPeer`) — a top-level session's `SendMessage` into this one.
  *
- * All three render as hairline DIVIDERS, whose ink ends inside a line box exactly like agent prose —
+ * All four render as hairline DIVIDERS, whose ink ends inside a line box exactly like agent prose —
  * so the role test handed the commonest rows on a driven thread the offset measured for a filled
  * rectangle and seated their reading 7px low: below its own divider and nearer the row underneath,
  * which is the "reads as the next message's" failure MessageTimestamp calls confidently wrong. A
  * `kind:"event"` or `kind:"reasoning"` row goes the same way, and for the same reason — Message tests
  * those before it looks at the role at all, and either draws a quiet line.
  *
- * Three shapes that are NOT the bubble still count as one, because the constant is about the EDGE and
+ * Two shapes that are NOT the bubble still count as one, because the constant is about the EDGE and
  * theirs is just as hard: an ANSWERS card (bordered, filled, right-justified — the human's composed
- * reply to a question block), an ATTACHMENT-ONLY send, which skips the bubble and ends on a framed
- * picture or a row of file pills, and a message from ANOTHER THREAD (`sessionPeer`), a bordered card.
+ * reply to a question block) and an ATTACHMENT-ONLY send, which skips the bubble and ends on a framed
+ * picture or a row of file pills.
  *
  * THIS MIRRORS `Message`'s BRANCH ORDER (components/ChatView.tsx) AND MUST MOVE WITH IT — a shape that
  * stops drawing a bubble, or a new one that starts, belongs in both. It is a separate function rather
@@ -68,6 +70,7 @@ export function messageEndsOnUserEdge(m: BubbleMessageLike, paired?: PairedAnswe
   // hairlines, so the wake flag alone settles them. Frizz's own trailer is the tell, never the words.
   if (m.wake) return false
   if (m.peerFrom) return false
+  if (m.sessionPeer) return false
   return true
 }
 

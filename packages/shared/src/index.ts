@@ -5607,13 +5607,12 @@ export const TranscriptMessage = z.object({
   peerSenderTaskId: z.string().optional(),
   // ANOTHER TOP-LEVEL SESSION wrote this user turn — a thread messaging this one through Claude Code's
   // cross-session channel (see parseCrossSessionMessage), most often the coordinator thread that spawned
-  // it. Not the human, and not a sub-agent either: the body is an instruction the reader needs to see,
-  // so the chat draws it as a card with the body in it, headed by the sending thread. `displayText`
-  // carries the unwrapped body.
+  // it. Not the human, and not a sub-agent either: the chat draws it as an expandable hairline naming
+  // the sending thread, with the body one click away. `displayText` carries the unwrapped body.
   //
   // `name` is the sender's Claude Code session name, the fallback label. `thread` is the Frizz thread
   // behind it, filled in by the server from the sender's socket (session-peer.ts) — absent when the
-  // sender is not a Frizz thread or is gone without having been resolved, and then the card names the
+  // sender is not a Frizz thread or is gone without having been resolved, and then the line names the
   // session without a link. `project` is the URL slug of the sender's project.
   sessionPeer: z.object({
     name: z.string().optional(),

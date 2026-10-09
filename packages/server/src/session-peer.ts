@@ -109,7 +109,7 @@ export function createSessionPeerResolver(deps: {
     const found = sessionId ? deps.findThread(sessionId) : undefined
     if (!found) return undefined
     const { projectId, project, ...thread } = found
-    // The project slug rides only when the sender is in ANOTHER project — the card then links across
+    // The project slug rides only when the sender is in ANOTHER project — the line then links across
     // projects; absent, the link stays inside the page the reader is on.
     return projectId === receiverProjectId || !project ? thread : { ...thread, project }
   }

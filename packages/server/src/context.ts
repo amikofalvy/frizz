@@ -197,8 +197,8 @@ export interface AppContext {
   activeTenants?: () => ReadonlyArray<{ project: Project; board: BoardManager; storage?: Storage }>
   /**
    * The Frizz thread that sent a cross-session message into one of THIS project's threads, for the
-   * chat card that heads the message (see session-peer.ts). Absent under a test context, and then the
-   * card names the sender's session without a link.
+   * chat line that names the sender (see session-peer.ts). Absent under a test context, and then the
+   * line names the sender's session without a link.
    */
   sessionPeerThread?: (peer: NonNullable<TranscriptMessage["sessionPeer"]>) => SessionPeerThread | undefined
   /**

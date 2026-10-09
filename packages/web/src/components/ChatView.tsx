@@ -46,7 +46,7 @@ import { useUnqueueFollowUp, useUnqueueSupported } from "../lib/unqueueFollowUp.
 import { useFailedDeliveryActions } from "../lib/failedDelivery.ts"
 import { useDeliverQueuedNow, useDeliverQueuedNowSupported } from "../lib/deliverQueuedNow.ts"
 import { useInnerHtml } from "../lib/innerHtml.ts"
-import { SessionMessageCard } from "./SessionMessageCard.tsx"
+import { SessionMessageLine } from "./SessionMessageLine.tsx"
 import { useLocalFileCodeLinks } from "../lib/localFileCode.ts"
 import { shouldSubmitStagedEnter } from "../lib/composerKeyboard.ts"
 import { lastAskIndex, messagePresentationText } from "../lib/messagePresentation.ts"
@@ -3521,9 +3521,8 @@ export const Message = memo(function Message({ m, answering, dense, paired, text
     if (recurring) return <RecurringPromptLine bump={recurring} sourceId={m.sourceId} at={m.at} />
     if (m.wake) return <FrizzWake steer={m.wakeSteer} text={text} sourceId={m.sourceId} at={m.at} wrap={dense} />
     // A SIDEWAYS writer of a user turn the human didn't type: another top-level thread messaging this
-    // one. Its body is an instruction the reader needs in full, so it is a card headed by a link to the
-    // sender — see SessionMessageCard.
-    if (m.sessionPeer) return <SessionMessageCard peer={m.sessionPeer} text={text} queued={m.queued} sourceId={m.sourceId} wrap={dense} />
+    // one. An expandable hairline naming and linking the sender — see SessionMessageLine.
+    if (m.sessionPeer) return <SessionMessageLine peer={m.sessionPeer} text={text} queued={m.queued} sourceId={m.sourceId} at={m.at} wrap={dense} />
     // …and the same correction for the OTHER writer of a user turn the human didn't type: a background
     // sub-agent pushing a report up to its parent through `SendMessage({to:"main"})`. `m.peerFrom` is the
     // server's own tell (it parsed the <agent-message> wrapper and put the body in displayText, which

@@ -1,12 +1,12 @@
 // Seed an adhoc stack with a thread that received messages from ANOTHER thread through Claude Code's
-// cross-session channel — the card SessionMessageCard draws. No provider is dispatched.
+// cross-session channel — the hairline SessionMessageLine draws. No provider is dispatched.
 //
 //   nub scripts/seed-session-peer.mjs --home=<adhoc-stack HOME>
 //
 // Three messages land in the watcher thread: one from the coordinator thread (a fake live-session
-// registry entry traces its socket to that thread, so the card links it), one that arrived while the
+// registry entry traces its socket to that thread, so the line links it), one that arrived while the
 // watcher was idle (the wrapped delivery shape), and one from a session Frizz cannot place (no
-// registry entry, so the card names the session without a link).
+// registry entry, so the line names the session without a link).
 import { execFileSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { mkdirSync, writeFileSync } from "node:fs"
