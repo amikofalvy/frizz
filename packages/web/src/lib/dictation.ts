@@ -49,7 +49,8 @@ interface Recognizer extends EventTarget {
   interimResults: boolean
   processLocally: boolean
   phrases: unknown[]
-  start(): void
+  // Chrome 135+ takes the audio track to recognize; older engines ignore it and open the microphone themselves.
+  start(track?: MediaStreamTrack): void
   stop(): void
   abort(): void
   onresult: ((e: { results: SpeechRecognitionResultList }) => void) | null
@@ -165,7 +166,7 @@ export function spliceDictation(before: string, spoken: string, after: string): 
 // Only one microphone at a time on the page: a second composer starting dictation ends the first.
 let activeSession: { abort: () => void } | null = null
 
-export type DictationState = "unsupported" | "idle" | "installing" | "listening"
+export type DictationState = "unsupported" | "idle" | "installing" | "starting" | "listening"
 
 // Recognizer errors worth a toast. "aborted" is our own cancel and "no-speech" is the operator saying
 // nothing; both just end the session.
@@ -186,10 +187,25 @@ function errorMessage(error: string): string | null {
   }
 }
 
+function microphoneError(err: unknown): string {
+  const name = err instanceof DOMException ? err.name : ""
+  if (name === "NotAllowedError" || name === "SecurityError") return errorMessage("not-allowed")!
+  if (name === "NotFoundError" || name === "OverconstrainedError") return errorMessage("audio-capture")!
+  return `The microphone could not start: ${err instanceof Error ? err.message : String(err)}`
+}
+
+function release(stream: MediaStream): void {
+  for (const track of stream.getTracks()) track.stop()
+}
+
 // The composer's microphone. `read` returns the textarea's current prose and selection; `write` puts
 // new prose in it and places the caret. The hook owns the recognizer and never lets two writers race:
 // the moment the box holds anything other than what dictation last wrote — the operator typed, sent, or
 // the surface cleared the draft — the session is cancelled and the box is left exactly as it is.
+//
+// The hook opens the microphone ITSELF and hands the recognizer that track, so the same audio can feed
+// the level meter on the button (DictationLevel): one capture, one permission prompt, and the browser's
+// recording indicator goes out the moment the session ends, because ending it stops the track.
 export function useDictation({
   read,
   write,
@@ -199,7 +215,11 @@ export function useDictation({
 }) {
   const [support, setSupport] = useState<DictationSupport | null>(null)
   const [state, setState] = useState<Exclude<DictationState, "unsupported">>("idle")
-  const sessionRef = useRef<{ recognizer: Recognizer; lastWritten: string; abort: () => void } | null>(null)
+  const [stream, setStream] = useState<MediaStream | null>(null)
+  const sessionRef = useRef<{ recognizer: Recognizer; stream: MediaStream; lastWritten: string; abort: () => void } | null>(null)
+  const mountedRef = useRef(true)
+  // Bumped by every cancel, so a start still waiting on the microphone prompt knows it was called off.
+  const generationRef = useRef(0)
   const readRef = useRef(read)
   readRef.current = read
   const writeRef = useRef(write)
@@ -214,22 +234,45 @@ export function useDictation({
   // Stop listening and keep what the box shows. Handlers come off FIRST, so nothing the engine still
   // has in flight can write after the operator took the box back.
   const cancel = useCallback(() => {
+    generationRef.current++
     const session = sessionRef.current
-    if (!session) return
+    if (!session) {
+      setState((s) => (s === "starting" ? "idle" : s))
+      return
+    }
     sessionRef.current = null
     if (activeSession === session) activeSession = null
     session.recognizer.onresult = null
     session.recognizer.onerror = null
     session.recognizer.onend = null
     session.recognizer.abort()
+    release(session.stream)
+    setStream(null)
     setState("idle")
   }, [])
-  useEffect(() => cancel, [cancel])
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      cancel()
+    }
+  }, [cancel])
 
-  const listen = useCallback((lang: string) => {
+  const listen = useCallback(async (lang: string) => {
     const SR = recognizerClass()
     if (!SR) return
     activeSession?.abort()
+    setState("starting")
+    const generation = generationRef.current
+    let mic: MediaStream
+    try {
+      mic = await navigator.mediaDevices.getUserMedia({ audio: true })
+    } catch (err) {
+      if (mountedRef.current) setState("idle")
+      showToast(microphoneError(err))
+      return
+    }
+    if (!mountedRef.current || generation !== generationRef.current) return release(mic)
     const recognizer = new SR()
     recognizer.lang = lang
     recognizer.continuous = true
@@ -246,7 +289,7 @@ export function useDictation({
     const { prose, start, end } = readRef.current()
     const before = prose.slice(0, start)
     const after = prose.slice(end)
-    const session = { recognizer, lastWritten: prose, abort: () => cancel() }
+    const session = { recognizer, stream: mic, lastWritten: prose, abort: () => cancel() }
     recognizer.onresult = (e) => {
       if (readRef.current().prose !== session.lastWritten) return cancel()
       const segments = Array.from(e.results, (r) => r[0]?.transcript ?? "")
@@ -264,16 +307,19 @@ export function useDictation({
       }
     }
     recognizer.onend = () => {
+      release(mic)
       if (sessionRef.current !== session) return
       sessionRef.current = null
       if (activeSession === session) activeSession = null
+      setStream(null)
       setState("idle")
     }
     sessionRef.current = session
     activeSession = session
+    setStream(mic)
     setState("listening")
     try {
-      recognizer.start()
+      recognizer.start(mic.getAudioTracks()[0])
     } catch (err) {
       cancel()
       showToast(`Dictation could not start: ${err instanceof Error ? err.message : String(err)}`)
@@ -290,7 +336,7 @@ export function useDictation({
       return
     }
     const SR = recognizerClass()
-    if (!SR || !support || state === "installing") return
+    if (!SR || !support || state === "installing" || state === "starting") return
     let status: Availability = support.status
     try {
       status = await SR.available({ langs: [support.lang], processLocally: true })
@@ -316,8 +362,8 @@ export function useDictation({
       }
       setSupport({ lang: support.lang, status: "available" })
     }
-    listen(support.lang)
+    await listen(support.lang)
   }, [support, state, listen])
 
-  return { state: support ? state : ("unsupported" as const), toggle, cancel }
+  return { state: support ? state : ("unsupported" as const), stream, toggle, cancel }
 }

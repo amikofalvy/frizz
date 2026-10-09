@@ -9,6 +9,7 @@ import { queueComposerHandlesOptionEnter } from "../lib/queueComposerKeyboard.ts
 import { focusQuestionFrom } from "../lib/questionKeys.ts"
 import { composerRail } from "../lib/iconRhythm.ts"
 import { useDictation } from "../lib/dictation.ts"
+import { DictationLevel } from "./DictationLevel.tsx"
 import { apiBase } from "../lib/base-path.ts"
 import { localImageUrl } from "../lib/markdownTargets.ts"
 import { basename } from "../lib/paths.ts"
@@ -1050,27 +1051,32 @@ export function Composer({
             }
             void dictation.toggle()
           }}
-          disabled={busy || dictation.state === "installing"}
+          disabled={busy || dictation.state === "installing" || dictation.state === "starting"}
           aria-pressed={dictation.state === "listening"}
           title={
             dictation.state === "listening"
               ? "Stop dictation"
               : dictation.state === "installing"
                 ? "Downloading the on-device speech model…"
-                : "Dictate — transcribed on this device"
+                : dictation.state === "starting"
+                  ? "Starting the microphone…"
+                  : "Dictate — transcribed on this device"
           }
           aria-label={dictation.state === "listening" ? "Stop dictation" : "Dictate"}
           style={{ right: rail.right.mic }}
-          // Listening is the GLYPH turning red and breathing, never a fill: a filled square is ink edge to
-          // edge, and at this slot's box gap it would sit ~6px off the paperclip's ink instead of ~14.
+          // Listening swaps the GLYPH for live level bars at full foreground, never a fill: a filled square
+          // is ink edge to edge, and at this slot's box gap it would sit ~6px off the paperclip's ink
+          // instead of ~14. (A red, pulsing microphone was tried first and rejected, 2026-10-08.)
           className={`icon-hover-outline absolute bottom-2 flex h-7 w-7 items-center justify-center rounded-lg transition-[color,background-color] enabled:hover:bg-panel-2/70 disabled:opacity-50 ${
-            dictation.state === "listening" ? "text-danger" : "text-muted enabled:hover:text-fg"
+            dictation.state === "listening" ? "text-fg" : "text-muted enabled:hover:text-fg"
           }`}
         >
-          {dictation.state === "installing" ? (
+          {dictation.state === "installing" || dictation.state === "starting" ? (
             <Loader2 size={15} strokeWidth={2} className="animate-spin" />
+          ) : dictation.state === "listening" && dictation.stream ? (
+            <DictationLevel stream={dictation.stream} />
           ) : (
-            <Mic size={15} strokeWidth={2} className={dictation.state === "listening" ? "animate-pulse" : undefined} />
+            <Mic size={15} strokeWidth={2} />
           )}
         </button>
       )}
