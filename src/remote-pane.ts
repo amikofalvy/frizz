@@ -2,7 +2,7 @@ import { isAnonymousClaimName } from "@frizz/shared";
 import { qrAreaOf, renderQrLines } from "@frizz/server/qr";
 import type { AccessLink } from "./access-pane.ts";
 import { ALT_SCREEN_OFF, ALT_SCREEN_ON, CLEAR, DIM, fitScreen, HIDE_CURSOR, type OptionalLine, RESET, SHOW_CURSOR } from "./access-pane.ts";
-import { type CloudConfig, describeCloudConfig, isClaimedConfig, isExternalConfig, normalizeHostname } from "./cloud.ts";
+import { type CloudConfig, customNamesOffered, describeCloudConfig, isClaimedConfig, isExternalConfig, normalizeHostname } from "./cloud.ts";
 import type { Pane } from "./pane-host.ts";
 import type { DeviceCodePrompt } from "./github-device-flow.ts";
 import type { CloudflaredProbe, TailscaleProbe } from "./remote-detect.ts";
@@ -12,8 +12,8 @@ import type { CloudflaredProbe, TailscaleProbe } from "./remote-detect.ts";
  * the terminal that is already running the board, remembered on disk.
  *
  * Why here and not in flags: the choice is made once, and it is a walkthrough, not a switch. Each
- * setup has a prerequisite (a GitHub sign-in, a tunnel created in another terminal, a Tailscale
- * daemon) that a flag can only fail on, while a screen can check it, print the commands, and ask for
+ * setup has a prerequisite (a tunnel created in another terminal, a Tailscale daemon) that a flag
+ * can only fail on, while a screen can check it, print the commands, and ask for
  * exactly the one or two values Frizz cannot find out for itself. What it saves is served by every
  * later plain launch; "Off" clears it.
  *
@@ -33,7 +33,8 @@ export interface RemotePaneOptions {
   /**
    * Claim `<name>.frizz.sh`. An empty name mints a private unguessable one with no account; a word
    * claims that word for a GitHub account, confirmed through a device code the pane shows via
-   * `signIn.onDeviceCode`. Escape on that screen aborts `signIn.signal`. Rejects with a message.
+   * `signIn.onDeviceCode`. Escape on that screen aborts `signIn.signal`. Rejects with a message. The
+   * pane asks for a word only while custom names are offered (CUSTOM_NAMES_OFFERED in cloud.ts).
    */
   claim: (name: string, signIn: ClaimSignIn) => Promise<CloudConfig>;
   /** A fresh single-use link for the origin now in force, for the done screen. */
@@ -61,6 +62,7 @@ interface Choice {
   blurb: string;
 }
 
+/** Every setup, in menu order. The menu shows the subset `choicesFor` picks, never this list directly. */
 const CHOICES: Choice[] = [
   { kind: "private", title: "Private name", blurb: "an unguessable name on frizz.sh — no account, nothing to install" },
   { kind: "frizz", title: "Custom name", blurb: "<name>.frizz.sh of your choosing; needs a GitHub account" },
@@ -69,6 +71,24 @@ const CHOICES: Choice[] = [
   { kind: "other", title: "Something else", blurb: "any proxy or tunnel you run — tell Frizz its address" },
   { kind: "off", title: "Off", blurb: "loopback only" },
 ];
+
+/**
+ * The rows the menu lists for a board whose setup is `current`.
+ *
+ * "Custom name" is withdrawn while custom names are paused (CUSTOM_NAMES_OFFERED in cloud.ts) — except
+ * on a board ALREADY served by a custom claim, which keeps the row so the menu still marks what is
+ * current. Choosing that row then serves the saved name again, renewed by the keypair alone; it never
+ * opens the claim form, because a new custom claim is exactly what is paused.
+ */
+function choicesFor(current: CloudConfig | null): Choice[] {
+  if (customNamesOffered()) return CHOICES;
+  if (kindOf(current) === "frizz") {
+    return CHOICES.map((choice) =>
+      choice.kind === "frizz" ? { ...choice, blurb: `${current!.hostname} — kept and renewed; new custom names are paused` } : choice,
+    );
+  }
+  return CHOICES.filter((choice) => choice.kind !== "frizz");
+}
 
 const ENTER = new Set(["\r", "\n"]);
 const BACKSPACE = new Set(["\x7f", "\b"]);
@@ -136,6 +156,10 @@ export function createRemotePane(options: RemotePaneOptions): Pane {
   };
 
   const check = (ok: boolean, text: string) => (ok ? `${text} ✓` : text);
+  // Read on every use: the current setup moves under the pane, and the custom row follows it.
+  const choices = () => choicesFor(options.current());
+  /** The row for `kind`, or the first row when the menu does not list it. */
+  const rowOf = (kind: RemoteKind) => Math.max(0, choices().findIndex((choice) => choice.kind === kind));
 
   const paint = () => {
     if (!open) return;
@@ -149,7 +173,7 @@ export function createRemotePane(options: RemotePaneOptions): Pane {
           "Frizz binds 127.0.0.1 and has no login. Reaching it from another device means something in front of it does the authenticating. Whatever you pick here is remembered; from then on a plain `npx frizz` serves it.",
         ),
         "",
-        ...CHOICES.map((choice, index) => {
+        ...choices().map((choice, index) => {
           const marker = index === s.index ? "❯" : " ";
           const title = choice.title.padEnd(18);
           const now = choice.kind === current ? `  ${DIM}(current)${RESET}` : "";
@@ -381,6 +405,24 @@ export function createRemotePane(options: RemotePaneOptions): Pane {
     paint();
   };
 
+  // The custom row while custom names are paused: serve the saved claim again, with no claim call of
+  // its own — apply renews the lease by keypair, exactly as every launch does.
+  const serveCurrent = async () => {
+    const current = options.current();
+    const back: Screen = { name: "menu", index: rowOf("frizz") };
+    if (!current) return;
+    screen = { name: "busy", message: `serving ${current.hostname}…` };
+    paint();
+    try {
+      await options.apply(current);
+      options.onChanged?.(current);
+      screen = { name: "done", message: `Serving https://${current.hostname} (${describeCloudConfig(current)}).`, link: options.issueLink(), config: current };
+    } catch (error) {
+      screen = { name: "error", message: error instanceof Error ? error.message : String(error), back };
+    }
+    paint();
+  };
+
   const turnOff = async () => {
     screen = { name: "busy", message: "back to loopback only…" };
     paint();
@@ -389,7 +431,7 @@ export function createRemotePane(options: RemotePaneOptions): Pane {
       options.onChanged?.(null);
       screen = { name: "done", message: "Loopback only. This board is reachable from this machine alone.", link: null, config: null };
     } catch (error) {
-      screen = { name: "error", message: error instanceof Error ? error.message : String(error), back: { name: "menu", index: CHOICES.length - 1 } };
+      screen = { name: "error", message: error instanceof Error ? error.message : String(error), back: { name: "menu", index: rowOf("off") } };
     }
     paint();
   };
@@ -397,8 +439,7 @@ export function createRemotePane(options: RemotePaneOptions): Pane {
   return {
     open() {
       open = true;
-      const current = kindOf(options.current());
-      screen = { name: "menu", index: Math.max(0, CHOICES.findIndex((choice) => choice.kind === current)) };
+      screen = { name: "menu", index: rowOf(kindOf(options.current())) };
       output.write(ALT_SCREEN_ON);
       output.write(HIDE_CURSOR);
       paint();
@@ -421,13 +462,15 @@ export function createRemotePane(options: RemotePaneOptions): Pane {
       }
       if (s.name === "menu") {
         if (key === ESC || key === "q") return "close";
-        if (key === UP || key === "k") s.index = (s.index + CHOICES.length - 1) % CHOICES.length;
-        else if (key === DOWN || key === "j") s.index = (s.index + 1) % CHOICES.length;
-        else if (/^[1-6]$/.test(key)) s.index = Number(key) - 1;
+        const rows = choices();
+        if (key === UP || key === "k") s.index = (s.index + rows.length - 1) % rows.length;
+        else if (key === DOWN || key === "j") s.index = (s.index + 1) % rows.length;
+        else if (/^[1-9]$/.test(key) && Number(key) <= rows.length) s.index = Number(key) - 1;
         else if (ENTER.has(key)) {
-          const choice = CHOICES[s.index]!;
+          const choice = rows[Math.min(s.index, rows.length - 1)]!;
           if (choice.kind === "off") void turnOff();
           else if (choice.kind === "private") void claimPrivate();
+          else if (choice.kind === "frizz" && !customNamesOffered()) void serveCurrent();
           else openForm(choice.kind);
           return "keep";
         }
@@ -436,7 +479,7 @@ export function createRemotePane(options: RemotePaneOptions): Pane {
       }
       // A form.
       if (key === ESC) {
-        screen = { name: "menu", index: CHOICES.findIndex((choice) => choice.kind === s.kind) };
+        screen = { name: "menu", index: rowOf(s.kind) };
         paint();
         return "keep";
       }
