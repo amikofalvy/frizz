@@ -206,7 +206,7 @@ test("an armed timer gets a row: named by its prompt, counting down, non-interac
   const body = text(t)
   assert.match(body, /Timers/)
   assert.match(body, /Re-check: tip quiet, install green/)
-  assert.match(body, /fires in 3[34]m/)
+  assert.match(render(t), /data-wait-status[^>]*>in 3[34]m</, "the Timers heading carries the verb")
   const rows = renderToStaticMarkup(createElement(AwaitingWaitTable, { thread: t, divider: false }))
   assert.doesNotMatch(rows, /lucide-chevron-right/, "nothing to open, so no chevron")
   assert.doesNotMatch(rows, /<a |<button/, "no dead link and no disabled control either")

@@ -420,12 +420,15 @@ export const ROW_INSET = 8
 // THE NAME WRAPS rather than truncating (maintainer 2026-10-08, choosing it off a mockup sheet: every
 // title on the /full rail had been cut to two or three words, a one-line name getting 107px of a 308px
 // rail). Wrapped, it keeps its whole width and the row simply grows; `items-baseline` keeps the mark, the
-// status and the chevron on its FIRST line. Three
-// lines is a backstop for a timer's prompt, which can run to a paragraph — no row label reaches it.
+// status and the chevron on its FIRST line. Two lines at most: a sub-agent or a saved file is named in a
+// handful of words, and a third line read as a paragraph in a column of titles (maintainer 2026-10-08).
+// A TIMER takes one (`oneLine`): its name is the prompt the worker armed it with, which runs to a
+// paragraph and is an instruction rather than a title, so the row reads its opening and the tooltip
+// carries the rest.
 // A tree row (the edited files) still truncates: a basename is one token and wrapping it breaks a word.
 // No `min-w-*` here: each use sets its own, and two in one class list resolve by stylesheet order.
 const NAME = "ml-1.5 font-medium text-fg/90"
-const NAME_WRAP = `${NAME} line-clamp-3 break-words`
+const NAME_WRAP = `${NAME} line-clamp-2 break-words`
 const NAME_TREE = `${NAME} min-w-0 flex-1 truncate`
 /** The light-gray status. It keeps its own width and the name's `flex-1` eats the slack, so the status
  *  lands against the chevron at the card's right edge; `text-right` matters only once it truncates.
@@ -468,7 +471,7 @@ function Chevron() {
   return <ChevronRight size={13} aria-hidden className={`${ON_CAP} ml-[3px] -mr-[4px] text-muted-35 transition-colors group-hover:text-muted-70`} />
 }
 
-export function WaitRow({ mark, name, status, onOpen, onPrewarm, href, ghRef, title, testKind, testId, indent, dismiss }: {
+export function WaitRow({ mark, name, status, onOpen, onPrewarm, href, ghRef, title, testKind, testId, indent, dismiss, oneLine }: {
   mark: ReactNode
   name: string
   status: ReactNode
@@ -477,6 +480,8 @@ export function WaitRow({ mark, name, status, onOpen, onPrewarm, href, ghRef, ti
    *  sub-agents and shells (maintainer 2026-07-30: "the X button to stop a sub-agent should show up
    *  everywhere sub-agents are listed"). Absent ⇒ no ×; the card leaves it to the strip beneath it. */
   dismiss?: { onDismiss: () => void; title: string; label: string }
+  /** Truncate the name to one line instead of wrapping it (a timer's prompt — see NAME). */
+  oneLine?: boolean
   /** Left inset in px for a row in a TREE (the rail's edited files), added to the row's own 8px. A tree
    *  row's name truncates rather than wraps (see NAME). */
   indent?: number
@@ -496,7 +501,8 @@ export function WaitRow({ mark, name, status, onOpen, onPrewarm, href, ghRef, ti
   const tree = indent !== undefined
   // The name is the row's `flex-1` — unless a × follows it, when the pair is, so the × sits directly
   // after the name rather than at the far end of the slack.
-  const nameClass = tree ? NAME_TREE : dismiss ? `${NAME_WRAP} min-w-0` : `${NAME_WRAP} ${NAME_FLOOR}`
+  const wrap = oneLine ? `${NAME} truncate` : NAME_WRAP
+  const nameClass = tree ? NAME_TREE : dismiss ? `${wrap} min-w-0` : `${wrap} ${NAME_FLOOR}`
   const open = href
     ? (
       <a
@@ -767,19 +773,25 @@ export function BgShellRow({ shell, slug, now, testId, onDismiss }: {
 // rather than as a disabled control.
 export function TimerRow({ watch, now }: { watch: ThreadWatchView; now: number }) {
   const fireMs = Date.parse(watch.timer?.fireAt ?? "")
-  // "fires in 34m", counting down live off the card's shared clock. A due-but-undelivered timer says
+  // "in 34m", counting down live off the card's shared clock — under a "Timers" heading the verb is
+  // implied, and "fires in 33m" was the widest status in the rail for it (maintainer 2026-10-08: "pretty
+  // unnecessarily verbose"). The "in" stays: beside the sub-agents' elapsed "1h 1m", a bare "33m" would
+  // read as time already spent rather than time left. A due-but-undelivered timer says
   // "firing…" rather than a 0s countdown or a negative one — the same present-progressive the PR row uses
   // for its own gap ("Checking…"). That gap is usually a scheduler tick, but it can run to minutes: a
   // timer wake is not exempt from the quiet window after a handoff (wake-store.ts), and the row settles
   // only once the delivery is confirmed.
-  const status = !Number.isFinite(fireMs) ? "armed" : fireMs > now ? `fires in ${formatCompactElapsed(fireMs - now)}` : "firing…"
+  const status = !Number.isFinite(fireMs) ? "armed" : fireMs > now ? `in ${formatCompactElapsed(fireMs - now)}` : "firing…"
+  const prompt = watch.timer?.prompt
   return (
     <WaitRow
       testKind="timer"
       testId={watch.target}
       mark={<Clock size={12} className={`${ON_CAP} text-muted-60`} />}
-      name={watch.timer?.prompt || watch.target}
-      title={watch.timer?.fireAt ? `One-off timer, set for ${watch.timer.fireAt}` : watch.target}
+      name={prompt || watch.target}
+      oneLine
+      // The whole prompt lives here, since the row shows only its first line.
+      title={[prompt, watch.timer?.fireAt ? `One-off timer, set for ${watch.timer.fireAt}` : watch.target].filter(Boolean).join("\n\n")}
       status={status}
     />
   )
@@ -927,7 +939,10 @@ export interface WaitGroup {
 // mono 8.10 / 7.42px. `ml-[3px]` read 6.10px in sans, visibly tighter than the gap before it.
 function GroupHeading({ group, first }: { group: WaitGroup; first: boolean }) {
   // `px-2`: the rows' inset (ROW), so a heading's first letter stays on the column of marks below it.
-  const cls = `px-2 text-[10.5px] uppercase tracking-wide text-muted-45 ${first ? "" : "mt-2.5"}`
+  // `mt-4` above every heading but the first — 16px against the rows' 1px. It was 10px while every row
+  // was one line; once names wrap, a two-line row is 40px tall and 10px no longer read as a section
+  // break (maintainer 2026-10-08: "We need more spacing between sections").
+  const cls = `px-2 text-[10.5px] uppercase tracking-wide text-muted-45 ${first ? "" : "mt-4"}`
   if (!group.onToggle) return <div className={cls}>{group.head}</div>
   return (
     <button
