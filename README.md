@@ -151,7 +151,7 @@ Options:
 
 
 To reach the board from a phone or another machine, press R in the terminal running it: a short
-walkthrough sets up a private frizz.sh name (no account needed), a custom one, a Cloudflare
+walkthrough sets up a private frizz.sh name (no account needed), a Cloudflare
 Tunnel, Tailscale, or a proxy of your own, and
 remembers the choice, so a plain launch serves it from then on. The board stays on loopback and
 shows a single-use sign-in link as a QR; press L for a fresh one, or run --link from another shell.
@@ -217,7 +217,7 @@ shows a single-use sign-in link as a QR; press L for a fresh one, or run --link 
 <details>
 <summary><b>Can I reach it from anywhere, not just my LAN?</b></summary>
 
-> Same answer: press **R** and pick a private frizz.sh name (unguessable, no account), a custom frizz.sh name, a Cloudflare Tunnel, or Tailscale. Each is reachable from anywhere the transport is — a frizz.sh name and a Cloudflare Tunnel from the open internet, Tailscale from your own devices.
+> Same answer: press **R** and pick a private frizz.sh name (unguessable, no account), a Cloudflare Tunnel, or Tailscale. (Custom frizz.sh names are paused for now; a board that already holds one keeps it.) Each is reachable from anywhere the transport is — a frizz.sh name and a Cloudflare Tunnel from the open internet, Tailscale from your own devices.
 >
 > Frizz has no accounts, so the single-use sign-in link **is** the door: a phone that scans it gets a session; nobody else gets in. Sessions are per device and can be listed and revoked with `npx frizz --sessions` and `npx frizz --sign-out`.
 
