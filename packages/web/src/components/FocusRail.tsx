@@ -11,10 +11,10 @@ import { newestFileChangeKey } from "../lib/editedFilesRefresh.ts"
 import { openLocalPath } from "../lib/local-file-links.ts"
 import { prewarmLocalFile } from "../lib/localFileQuery.ts"
 import { useNowMs } from "../lib/liveClock.ts"
-import { basename, tildePath } from "../lib/paths.ts"
+import { tildePath } from "../lib/paths.ts"
 import { prefs } from "../lib/prefs.ts"
 import { PRIMER } from "../lib/primer.ts"
-import { AgentRow, BgShellRow, GithubWatchRow, ON_CAP, TimerRow, WaitGrid, WaitRow, type WaitGroup } from "./AwaitingBackgroundCard.tsx"
+import { AgentRow, BgShellRow, GithubWatchRow, ON_CAP, ROW_INSET, TimerRow, WaitGrid, WaitRow, type WaitGroup } from "./AwaitingBackgroundCard.tsx"
 import { transcriptBackgroundShells } from "./ChatView.tsx"
 
 // THE FULLSCREEN PAGE'S OPERATIONAL RAIL — what is going on in this thread, listed beside the transcript
@@ -67,8 +67,8 @@ function DirRow({ name, depth }: { name: string; depth: number }) {
   return (
     <div
       data-file-dir={name}
-      className="flex items-baseline text-[12px] leading-5 text-muted-70"
-      style={{ paddingLeft: depth * TREE_INDENT }}
+      className="flex items-baseline pr-2 text-[12px] leading-5 text-muted-70"
+      style={{ paddingLeft: ROW_INSET + depth * TREE_INDENT }}
     >
       <span className="flex shrink-0"><Folder size={12} className={`${ON_CAP} text-muted-45`} /></span>
       {/* ml-[5px], not the row's ml-1.5: lucide's folder inks 11 of its 12 box px, so 6px of box read
@@ -139,11 +139,13 @@ function FileRow({ file, name, depth, homeDir }: { file: EditedFile; name: strin
 }
 
 // A file or link the worker SAVED for the human (`mcp__frizz__link`). The card's row shape again: the
-// label it was saved under is the name, and the status is the short reading of where it goes — a URL's
-// host, a file's basename — with the full target in the tooltip (a file's home written as `~`, as the
-// edited-files tree writes it). Never the whole URL or path: the status track is shared by every row in
-// the grid, so one long target there would truncate every name above it (see WaitGrid's
-// `fit-content(50%)`). A file opens in the page's viewer, a link in a new tab.
+// label it was saved under is the name, and the full target is the tooltip (a file's home written as
+// `~`, as the edited-files tree writes it). A URL's status is its host, the one thing its label may not
+// say; a FILE has none (maintainer 2026-10-08: "I don't think the file name is super important") — its
+// basename restated the label and took the width the label needed to stop wrapping. Never the whole URL
+// or path: the status track is shared by every row in the grid, so one long target there would squeeze
+// every name above it (see WaitGrid's `fit-content(50%)`). A file opens in the page's viewer, a link in
+// a new tab.
 function SavedLinkRow({ link }: { link: ThreadLinkView }) {
   const client = useQueryClient()
   const homeDir = useHomeDir()
@@ -172,8 +174,7 @@ function SavedLinkRow({ link }: { link: ThreadLinkView }) {
       onOpen={() => openLocalPath(link.target)}
       onPrewarm={() => prewarmLocalFile(client, link.target)}
       title={tildePath(link.target, homeDir)}
-      // Either separator: a `/`-only split left a Windows target's whole `C:\Users\…` path as the status.
-      status={basename(link.target)}
+      status={null}
     />
   )
 }

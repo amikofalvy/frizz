@@ -41,7 +41,7 @@ test("/full lists the thread's ops in its rail, and under the prompt box only on
     // verdict lands a probe tick after the first board read, so it is waited for rather than read once.
     const railRow = (id: string) => `[data-focus-rail] [data-wait-row="${id}"]`
     const statusOf = (id: string) => page.$eval(`${railRow(id)} [data-wait-status]`, (el) => (el as HTMLElement).innerText)
-    assert.match(await statusOf("toolu_fro_agent2"), /^stale · sonnet-low · /)
+    assert.match(await statusOf("toolu_fro_agent2"), /^stale · \d/)
     assert.equal(await page.$(`${railRow("toolu_fro_agent2")} [class*="animate-spin"]`), null, "a stale sub-agent does not spin")
     assert.ok(await page.$(`${railRow("toolu_fro_agent2")} .rounded-full.bg-muted\\/30`), "…it wears the stale dot")
     assert.equal(await page.$(`${railRow("toolu_fro_agent")} [class*="animate-spin"]`) !== null, true, "the live one still spins")

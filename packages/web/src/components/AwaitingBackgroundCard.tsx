@@ -396,17 +396,36 @@ export function watchStatusLine(status: GithubWatchStatus | undefined): string {
 // and the status are opposite ends of the row (the 1fr owns that space), and the chevron is the status's
 // handle (medium). A gap is also a BOX distance, and two of the four cells are mostly empty box — so the
 // numbers here are INK, measured with the row's own probe at dsf 6, sans and mono.
-const ROW = "group relative col-span-4 grid grid-cols-subgrid items-baseline rounded-sm text-[12px] leading-5"
+//
+// `px-2` INSETS every mark from the row's hover fill, and WaitGrid's `-mx-2` gives that inset back, so
+// the ink stays on the content edge it always sat on while the fill reaches 8px past it on both sides.
+// Without it the chevron's ink ran to 1.88px from the fill's right edge and the mark sat flush on its
+// left (maintainer 2026-10-08: "the chevron goes all the way to the very edge"). On a subgrid row the
+// padding folds into the two edge tracks, identically on every row, so the columns still agree.
+const ROW = "group relative col-span-4 grid grid-cols-subgrid items-baseline rounded-sm px-2 text-[12px] leading-5"
 // The same row laid out by FLEX, for a row that INDENTS (the rail's edited-files tree). Subgrid could
 // not do it: a subgrid item's padding is folded into the shared edge track, so one deep row would
 // have widened the mark column for every row and none of the names would have moved. In flex the
 // name is the `1fr` (flex-1), the status keeps its own width, and the chevron sits at the end —
 // the same four marks in the same order, at the same right edge.
-const ROW_FLEX = "group relative col-span-4 flex items-baseline rounded-sm text-[12px] leading-5"
+// Its left inset is the row's `indent` plus the same 8px (set inline, since it varies by depth).
+const ROW_FLEX = "group relative col-span-4 flex items-baseline rounded-sm pr-2 text-[12px] leading-5"
+/** The inset every row keeps inside its hover fill, in px — ROW's `px-2`, for the tree rows that set
+ *  their left padding inline. */
+export const ROW_INSET = 8
 // ml-1.5 → 6.5px of ink between the mark and the name, which is the figure the old single-row layout was
 // measured and left at (a -1px "safety" trim made it worse). A lucide circle at 12 inks ~10 of its box,
 // so it behaves like a text run and needs no trim of its own.
-const NAME = "ml-1.5 min-w-0 truncate font-medium text-fg/90"
+//
+// THE NAME WRAPS rather than truncating (maintainer 2026-10-08, choosing it off a mockup sheet: every
+// title on the /full rail had been cut to two or three words). The status track takes up to half the
+// grid, so a one-line name got 107px of a 308px rail. Wrapped, it keeps its whole width and the row
+// simply grows; `items-baseline` keeps the mark, the status and the chevron on its FIRST line. Three
+// lines is a backstop for a timer's prompt, which can run to a paragraph — no row label reaches it.
+// A tree row (the edited files) still truncates: a basename is one token and wrapping it breaks a word.
+const NAME = "ml-1.5 min-w-0 font-medium text-fg/90"
+const NAME_WRAP = `${NAME} line-clamp-3 break-words`
+const NAME_TREE = `${NAME} flex-1 truncate`
 /** The light-gray status column. `text-right` right-justifies it inside its own track; the name's `1fr`
  *  eats the slack, so the status lands against the chevron at the card's right edge. `ml-3` is only a
  *  floor — the distance the reader actually sees is whatever the truncating name leaves. */
@@ -465,7 +484,7 @@ export function WaitRow({ mark, name, status, onOpen, onPrewarm, href, ghRef, ti
   testId: string
 }) {
   const tree = indent !== undefined
-  const nameClass = tree ? `${NAME} flex-1` : NAME
+  const nameClass = tree ? NAME_TREE : NAME_WRAP
   const open = href
     ? (
       <a
@@ -500,10 +519,9 @@ export function WaitRow({ mark, name, status, onOpen, onPrewarm, href, ghRef, ti
   // at the far right it read as too subtle to find). `relative` lifts it over the name's stretched
   // overlay, as the PR row's failures link is lifted, so pressing it never opens the row.
   // `ml-0.5`, not the strip's 6px gap, and measured (ink-gaps.mjs, dsf 4, sans): 6.6–7.1px of ink after
-  // an untruncated name, the row's tight mark-to-name figure, because the × is the name's handle. A
-  // TRUNCATED name — the rail's usual case — adds its ellipsis remainder, which no margin removes:
-  // 8.6–13.6px, against 16.75px from the × to the widest status. At 6px the rows read 12.5–15.7px, the
-  // worst all but halfway to the status. Its ink centre is 0.23px under the cap band's: no nudge.
+  // an untruncated name, the row's tight mark-to-name figure, because the × is the name's handle. Its
+  // ink centre is 0.23px under the cap band's: no nudge. (It rides only a SETTLED rail row since
+  // 2026-10-08 — see railDismiss — and those names wrap rather than truncate.)
   const x = dismiss && (
     <button
       type="button"
@@ -522,7 +540,7 @@ export function WaitRow({ mark, name, status, onOpen, onPrewarm, href, ghRef, ti
       data-wait-kind={testKind}
       onMouseEnter={onPrewarm}
       onFocus={onPrewarm}
-      style={tree ? { paddingLeft: indent } : undefined}
+      style={tree ? { paddingLeft: ROW_INSET + indent } : undefined}
       className={`${tree ? ROW_FLEX : ROW} ${interactive ? "cursor-pointer transition-colors hover:bg-fg/[0.045]" : ""}`}
     >
       <span className="flex shrink-0">{mark}</span>
@@ -674,9 +692,15 @@ function ShellWatchRow({ watch, thread, slug, now }: {
 }
 
 /** The strip's × for a rail row: STOP while the op runs, CLEAR once it does not — ChildOpRow's two
- *  meanings and words. Whether there is a × at all is the caller's `childOpDismisser`, as on the strip. */
-function railDismiss(onDismiss: (() => void) | undefined, running: boolean, kind: "AGENT" | "SHELL", label: string) {
-  if (!onDismiss) return undefined
+ *  meanings and words. Whether there is a × at all is the caller's `childOpDismisser`, as on the strip.
+ *
+ *  A RUNNING row that OPENS carries none (maintainer 2026-10-08: "it's fine if you need to open the
+ *  subagent to close it"): its drawer has the same stop — "Stop sub-agent" in SubAgentSheet, "Stop
+ *  shell" in BackgroundShellSheet — and the × cost a wrapped title its width on every live row. The
+ *  × stays where nothing else on /full can do its job: CLEAR on a settled row, which no drawer offers,
+ *  and STOP on a running row with no drawer to open. */
+function railDismiss(onDismiss: (() => void) | undefined, running: boolean, openable: boolean, kind: "AGENT" | "SHELL", label: string) {
+  if (!onDismiss || (running && openable)) return undefined
   const tone = running ? "running" : "settled"
   return { onDismiss, title: CHILD_DISMISS_TITLE[tone], label: `${CHILD_DISMISS_VERB[tone]} ${CHILD_DISMISS_NOUN[kind]}: ${label}` }
 }
@@ -712,7 +736,7 @@ export function BgShellRow({ shell, slug, now, testId, onDismiss }: {
       onOpen={openable ? () => pushBackgroundShellDrawer(slug, shell.id!, { label: shell.label, startedAt: shell.startedAt }) : undefined}
       title={openable ? `Read this shell's output — ${state}` : running ? shell.label : `${shell.label} — ${state}`}
       status={elapsed ? `${word} · ${elapsed}` : word}
-      dismiss={railDismiss(onDismiss, running, "SHELL", shell.label)}
+      dismiss={railDismiss(onDismiss, running, !!openable, "SHELL", shell.label)}
     />
   )
 }
@@ -758,7 +782,9 @@ export function liveAgents(thread: Pick<ThreadView, "subAgents">) {
 export function AgentRow({ agent, slug, now, onDismiss }: { agent: ThreadView["subAgents"][number]; slug: string; now: number; onDismiss?: () => void }) {
   const elapsed = compactElapsedSince(agent.startedAt, now)
   // The profile without its namespace: `frizz:opus-high` is how it is dispatched, `opus-high` is how the
-  // maintainer says it, and the row has no width to spend on a prefix every row would repeat.
+  // maintainer says it. It lives in the TOOLTIP, not the status (maintainer 2026-10-08: "I don't think
+  // the model and effort is very important") — the status track is width the title needs, and the
+  // elapsed time is the one reading on this row that changes.
   const profile = agent.subagentType?.replace(/^frizz:/, "")
   // STALE reaches the fullscreen rail only (this card's set is `liveAgents`): a child whose completion
   // never arrived and whose transcript has gone quiet past its window (tailer `quietPastWindow`). It does
@@ -776,9 +802,9 @@ export function AgentRow({ agent, slug, now, onDismiss }: { agent: ThreadView["s
       mark={stale ? <span aria-hidden className={`inline-block size-3 p-[3px] ${ON_CAP}`}><span className={CHILD_STALE_DOT_CLASS} /></span> : <Spinner tone="border-accent" />}
       name={agent.label}
       onOpen={agent.id ? () => pushSubAgentDrawer(slug, agent.id!, { label: agent.label, subagentType: agent.subagentType, startedAt: agent.startedAt }) : undefined}
-      title={agent.id ? `Open this sub-agent — ${stale ? CHILD_STALE_TITLE : `working for ${elapsed}`}` : agent.label}
-      status={[stale ? "stale" : undefined, profile, elapsed].filter(Boolean).join(" · ")}
-      dismiss={railDismiss(onDismiss, agent.state === "running", "AGENT", agent.label)}
+      title={agent.id ? `Open this sub-agent${profile ? ` (${profile})` : ""} — ${stale ? CHILD_STALE_TITLE : `working for ${elapsed}`}` : agent.label}
+      status={[stale ? "stale" : undefined, elapsed].filter(Boolean).join(" · ")}
+      dismiss={railDismiss(onDismiss, agent.state === "running", !!agent.id, "AGENT", agent.label)}
     />
   )
 }
@@ -886,7 +912,8 @@ export interface WaitGroup {
 // scripts/ink-gaps.mjs at dsf 6 on the fullscreen rail — label→count / count→caret: sans 7.84 / 8.10px,
 // mono 8.10 / 7.42px. `ml-[3px]` read 6.10px in sans, visibly tighter than the gap before it.
 function GroupHeading({ group, first }: { group: WaitGroup; first: boolean }) {
-  const cls = `col-span-4 text-[10.5px] uppercase tracking-wide text-muted-45 ${first ? "" : "mt-2.5"}`
+  // `px-2`: the rows' inset (ROW), so a heading's first letter stays on the column of marks below it.
+  const cls = `col-span-4 px-2 text-[10.5px] uppercase tracking-wide text-muted-45 ${first ? "" : "mt-2.5"}`
   if (!group.onToggle) return <div className={cls}>{group.head}</div>
   return (
     <button
@@ -927,7 +954,9 @@ export function WaitGrid({ groups, divider }: { groups: ReadonlyArray<WaitGroup>
           mt-3 UNCONDITIONALLY — 12px, and it is the WHOLE gap rather than an addition: CardContent's own
           mt-1 collapses into it, which is why an earlier mt-2 measured 8px and put the first row closer
           to the card title than to the row beneath it (measured, sans and mono, dsf 3). */}
-      <div className="mt-3 grid grid-cols-[auto_1fr_fit-content(50%)_auto] gap-y-px">
+      {/* `-mx-2` hands back the rows' own `px-2` inset (ROW), so the ink keeps its edge and only the
+          hover fill grows past it. */}
+      <div className="-mx-2 mt-3 grid grid-cols-[auto_1fr_fit-content(50%)_auto] gap-y-px">
         {groups.map((g, i) => (
           <Fragment key={g.head}>
             {/* The heading spans all four tracks. `mt-*` on every group but the first: the gap between
