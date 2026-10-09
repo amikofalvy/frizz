@@ -25,8 +25,8 @@ test("picks hydrate by registration identity, separate from display numbers, tex
   assert.equal(remount.get(key), "an unselected typed draft")
   assert.equal(remount.get(`${draftKey.question("/two", "same-thread", "qst_one", "root")}:picks`), "")
   assert.equal(remount.get(`${draftKey.question("/one", "same-thread", "qst_two", "root")}:picks`), "")
-  assert.equal(JSON.parse(remount.get(`${key}:picks`)).chosen, "Hold it", "persist the raw option identity, not a keycap")
-  assert.deepEqual(decodeQuestionPick({ ...spec, options: [...spec.options!].reverse() }, remount.get(`${key}:picks`)), { chosen: 0, chosenSet: [] })
+  assert.deepEqual(JSON.parse(remount.get(`${key}:picks`)).chosen, { index: 1, label: "Hold it" }, "persist the immutable option slot, not a keycap")
+  assert.deepEqual(decodeQuestionPick({ ...spec, options: [...spec.options!].reverse() }, remount.get(`${key}:picks`)), { chosen: null, chosenSet: [] })
   remount.clear(`${key}:picks`)
   assert.equal(new DraftStore(storage).get(`${key}:picks`), "")
 })
@@ -49,8 +49,28 @@ test("a restored branch and multi picks build the same payload; inactive branche
 })
 
 test("empty, stale and corrupt saved picks never choose an unrelated option", () => {
-  for (const raw of ["", "{", "null", "[]", '{"chosen":3,"chosenSet":[]}', '{"chosen":null,"chosenSet":[1]}', '{"chosen":"Gone","chosenSet":[]}']) {
+  for (const raw of ["", "{", "null", "[]", '{"chosen":3,"chosenSet":[]}', '{"chosen":null,"chosenSet":[1]}', '{"chosen":"Gone","chosenSet":[]}',
+    ...[-1, 0.5, 99].map((index) => JSON.stringify({ chosen: { index, label: "Land it" }, chosenSet: [] })),
+    JSON.stringify({ chosen: { index: 0, label: "Gone" }, chosenSet: [] }),
+  ]) {
     assert.deepEqual(decodeQuestionPick(spec, raw), { chosen: null, chosenSet: [] })
   }
   assert.equal(encodeQuestionPick(spec, { chosen: null, chosenSet: [] }), "")
+})
+
+test("duplicate option labels retain separate single, multi and follow-up identities", () => {
+  const duplicate: AskedQuestion = { kind: "question", question: "Which branch?", options: [
+    { label: "Yes", followUps: [{ kind: "question", question: "First branch" }] },
+    { label: "Yes", followUps: [{ kind: "question", question: "Second branch" }] },
+  ] }
+  const restore = (q: AskedQuestion, chosen: number | null, chosenSet: number[]) =>
+    decodeQuestionPick(q, encodeQuestionPick(q, { chosen, chosenSet }))
+  const second = restore(duplicate, 1, [])
+  assert.deepEqual(second, { chosen: 1, chosenSet: [] })
+  assert.deepEqual(liveQuestionNodes(duplicate, new Map([["root", { ...second, text: "" }]])).map(n => n.path), ["root", "root/1.0"])
+  assert.deepEqual(restore(duplicate, null, []), { chosen: null, chosenSet: [] }, "a repeated click can toggle the second off")
+  const multi = { ...duplicate, kind: "multi" as const }
+  for (const indices of [[0], [1], [0, 1], []]) {
+    assert.deepEqual(restore(multi, null, indices), { chosen: null, chosenSet: indices })
+  }
 })

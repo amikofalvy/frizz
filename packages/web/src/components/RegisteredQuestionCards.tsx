@@ -16,8 +16,9 @@
 // cards through the prose — a placed card inside one message, its sibling at the tail — so the staged
 // picks cannot live in the card that draws them. `useRegisteredAnswering` holds them for the whole
 // thread; the surface mounts it ONCE (RegisteredAnsweringProvider) and every card and every stack on
-// that surface reads it through context. A stack mounted with no provider above it (a surface that
-// never places) owns a state of its own, exactly as it did before.
+// that surface reads it through context. Picks and text are shared through the tab's draft store
+// across providers and remounts; secrets, errors and send state remain per hook instance. A stack
+// mounted with no provider above it (a surface that never places) owns its own hook instance.
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { X } from "lucide-react"
@@ -115,7 +116,7 @@ export function useRegisteredAnswering(thread: ThreadView | undefined): Register
     mutationFn: async (submission: { answers: QuestionAnswer[]; drafts: Array<{ id: string; keys: string[] }> }) =>
       rpc.answerQuestions({ slug: slug!, answers: submission.answers }),
     onSuccess: (result, submission) => {
-      // The rows are gone from the board push that follows, so the staged state for them is dead weight;
+      // The board push removes these rows, so the staged state for them is dead weight;
       // dropping the drafts too keeps a re-asked question from opening pre-filled with a stale answer.
       for (const id of result.answered) {
         setSecrets((prev) => {

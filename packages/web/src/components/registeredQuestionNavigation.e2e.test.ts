@@ -7,6 +7,13 @@ import { createRpcClient } from "../../../../scripts/lib/rpc-client.mjs"
 
 // A real two-project adhoc-stack, no provider required. The session row is the simulated worker;
 // questions are registered and answered through the real RPC. Both variables come from the stack.
+// Create two empty directories, then start the stack in a separate terminal:
+//   nub scripts/adhoc-stack.mjs --port=45837 --project=/abs/a --also-project=/abs/b
+// Its first JSON line contains the sandbox "home" field. With the stack still running:
+//   FRIZZ_QUESTION_NAVIGATION_E2E_URL=http://127.0.0.1:45837 \
+//   FRIZZ_QUESTION_NAVIGATION_E2E_HOME=<the "home" field> nub --test \
+//     packages/web/src/components/registeredQuestionNavigation.e2e.test.ts
+// Stop the disposable stack with Ctrl-C when finished.
 const baseUrl = process.env.FRIZZ_QUESTION_NAVIGATION_E2E_URL
 const home = process.env.FRIZZ_QUESTION_NAVIGATION_E2E_HOME
 
