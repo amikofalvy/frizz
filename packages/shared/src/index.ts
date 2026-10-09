@@ -2657,12 +2657,23 @@ export const RegisteredQuestionView = z.object({
 export type RegisteredQuestionView = z.infer<typeof RegisteredQuestionView>
 
 /** What a SECRET answer is stored and delivered as, in place of the value: where to read it, and the
- *  terms it is served on. ONE wording, because the settled card, the in-flight card and the
- *  worker's wake all read this same stored text — which is also why it is SHORT: the human reads it on
- *  the Answers card, often on a phone, and the `secret` tool already handed the worker the recipe. */
+ *  terms it is served on. It is the WORKER's text: the `secret` tool already handed it the recipe, so
+ *  this stays short. Every card the human reads draws `SECRET_ANSWER_MASK` in its place. */
 export function secretAnswerText(path: string): string {
-  return `(secret ready at ${quotePath(path)} — it can be read ONCE, within ${SECRET_TTL_MS / 60_000}m; never print it)`
+  return `${SECRET_ANSWER_PREFIX}${quotePath(path)} — it can be read ONCE, within ${SECRET_TTL_MS / 60_000}m; never print it)`
 }
+
+const SECRET_ANSWER_PREFIX = "(secret ready at "
+
+/** Whether a stored answer is a secret's delivery note rather than something the human typed. The note
+ *  is for the WORKER; a card the human reads draws `SECRET_ANSWER_MASK` in its place. */
+export function isSecretAnswerText(text: string): boolean {
+  return text.startsWith(SECRET_ANSWER_PREFIX)
+}
+
+/** What every card draws for a sent secret: the masked field the human typed into, and nothing about
+ *  where the value went (maintainer 2026-10-09: the path note on the card was "useless" commentary). */
+export const SECRET_ANSWER_MASK = "••••••••••••"
 
 /** How long a secret waits to be read before the server drops it (`secret-files.ts`). Here rather than
  *  beside the server, because the stored answer text names it to the worker. */

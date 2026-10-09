@@ -1,4 +1,4 @@
-import { ANSWER_CONTINUATION_INDENT, ANSWER_FOLLOW_UP_MARKER, ANSWER_PICK_PREFIX, BURIED_ANSWERS_HEADER, DISMISSED_ANSWER } from "@frizz/shared"
+import { ANSWER_CONTINUATION_INDENT, ANSWER_FOLLOW_UP_MARKER, ANSWER_PICK_PREFIX, BURIED_ANSWERS_HEADER, DISMISSED_ANSWER, SECRET_ANSWER_MASK, isSecretAnswerText } from "@frizz/shared"
 import { splitQuestionBlocks, parseQuestionBlock, type MessageSegment } from "./questionBlocks.ts"
 
 // Detect + parse OUR OWN composed-answer format, so a user message that is a multi-block answer renders
@@ -183,8 +183,12 @@ export function parseAnswersCard(text: string): PairedAnswer[] | null {
 // (maintainer 2026-09-25). The parse keeps the row — the wire is the worker's and the pairing counts
 // on it — and only the card leaves it out. A card of nothing but dismissals never reaches here: the
 // server composes that as the cancellation wake, a different message.
+// A SECRET's row draws the mask, not the delivery note the worker reads (where the value was put and on
+// what terms) — that note is the worker's, and on the human's card it read as noise.
 export function answersForDisplay(answers: readonly PairedAnswer[]): PairedAnswer[] {
-  return answers.filter((a) => a.answer !== DISMISSED_ANSWER)
+  return answers
+    .filter((a) => a.answer !== DISMISSED_ANSWER)
+    .map((a) => (isSecretAnswerText(a.answer) ? { ...a, answer: SECRET_ANSWER_MASK } : a))
 }
 
 // One answer's PICKS and NOTE, as the card draws them: each `- [x] ` line the writer put first

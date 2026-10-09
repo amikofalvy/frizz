@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { ANSWER_FOLLOW_UP_MARKER, BURIED_ANSWERS_HEADER, DISMISSED_ANSWER, questionAnswerMessage } from "@frizz/shared"
+import { ANSWER_FOLLOW_UP_MARKER, BURIED_ANSWERS_HEADER, DISMISSED_ANSWER, SECRET_ANSWER_MASK, questionAnswerMessage, secretAnswerText } from "@frizz/shared"
 import { answersForDisplay, splitAnswerPicks, parseAnswersMessage, parseBuriedAnswersMessage, parseAnswersCard, pairAnswersMessage, pairAllAnswers, unrenderedAnswers, isAnswersMessage, type MsgLike } from "./answersMessage.ts"
 import { composeAnswerWire } from "./answering.ts"
 
@@ -201,6 +201,15 @@ test("the card drops a dismissal row: the worker needs it, the human already sai
   const parsed = parseAnswersCard(wire)
   assert.equal(parsed?.length, 2, "the parse keeps the row — it is the worker's wire")
   assert.deepEqual(answersForDisplay(parsed ?? []), [{ n: 1, answer: "SQLite", question: "SQLite or a JSON file?" }])
+})
+
+test("a secret's row draws the mask, never the delivery note the worker reads", () => {
+  const wire = questionAnswerMessage([
+    { questionId: "qst_s", question: "The npm one-time code", chosen: [], text: secretAnswerText("/state/secrets/t/qst_s") },
+  ])
+  const parsed = parseAnswersCard(wire)
+  assert.ok(parsed?.[0]?.answer.includes("/state/secrets/t/qst_s"), "the wire still carries the path for the worker")
+  assert.deepEqual(answersForDisplay(parsed ?? []), [{ n: 1, answer: SECRET_ANSWER_MASK, question: "The npm one-time code" }])
 })
 
 test("buried detection is strict: wrong header, or rows without the quote-arrow, → null", () => {

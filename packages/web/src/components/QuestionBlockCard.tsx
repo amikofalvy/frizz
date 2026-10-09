@@ -16,6 +16,7 @@
 // could only have been shared through a module cycle.
 import { Fragment, type ReactNode, useEffect, useId, useLayoutEffect, useMemo, useRef } from "react"
 import { AlertTriangle, Check } from "lucide-react"
+import { SECRET_ANSWER_MASK } from "@frizz/shared"
 import { useInlineMarkdownHtml, useMarkdownHtml } from "../lib/useMarkdown.ts"
 import { shouldSubmitStagedEnter } from "../lib/composerKeyboard.ts"
 import { parseQuestionBlock, splitOptionId, type BlockAnswer, type ParsedQuestion, type QuestionKind } from "../lib/questionBlocks.ts"
@@ -305,7 +306,8 @@ export function QuestionBlockCard({
                     freetext.trim() ? "border-selection-border bg-selection" : "border-border bg-transparent hover:bg-panel-2 focus:border-accent"
                   }`}
                 />
-                <div className="mt-1.5 text-[11px] leading-snug text-muted-70">
+                {/* A caption, not a second paragraph: capped at 60% so it never runs the card's width. */}
+                <div className="mt-1.5 max-w-[60%] text-[11px] leading-snug text-muted-70">
                   Held in memory on the machine running Frizz and handed to one command, once. The worker never sees it.
                 </div>
               </>
@@ -378,7 +380,9 @@ export function QuestionBlockCard({
       {/* pl-[11px] matches the settled chips above: 11 + the 2px rule = the plain chips' 12 + 1. */}
       {settled?.text && (
         <div className="mt-2 whitespace-pre-wrap [overflow-wrap:anywhere] rounded-md border border-border-strong border-l-2 border-l-accent/40 bg-bg/50 py-1.5 pl-[11px] pr-3 text-[12px] leading-snug text-fg">
-          {settled.text}
+          {/* A secret draws the masked field it was typed into — never the delivery note the worker
+              reads in its place (where the value went, and on what terms). */}
+          {parsed.secret ? SECRET_ANSWER_MASK : settled.text}
         </div>
       )}
       {/* A settled ask nobody answered — the operator steered past it, or the session moved on. The
