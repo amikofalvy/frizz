@@ -28,8 +28,8 @@ import { Popover, PopoverAnchor, PopoverContent } from "./ui/Popover.tsx"
 // THE DRAWER DRAWS THE SAME LINE, since 2026-10-09 (maintainer: "We should be using the condensed
 // activity summary in the queue cards as well as in the drawer view"). Until then the drawer kept the
 // ⤷ column under its prompt box, so one thread read as counts on its card and as a column of rows in
-// its drawer. The drawer hands in the shells it reads off the transcript (`transcriptShells`, as it
-// handed them to the strip), which the board does not report for a Codex thread. The phone and /full
+// its drawer. Both hand in the shells they read off the transcript (`transcriptShells`), which the board
+// does not report for a Codex thread. The phone and /full
 // beside its rail draw neither: the ⋯ sheet and the rail already list every row (ChatView).
 //
 // THE MARK IS THE ROWS' OWN LIVENESS DOT, in the row's hue (yellow agent, blue shell, violet watch), and

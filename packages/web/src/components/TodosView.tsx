@@ -13,17 +13,18 @@ import { tailAskIdx, useLiveAnswering } from "../lib/answering.ts"
 import { shouldSubmitStagedEnter } from "../lib/composerKeyboard.ts"
 import { hasQuestionBlock } from "../lib/questionBlocks.ts"
 import { showsRegisteredDoneCard } from "../lib/registeredDone.ts"
-import { RestedCard, showsRestedCard } from "./RestedCard.tsx"
+import { showsRestedCard } from "./RestedCard.tsx"
+import { providerErrorVisible } from "./ProviderErrorCard.tsx"
 import { carriesDoneRegistration, collapseMiddleRuns, opensQueueSegment, queueCollapseSegments, segmentFolds, supersededAskIndices, survivesQueueCollapse } from "../lib/queueCollapse.ts"
 import { pairAllAnswers, unrenderedAnswers } from "../lib/answersMessage.ts"
-import { lastHumanTurnIndex } from "../lib/messagePresentation.ts"
+import { lastAskIndex, lastHumanTurnIndex } from "../lib/messagePresentation.ts"
 import { isOptimisticallySteering, useSteeredAt } from "../lib/steering.ts"
 import { questionsByAnchor } from "../lib/questionAnchor.ts"
 import { allFencesShadowed, placedFrom, placedRestEnds, placeQuestions, questionsAtCurrentRest, registeredStandingAt } from "../lib/questionShadow.ts"
 import { settledQuestionPositions } from "../lib/settledQuestions.ts"
-import { FenceCard, LimitPauseCard, Message, PermPolicyDenialCard, PermPromptBanner, PendingAskCard, VSpace, STEP, messageTailIsMeta, messageHeadIsMeta, messageRendersNothing, messageHasRenderableText, lastAssistantIndex } from "./ChatView.tsx"
+import { Message, PermPolicyDenialCard, transcriptBackgroundShells, RuntimeStatusLadder, VSpace, STEP, PICTURE_STEP, runtimeStatusRung, type RuntimeStatusState, messageGap, messageHeadIsPicture, messageRendersNothing, messageHasRenderableText, lastAssistantIndex } from "./ChatView.tsx"
 import { BLOCK_RADIUS, BLOCK_RADIUS_TOP, BLOCK_RADIUS_INNER_BOTTOM } from "./TranscriptCard.tsx"
-import { AwaitingBackgroundCard, showsRestingCard } from "./AwaitingBackgroundCard.tsx"
+import { showsRestingCard } from "./AwaitingBackgroundCard.tsx"
 import { agentCompletionCall } from "../lib/subAgentCompletion.ts"
 import { coalesceToolActivityMessages } from "../lib/toolActivity.ts"
 import { prefs } from "../lib/prefs.ts"
@@ -51,7 +52,7 @@ import {
   transcriptAnchorCorrection,
   type TranscriptViewportAnchor,
 } from "../lib/transcriptPagination.ts"
-import type { TranscriptData } from "../hooks.ts"
+import type { ChatMessage, TranscriptData } from "../hooks.ts"
 
 // The Queue: everything currently waiting on the human, rendered as a SCROLLING LIST of cards — every
 // pending item visible at once, one per card, in one vertical column that scrolls when it overflows.
@@ -134,27 +135,10 @@ function resumeNativeAnchoring(): void {
   }
 }
 
-// The QUEUE's awaiting-background banner: the shared resting card (AwaitingBackgroundCard, which the
-// drawer and the full-screen page render too) — and NOTHING else since 2026-08-31, when the card took
-// ownership of its own event-Snooze. This wrapper is now only the queue's OPTIMISTIC EXIT: the card
-// fades the instant the human parks it, and reinstates itself if the server declines.
-//
-// The snooze itself is unchanged in effect — no session is stopped, the thread is already at rest and
-// stays alive; the card simply drops out of the queue and re-surfaces on its own when a shell finishes
-// and the worker acts on it. Distinct from the header's wall-clock Snooze (a fixed deadline); this one
-// has no deadline and expires itself on the next rest.
-//
-// WHY THE CONTROL MOVED: the queue was the only surface that injected it, and a thread whose ```awaiting
-// fence still resolves live is EXCUSED from the queue outright (server/board.deriveNeedsYou), so the
-// button was missing from exactly the threads that had declared a wait most carefully. See AwaitingSnooze.
-function AwaitingBackgroundBanner({ thread, onSnooze, onSnoozeFailed }: {
-  thread: ThreadView
-  onSnooze: () => void // optimistically dismiss the card (fade it out now)
-  onSnoozeFailed: () => void // reinstate the card if the server declines
-}) {
-  // A STEPS reply leaves the queue the same way: the card fades the instant "Done" is sent, and comes
-  // back if the send fails.
-  return <AwaitingBackgroundCard thread={thread} onSnooze={onSnooze} onSnoozeFailed={onSnoozeFailed} onReplied={onSnooze} onReplyFailed={onSnoozeFailed} />
+// A message as the queue's text-only render draws it: the prose, with its tool bands dropped. The gap
+// rule (messageGap) reads a row's edges, and a text-only row's edges are prose whatever the message held.
+function proseOnly(m: ChatMessage): ChatMessage {
+  return { ...m, tools: [], parts: m.parts?.filter((part) => part.kind !== "tools") }
 }
 
 // Keyboard: a card's inputs are ordinary DOM focus — click in to type, Esc blurs, ⌘/Ctrl-Enter submits
@@ -868,6 +852,7 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
   // component because the collapse walk below needs it too, and a settled fence-only message renders
   // nothing — so the walk has to skip it rather than spend a step on an empty slot.
   const lastAgentIdx = useMemo(() => lastAssistantIndex(messages), [messages])
+  const liveTranscriptShells = useMemo(() => transcriptBackgroundShells(messages), [messages])
   const isStaleAwaiting = (idx: number) => lastAgentIdx >= 0 && idx < lastAgentIdx
   // …and the LAST message's fence draws nothing either while the resting banner below states it (the
   // banner opens on that fence's body). Message takes the two reasons as separate props, and so do the
@@ -1271,6 +1256,22 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
   // the memoized value below never churns and context consumers don't re-render each frame.
   const dismissThisCard = useCallback(() => onResolve(thread.id), [onResolve, thread.id])
   const cancelThisCard = useCallback(() => onUnresolve(thread.id), [onUnresolve, thread.id])
+  // What the drawer's runtime-status ladder needs to pick this card's tail (ChatView runtimeStatusRung).
+  // `showWorking` is false: a queue card is a triage surface for a REST, and the live Working… rung is
+  // drawn from a tool tail and a run clock only the drawer computes — a thread that starts working while
+  // it holds a card is one hover from its drawer. `errorVisible` reads the window this card draws, where
+  // a provider-error row survives the fold (lib/queueCollapse), so the card and that row never double up.
+  const lastAgentText = lastAgentIdx >= 0 ? messages[lastAgentIdx]?.text : undefined
+  const queueStatus: RuntimeStatusState = {
+    thread,
+    showWorking: false,
+    registeredDone: showsRegisteredDoneCard(thread, lastAgentText),
+    restedCard: showsRestedCard(thread, lastAgentText, questionsHere),
+    errorVisible: providerErrorVisible(visible, thread.providerError),
+  }
+  const queueRung = runtimeStatusRung(queueStatus)
+  // The human's most recent landed ask — the provider-fault card's Retry resends it, as in the drawer.
+  const lastAskIdx = useMemo(() => lastAskIndex(messages), [messages])
   const queueDismiss = useMemo(() => ({ dismiss: dismissThisCard, cancel: cancelThisCard }), [dismissThisCard, cancelThisCard])
 
   return (
@@ -1413,10 +1414,9 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
         {messages.length === 0 ? (
           <p className="text-[13px] text-muted">{q.isLoading ? "Loading…" : thread.statusText || "No message yet."}</p>
         ) : (
-          // Adjacency-based message spacing IDENTICAL to the thread drawer (messageTailIsMeta/HeadIsMeta
-          // → 6px when a CARD abuts a meta row, else STEP — see messageGap) —
-          // so a batched vs split tool run reads the same here as in the drawer. No flex gap; explicit
-          // spacers between rendered messages.
+          // Adjacency-based message spacing through the drawer's own messageGap, so a batched vs split
+          // tool run, two label rows, a screenshot and the gap under the human's words all read the same
+          // here as in the drawer. No flex gap; explicit spacers between rendered messages.
           <div ref={messageListRef} className="flex flex-col">
             {hasMore && (
               <button
@@ -1435,11 +1435,19 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
             {(() => {
               const base = visibleStart
               const out: ReactNode[] = []
-              let prevTailIsMeta: boolean | null = null
+              // What the last drawn row ENDS in, for messageGap — the drawer's one gap rule, which this
+              // card spelled inline (a 6px tight run or STEP) until 2026-10-09 and so lacked its label,
+              // picture and under-the-human rules. The message itself when drawn whole, its prose alone
+              // when drawn text-only, `null` after a question stack or a fold divider (both end in a card,
+              // so the next gap is a full STEP), and `undefined` before anything is drawn.
+              let prev: ChatMessage | null | undefined = undefined
+              const gapBefore = (next: ChatMessage) => (prev ? messageGap(prev, next) : messageHeadIsPicture(next) ? PICTURE_STEP : STEP)
               // A REGISTERED question renders at the rest it was ASKED at, not at the card's tail — the
-              // same rule the thread view follows (lib/questionAnchor). Pending groups are flushed after
-              // the first rendered row at or past their anchor, so a group whose anchor was a message this
-              // card does not draw (or one above the window) still lands above what came after it.
+              // same rule the thread view follows (lib/questionAnchor): after the last DRAWN row at or
+              // before its anchor. So a group flushes right after its anchor row draws, and otherwise just
+              // BEFORE the first drawn row past it. Its anchor is usually the "Agent rested" row, which
+              // this card never draws, and until 2026-10-09 the group waited for the next drawn row and
+              // landed UNDER it — below the wake that resumed the worker, a row late.
               const pending = [...questionAnchors.byAnchor.entries()].sort((a, b) => a[0] - b[0])
               // ANSWERED questions flush the same way, ahead of any open group at the same anchor — but
               // only inside the window: a settled card owes nothing, so one whose rest is above the cut
@@ -1448,20 +1456,20 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
               const flushSettled = (globalIdx: number) => {
                 while (pendingSettled.length > 0 && pendingSettled[0][0] <= globalIdx) {
                   const [anchor, group] = pendingSettled.shift()!
-                  if (prevTailIsMeta !== null) out.push(<VSpace key={`sq-space-${anchor}`} h={STEP} />)
+                  if (prev !== undefined) out.push(<VSpace key={`sq-space-${anchor}`} h={STEP} />)
                   out.push(<SettledQuestionStack key={`sq-${anchor}`} questions={group} wrap />)
-                  prevTailIsMeta = false
+                  prev = null
                 }
               }
               const flushQuestions = (globalIdx: number) => {
                 flushSettled(globalIdx)
                 while (pending.length > 0 && pending[0][0] <= globalIdx) {
                   const [anchor, group] = pending.shift()!
-                  if (prevTailIsMeta !== null) out.push(<VSpace key={`qa-space-${anchor}`} h={STEP} />)
+                  if (prev !== undefined) out.push(<VSpace key={`qa-space-${anchor}`} h={STEP} />)
                   out.push(
                     <RegisteredQuestionStack key={`qa-${anchor}`} thread={thread} questions={group} showSend={questionAnchors.sendAnchors.has(anchor)} />,
                   )
-                  prevTailIsMeta = false
+                  prev = null
                 }
               }
               // A rest ABOVE this card's window — which is cut at the previous rest, so it is the common
@@ -1510,7 +1518,8 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
                 if (collapseIntermediate && middle && globalIdx >= middle.start && globalIdx <= middle.end) {
                   if (!middleEmitted) {
                     middleEmitted = true
-                    if (prevTailIsMeta !== null) out.push(<VSpace key="middle-runs-space" h={STEP} />)
+                    flushQuestions(globalIdx - 1)
+                    if (prev !== undefined) out.push(<VSpace key="middle-runs-space" h={STEP} />)
                     out.push(
                       <MiddleRunsSummary
                         key="middle-runs-summary"
@@ -1519,7 +1528,7 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
                         onExpand={() => setIntermediateExpanded(true)}
                       />,
                     )
-                    prevTailIsMeta = false
+                    prev = null
                   }
                   return
                 }
@@ -1548,14 +1557,15 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
                 if (seg !== undefined && globalIdx === seg.waker) {
                   // The SAME pitch the ordinary path charges, spelled the same way: a waker is a wake
                   // hairline like any other, and a second spelling here is how the rhythm drifts.
-                  if (prevTailIsMeta !== null) out.push(<VSpace key={`s${i}`} h={prevTailIsMeta && messageHeadIsMeta(m) ? 6 : STEP} />)
+                  flushQuestions(globalIdx - 1)
+                  if (prev !== undefined) out.push(<VSpace key={`s${i}`} h={gapBefore(m)} />)
                   const wakerKey = m.sourceId ?? `legacy-${globalIdx}`
                   out.push(
                     <div key={wakerKey} data-transcript-source-id={wakerKey} className="flex flex-col">
                       <Message m={m} dense />
                     </div>,
                   )
-                  prevTailIsMeta = messageTailIsMeta(m)
+                  prev = m
                   return
                 }
                 if (inSpan && !liftedWake) {
@@ -1589,7 +1599,7 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
                   const loneProse = isFirst && isLast
                   const emitBar = () => {
                     if (segIdx === undefined || barEmitted.has(segIdx)) return
-                    if (prevTailIsMeta !== null) out.push(<VSpace key={`im-space-${segIdx}`} h={STEP} />)
+                    if (prev !== undefined) out.push(<VSpace key={`im-space-${segIdx}`} h={STEP} />)
                     out.push(
                       <IntermediateSummary
                         key={`intermediate-summary-${segIdx}`}
@@ -1597,27 +1607,30 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
                         onExpand={() => setIntermediateExpanded(true)}
                       />,
                     )
-                    prevTailIsMeta = false
+                    prev = null
                     barEmitted.add(segIdx)
                   }
                   if (!isFirst || (loneProse && seg.hiddenBeforeOpen)) emitBar()
                   // A first/last message that is pure batched tool calls (no prose) contributes no row —
                   // its calls are already folded into the divider — so skip it and leave no dangling spacer.
                   if (!messageHasRenderableText(m, ...hidesAwaiting(globalIdx))) return
-                  if (prevTailIsMeta !== null) out.push(<VSpace key={`s${i}`} h={STEP} />)
+                  flushQuestions(globalIdx - 1)
+                  const prose = proseOnly(m)
+                  if (prev !== undefined) out.push(<VSpace key={`s${i}`} h={gapBefore(prose)} />)
                   const textKey = m.sourceId ?? `legacy-${globalIdx}`
                   out.push(
                     <div key={textKey} data-transcript-source-id={textKey} className="flex flex-col">
                       <Message m={m} dense textOnly answering={fencesLive ? answeringForMessage(m) : undefined} paired={paired[globalIdx]} staleAwaiting={isStaleAwaiting(globalIdx)} restingCardShown={globalIdx === lastAgentIdx && restingShown} shadowedBy={shadowedByMessage.get(globalIdx)} placed={placement.placed.get(globalIdx)} settledPlaced={settledPlacement.placed.get(globalIdx)} thread={thread} />
                     </div>,
                   )
-                  // Text-only → the row ends in prose (tool band dropped), so the next gap is a full STEP.
-                  prevTailIsMeta = false
+                  // Text-only → the row ends in prose (tool band dropped).
+                  prev = prose
                   if (loneProse) emitBar()
                   flushQuestions(globalIdx)
                   return
                 }
-                if (prevTailIsMeta !== null) out.push(<VSpace key={`s${i}`} h={prevTailIsMeta && messageHeadIsMeta(m) ? 6 : STEP} />)
+                flushQuestions(globalIdx - 1)
+                if (prev !== undefined) out.push(<VSpace key={`s${i}`} h={gapBefore(m)} />)
                 const sourceKey = m.sourceId ?? `legacy-${globalIdx}`
                 out.push(
                   <div key={sourceKey} data-transcript-source-id={sourceKey} className="flex flex-col">
@@ -1635,18 +1648,14 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
                   />
                   </div>,
                 )
-                prevTailIsMeta = messageTailIsMeta(m)
+                prev = m
                 flushQuestions(globalIdx)
               })
-              // A settled group anchored on a trailing row this card does not draw still belongs above the
-              // queued sends.
-              flushSettled(Number.POSITIVE_INFINITY)
-              // Queued (optimistic) messages pinned to the bottom, same as the drawer.
-              visible.forEach((m, i) => {
-                if (!m.queued) return
-                out.push(<VSpace key={`qs${i}`} />)
-                out.push(<Message key={`q${base + i}`} m={m} dense paired={paired[base + i]} />)
-              })
+              // A group anchored past the last row this card draws — a trailing row it skips, or an anchor
+              // an optimistic send moved off the tail — still lands at the end of the transcript, the way
+              // the drawer gives it its own row there. Only the settled groups were flushed here until
+              // 2026-10-09, and an open group in that position was never drawn at all.
+              flushQuestions(Number.POSITIVE_INFINITY)
               return out
             })()}
           </div>
@@ -1671,95 +1680,55 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
         {!q.isLoading && (
           <>
             <InteractionStack thread={thread} className="mt-4" />
-            {/* THE TERMINAL-BOUND SAFETY NETS, and the ONE premise both of them rest on: that frizz has
-                nothing answerable to offer, so the only way through is the operator's own terminal.
-                A pending typed interaction falsifies that outright — InteractionStack drew the request
-                right above with its real buttons — so BOTH nets stand down on it rather than telling
-                someone to go and type at a session they can resolve with one click.
-                It used to be only the AskUserQuestion net that stood down; the perm-prompt banner below
-                it did not, and a broker-path escalation sets `runtime: "perm-prompt"` AND journals an
-                answerable interaction, so the pair drew together — a "Run a command?" card with
-                Grant/Deny, and directly under it "respond in your external terminal" (visible in the
-                maintainer's 2026-09-05 screenshot, under the placement defect above).
-                `pendingInteraction`, NOT `actionableInteraction`: the question is whether a card is on
-                SCREEN, and an answered request stays pending-and-readable while its delivery drains.
-                Both nets still cover what they exist for — a pre-contract, adopted or foreign session
-                that reaches the tool with no broker to intercept it, and any escalation
-                `buildClaudePermissionInteraction` could not represent, neither of which journals
-                anything. */}
-            {thread.pendingInteraction ? null : thread.pendingAsk ? (
-              // The REAL question, read-only, so the human knows exactly what is asked without opening
-              // anything; it takes precedence over the generic banner below.
-              <div className="mt-4">
-                <PendingAskCard ask={thread.pendingAsk} onTerminal={copyTerminalCommand} />
-              </div>
-            ) : thread.runtime === "perm-prompt" ? (
-              // A permission-blocked agent has NO message to show at all (the turn parked mid-tool_use),
-              // so the banner says so explicitly rather than leaving the card looking idle.
-              <div className="mt-4">
-                <PermPromptBanner onTerminal={copyTerminalCommand} />
-              </div>
-            ) : null}
-            {/* What frizz's permission policy REFUSED on the worker's behalf. Sits BELOW the gates above:
-                those are things waiting on the human, this is something already handled for them. */}
+            {/* THE RUNTIME-STATUS LADDER — the drawer's own, one card at most, in the drawer's order
+                (ChatView runtimeStatusRung): a provider failure, the usage-limit pause, the
+                terminal-bound safety nets, the snooze, the resting card, a registered sign-off, and the
+                residual rested card. This card hand-rolled its own copy of that chain until 2026-10-09,
+                and it had drifted: a failed Codex request drew nothing here at all — the card read as an
+                ordinary rest while the drawer said "Codex request failed" — several rungs could draw at
+                once, and the policy-denial card sat on the other side of the ending card. Held until the
+                transcript loads for the same reason as the gates above: the tail describes the END of the
+                transcript, and drawn under "Loading…" it painted, then jumped when the messages mounted
+                (maintainer 2026-08-28). */}
+            {queueRung !== null && (
+              <>
+                <VSpace />
+                <RuntimeStatusLadder
+                  state={queueStatus}
+                  slug={thread.id}
+                  retryText={lastAskIdx >= 0 ? messages[lastAskIdx]?.text : undefined}
+                  onTerminal={copyTerminalCommand}
+                  liveRuntimeStart={undefined}
+                  liveActivityLabel={undefined}
+                  liveToolRun={undefined}
+                  // The resting card's snooze and its steps reply leave the queue optimistically, and
+                  // come back if the server declines — the queue's one addition to the ladder.
+                  onRestingExit={dismissThisCard}
+                  onRestingExitFailed={cancelThisCard}
+                  wrap
+                />
+              </>
+            )}
+            {/* SIBLING of the ladder, as in the drawer: a policy denial already happened and blocks
+                nobody now, so it sits under whatever card the ladder drew, and stands alone without one. */}
             {thread.permPolicy ? (
-              <div className="mt-4">
-                <PermPolicyDenialCard policy={thread.permPolicy} denies={thread.permDenies} />
-              </div>
+              <>
+                {queueRung === null && <VSpace />}
+                <div className={queueRung !== null ? "mt-3" : ""}>
+                  <PermPolicyDenialCard policy={thread.permPolicy} denies={thread.permDenies} />
+                </div>
+              </>
             ) : null}
+            {/* Queued (optimistic) messages pinned UNDER everything, as the drawer pins them — they are
+                stuck behind whatever the tail says (maintainer 2026-07-09: "queued messages render
+                underneath everything until they become un-queued and show up in the logs"). */}
+            {visible.map((m, i) => (m.queued ? (
+              <Fragment key={`q${visibleStart + i}`}>
+                <VSpace />
+                <Message m={m} dense paired={paired[visibleStart + i]} />
+              </Fragment>
+            ) : null))}
           </>
-        )}
-        {/* AFTER the transcript, not before it (maintainer 2026-07-24). This banner describes the state
-            the thread reached by resting at the END of that transcript — it is the newest thing on the
-            card, so it belongs at the bottom, adjacent to the composer, where every other trailing
-            control lives. Above the messages it read as a header for a turn that hadn't happened yet.
-            No priority guard needed against the gates above — deriveAwaitingBackground already returns
-            false for every one of those states (board.ts).
-            THE SAME PREDICATE THE FENCE CARD READS (showsRestingCard), not `awaitingBackground` alone.
-            The fence card renders nothing while this banner shows, and it decides that with
-            showsRestingCard — which also reads the event-snooze. Keying this banner on the bare flag let
-            the two disagree: a snoozed thread the server still queued (a timer park, until 2026-08-25)
-            drew the fence card AND this banner, the same wait twice on one card. With the shared predicate
-            a queued-while-snoozed thread shows the fence card alone, whatever the server does.
-            NOT BEFORE THE TRANSCRIPT, though — none of the three tail cards below. The board lands before
-            the transcript window does, and drawing the tail under the "Loading…" line painted it in one
-            place and then shoved it ~1s later when the messages mounted above it: the card the human
-            was reading jumped, and the prose-to-card gap "appeared" (maintainer 2026-08-28, refreshing on
-            a rested card). The tail describes the END of the transcript, so it mounts with it. */}
-        {!q.isLoading && showsRestingCard(thread) && (
-          <div className="mt-4">
-            <AwaitingBackgroundBanner thread={thread} onSnooze={dismissThisCard} onSnoozeFailed={cancelThisCard} />
-          </div>
-        )}
-        {/* A sign-off that came in as a TOOL CALL (mcp__frizz__done) is in no message, so the tail above
-            drew its prose and nothing else — the same gap the thread view had, one surface over. The card
-            is the one the fence draws (FenceCard, with its Mark-as-done through ThreadSlugContext), and
-            the same predicate keeps it off a thread whose final message already carries the fence. */}
-        {!q.isLoading && showsRegisteredDoneCard(thread, lastAgentIdx >= 0 ? messages[lastAgentIdx]?.text : undefined) && (
-          // STEP, not the banner's mt-4: this is the SAME card the fence path draws one STEP under the prose
-          // of the message it sits in, and the two must land at the same distance (measured 2026-08-27 on the
-          // seeded pair: 20.3px prose-ink to card-edge on the fence card, 22.3px here on mt-4 — 2px of drift
-          // between two cards that are supposed to be indistinguishable).
-          <>
-            <VSpace />
-            <FenceCard fenceKind="done" body={thread.lastFence!.body} hints={[]} wrap />
-          </>
-        )}
-        {/* KILLED BY A USAGE LIMIT — the reason this card is in the queue at all (a limit fault is a
-            hard queue member, deriveNeedsYou, 2026-08-31), so the tail says so in the drawer's own
-            card: which window blew, when frizz continues it, and the manual "Continue now" for the
-            operator who won't wait. The transcript's last line above it is the provider's own limit
-            message, so this sits exactly where the drawer puts it. */}
-        {!q.isLoading && thread.limitPause && thread.foreign !== true && (
-          <div className="mt-4">
-            <LimitPauseCard slug={thread.id} sessionId={thread.sessionId} pause={thread.limitPause} />
-          </div>
-        )}
-        {/* The residual rung, same as the thread view: a rest with no other card still states itself. */}
-        {!q.isLoading && showsRestedCard(thread, lastAgentIdx >= 0 ? messages[lastAgentIdx]?.text : undefined, questionsHere) && (
-          <div className="mt-4">
-            <RestedCard thread={thread} />
-          </div>
         )}
       </div>
 
@@ -1814,13 +1783,13 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
         slug={thread.id}
         surface="queueComposer"
         className={`sticky bottom-0 z-10 mt-[var(--queue-card-header-h,0px)] shrink-0 ${BLOCK_RADIUS_INNER_BOTTOM} border-t border-border/60 bg-panel px-5 pb-3 pt-3 shadow-[0_-12px_18px_-14px_var(--dock-shadow)]`}
-        // With an open ask the box is the deliberate escape hatch, so say so — otherwise "Reply to the
-        // agent…" reads as a second way to answer the question rather than a way around it. A
-        // REGISTERED question counts: it is answered on this same card, so with one open the box is the
-        // same escape hatch it is for a fenced one.
-        placeholder={answerable || (thread.questions?.length ?? 0) > 0 ? "Or skip the questions and reply…" : "Reply to the agent…"}
+        // The placeholder is ThreadComposerBox's own, shared with the drawer: with an open ask it says the
+        // box is the way AROUND the question ("Or skip the questions and reply…") rather than a second
+        // way to answer it.
         submitOverride={sendMessage}
-        above={<QueueOpsSummary thread={thread} />}
+        // The shells read off the transcript, as the drawer passes them: a Codex thread's background
+        // execs live there and nowhere on the board, so without them the two lines counted differently.
+        above={<QueueOpsSummary thread={thread} transcriptShells={liveTranscriptShells} />}
       />
       )}
     </div>

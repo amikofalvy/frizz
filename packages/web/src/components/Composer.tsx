@@ -24,7 +24,7 @@ import { useKeyboardInset } from "../lib/keyboardInset.ts"
 // (climbs out — the next Esc, at rest, unwinds a drawer via
 // App's window handler). Keyboard handling is entirely LOCAL: the focus machine that used to
 // arbitrate boundary keys was deleted with the mouse-only sidebar. `surface` remains only as a
-// data- tag for per-card input targeting (TodosView queries [data-surface="queueComposer"]).
+// data- tag the e2e tests target a surface's textarea by.
 // Upload a dropped/pasted/picked file and return its server-side absolute path. The path goes INTO the
 // message text: workers open it with their Read/file tool; the chat renders images via /local-image and
 // non-image files as an openable chip. The shared extension allowlist (images, docs/text/code, office,
@@ -147,8 +147,8 @@ export function Composer({
   value: string
   onChange: (v: string) => void
   onSubmit: () => void
-  // Pure data- tag on the textarea (e.g. TodosView targets [data-surface="queueComposer"] to focus a
-  // card's input). No focus registry behind it anymore.
+  // Pure data- tag on the textarea, which the e2e tests target a surface's input by. No focus registry
+  // behind it anymore.
   surface: string
   placeholder?: string
   id?: string

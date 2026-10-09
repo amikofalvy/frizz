@@ -48,7 +48,7 @@ export function HeaderActions({
   onStatusFailed,
 }: {
   thread: ThreadView
-  expand?: boolean // queue cards only → the fullscreen door (ExpandThreadLink); the drawer header mounts its own
+  expand?: boolean // queue cards and the drawer → the fullscreen door (ExpandThreadLink)
   collapse?: boolean // the /full page → the same door, closing (CollapseThreadLink). Never both.
   onDoc?: () => void // present only on the thread header → shows the frizz-document icon
   onDone: () => void // legacy Mark-as "done" path (parent-owned mutation)
@@ -80,7 +80,7 @@ export function HeaderActions({
       {onDoc && <IconBtn label="Frizz document" icon={FileText} size={14} onClick={onDoc} />}
       {/* THE FULLSCREEN DOOR, one slot, both directions — a real anchor that navigates IN PLACE on a
           plain click and leaves ⌘/middle/right-click to the browser. It replaced the ↗ "Open in new
-          tab" arrow on 2026-08-28; the drawer header (ChatView) mounts the expand half itself.
+          tab" arrow on 2026-08-28; the queue card and the drawer both mount the expand half here.
           A surface can only ever offer ONE of these: the queue card can be expanded, the /full page can
           be collapsed, and putting the closing half here is what makes the two share a position instead
           of the reader hunting an ArrowLeft at the far end of the header (maintainer 2026-09-02). */}

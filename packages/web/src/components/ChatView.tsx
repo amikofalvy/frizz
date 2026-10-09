@@ -49,7 +49,6 @@ import { useDeliverQueuedNow, useDeliverQueuedNowSupported } from "../lib/delive
 import { useInnerHtml } from "../lib/innerHtml.ts"
 import { SessionMessageLine } from "./SessionMessageLine.tsx"
 import { useLocalFileCodeLinks } from "../lib/localFileCode.ts"
-import { shouldSubmitStagedEnter } from "../lib/composerKeyboard.ts"
 import { lastAskIndex, messagePresentationText } from "../lib/messagePresentation.ts"
 import { snoozePresetInstant, formatSnoozeWake } from "../lib/snooze.ts"
 import { noteGithubRefs } from "../lib/githubHovercards.ts"
@@ -105,7 +104,6 @@ export { QuestionBlockCard } from "./QuestionBlockCard.tsx"
 import { CopyTerminalCommandButton, useCopyTerminalCommand } from "./ExternalTerminalCommand.tsx"
 import { SignInModal } from "./SignInModal.tsx"
 import { PROVIDER_LABEL } from "../lib/signIn.ts"
-import { ExpandThreadLink } from "./ExpandThreadLink.tsx"
 import { takeFullscreenEnterAnchor } from "../lib/fullscreenHandoff.ts"
 import { prependEarlierPage } from "../lib/transcriptPagination.ts"
 import { buildVirtualTranscriptMessageRows, earlierLoadGate, nextTailFollow, TAIL_FOLLOW_PX, type VirtualTranscriptMessageRow } from "../lib/virtualTranscript.ts"
@@ -654,7 +652,6 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
       <div data-thread-chat-footer className={`z-10 shrink-0 border-t border-border/60 bg-panel ${phone ? "" : "pb-[env(safe-area-inset-bottom)]"}`}>
         <ThreadActionBar
           slug={slug}
-          onTerminal={copyTerminalCommand}
           // THE LIVE OPS AS ONE LINE OF COUNTS over the prompt box, their rows one hover away — the
           // queue card's line (QueueOpsSummary), so a thread reads the same in its drawer as on its card
           // (maintainer 2026-10-09). The rows hung under the prompt box until then (2026-07-09).
@@ -730,8 +727,12 @@ type VirtualThreadRow =
 // THE RUNTIME-STATUS LADDER — ONE slot at the transcript's end, nine mutually exclusive rungs, hardest
 // reading first, and ONE renderer for all of it.
 //
-// The transcript draws this slot from two places: the virtualized path's `runtime-status` row, and the
-// eager path in ChatView (reachable at count === 0, where there is no virtualizer to hang a row on).
+// The transcript draws this slot from three places: the virtualized path's `runtime-status` row, the
+// eager path in ChatView (reachable at count === 0, where there is no virtualizer to hang a row on), and
+// the queue card's tail (TodosView). The queue card kept a seventh, hand-rolled copy until 2026-10-09,
+// and it had drifted exactly the way this comment predicts: no provider-failure cards at all (so a
+// failed Codex thread sat in the queue reading as an ordinary rest), several rungs able to draw at once,
+// and the policy-denial card on the other side of the ending card.
 // Both drew their own copy of the ladder, and each ALSO carried its own copy of two derived facts — is
 // any rung showing (the slot's gate), and is `working` the rung that won (the spacing above it, which is
 // a quiet meta line for that rung and a card's STEP for every other). Six hand-mirrored copies of one
@@ -743,11 +744,11 @@ type VirtualThreadRow =
 // yet — the copies still agreed, rung for rung — but every one of them had to be edited in lockstep
 // forever, and that is not a property to rely on. So the ladder is stated ONCE, here: `runtimeStatusRung`
 // decides which rung wins, and everything else is derived from that answer rather than re-deriving it.
-type RuntimeStatusRung = "provider-fault" | "provider-error" | "limit-pause" | "pending-ask" | "perm-prompt" | "working" | "snooze" | "resting" | "registered-done" | "rested"
+export type RuntimeStatusRung = "provider-fault" | "provider-error" | "limit-pause" | "pending-ask" | "perm-prompt" | "working" | "snooze" | "resting" | "registered-done" | "rested"
 
 /** What each caller knows that the ladder cannot work out for itself. `registeredDone`/`restedCard` are
  *  keyed on the final assistant message, which each path computes off its own list. */
-interface RuntimeStatusState {
+export interface RuntimeStatusState {
   thread: ThreadViewData | undefined
   showWorking: boolean
   registeredDone: boolean
@@ -782,7 +783,7 @@ function frozenPendingAsk(thread: ThreadViewData | undefined): PendingAsk | unde
  *  a frozen ask outranks the generic perm banner and the Working… spinner, the human's own park outranks
  *  the benign resting card, and `rested` is the residual. Background sub-agents and shells are NOT here:
  *  they live in the anchored ops strip, which stays visible mid-turn. */
-function runtimeStatusRung({ thread, showWorking, registeredDone, restedCard, errorVisible }: RuntimeStatusState): RuntimeStatusRung | null {
+export function runtimeStatusRung({ thread, showWorking, registeredDone, restedCard, errorVisible }: RuntimeStatusState): RuntimeStatusRung | null {
   if (thread?.providerError?.retrying) return "provider-error"
   if (thread?.providerFault && !thread.foreign) return "provider-fault"
   if (thread?.limitPause && !thread.foreign) return "limit-pause"
@@ -810,7 +811,7 @@ function runtimeStatusGapFor(state: RuntimeStatusState, messages: readonly ChatM
   return runtimeStatusRung(state) === "working" ? workingIndicatorGap(messages) : STEP
 }
 
-function RuntimeStatusLadder({
+export function RuntimeStatusLadder({
   state,
   slug,
   retryText,
@@ -818,6 +819,9 @@ function RuntimeStatusLadder({
   liveRuntimeStart,
   liveActivityLabel,
   liveToolRun,
+  onRestingExit,
+  onRestingExitFailed,
+  wrap,
 }: {
   state: RuntimeStatusState
   slug: string
@@ -827,6 +831,13 @@ function RuntimeStatusLadder({
   liveRuntimeStart: string | undefined
   liveActivityLabel: string | undefined
   liveToolRun: { tools: readonly TranscriptToolCall[]; at?: string } | undefined
+  /** THE QUEUE'S optimistic card exit, and the only thing the queue card adds to the ladder: the resting
+   *  card's snooze and its steps reply fade the card the instant they are sent, and put it back if the
+   *  server declines. Off the queue there is no card to fade, so the drawer passes neither. */
+  onRestingExit?: () => void
+  onRestingExitFailed?: () => void
+  /** The queue card's narrower column: the done card wraps its prose there (FenceCard `wrap`). */
+  wrap?: boolean
 }) {
   const thread = state.thread
   switch (runtimeStatusRung(state)) {
@@ -845,13 +856,13 @@ function RuntimeStatusLadder({
     case "snooze":
       return <SnoozeCard thread={thread!} />
     case "resting":
-      return <AwaitingBackgroundCard thread={thread!} />
+      return <AwaitingBackgroundCard thread={thread!} onSnooze={onRestingExit} onSnoozeFailed={onRestingExitFailed} onReplied={onRestingExit} onReplyFailed={onRestingExitFailed} />
     // THE THREAD'S OWN ENDING, for a sign-off that came in as a tool call rather than a fence: the same
     // card the fence draws, in the slot the fence would have occupied at the transcript's end. Below
     // everything because `done` refuses while anything above could still be true — an open question or an
     // armed watch blocks the verb — so a thread showing this is at rest with nothing left to wait on.
     case "registered-done":
-      return <FenceCard fenceKind="done" body={thread!.lastFence!.body} hints={[]} />
+      return <FenceCard fenceKind="done" body={thread!.lastFence!.body} hints={[]} wrap={wrap} />
     // NOTHING ELSE APPLIES, and the bottom of the thread still has to say so — see RestedCard.
     case "rested":
       return <RestedCard thread={thread!} />
@@ -968,6 +979,11 @@ function VirtualizedThreadTranscript({
   const errorVisible = providerErrorVisible(messages, thread?.providerError)
   const runtimeStatus: RuntimeStatusState = { thread, showWorking, registeredDone, restedCard, errorVisible }
   const hasRuntimeStatus = runtimeStatusRung(runtimeStatus) !== null
+  // The slot's ROW also carries the policy-denial card, a sibling of the ladder that can stand alone: a
+  // thread whose rest drew no rung (a done fence in its last message, say) still owes the reader what the
+  // policy refused. Gating the row on the ladder alone dropped that card from long transcripts only —
+  // the eager path and the queue card always drew it.
+  const hasRuntimeRow = hasRuntimeStatus || Boolean(thread?.permPolicy)
   // The deps are runtimeStatus's FIELDS, not the object: it is a fresh literal every render.
   const runtimeStatusGap = useMemo(
     () => runtimeStatusGapFor({ thread, showWorking, registeredDone, restedCard, errorVisible }, activityMessages.map((entry) => entry.message)),
@@ -1058,8 +1074,8 @@ function VirtualizedThreadTranscript({
     // but a tool call that never finished. It belongs where the block actually happened: after the last
     // message, above the runtime status and the queued sends that are stuck behind it.
     next.push({ key: "interactions", kind: "interactions" })
-    if (hasRuntimeStatus) next.push({ key: "runtime-status", kind: "runtime-status" })
-    let queuedGap = hasRuntimeStatus || messageRows.length > 0 ? STEP : 0
+    if (hasRuntimeRow) next.push({ key: "runtime-status", kind: "runtime-status" })
+    let queuedGap = hasRuntimeRow || messageRows.length > 0 ? STEP : 0
     messages.forEach((message, messageIndex) => {
       if (!message.queued) return
       const key = `queued:${message.deliveryId ?? message.sourceId ?? messageIndex}`
@@ -1067,7 +1083,7 @@ function VirtualizedThreadTranscript({
       queuedGap = STEP
     })
     return next
-  }, [beforeCursor, earlierError, hasEarlier, hasRuntimeStatus, loadingEarlier, messageRows, messages, questionGroups, settledByRow, transportFallback])
+  }, [beforeCursor, earlierError, hasEarlier, hasRuntimeRow, loadingEarlier, messageRows, messages, questionGroups, settledByRow, transportFallback])
 
   const virtualizer = useVirtualizer({
     count: rows.length,
@@ -1620,7 +1636,7 @@ function VirtualizedThreadTranscript({
                     describe the ONE thing currently blocking; a policy denial already happened and blocks
                     nobody now, so it can coexist and must not compete for the same slot. */}
                 {thread?.permPolicy ? (
-                  <div className="mt-3">
+                  <div className={hasRuntimeStatus ? "mt-3" : ""}>
                     <PermPolicyDenialCard policy={thread.permPolicy} denies={thread.permDenies} />
                   </div>
                 ) : null}
@@ -1716,14 +1732,15 @@ export function ThreadHeader({ slug, onStatusApplied, onClose, showReturnToQueue
             // The /full page is the one surface with a fullscreen to LEAVE, and it leaves through the
             // same slot it was entered by.
             collapse={showReturnToQueue}
+            // The fullscreen door, in the slot the queue card's sits in (before Retry) — only where there
+            // is a drawer to leave, since the /full page is already there. The drawer mounted its own
+            // after the whole strip until 2026-10-09, so the icon sat on the other side of Retry here.
+            expand={Boolean(onClose)}
             onDoc={hasDoc ? () => pushDrawer("doc", thread.id) : undefined}
             onDone={() => markComplete.mutate(undefined, { onSuccess: onStatusApplied })}
             doneBusy={markComplete.isPending}
             onStatusApplied={onStatusApplied}
           />
-          {/* The fullscreen door, drawer header edition — same component as the queue card's, so the two
-              cannot drift. Only where there is a drawer to leave: the /full page is already there. */}
-          {onClose && <ExpandThreadLink slug={slug} />}
           <ThreadLifecycleActions thread={thread} onArchived={onStatusApplied} />
         </div>
       </div>

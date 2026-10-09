@@ -61,6 +61,12 @@ test("a SCHEDULER wake survives — nothing else on the card represents it", () 
   assert.equal(survivesQueueCollapse({ text: "👤 Review from @colinhacks on acme/app#391", wake: true }, 3, none), true)
 })
 
+test("a provider failure survives — it is why the run stopped, and the card's tail stands down for it", () => {
+  const none = new Set<number>()
+  assert.equal(survivesQueueCollapse({ text: "", providerError: { message: "stream disconnected", at: "2026-10-09T10:00:00.000Z" } }, 3, none), true)
+  assert.equal(survivesQueueCollapse({ text: "" }, 3, none), false)
+})
+
 // Its POSITION decides it instead — see the waker tests below. This predicate answers only "is it a wake
 // DELIVERY", and a completion marker is not one.
 test("a background-task/sub-agent COMPLETION is not a wake delivery", () => {

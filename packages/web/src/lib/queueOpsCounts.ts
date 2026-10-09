@@ -16,8 +16,8 @@ export interface QueueOpsCount {
 // The counts on the line above a thread's prompt box — the queue card's docked one and the drawer's
 // (QueueOpsSummary) — in display order, with the empty kinds dropped. Taken from the same lists the rows
 // in its panel render, by the same filters, so the line and the panel cannot disagree about how many
-// there are. `transcriptShells` is the drawer's: it holds the transcript, whose Codex background execs
-// the board reports none of (see mergeBackgroundShells); a queue card passes none, as its panel does.
+// there are. `transcriptShells` are the shells read off the transcript, whose Codex background execs the
+// board reports none of (see mergeBackgroundShells); both surfaces pass them, to the panel too.
 //
 // ONLY GITHUB WATCHES COUNT. A shell watch is not a second object: the shell it waits on is already a
 // shell, from the board's own shell list, and counting the watch too would name one process twice — the

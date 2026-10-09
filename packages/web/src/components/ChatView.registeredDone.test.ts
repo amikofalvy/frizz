@@ -31,7 +31,7 @@ test("the card is the last rung of the one ladder, after the resting card", () =
     "the resting card, then the registered done, then the residual rung, then nothing",
   )
   // …and each of those rungs draws its own card, in the one renderer both paths call.
-  assert.match(chat, /case "registered-done":\n\s*return <FenceCard fenceKind="done" body=\{thread!\.lastFence!\.body\} hints=\{\[\]\} \/>/)
+  assert.match(chat, /case "registered-done":\n\s*return <FenceCard fenceKind="done" body=\{thread!\.lastFence!\.body\} hints=\{\[\]\} wrap=\{wrap\} \/>/)
   assert.match(chat, /case "rested":\n\s*return <RestedCard thread=\{thread!\} \/>/)
 })
 
@@ -44,8 +44,13 @@ test("every gate is the ladder's own answer, so the slot opens exactly when a ru
   assert.equal(chat.match(/showsSnoozeCard\(thread\)/g)?.length, 1, "the ladder is the only place a rung is tested")
 })
 
-test("the queue card draws the same card off the same predicate", () => {
-  assert.match(queue, /showsRegisteredDoneCard\(thread, lastAgentIdx >= 0 \? messages\[lastAgentIdx\]\?\.text : undefined\) && \(/)
-  assert.match(queue, /<FenceCard fenceKind="done" body=\{thread\.lastFence!\.body\} hints=\{\[\]\} wrap \/>/)
-  assert.match(queue, /showsRestedCard\(thread, lastAgentIdx >= 0 \? messages\[lastAgentIdx\]\?\.text : undefined, questionsHere\) && \(/)
+// The queue card drew its own copy of this chain until 2026-10-09. It now feeds the same predicates into
+// the same ladder, so it cannot draw a different card — and nothing on it may draw one by hand.
+test("the queue card draws the same card off the same predicate, through the same ladder", () => {
+  const lastText = "const lastAgentText = lastAgentIdx >= 0 ? messages[lastAgentIdx]?.text : undefined"
+  assert.ok(queue.includes(lastText))
+  assert.ok(queue.includes("registeredDone: showsRegisteredDoneCard(thread, lastAgentText),"))
+  assert.ok(queue.includes("restedCard: showsRestedCard(thread, lastAgentText, questionsHere),"))
+  assert.match(queue, /<RuntimeStatusLadder\n[\s\S]*?\n\s*wrap\n\s*\/>/)
+  assert.doesNotMatch(queue, /<(FenceCard|RestedCard|LimitPauseCard|PendingAskCard|PermPromptBanner|AwaitingBackgroundCard)\b/, "no rung is drawn by hand beside the ladder")
 })

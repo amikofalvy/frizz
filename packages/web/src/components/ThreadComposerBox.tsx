@@ -57,7 +57,6 @@ function fetchThreadSkills(slug: string): Promise<ThreadSkill[]> {
 export function ThreadComposerBox({
   slug,
   surface,
-  placeholder,
   className,
   id,
   above,
@@ -69,7 +68,6 @@ export function ThreadComposerBox({
   // Pure data- tag forwarded to the textarea. Also the two surfaces' only behavioral fork inside
   // <Composer> itself (queueComposer owns Option-Enter); see lib/queueComposerKeyboard.ts.
   surface: "queueComposer" | "chatComposer"
-  placeholder: string
   // The ONLY padding/chrome difference between the call sites — the drawer's bordered panel footer vs the
   // queue card's flush bottom block.
   className?: string
@@ -100,6 +98,16 @@ export function ThreadComposerBox({
 }): ReactElement {
   const snap = useSnapshot(store)
   const thread = snap.board?.threads.find((candidate) => candidate.id === slug)
+  // ONE placeholder for both surfaces, decided here from the thread — the queue card said "Reply to the
+  // agent…" and the drawer "Follow up…" until 2026-10-09, and only the card said when the box was the
+  // way AROUND an open question. An external session keeps its own sentence: it says what sending does,
+  // which is to take the session over (see ThreadActionBar). An open question is a registered one or a
+  // fence the worker's last message still asks.
+  const placeholder = thread?.foreign
+    ? "Send a message to take over this session…"
+    : thread?.pendingQuestion || (thread?.questions?.length ?? 0) > 0
+      ? "Or skip the questions and reply…"
+      : "Reply to the agent…"
   const projectDir = useProjectDir()
   const key = draftKey.followUp(projectDir, slug, thread?.sessionId)
   const [message, setMessage, clearMessage] = useDraft(key)

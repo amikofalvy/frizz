@@ -58,9 +58,9 @@ test("a fence the resting card states never reaches the card either", () => {
 // messages mounted above it — the layout shift the maintainer refreshed into (2026-08-28).
 test("the queue card holds its tail cards until the transcript window has loaded", () => {
   const todos = readFileSync(new URL("./TodosView.tsx", import.meta.url), "utf8")
-  assert.match(todos, /\{!q\.isLoading && showsRestingCard\(thread\) && \(/)
-  assert.match(todos, /\{!q\.isLoading && showsRegisteredDoneCard\(thread, /)
-  assert.match(todos, /\{!q\.isLoading && showsRestedCard\(thread, /)
+  // Its tail is the drawer's ladder since 2026-10-09, and the ladder sits inside the same hold as the
+  // gates above it.
+  assert.match(todos, /\{!q\.isLoading && \(\n\s*<>\n\s*<InteractionStack[^\n]*\n[\s\S]*?<RuntimeStatusLadder/)
   // The thread view's eager branch is what renders while ITS window loads (count === 0 on both production
   // callers), and it drew the same ladder alone at the top of an empty pane. Same hold, both halves of it —
   // the spacer gate and the ladder — or the slot opens before the rung.

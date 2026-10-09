@@ -27,6 +27,8 @@ export interface CollapseMsgLike {
   /** The message's tool calls, reduced to the two facts the sign-off check reads. Callers pass whole
    *  transcript messages, whose TranscriptToolCall entries satisfy this structurally. */
   tools?: readonly { name?: string; status?: string }[]
+  /** Set on the transcript's provider-failure row (a Codex request that failed). */
+  providerError?: unknown
 }
 
 // The message that REGISTERED the thread's completion — a successful `mcp__frizz__done` call. Its prose
@@ -127,6 +129,10 @@ export function supersededAskIndices(messages: readonly CollapseMsgLike[]): Set<
 export function survivesQueueCollapse(m: CollapseMsgLike, index: number, superseded: ReadonlySet<number>): boolean {
   if (hasQuestionBlock(m.text)) return !superseded.has(index)
   if (carriesDoneRegistration(m)) return true
+  // A PROVIDER FAILURE is lifecycle, not chatter: it is why the run stopped, and often why the card is in
+  // the queue at all. Folded, it vanished with the calls before it, and the card read as an ordinary rest
+  // (2026-10-09). The runtime-status ladder stands its own error card down whenever this row is drawn.
+  if (m.providerError) return true
   return m.wake === true
 }
 
