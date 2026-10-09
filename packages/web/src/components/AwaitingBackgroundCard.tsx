@@ -32,7 +32,7 @@ import { awaitingFenceTitle, awaitingSteps, isDirectSubAgent } from "@frizz/shar
 import { githubRefUrl } from "../lib/githubRef.ts"
 import { noteGithubRefs } from "../lib/githubHovercards.ts"
 import { AWAITING_FALLBACK_TITLE, AWAITING_NO_PROSE, awaitingDefersToQuestions, awaitingProseBlock, prWatchRefs, STEPS_CHIP } from "../lib/awaitingPresentation.ts"
-import { CHILD_DISMISS_NOUN, CHILD_DISMISS_TITLE, CHILD_DISMISS_VERB, CHILD_STALE_DOT_CLASS, CHILD_STALE_SHELL_TITLE, CHILD_STALE_TITLE } from "../lib/childOps.ts"
+import { CHILD_DISMISS_NOUN, CHILD_DISMISS_TITLE, CHILD_DISMISS_VERB, CHILD_STALE_DOT_CLASS, CHILD_STALE_SHELL_TITLE, CHILD_STALE_TITLE, checksCounterLabel, issueCounterLabel } from "../lib/childOps.ts"
 import { compactElapsedSince, formatCompactElapsed } from "../lib/durationLabels.ts"
 import { useNowMs } from "../lib/liveClock.ts"
 import { useMarkdownHtml } from "../lib/useMarkdown.ts"
@@ -371,6 +371,28 @@ export function watchStatusLine(status: GithubWatchStatus | undefined): string {
   return [counts || "No checks", merge].filter((p): p is string => p !== null).join(" · ")
 }
 
+/** THE ROW'S READING: ONE fact, the one that decides what the reader does next — and the whole sentence
+ *  above (watchStatusLine) rides the row's tooltip. The sentence was the status until 2026-10-08, and it
+ *  was the widest thing in the table ("2 failing, 1 in progress, 9 successful · view failures"; maintainer:
+ *  "We need a better way to represent the PR status … We need to be picky about what we include as the
+ *  light gray metadata").
+ *
+ *  The words are the ops strip's counter (checksCounterLabel — "1 failed", "9 held", "14 running", "29
+ *  green", "merged"), so the strip and this table never count one PR in two vocabularies. Two merge facts
+ *  outrank the counts it would otherwise lead with, each the one thing the glyph cannot say: a conflict
+ *  (no amount of waiting fixes it), and a GREEN PR that still cannot merge ("blocked" — a review or a
+ *  required branch holds it, by the same rule mergeClause keeps). Failures outrank both: they are red on
+ *  the glyph already, and the count is the link to them. Unpolled says "Checking…", never nothing — an
+ *  unpolled PR and one with no CI are different facts (the second is simply silent). */
+export function watchCounterLine(status: GithubWatchStatus | undefined): string | undefined {
+  if (!status) return "Checking…"
+  if (status.state === "open" && status.failed === 0) {
+    if (status.merge === "conflicting") return "conflicts"
+    if (status.merge === "blocked" && status.checks === "passing") return "blocked"
+  }
+  return checksCounterLabel(status)
+}
+
 // ---- ONE ROW SHAPE, EVERY KIND -------------------------------------------------------------------
 // Maintainer 2026-08-15, choosing the shape off the mockup sheet: "Definitely group them by kind. They
 // should all consistently use the chevron […] and right justify the status label, the light gray status
@@ -615,31 +637,27 @@ export function GithubWatchRow({ watch }: { watch: ThreadWatchView }) {
       name={watch.target}
       href={url ?? undefined}
       ghRef={url ? watch.target : undefined}
-      title={url ? `Open ${watch.target} on GitHub` : watch.target}
+      title={url ? `Open ${watch.target} on GitHub — ${watchStatusLine(status)}` : watch.target}
       status={
-        <>
-          {watchStatusLine(status)}
-          {/* THE FAILING JOBS ARE NOT LISTED ANY MORE (maintainer 2026-08-15: "I don't think we should
-              list out the failed checks. I think there should just be a button to view the failures, and
-              it can just link out to the PR"). The names cost a whole second line on every red row for
-              something the reader has to go to GitHub to act on anyway. The count still speaks — "2
-              failing" says HOW red — and this goes to the PR's own CHECKS tab, which is where they are.
-              `relative` lifts it over the stretched overlay so it keeps its own click. */}
-          {status && status.failing.length > 0 && url && (
-            <>
-              {" · "}
-              <a
-                href={`${url}/checks`}
-                target="_blank"
-                rel="noreferrer noopener"
-                onMouseDown={(e) => e.stopPropagation()}
-                className={`relative underline underline-offset-2 ${PRIMER_DANGER_LINK}`}
-              >
-                view failures
-              </a>
-            </>
-          )}
-        </>
+        // THE FAILED COUNT IS THE LINK TO THE FAILURES (maintainer 2026-08-15: "there should just be a
+        // button to view the failures, and it can just link out to the PR"). It was a separate "view
+        // failures" link after the counts until 2026-10-08; the count itself now goes to the PR's own
+        // CHECKS tab, which is where the failures are, so the button costs no words of its own.
+        // `relative` lifts it over the stretched overlay so it keeps its own click.
+        status && status.state === "open" && status.failed > 0 && url
+          ? (
+            <a
+              href={`${url}/checks`}
+              target="_blank"
+              rel="noreferrer noopener"
+              title={`View the failing checks on ${watch.target}`}
+              onMouseDown={(e) => e.stopPropagation()}
+              className={`relative underline underline-offset-2 ${PRIMER_DANGER_LINK}`}
+            >
+              {watchCounterLine(status)}
+            </a>
+          )
+          : watchCounterLine(status)
       }
     />
   )
@@ -659,8 +677,10 @@ function GithubIssueWatchRow({ watch }: { watch: ThreadWatchView }) {
       name={status?.title ? `${watch.target} ${status.title}` : watch.target}
       href={url ?? undefined}
       ghRef={url ? watch.target : undefined}
-      title={url ? `Open ${watch.target} on GitHub` : watch.target}
-      status={issueStatusLine(status)}
+      // The row says one fact — the comment count, or "closed" — in the strip's own words
+      // (issueCounterLabel); the glyph already says open or closed, and the full line is the tooltip.
+      title={url ? `Open ${watch.target} on GitHub — ${issueStatusLine(status)}` : watch.target}
+      status={status ? issueCounterLabel(status) : "Checking…"}
     />
   )
 }
@@ -706,7 +726,7 @@ function ShellWatchRow({ watch, thread, slug, now }: {
       mark={<TerminalSquare size={12} className={`${ON_CAP} text-shell`} />}
       name={watch.target}
       title={watch.target}
-      status={elapsed ? `running · ${elapsed}` : "running"}
+      status={elapsed}
     />
   )
 }
@@ -741,7 +761,6 @@ export function BgShellRow({ shell, slug, now, testId, onDismiss }: {
 }) {
   const elapsed = compactElapsedSince(shell.startedAt, now)
   const running = shell.state === "running"
-  const word = running ? "running" : "stale"
   // A CODEX shell has an id (its processId) but no readable output — codex keeps that inside its own
   // session — so the row states its wait and declines the drill-in rather than opening a drawer that
   // could only report "unavailable". Same parting of the two affordances as the ops strip.
@@ -755,7 +774,10 @@ export function BgShellRow({ shell, slug, now, testId, onDismiss }: {
       name={shell.label}
       onOpen={openable ? () => pushBackgroundShellDrawer(slug, shell.id!, { label: shell.label, startedAt: shell.startedAt }) : undefined}
       title={openable ? `Read this shell's output — ${state}` : running ? shell.label : `${shell.label} — ${state}`}
-      status={elapsed ? `${word} · ${elapsed}` : word}
+      // The elapsed time alone (maintainer 2026-10-08: "We need to be picky about what we include as the
+      // light gray metadata"). The mark already says which: shell blue while it runs, grey once the OS
+      // confirms it gone, and the tooltip spells it out.
+      status={elapsed}
       dismiss={railDismiss(onDismiss, running, !!openable, "SHELL", shell.label)}
     />
   )
@@ -815,7 +837,9 @@ export function AgentRow({ agent, slug, now, onDismiss }: { agent: ThreadView["s
   // STALE reaches the fullscreen rail only (this card's set is `liveAgents`): a child whose completion
   // never arrived and whose transcript has gone quiet past its window (tailer `quietPastWindow`). It does
   // not spin. It wears the flat dot every other surface gives a stale child, in a box the size of the
-  // spinner so the column keeps one footprint, and its status leads with the word.
+  // spinner so the column keeps one footprint. The dot is the whole signal and the tooltip the words: a
+  // "stale ·" in the status said the same thing a third time (maintainer 2026-10-08: "I don't think it's
+  // worth including the stale label either").
   const stale = agent.state === "stale"
   return (
     <WaitRow
@@ -829,7 +853,7 @@ export function AgentRow({ agent, slug, now, onDismiss }: { agent: ThreadView["s
       name={agent.label}
       onOpen={agent.id ? () => pushSubAgentDrawer(slug, agent.id!, { label: agent.label, subagentType: agent.subagentType, startedAt: agent.startedAt }) : undefined}
       title={agent.id ? `Open this sub-agent${profile ? ` (${profile})` : ""} — ${stale ? CHILD_STALE_TITLE : `working for ${elapsed}`}` : agent.label}
-      status={[stale ? "stale" : undefined, elapsed].filter(Boolean).join(" · ")}
+      status={elapsed}
       dismiss={railDismiss(onDismiss, agent.state === "running", !!agent.id, "AGENT", agent.label)}
     />
   )

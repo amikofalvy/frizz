@@ -260,12 +260,13 @@ test("a shell watch resolves its label off ANY of the three legal handles", () =
 
 // A declared watch outlives the shell it names: the OS confirms the process gone (tailer `shellIsGone`),
 // no completion ever arrives, and this row is the reason the thread is back in the queue. It read
-// "running · …" in the shell blue until 2026-10-05.
+// "running · …" in the shell blue until 2026-10-05; since 2026-10-08 its status is the elapsed time
+// alone, and the grey mark and the tooltip say it is gone.
 test("a declared shell whose process is gone reads stale, never running", () => {
   const dead = { ...thread([], [{ ...shell("running"), state: "stale" }]), watches: [shellWatch("bzvtnt3ig")] } as Parameters<typeof AwaitingBackgroundCard>[0]["thread"]
   const html = render(dead)
   const row = html.slice(html.indexOf('data-wait-kind="shell"'))
-  assert.match(row, /data-wait-status[^>]*>stale · /)
+  assert.doesNotMatch(row, /data-wait-status[^>]*>[^<]*stale/, "the mark and tooltip carry it, not the status")
   assert.doesNotMatch(row, /running/)
   assert.doesNotMatch(row, /text-shell/, "a dead process does not wear the live shell blue")
   assert.ok(row.includes(CHILD_STALE_SHELL_TITLE), "the tooltip says the process exited")
@@ -278,7 +279,7 @@ test("the rail's row for a stale sub-agent wears the stale dot, never the spinne
   const stale = renderToStaticMarkup(createElement(AgentRow, { agent: agent("stale"), slug: "demo-thread", now }))
   assert.ok(stale.includes(`class="${CHILD_STALE_DOT_CLASS}"`))
   assert.doesNotMatch(stale, /animate-spin/)
-  assert.match(stale, /data-wait-status[^>]*>stale · 30m</)
+  assert.match(stale, /data-wait-status[^>]*>30m</, "the dot says stale; the status is the elapsed time")
   assert.ok(stale.includes(CHILD_STALE_TITLE))
   const live = renderToStaticMarkup(createElement(AgentRow, { agent: agent("running"), slug: "demo-thread", now }))
   assert.match(live, /animate-spin/)
@@ -422,7 +423,7 @@ test("AwaitingWaitTable draws the resting card's rows off a thread that is not a
   assert.match(html, /data-wait-row="bzvtnt3ig" data-wait-kind="shell"/)
   assert.match(plain, /vite dev/)
   assert.doesNotMatch(plain, /bzvtnt3ig/, "a runtime id is never the reader's text")
-  assert.match(plain, /running · /)
+  assert.doesNotMatch(plain, /running · /, "the shell blue says it runs; the status is the elapsed time")
   // The divider is the caller's call — it separates prose the caller drew above.
   assert.match(html, /-mx-4 mt-3 border-t border-border/)
   assert.doesNotMatch(renderToStaticMarkup(createElement(AwaitingWaitTable, { thread: midTurn, divider: false })), /-mx-4 mt-3 border-t border-border/)
