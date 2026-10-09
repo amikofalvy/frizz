@@ -42,6 +42,7 @@ import { PhoneAnswerBar, PhoneQuestionsContext, type PhoneQuestions } from "./Ph
 import { RegisteredAnswerSheet } from "./RegisteredAnswerSheet.tsx"
 import { sendEagerFollowUp } from "../lib/eagerComposerSubmission.ts"
 import { limitResumeClock } from "../lib/activityTime.ts"
+import { timeBreakLabel, timeBreaks, type TimeBreak } from "../lib/timeBreaks.ts"
 import { useUnqueueFollowUp, useUnqueueSupported } from "../lib/unqueueFollowUp.ts"
 import { useFailedDeliveryActions } from "../lib/failedDelivery.ts"
 import { useDeliverQueuedNow, useDeliverQueuedNowSupported } from "../lib/deliverQueuedNow.ts"
@@ -112,7 +113,7 @@ import { withoutRedundantRestDividers } from "../lib/restDividers.ts"
 import { coalesceToolActivityMessages, editedFileCount, historicalToolActivityMessages, isPictureTool, isSettledAsk, isToolActivityException, liveRuntimeStartedAt, liveToolActivityRun, liveToolActivityTail, settledToolActivityLabel, thinkingToolActivityLabel, toolActivityLabel } from "../lib/toolActivity.ts"
 import { CodexDirectiveCard, MermaidDiagram } from "./CodexRichOutput.tsx"
 import { LightboxGallery } from "./Lightbox.tsx"
-import { META_CARD_STEP, PICTURE_STEP, STEP, USER_TAIL_EXTRA, VSpace } from "./rhythm.tsx"
+import { META_CARD_STEP, PICTURE_STEP, STEP, TIME_BREAK_ABOVE, TIME_BREAK_BELOW, USER_TAIL_EXTRA, VSpace } from "./rhythm.tsx"
 
 // Answer types moved to lib/questionBlocks.ts (shared by the queue card, the thread view, and the
 // answering controller). Re-exported here so existing importers keep working.
@@ -722,7 +723,7 @@ type VirtualThreadRow =
   | { key: string; kind: "settled-questions"; questions: SettledQuestion[] }
   | { key: "transport-fallback"; kind: "transport-fallback" }
   | { key: string; kind: "earlier-history" }
-  | ({ kind: "message" } & VirtualTranscriptMessageRow)
+  | ({ kind: "message"; timeBreak: TimeBreak | null; timeBreakAt: string | undefined } & VirtualTranscriptMessageRow)
   | { key: "runtime-status"; kind: "runtime-status" }
   | { key: string; kind: "queued"; message: ChatMessage; messageIndex: number; gap: number }
 
@@ -937,11 +938,21 @@ function VirtualizedThreadTranscript({
   }, [coalescedActivityMessages, running, awaitingCut, restingShown])
   const showWorking = running
   const messageRows = useMemo(() => {
-    return buildVirtualTranscriptMessageRows(
+    const rows = buildVirtualTranscriptMessageRows(
       activityMessages.map((entry) => entry.message),
       rendersNothingIn(activityMessages, awaitingCut, restingShown),
       messageGap,
-    ).map((row) => ({ ...row, messageIndex: activityMessages[row.messageIndex].messageIndex }))
+    )
+    // A coalesced tool run STARTED at `runStartedAt` and last moved at its walked-forward `at` — see
+    // lib/timeBreaks for why the pause is measured between the two.
+    const startAt = (row: VirtualTranscriptMessageRow) => activityMessages[row.messageIndex].runStartedAt ?? row.message.at
+    const breaks = timeBreaks(rows, startAt, (row) => row.message.at)
+    return rows.map((row, i) => ({
+      ...row,
+      messageIndex: activityMessages[row.messageIndex].messageIndex,
+      timeBreak: breaks[i],
+      timeBreakAt: startAt(row),
+    }))
   }, [activityMessages, awaitingCut, restingShown])
   const lastUserIdx = useMemo(() => lastAskIndex(messages), [messages])
   // A completion the worker REGISTERED rather than fenced: the last rung of the ladder below, drawn here
@@ -1570,7 +1581,17 @@ function VirtualizedThreadTranscript({
                 )}
               </div>
             ) : row.kind === "message" ? (
-              <div className="relative flex flex-col px-6" style={{ paddingTop: row.gap }}>
+              // A time break heads the row it dates, INSIDE it, so the virtualizer measures the two as
+              // one and nothing can ever be drawn over the message below. It replaces the row's gap:
+              // TIME_BREAK_ABOVE is the air above the reading (none at the very top of the transcript,
+              // where the row already starts flush), and TIME_BREAK_BELOW ties it to its own message.
+              <div className="relative flex flex-col px-6" style={{ paddingTop: row.timeBreak && row.timeBreakAt ? (row.gap === 0 ? 0 : TIME_BREAK_ABOVE) : row.gap }}>
+                {row.timeBreak && row.timeBreakAt ? (
+                  <>
+                    <TimeBreakLine at={row.timeBreakAt} kind={row.timeBreak} />
+                    <VSpace h={TIME_BREAK_BELOW} />
+                  </>
+                ) : null}
                 <Message
                   m={row.message}
                   answering={fencesLive ? answeringForMessage(row.message) : undefined}
@@ -1799,6 +1820,19 @@ export function messageHeadIsPicture(m: ChatMessage): boolean {
   const tools = messageHeadTools(m)
   return tools !== null && isPictureTool(tools[0])
 }
+// The centred reading a time break draws — see lib/timeBreaks. `<time>` carries the exact instant on
+// `dateTime`; the day word is a step brighter than the clock because it is the part a reader scrolling
+// a long, parked thread is looking for.
+function TimeBreakLine({ at, kind }: { at: string; kind: TimeBreak }) {
+  const { day, time } = timeBreakLabel(at, kind)
+  return (
+    <time dateTime={at} className="block select-none text-center text-[11px] leading-4 [font-variant-numeric:tabular-nums] text-muted-45">
+      {day ? <span className="font-medium text-muted-60">{day} </span> : null}
+      {time}
+    </time>
+  )
+}
+
 // THE between-message gap, in one function. Both spacing implementations (this file's plain column and
 // the virtualized row builder) call it, so neither can drift from the other.
 export function messageGap(previous: ChatMessage, next: ChatMessage): number {
