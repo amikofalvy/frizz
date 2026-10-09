@@ -184,7 +184,7 @@ import { activeBandThread, boardAskThread, FrizzMdAnswers, FrizzMdStatus, Projec
 import { createFrizzMd, frizzMdStatus, skipFrizzMd } from "./frizz-md.ts"
 import { imageDimensions } from "./image-header.ts"
 import { homedir } from "node:os"
-import { chosenProjectRoot, ensureProjectIdFile, existingProjectId, isHomeDirectory, writeProjectIdFile } from "./project-root.ts"
+import { chosenProjectRoot, ensureProjectIdFile, existingProjectId, isHomeDirectory, refuseWorldWritableProject, writeProjectIdFile } from "./project-root.ts"
 import { resolveProjectLabel } from "./project-identity.ts"
 import { registerProject } from "./project-registry.ts"
 import { pickDirectory, pickImageFile, warmDirectoryPicker, warmImagePicker } from "./directory-picker.ts"
@@ -685,6 +685,8 @@ export function addProjectAtPath(input: string, home = homedir()): ProjectCard {
   // Minting an id in $HOME writes a project into ~/.frizz — Frizz's own state root — and every
   // unmarked directory under home then resolves to it. The launcher refuses this; so does the grid.
   if (isHomeDirectory(root, home)) throw new Error("The home folder cannot be a project — choose a folder inside it.")
+  // Before anything is written: `/private/tmp` was added exactly this way (refuseWorldWritableProject).
+  refuseWorldWritableProject(root)
   // SEEDED, exactly as the launcher seeds it: an established repository whose id lives only in
   // `git config frizz.id` keeps that id, so adding it from the grid finds its existing board instead
   // of minting a fresh one and orphaning every thread on it.

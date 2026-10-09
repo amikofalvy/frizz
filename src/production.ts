@@ -212,7 +212,9 @@ const workspace: Workspace = (() => {
     throw new Error(
       intent.reason === "home"
         ? "frizz cannot open your home directory as a project, and there is no other project to show yet. cd into a repository and run frizz there."
-        : `${intent.directory} is not a Frizz project yet, and there is no other project to show. Run frizz inside a repository, or add this one from the projects page once a board is open.`,
+        : intent.reason === "world-writable"
+          ? `A folder every account can write to cannot be a project: ${intent.directory}. Run frizz in a folder only you can write to.`
+          : `${intent.directory} is not a Frizz project yet, and there is no other project to show. Run frizz inside a repository, or add this one from the projects page once a board is open.`,
     );
   launchIntent = intent;
   return intent.workspace;

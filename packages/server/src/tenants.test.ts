@@ -1,5 +1,8 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
+import { chmodSync, mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import type { AppContext } from "./context.ts"
 import type { Project } from "./project.ts"
 import { createTenantMap } from "./tenants.ts"
@@ -31,6 +34,25 @@ test("activate opens a project once, and a second activate returns the same cont
   assert.equal(a, b, "the same context, not a second one over the same SQLite file")
   assert.equal(built, 1)
   assert.equal(tenants.active().length, 1)
+})
+
+// A project registered at a world-writable folder before those were refused (or chmod'ed since) must
+// not open: every worker it starts would run what any account planted there.
+test("activate refuses a project whose folder every account can write to, as one dead card", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "frizz-tenant-shared-"))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  chmodSync(dir, 0o777)
+  let built = 0
+  const errors: string[] = []
+  const tenants = createTenantMap({
+    createContext: async () => { built++; return fakeContext([]) },
+    onError: (_project, error) => errors.push((error as Error).message),
+  })
+  assert.equal(await tenants.activate({ ...project("shared"), dir }), undefined)
+  assert.equal(built, 0, "refused before anything is opened")
+  assert.deepEqual(errors, [`A folder every account can write to cannot be a project: ${dir}`])
+  chmodSync(dir, 0o755)
+  assert.ok(await tenants.activate({ ...project("shared"), dir }))
 })
 
 // Two viewers opening one project at the same instant must not race two contexts onto one database.

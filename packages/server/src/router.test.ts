@@ -1,7 +1,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync, utimesSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync, utimesSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { Hono } from "hono"
@@ -30,7 +30,7 @@ import {
 } from "./router.ts"
 import { projectTranscriptPageAgentLifecycles } from "./transcript.ts"
 import { readProjectIdFile, writeProjectIdFile } from "./project-root.ts"
-import { registerProject } from "./project-registry.ts"
+import { listProjects, registerProject } from "./project-registry.ts"
 import { createStorage, type AdoptionClaimRow, type SessionRow } from "./storage.ts"
 import type { AdoptionPaneLookup, PaneIdentity, PaneIdentity as PaneSnapshot } from "./adoption-recovery.ts"
 import type { AppContext } from "./context.ts"
@@ -1906,6 +1906,43 @@ test("projectAdd: the home directory itself is refused, and nothing is written",
   try {
     assert.throws(() => addProjectAtPath(home, home), /home folder/u)
     assert.equal(existsSync(join(home, ".frizz", ".id")), false)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+// A stolen board session typed `/private/tmp` into "Add a project" and dispatched workers into it
+// (2026-10-08). Any account can write there, so any account could plant what those workers ran.
+test("projectAdd: a folder every account can write to is refused, and nothing is written", () => {
+  const home = mkdtempSync(join(tmpdir(), "frizz-add-shared-"))
+  try {
+    const shared = join(home, "shared")
+    mkdirSync(shared)
+    chmodSync(shared, 0o777)
+    assert.throws(
+      () => addProjectAtPath(shared, home),
+      { message: `A folder every account can write to cannot be a project: ${shared}` },
+    )
+    assert.equal(existsSync(join(shared, ".frizz")), false)
+    assert.equal(listProjects(home).length, 0)
+    // The sticky bit of /tmp changes nothing: it guards deletion, not planting.
+    chmodSync(shared, 0o1777)
+    assert.throws(() => addProjectAtPath(shared, home), /every account can write to/u)
+    // The same folder, writable only by its owner, is an ordinary project.
+    chmodSync(shared, 0o755)
+    const card = addProjectAtPath(shared, home)
+    assert.equal(card.path, realpathSync(shared))
+    assert.ok(readProjectIdFile(shared))
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("projectAdd: the machine's own /tmp is refused", { skip: process.platform === "win32" }, () => {
+  const home = mkdtempSync(join(tmpdir(), "frizz-add-tmp-"))
+  try {
+    assert.throws(() => addProjectAtPath("/tmp", home), /A folder every account can write to cannot be a project: /u)
+    assert.equal(listProjects(home).length, 0)
   } finally {
     rmSync(home, { recursive: true, force: true })
   }

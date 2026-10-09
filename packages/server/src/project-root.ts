@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto"
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs"
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join, parse, resolve } from "node:path"
 import { acquireNamedLaunchLockSync, readGitProjectId, validateProjectId } from "./project-identity.ts"
@@ -196,6 +196,38 @@ export function isHomeDirectory(dir: string, home = homedir()): boolean {
   } catch {
     return false
   }
+}
+
+/**
+ * A FOLDER EVERY ACCOUNT CAN WRITE TO IS NOT A PROJECT.
+ *
+ * A project root is where every worker Frizz dispatches starts, with permission prompts bypassed, and
+ * what it trusts at start lives in that folder: `FRIZZ.md`, `.claude/settings.json` hooks, `.mcp.json`,
+ * `.frizz/` itself. In a folder with `o+w` — `/tmp`, `/private/tmp`, `/var/tmp`, anything chmod 777 —
+ * any account on the machine can plant those files, and the worker runs them as the operator. The
+ * sticky bit does not help: it stops someone deleting another account's files, not adding their own.
+ *
+ * Not hypothetical. On 2026-10-08 a board session stolen through a backdoored relay typed
+ * `/private/tmp` into "Add a project", and about 13 workers dispatched into it installed malware.
+ * Nothing in Frizz refused the folder; only the home folder was refused.
+ *
+ * Asked of the folder ITSELF, through `statSync`, so a symlink is judged by its target (`/tmp` on macOS
+ * is a link to `/private/tmp`). A folder that cannot be read answers false: the caller is about to fail
+ * on it anyway, with a message about the real problem. Windows has no `o+w` bit — node reports every
+ * directory there as writable by all — so it answers false and leaves the ACLs to Windows.
+ */
+export function isWorldWritable(dir: string, platform: NodeJS.Platform = process.platform): boolean {
+  if (platform === "win32") return false
+  try {
+    return (statSync(dir).mode & 0o002) !== 0
+  } catch {
+    return false
+  }
+}
+
+/** Throw the one sentence every way into a project uses when the folder is world-writable. */
+export function refuseWorldWritableProject(dir: string): void {
+  if (isWorldWritable(dir)) throw new Error(`A folder every account can write to cannot be a project: ${dir}`)
 }
 
 /**

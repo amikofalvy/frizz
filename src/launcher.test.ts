@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { createServer, type AddressInfo } from "node:net";
 import { createServer as createHttpServer } from "node:http";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync, lstatSync, readlinkSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync, lstatSync, readlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
 import { test } from "node:test";
@@ -2415,6 +2415,41 @@ test("launch intent: $HOME is never a project, marker or not", () => {
     assert.ok(intent.kind === "grid");
     assert.equal(intent.workspace.root, hosted.root);
     assert.equal(existsSync(join(home, ".frizz", ".id")), false);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("launch intent: a folder every account can write to is never a project, repository or not", () => {
+  // `/private/tmp` was added as a project by a stolen session (2026-10-08); `frizz` run in such a folder
+  // must not adopt it either. Any account can plant hooks and settings there that a worker would run.
+  const base = mkdtempSync(join(tmpdir(), "frizz launch intent shared "));
+  const home = join(base, "home");
+  const host = join(base, "host repo");
+  const shared = join(base, "shared repo");
+  try {
+    mkdirSync(home, { recursive: true });
+    execFileSync("git", ["init", "-q", host]);
+    execFileSync("git", ["init", "-q", shared]);
+    chmodSync(shared, 0o1777);
+
+    const orphan = resolveLaunchIntent(shared, home, {});
+    assert.ok(orphan.kind === "empty");
+    assert.equal(orphan.reason, "world-writable");
+    assert.throws(() => resolveWorkspace(shared, home), /A folder every account can write to cannot be a project/);
+
+    const hosted = resolveWorkspace(host, home);
+    registerProject({ dir: hosted.root, id: hosted.id }, home);
+    const intent = resolveLaunchIntent(shared, home, {});
+    // The grid, not an offer: the add it would offer is refused too.
+    assert.ok(intent.kind === "grid");
+    assert.equal(intent.workspace.root, hosted.root);
+    assert.equal(existsSync(join(shared, ".frizz", ".id")), false);
+
+    // A registered project that has since become world-writable is not chosen to host the server.
+    chmodSync(hosted.root, 0o777);
+    assert.equal(resolveLaunchIntent(shared, home, {}).kind, "empty");
+    chmodSync(hosted.root, 0o755);
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
