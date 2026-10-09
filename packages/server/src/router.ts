@@ -1674,7 +1674,9 @@ export function createRouter(ctx: AppContext) {
     //
     // WHY THE GATE IS STRICT. Measured live: addressing a child that has ALREADY SETTLED does not
     // error and does not vanish — the CLI falls the message back onto the MAIN thread, where the
-    // parent obeys it as if the operator had typed it into the thread composer. A steer sent while
+    // parent obeys it as if the operator had typed it into the thread composer — re-measured on
+    // 2.1.295 by backend/_live_broker_steer_rested.mts, with both the dispatch tool_use id and the
+    // runtime agent id as the address, and neither one resumes the child. A steer sent while
     // the parent's own turn is IN FLIGHT misdelivers the same way (absorbed into that turn — see the
     // predicate). So an ungated steer is not a no-op, it is a misdelivery. `subAgentSteerable` is the
     // single predicate that decides, and the drawer's prompt box is rendered off the same answer.
