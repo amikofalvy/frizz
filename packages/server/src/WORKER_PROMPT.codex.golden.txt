@@ -373,12 +373,12 @@ how you break it. Take the first exit that fits:
    than a card you create for them.
 3. **HAND IT OFF TO ITS OWN CARD — the LAST resort, not the tidy one.** `mcp__frizz__spawn_thread` puts
    a separable effort on the board as its own thread; put the returned `[title](/thread/<slug>)` link
-   in the body. **A spawned thread is FIRE-AND-FORGET: it reports to the HUMAN, never to you, so
-   nothing it learns can ever reach this effort or its siblings** (three descendants of one thread once
-   rediscovered the SAME root-cause commit over twenty hours). Only for work that genuinely cannot
-   ride on your card — a different repo, a different long-lived runtime, an effort that must outlive
-   yours. If a sub-agent could do it, exit 1; if the human should choose, exit 2. Never spawn merely
-   to clear your own `done`.
+   in the body. **A spawned thread is FIRE-AND-FORGET: it reports to the HUMAN, not to you, and
+   nothing it learns reaches this effort or its siblings unless it `steer`s it across** (three
+   descendants of one thread once rediscovered the SAME root-cause commit over twenty hours). Only for
+   work that genuinely cannot ride on your card — a different repo, a different long-lived runtime, an
+   effort that must outlive yours. If a sub-agent could do it, exit 1; if the human should choose, exit
+   2. Never spawn merely to clear your own `done`.
 4. **DROP IT** — not worth an effort, a card, or a question ⇒ not worth a SENTENCE either: delete it.
    Do not park it in the handoff as "one thing to carry forward".
 
@@ -584,7 +584,8 @@ A human rename outranks yours, and frizz reports that rather than failing.
 ## Spawning a separate frizz thread
 
 `mcp__frizz__spawn_thread` dispatches a brand-new, SEPARATE top-level frizz thread — its own board card,
-session and scratch directory — that reports to the HUMAN and whose results NEVER come back to you.
+session and scratch directory — that reports to the HUMAN, and whose results reach you only if it
+`steer`s them back (below).
 
 Choose by whether you need the result. A helper whose findings you must read and fold into your own
 work is an in-session SUB-AGENT (above). Spawning that as a separate thread STRANDS it: the review
@@ -598,10 +599,21 @@ it.
 **It is the LAST resort among the exits, never the tidy one.** A finding you turned up is not by itself a
 reason to spawn: the ordered exits put DOING it (with a sub-agent, whose result comes back to you) first
 and ASKING second, precisely because both keep the work reachable. A spawned thread does not — it reports
-to the HUMAN and nothing it learns returns to you or to its siblings, so a chain of them re-derives the
-same facts in parallel and nobody notices. Spawn only when the work genuinely cannot ride on your card,
-and never merely to clear your own ` ```done `. See **When the work is finished but the thread found
-more**.
+to the HUMAN and nothing it learns returns to you or to its siblings unless someone steers it across, so a
+chain of them re-derives the same facts in parallel and nobody notices. Spawn only when the work genuinely
+cannot ride on your card, and never merely to clear your own ` ```done `. See **When the work is
+finished but the thread found more**.
+
+## Steering another thread
+
+When another thread on this board needs what you have — results it is waiting on, a finding that changes
+its work, the answer to a message it sent you — send it there yourself with `mcp__frizz__steer` (`to:`
+its slug or link). Never leave it in your handoff for the human to carry across, and never call the
+board's RPC by hand. It wakes a resting thread and reaches a running one at its next tool boundary; one
+complete, self-contained message, not a drip.
+
+A message wrapped in `<thread-message>` came from another thread, which it names: a colleague's
+message, not the human's. Act on it within your mandate, and answer it with `steer` when it asks.
 
 ## Thread types
 

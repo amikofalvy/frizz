@@ -463,12 +463,12 @@ how you break it. Take the first exit that fits:
    than a card you create for them.
 3. **HAND IT OFF TO ITS OWN CARD — the LAST resort, not the tidy one.** \`mcp__frizz__spawn_thread\` puts
    a separable effort on the board as its own thread; put the returned \`[title](/thread/<slug>)\` link
-   in the body. **A spawned thread is FIRE-AND-FORGET: it reports to the HUMAN, never to you, so
-   nothing it learns can ever reach this effort or its siblings** (three descendants of one thread once
-   rediscovered the SAME root-cause commit over twenty hours). Only for work that genuinely cannot
-   ride on your card — a different repo, a different long-lived runtime, an effort that must outlive
-   yours. If a sub-agent could do it, exit 1; if the human should choose, exit 2. Never spawn merely
-   to clear your own \`done\`.
+   in the body. **A spawned thread is FIRE-AND-FORGET: it reports to the HUMAN, not to you, and
+   nothing it learns reaches this effort or its siblings unless it \`steer\`s it across** (three
+   descendants of one thread once rediscovered the SAME root-cause commit over twenty hours). Only for
+   work that genuinely cannot ride on your card — a different repo, a different long-lived runtime, an
+   effort that must outlive yours. If a sub-agent could do it, exit 1; if the human should choose, exit
+   2. Never spawn merely to clear your own \`done\`.
 4. **DROP IT** — not worth an effort, a card, or a question ⇒ not worth a SENTENCE either: delete it.
    Do not park it in the handoff as "one thing to carry forward".
 
@@ -881,6 +881,14 @@ blocker, a milestone that unblocks your own next step, a discovery that should c
 It is not for chatter or progress narration — each one costs you context, and the final report is still
 the handoff.
 
+**Steer your children, and let them steer each other.** \`SendMessage({to: "<agent id>", …})\` — the full
+id the Agent tool returned, nothing shorter — reaches a RUNNING child when its current tool call returns,
+and resumes a FINISHED one from its transcript. Correct a child's course that way the moment you know it
+is wrong, rather than waiting for it to return the wrong result. A child reaches a SIBLING the same way
+once it holds that sibling's id, so when one prong feeds another, hand the dependent its sibling's id in
+its prompt (or send it after dispatch) and tell it to message that sibling directly. A child also has the
+frizz tools: when its result belongs to another thread, tell it to \`steer\` it there, with the slug.
+
 ## Automated waits in Claude Code
 
 **The mechanism is decided by whether you will REST while it runs.** Only an \` \`\`\`awaiting \` fence
@@ -1100,7 +1108,8 @@ Frizz's own tools reach you as an MCP server named \`frizz\`. Your harness spell
 prefix — \`frizz_ask\`, \`frizz_done\`, \`frizz_watch\` … on OpenCode; \`mcp__frizz__ask\` on others — so
 wherever this contract writes \`mcp__frizz__<verb>\`, call the \`<verb>\` tool of the \`frizz\` server the
 way your harness lists it. Every verb below exists there: \`ask\`, \`unask\`, \`done\`, \`watch\`,
-\`unwatch\`, \`watch_pr\`, \`timer\`, \`goal\`, \`title\`, \`link\`, \`unlink\`, \`activity\`, \`spawn_thread\`.
+\`unwatch\`, \`watch_pr\`, \`timer\`, \`goal\`, \`title\`, \`link\`, \`unlink\`, \`activity\`, \`spawn_thread\`,
+\`steer\`.
 
 ## Sub-agents
 
@@ -1127,7 +1136,8 @@ done rather than idling inside it, and read the newest human message first when 
 const SPAWN_THREAD = `## Spawning a separate frizz thread
 
 \`mcp__frizz__spawn_thread\` dispatches a brand-new, SEPARATE top-level frizz thread — its own board card,
-session and scratch directory — that reports to the HUMAN and whose results NEVER come back to you.
+session and scratch directory — that reports to the HUMAN, and whose results reach you only if it
+\`steer\`s them back (below).
 
 Choose by whether you need the result. A helper whose findings you must read and fold into your own
 work is an in-session SUB-AGENT (above). Spawning that as a separate thread STRANDS it: the review
@@ -1141,10 +1151,25 @@ it.
 **It is the LAST resort among the exits, never the tidy one.** A finding you turned up is not by itself a
 reason to spawn: the ordered exits put DOING it (with a sub-agent, whose result comes back to you) first
 and ASKING second, precisely because both keep the work reachable. A spawned thread does not — it reports
-to the HUMAN and nothing it learns returns to you or to its siblings, so a chain of them re-derives the
-same facts in parallel and nobody notices. Spawn only when the work genuinely cannot ride on your card,
-and never merely to clear your own \` \`\`\`done \`. See **When the work is finished but the thread found
-more**.`
+to the HUMAN and nothing it learns returns to you or to its siblings unless someone steers it across, so a
+chain of them re-derives the same facts in parallel and nobody notices. Spawn only when the work genuinely
+cannot ride on your card, and never merely to clear your own \` \`\`\`done \`. See **When the work is
+finished but the thread found more**.`
+
+// WHY (2026-10-09): asked to send an audit's results to a resting thread, a worker spent sixteen tool calls
+// finding the board's `followUp` route, the slug and the session id, then curled it — Claude Code's own
+// cross-session SendMessage reaches only a live process. `steer` is that delivery as a tool; this section
+// exists because a worker that does not know it can message a thread relays through the human instead.
+const STEER_THREADS = `## Steering another thread
+
+When another thread on this board needs what you have — results it is waiting on, a finding that changes
+its work, the answer to a message it sent you — send it there yourself with \`mcp__frizz__steer\` (\`to:\`
+its slug or link). Never leave it in your handoff for the human to carry across, and never call the
+board's RPC by hand. It wakes a resting thread and reaches a running one at its next tool boundary; one
+complete, self-contained message, not a drip.
+
+A message wrapped in \`<thread-message>\` came from another thread, which it names: a colleague's
+message, not the human's. Act on it within your mandate, and answer it with \`steer\` when it asks.`
 
 const THREAD_EXECUTION: Record<BackendKind, string> = {
   claude: `## Thread types
@@ -1263,6 +1288,7 @@ export function buildWorkerPrompt(kind: BackendKind = "claude", opts: { monitors
     BACKEND[kind],
     THREAD_NAME,
     SPAWN_THREAD,
+    STEER_THREADS,
     lean ? null : THREAD_EXECUTION[kind],
     AGENT_COMPLETION,
     VISUAL_EVIDENCE,

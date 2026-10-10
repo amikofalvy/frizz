@@ -600,8 +600,8 @@ test("end-state contract: a fenceless rest is a DEFECT, done checks, awaiting pa
     // carrying the same demotion, because a worker that reads only that section must not come away
     // thinking a spawned card is how it tidies up a barred `done`.
     assert.match(c, /It is the LAST resort among the exits, never the tidy one/)
-    assert.match(c, /nothing it learns returns to you or to its siblings/)
-    assert.match(c, /When the work is finished but the thread found\s+more/)
+    assert.match(c, /nothing it learns returns to you or to its siblings unless someone steers it across/)
+    assert.match(c, /When the work is\s+finished but the thread found\s+more/)
     assert.doesNotMatch(c, /Its most valuable use is the one that unblocks/)
     // The stop criterion's "you marked it (recommended), so you already knew — implement it instead"
     // is the counter-pull that pushed zod #6022 away from a question. It only holds where the worker

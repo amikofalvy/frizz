@@ -15,6 +15,7 @@ import {
   isWakeDelivery,
   parseAgentMessage,
   parseCrossSessionMessage,
+  parseThreadMessage,
   parseAskUserQuestionAnswers,
   parseAskUserQuestionInput,
   parseGithubWakeSteer,
@@ -231,6 +232,11 @@ function userProjection(text: string, first: boolean): { displayText?: string; w
   // the same reason as the upward one below: none of it is the human's, and its wrapper is not prose.
   const session = parseCrossSessionMessage(text)
   if (session) return { displayText: session.body, sessionPeer: sessionPeerOf(session) }
+  // The same kind of message sent through Frizz's own `steer` tool. It names its sending thread outright
+  // (formatThreadMessage), so the hairline links it without the socket lookup Claude's channel needs.
+  // `steer` addresses this project only, so the link never carries a project slug.
+  const fromThread = parseThreadMessage(text)
+  if (fromThread) return { displayText: fromThread.body, sessionPeer: { name: fromThread.title, thread: { slug: fromThread.slug, title: fromThread.title } } }
   // An UPWARD agent-to-agent message — a background child calling `SendMessage({to:"main"})` — is not
   // the human's text at all, so it is settled FIRST and returns on its own. Its body, not the
   // `<agent-message>` wrapper, is what a reader wants, and none of the projections below apply: the

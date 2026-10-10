@@ -10,6 +10,10 @@ import {
   AdoptThreadResult,
   DispatchInput,
   FollowUpInput,
+  SteerThreadInput,
+  SteerThreadResult,
+  formatThreadMessage,
+  parseThreadMessage,
   UnqueueFollowUpInput,
   DismissFailedFollowUpInput,
   DismissFailedFollowUpResult,
@@ -139,7 +143,7 @@ import { secretFilePath, serveSecret } from "./secret-files.ts"
 import { listAcpAgents } from "./backend/acp-agents.ts"
 import { sessionTitleLocked } from "./storage.ts"
 import { mayHaveLiveBackgroundWork, needsFreshProcessForLimit } from "./backend/usage-limit.ts"
-import { appServerTurnStalled, resolveLiveWatchTarget, resolveRecurringPrompt } from "./board.ts"
+import { appServerTurnStalled, resolveLiveWatchTarget, resolveRecurringPrompt, resolveSessionTitle } from "./board.ts"
 import { runThreadUpdate } from "./frizz.ts"
 import { repairThreadFile } from "./repair.ts"
 import { reopenArchivedThreadForFollowUp, resumeThread, wakeParkedThreadForFollowUp } from "./resume.ts"
@@ -863,6 +867,356 @@ export function createRouter(ctx: AppContext) {
       throw new Error("This thread was replaced; refresh before acting on its current session")
     }
     return row
+  }
+
+  // THE FOLLOW-UP DELIVERY, shared by the operator's `followUp` and a worker's `steerThread` (one thread
+  // messaging another): both are a message into a thread's next turn, and a second copy of this path
+  // would be a second set of runtime branches to keep in step.
+  function deliverFollowUp(input: z.infer<typeof FollowUpInput>): Promise<void> {
+    return keepFailedFollowUp(input, async (openWriteAhead) => {
+      // Every follow-up crosses a TYPED CONTROL CHANNEL now, never a terminal: a codex row goes to the
+      // app-server bridge and a claude row to the session broker, each of which owns its own
+      // steer-vs-start decision and reconnects or cold-resumes a dead session itself. Nothing types
+      // into a provider TUI any more, so the capture-gated atomic paste-and-key this used to open with
+      // — which existed only because Codex's TUI dropped Enter when it followed literal text in the
+      // same instant — went with the transport that needed it.
+      //
+      // A follow-up DISABLES any snooze on this row — see wakeParkedThreadForFollowUp, which owns the
+      // rule and the reasoning. Short version: re-parking after the turn you just asked for would hide
+      // its own answer from the queue, so the later instruction ("now") wins over the earlier park.
+      //
+      // The row is bound to the CALLER's session id (origin/main's staleness guard): a stale tab must
+      // not deliver a follow-up into a thread that has since been re-dispatched.
+      // PROMOTION. Steering an EXTERNAL session — one of the human's own terminals, listed in the
+      // rail's External band — is what turns it into a frizz thread (maintainer 2026-08-24). It runs
+      // here, inside the follow-up, rather than behind a button of its own: one round trip, so the
+      // message and the row it belongs to can never end up on opposite sides of a failure.
+      //
+      // Below `currentOwnedSession` because that guard is what an ORDINARY follow-up needs and this
+      // is the case where it cannot yet pass — there is no row. `promoteExternalSession` returns
+      // false for every ordinary send, so the guard still runs first for everything else.
+      await promoteExternalSession(input.slug, input.sessionId)
+      const row = currentOwnedSession(input.slug, input.sessionId)
+      if (hasPendingPermissionChange(row)) {
+        throw new Error("Wait for the current permission change to finish before sending a follow-up")
+      }
+      // The operator's "Restart worker" verb, enforced HERE and not only in the UI that offers it: a
+      // stale tab holds a button whose preconditions may have expired since it rendered.
+      //
+      // Both refusals THROW rather than degrading to an ordinary follow-up, because a restart that
+      // quietly becomes a plain message is the worst outcome — the operator believes their worker came
+      // back on the new build when it is still the old process.
+      if (input.freshProcess) {
+        if (!(row?.backend === "claude" && row.claude_runtime === "broker")) {
+          throw new Error("Only a broker-backed Claude worker can be restarted in place")
+        }
+        // Running sub-agents do NOT refuse this. They used to: the completion invariant says an agent
+        // runs to its terminal return, and a restart kills the parent's in-memory children. But that
+        // invariant binds frizz's OWN initiative — needsFreshProcessForLimit below still declines to
+        // kill a live child when FRIZZ is the one deciding to restart — and `freshProcess` is not frizz
+        // deciding, it is the operator instructing. Refusing it made the recovery verb unavailable in
+        // precisely the state that motivates it: a worker wedged behind background work that will not
+        // finish (maintainer 2026-08-01: "do not disable the button when there are sub-agents
+        // running"). The children die; that is what the operator asked for and already knows.
+      }
+      // Every refusal above is a send that never started. From here on the server holds the text —
+      // the write-ahead entry opens BEFORE the reopen and un-park below (the reopen's CAS can throw a
+      // RetryableDeliveryError) and before any transport. A deliveryId already accounted for is a
+      // replay: answer success and deliver nothing (see beginDelivery for which states count).
+      if (!openWriteAhead()) return
+      // Reopen an archived thread HERE, above the runtime branches, because only the LEGACY
+      // fall-through reaches resumeThread (where this used to live alone). A broker-backed Claude row
+      // and an app-server Codex row both return from their own branch below, so sending them a
+      // follow-up used to resume the WORKER while leaving the ROW archived: the thread executed away
+      // while the board read Done, and — an archived thread having no lifecycle verbs — offered no
+      // Mark-as-done button to stop it. That is the state the "send a message to reopen it" readout
+      // promises against, so it has to hold for every runtime. Raised 2026-07-31 against a live broker
+      // thread ("showing up as done… but it is actually running actively").
+      // THE GAP THE HUMAN LEFT, appended to what the worker receives — and to that ONLY. A worker has no
+      // clock of its own, so an answer arriving after four hours is indistinguishable from one arriving
+      // after four seconds; it will resume on a stale premise and re-run work whose result went cold.
+      //
+      // The BUBBLE and the delivery LEDGER keep the human's text untouched (see the `input.message`
+      // uses below): what the human typed is what the board shows. Only the copy handed to the worker
+      // carries the note, and the note names frizz as its author because the message it rides on is
+      // not frizz's.
+      // A message from another THREAD (`steerThread`) carries no such note: the gap it would measure is
+      // the human's, and the receiver's next turn opens on the peer's words, not on a human returning.
+      const gapNote = parseThreadMessage(input.message) ? undefined : humanGapNote(Date.now(), ctx.tailer.get(input.slug)?.lastAssistantAt)
+      const messageForWorker = gapNote ? `${input.message}\n\n${gapNote}` : input.message
+      if (row) reopenArchivedThreadForFollowUp(ctx, row)
+      // Un-park HERE, above the runtime branches, for the same reason the reopen is here: a broker
+      // Claude row and an app-server Codex row both return from their own branch below, so anything
+      // that must hold for every runtime has to run before the split.
+      if (row) wakeParkedThreadForFollowUp(ctx, row)
+      // Every Codex follow-up flows through the app-server bridge — no terminal composer, no queue, no
+      // stale-draft class. The bridge owns the steer-vs-start decision atomically and dedups on
+      // deliveryId. A LEGACY Codex row (dispatched before the cutover) is migrated on its first
+      // follow-up by adopting its rollout; from then on it is an ordinary app-server thread.
+      // An ACP follow-up goes to the bridge, which delivers it now, queues it behind a running turn
+      // (ACP has no steer), or re-opens the session first when the child is gone (a restart). The
+      // ledger entry is `delivered` or `enqueued` accordingly; a fresh ACP session id is re-pinned.
+      if (row?.backend === "acp") {
+        const bridge = ctx.acpBridge
+        if (!bridge) throw new Error("The ACP bridge is unavailable; cannot deliver this follow-up")
+        const result = await bridge.followUp({
+          threadSlug: input.slug, sessionId: row.session_id, cwd: ctx.project.dir,
+          agentId: row.acp_agent ?? "", modelId: acpModelIdFromModel(row.model), acpSessionId: row.agent_session_id,
+          text: messageForWorker, ...(input.deliveryId ? { deliveryId: input.deliveryId } : {}),
+        })
+        if (result.acpSessionId !== row.agent_session_id) ctx.storage.setAgentSession(input.slug, result.acpSessionId)
+        if (row.exited === 1) ctx.storage.setExitedIfCurrent(input.slug, row.session_id, row.runtime_generation ?? 0, false)
+        if (input.deliveryId) {
+          appendDelivery(ctx.storage, input.slug, { id: input.deliveryId, text: input.message, state: result.state === "queued" ? "enqueued" : "delivered" })
+          ctx.transcriptChange.emit([input.slug])
+        }
+        ctx.board.refresh()
+        return
+      }
+      if (row?.backend === "codex") {
+        const bridge = ctx.codexAppServer
+        if (!bridge) throw new Error("Codex app-server is unavailable; cannot deliver this follow-up")
+        if (row.codex_runtime !== "app-server") {
+          if (!row.agent_session_id) throw new Error("This legacy Codex thread has no resumable rollout id yet")
+          await bridge.adoptExternalRollout({ threadSlug: input.slug, sessionId: row.session_id, codexThreadId: row.agent_session_id, cwd: ctx.project.dir })
+          ctx.storage.setCodexRuntime(input.slug, "app-server")
+        }
+        const binding = bridge.binding(input.slug, row.session_id)
+        // Writer-yield: if the rollout shows an in-flight turn the bridge does NOT hold (it has no
+        // current turn of its own), someone is driving this thread in their own terminal via
+        // `codex resume`. Frizz keeps MIRRORING that turn (the tailer follows the same rollout), but it
+        // must not start/steer a second turn and race two writers. Yield until the external turn rests.
+        // A turn the app-server opens on its own — a codex thread goal's continuation — is NOT this
+        // case: the bridge adopts it from `turn/started` (codex-app-server.ts), so it holds a current
+        // turn and the follow-up steers it like any other.
+        //
+        // "In flight" must mean the rollout is ACTUALLY ADVANCING, not merely that it stopped
+        // mid-turn: a rollout frozen by a dead app-server looks identical to an external writer from
+        // here, and yielding to it left the operator unable to answer their own stalled thread at all.
+        // appServerTurnStalled tells the two apart — see board.ts.
+        const stalled = appServerTurnStalled(
+          bridge.turnLiveness(input.slug, row.session_id),
+          ctx.tailer.get(input.slug)?.lastActivityAt,
+          Date.now(),
+        )
+        const turnLive = ctx.tailer.get(input.slug)?.turn === "in-flight" && !stalled
+        if (turnLive && (!binding || binding.currentTurnId === null)) {
+          // Under 160 characters: sendEagerFollowUp toasts this after "Steer failed — " and cuts the rest.
+          throw new Error("This thread is being driven outside Frizz. Wait for that turn to end, then resend.")
+        }
+        if (!binding || binding.state !== "active") {
+          await bridge.resumeOwnedSession(input.slug, row.session_id)
+        }
+        await bridge.followUp({
+          threadSlug: input.slug,
+          sessionId: row.session_id,
+          text: messageForWorker,
+          deliveryId: input.deliveryId,
+          model: row.model ?? undefined,
+          effort: row.effort ?? undefined,
+        })
+        // Codex gets a ledger entry too — as SERVER TRUTH for the just-sent bubble, not as a delivery
+        // guess: the bridge already dedups on deliveryId and its return IS the receipt. Without it the
+        // ONLY thing rendering a just-sent codex steer is the client's optimistic bubble, and
+        // mergeOptimistic's ghost floor retires that once the transcript advances 60s past it —
+        // measured against frizz's own delivery records, 8 of 75 codex sends took longer than that to
+        // appear in the rollout (steers at 71s, 212s and 4.6h), so the message could vanish from the
+        // drawer entirely. The tailer drops the item the moment the rollout materialises the message.
+        //
+        // `delivered`, not `enqueued`: the receipt names the turn this message steered or STARTED, so
+        // by the time followUp returns the model is already working on it — codex has no queue for it
+        // to sit in. Rendering it gray for the rollout's whole materialization window (p50 3.3s,
+        // tails past an hour) is exactly the "still looks enqueued while the agent is answering it"
+        // report. `delivered` also never ages into the amber "no receipt" warning, which would be
+        // meaningless on a thread whose transport acknowledges every send.
+        if (input.deliveryId) {
+          appendDelivery(ctx.storage, input.slug, { id: input.deliveryId, text: input.message, state: "delivered" })
+          // The ledger is not JSONL bytes, so nothing else pushes a transcript frame for it — emit one
+          // now so the bubble (and its un-grayed state) reaches subscribed tabs immediately instead of
+          // riding the next byte-driven refresh.
+          ctx.transcriptChange.emit([input.slug])
+        }
+        ctx.board.refresh()
+        return
+      }
+      // Claude session-broker follow-up: a broker-backed claude row owns a DETACHED daemon, so its
+      // follow-up is a message on that daemon's own control channel and nothing else can reach it.
+      // Route through the bridge — it reconnects the live daemon's socket (context intact) or
+      // cold-resumes a dead one. Branch on the ROW's runtime (not the flag): a row dispatched via the
+      // broker must always be served via the broker. The worker system prompt is rebuilt so a cold
+      // resume re-applies it (ignored when the daemon is still alive).
+      if (row?.backend === "claude" && row.claude_runtime === "broker") {
+        const bridge = ctx.claudeBroker
+        if (!bridge) throw new Error("Claude session broker is unavailable; cannot deliver this follow-up")
+        // Replay guard: `openWriteAhead` above already answered success for a deliveryId the ledger
+        // accounts for. This branch once had no guard at all — a replayed deliveryId sent the message
+        // a SECOND time — and it matters more now that the deliveryId IS the SDK input uuid: the SDK
+        // rejects an id that is still outstanding, so a replay would surface as an error on the
+        // operator's send instead of the no-op it should be.
+        const appendSystemPrompt = [
+          loadWorkerPrompt("claude"),
+          scratchpadOrientation(row.session_id, "claude"),
+          frizzConfigBlock(ctx.project.dir),
+        ].filter(Boolean).join("\n\n")
+        // Is this thread MID-TURN right now? Sampled BEFORE the bridge call on purpose: a cold resume
+        // takes seconds, and by the time it returns the turn this very message started reads as
+        // in-flight — which would gray the one send that is provably being read. The tailer's `turn`
+        // already folds in the runtime's own liveness. Unknown telemetry (a row not yet primed after a
+        // server boot) defaults to mid-turn — the conservative direction, since the gray bubble is
+        // honest for a queued send and merely late for a delivered one.
+        const midTurn = (ctx.tailer.get(input.slug)?.turn ?? "in-flight") === "in-flight"
+        // THE UPGRADE AT COMPACTION (claude-model-upgrade.ts): a thread that compacted on an edition its
+        // family has since moved past takes this message in a fresh process, forked from the current pin.
+        // Only at rest — the gate refuses a turn in flight, a sub-agent, a shell, an approval or an
+        // undelivered send, so a steer never restarts anything.
+        const upgradeCandidate = claudeUpgradeCandidate({ stateDir: ctx.project.stateDir, projectId: ctx.project.id, storage: ctx.storage, telemetry: ctx.tailer.get(input.slug) }, row)
+        const upgrade = upgradeCandidate
+          ? claudeModelUpgradeDue(upgradeCandidate, { catalogue: peekClaudeModels(), nowMs: Date.now(), serverStartedAtMs: SERVER_STARTED_AT_MS })
+          : undefined
+        if (upgrade?.due) frizzLog.info("server", `${input.slug}: compacted on ${upgrade.from}; this follow-up starts a fresh worker on ${upgrade.to}`)
+        await bridge.followUp({
+          threadSlug: input.slug,
+          sessionId: row.session_id,
+          cwd: ctx.project.dir,
+          text: messageForWorker,
+          // Rides through to the SDK as this input's uuid, which the SDK echoes back on the record
+          // that delivers it — the ledger then correlates by identity rather than by text.
+          deliveryId: input.deliveryId,
+          // A persisted per-thread mode, or the dispatch floor for a row that has none — see
+          // coldResumePermission for why a legacy row must not fall through to the bridge's `"default"`.
+          permissionMode: coldResumePermission(row, ctx.getSettings()),
+          appendSystemPrompt,
+          model: row.model ?? undefined,
+          effort: row.effort ?? undefined,
+          // The pause card's "Continue now" is the same act as the scheduler's auto-resume, so it
+          // needs the same treatment: while the process is still latched on its own 429, delivering
+          // into it does nothing at all. Restart it instead — otherwise the button is a no-op and
+          // reads as frizz having ignored the click.
+          //
+          // `input.freshProcess` is the operator asking for it OUTRIGHT (the "Restart worker" verb),
+          // which the server cannot derive: only the human knows they want the worker back on a newer
+          // build. It is OR'd in rather than replacing the derivation, so a restart clicked on a
+          // limit-latched thread still behaves. The live-sub-agent refusal above applies to both.
+          freshProcess: input.freshProcess === true || upgrade?.due === true || needsFreshProcessForLimit(
+            ctx.tailer.get(input.slug)?.limitFault,
+            Date.now(),
+            mayHaveLiveBackgroundWork(ctx.tailer.get(input.slug)),
+          ),
+        })
+        // `exited` records a deliberate stop (a dismiss, a retire, a hibernation). The bridge just
+        // accepted this send — it reconnected the live daemon or cold-resumed a dead one — so the stop
+        // is over, and the column has to say so. Nothing cleared it before: `beginRuntimeGeneration`
+        // is the only other writer of `exited = 0` and no path calls it, so a thread resumed by a
+        // follow-up kept `exited = 1` for as long as it then ran (four of them on 2026-09-03, each
+        // hours into a resumed task). The board derives a broker row's liveness live and never
+        // showed it, but every direct reader of the row — the CLI, a diagnostic, the next
+        // engineer — believed the column. Same CAS as every other row write: a replaced owner
+        // observes zero changes.
+        if (row.exited === 1) ctx.storage.setExitedIfCurrent(input.slug, row.session_id, row.runtime_generation ?? 0, false)
+        // The ledger's RELIABILITY half died with the terminal transport — the stuck-composer flush and
+        // the screen-inspected receipt were the only things it bought, and both were skipped for a
+        // headless row even then; no delivery marker is stamped either, because nothing rewrites bytes
+        // on the way to the SDK. But its RENDERING half applies here exactly as it does to codex:
+        // until the JSONL carries the message, the only thing showing the human their own just-sent
+        // steer is the client's optimistic bubble, and mergeOptimistic's ghost floor retires that once
+        // the transcript advances 60s past it. So the write-ahead entry settles here into a receipted
+        // state; the SDK call returning IS the receipt, which also keeps it out of the amber "no receipt" state that would be meaningless
+        // on a thread whose transport acknowledges every send. The tailer drops it as soon as the
+        // record lands.
+        //
+        // WHICH state depends on whether anything was ahead of it. Mid-turn, the SDK genuinely queues
+        // the message until the next sampling boundary — that is what the gray bubble is FOR, so it
+        // opens `enqueued`. With no turn in flight (a rested thread, above all one whose hibernated
+        // daemon this send just cold-resumed) the message is what STARTS the next turn, and graying
+        // it renders the one send the agent is provably reading as "still enqueued" for the whole
+        // resume-and-first-record window (~3s on a small session, longer on a big one). It opens
+        // `delivered` and renders as an ordinary bubble — which also keeps the daemon-death retire
+        // sweeps from dropping it mid-cold-resume, a race that made a just-sent message vanish from
+        // the chat for the resume's whole duration (observed live: rendered at +0.2s, gone from
+        // +0.3s to +2.3s, back at +2.3s). A `freshProcess` restart is delivered by the same logic:
+        // the old process's turn died with it and this message opens the new one's first turn.
+        // A restart RETIRED the process every earlier outstanding send was handed to, so those sends
+        // are dead and their queued bubbles are now claims about a process that no longer exists.
+        // Clear them here, BEFORE this restart's own entry is opened, so the continuation is the only
+        // thing left queued. Without this they linger the rest of the hour and cannot be dismissed by
+        // hand — the unqueue click asks the NEW daemon about a uuid it never heard of and answers
+        // "Too late — that message has already left the queue", which is exactly backwards.
+        if (input.freshProcess) retireOutstandingDeliveries(ctx.storage, input.slug)
+        // "Interrupt and send": preempt whatever the worker is doing so it reads this NOW. Strictly
+        // AFTER the delivery above, and that order is the whole mechanism — the SDK's interrupt
+        // aborts the turn without discarding queued inputs (its receipt reports `still_queued`), so
+        // a message queued first is what the next turn opens on. Interrupting first would abort into
+        // an empty queue and the message would merely start an ordinary new turn.
+        //
+        // Measured live (_live_broker_interrupt_send.mts) against a real 90s tool call in flight:
+        // 94.4s without it, seconds with it, and the session takes ordinary follow-ups afterwards.
+        //
+        // THE INTERRUPT ALSO ENDS EVERY BACKGROUND SUB-AGENT, and the runtime tells the worker nothing
+        // (interrupt-ended.ts). Snapshot the running children BEFORE the frame goes out, so the note can
+        // name exactly the ones the tailer then sees end — fire-and-forget, after the send succeeded.
+        const childrenBefore = input.interrupt === true ? runningSubAgentsOf(ctx.tailer.get(input.slug)) : []
+        const preempted = input.interrupt === true && bridge.interruptTurn({ threadSlug: input.slug, sessionId: row.session_id })
+        if (preempted) {
+          void noteSubAgentsEndedByInterrupt(
+            { tailer: ctx.tailer, storage: ctx.storage, log: (line) => frizzLog.info("interrupt", line) },
+            { slug: input.slug, sessionId: row.session_id, before: childrenBefore, interruptedAtMs: Date.now() },
+          )
+        }
+        if (input.deliveryId) {
+          appendDelivery(ctx.storage, input.slug, {
+            id: input.deliveryId,
+            text: input.message,
+            state: midTurn && input.freshProcess !== true ? "enqueued" : "delivered",
+          })
+        }
+        // A landed interrupt frees the WHOLE queue — the next turn opens on it — so nothing outstanding
+        // is still waiting to be read, this send included. Flipping it here rather than in the `state`
+        // above is what covers the sends already queued AHEAD of this one, which the same interrupt
+        // also delivers.
+        if (preempted) deliverOutstandingDeliveries(ctx.storage, input.slug)
+        // The ledger is not JSONL bytes, so nothing else pushes a transcript frame for it — emit one
+        // now so the bubble (gray or delivered) reaches subscribed tabs immediately instead of
+        // riding the next byte-driven refresh.
+        if (input.deliveryId || preempted) ctx.transcriptChange.emit([input.slug])
+        ctx.board.refresh()
+        return
+      }
+      // Idempotency for a REPLAYED deliveryId is `openWriteAhead` above: an accepted send answers
+      // success and injects nothing.
+      //
+      // What actually guarantees the retry loop cannot double-send is the CLASSIFICATION, not that
+      // check: the client only replays an error typed RetryableDeliveryError, and every such throw is
+      // raised strictly upstream of the first write to the worker, so a replayed send never had a first
+      // copy to duplicate — which is also the only reason beginDelivery lets a `retryable` entry be
+      // re-opened under the same id. A throw misclassified as retryable AFTER an injection would
+      // therefore double-send on the replay. Keeping every retryable throw pre-injection is
+      // load-bearing, not optional.
+      // The LEGACY fall-through: a claude row that is not broker-backed, i.e. one dispatched before the
+      // cutover. The deliveryId rides along because the old terminal transport stamped each send with
+      // an invisible marker (delivery-marker.ts) — that is what let the tailer confirm delivery by
+      // IDENTITY instead of by comparing prose a paste channel was free to rewrite. Codex never takes
+      // this path, and frizz has no transport left for the rows that do: resumeThread refuses every one
+      // of them by design (see resume.ts), so this is a loud backstop, not a delivery.
+      resumeThread({ project: ctx.project, storage: ctx.storage, board: ctx.board, getSettings: ctx.getSettings, backendFor: ctx.backendFor }, input.slug, messageForWorker,
+        input.deliveryId && row?.backend !== "codex" ? input.deliveryId : undefined,
+        // "Continue now" on a limit-paused legacy thread relaunches it, for the same reason the broker
+        // branch above swaps its process: the running one is not listening.
+        {
+          freshProcess: needsFreshProcessForLimit(
+            ctx.tailer.get(input.slug)?.limitFault,
+            Date.now(),
+            mayHaveLiveBackgroundWork(ctx.tailer.get(input.slug)),
+          ),
+        })
+      // Injection accepted → open a delivery-ledger entry (Claude rows only; Codex has its own durable
+      // queue above). From here the send is a tracked state machine: the tailer correlates the JSONL
+      // evidence and the transcript projection renders the queued bubble as SERVER truth — reload-safe,
+      // consumed by the client's optimistic copy via this deliveryId instead of by text match.
+      if (input.deliveryId && row?.backend !== "codex") {
+        appendDelivery(ctx.storage, input.slug, { id: input.deliveryId, text: input.message })
+      }
+      ctx.board.refresh()
+    })
   }
 
   // THE SERVER OWNS A STEER'S TEXT FROM THE MOMENT IT ARRIVES (delivery-ledger.ts, "WRITE-AHEAD").
@@ -1914,348 +2268,57 @@ export function createRouter(ctx: AppContext) {
           ...(input.freshProcess ? { freshProcess: true } : {}),
           ...(input.interrupt ? { interrupt: true } : {}),
         },
-      }, () => keepFailedFollowUp(input, async (openWriteAhead) => {
-        // Every follow-up crosses a TYPED CONTROL CHANNEL now, never a terminal: a codex row goes to the
-        // app-server bridge and a claude row to the session broker, each of which owns its own
-        // steer-vs-start decision and reconnects or cold-resumes a dead session itself. Nothing types
-        // into a provider TUI any more, so the capture-gated atomic paste-and-key this used to open with
-        // — which existed only because Codex's TUI dropped Enter when it followed literal text in the
-        // same instant — went with the transport that needed it.
-        //
-        // A follow-up DISABLES any snooze on this row — see wakeParkedThreadForFollowUp, which owns the
-        // rule and the reasoning. Short version: re-parking after the turn you just asked for would hide
-        // its own answer from the queue, so the later instruction ("now") wins over the earlier park.
-        //
-        // The row is bound to the CALLER's session id (origin/main's staleness guard): a stale tab must
-        // not deliver a follow-up into a thread that has since been re-dispatched.
-        // PROMOTION. Steering an EXTERNAL session — one of the human's own terminals, listed in the
-        // rail's External band — is what turns it into a frizz thread (maintainer 2026-08-24). It runs
-        // here, inside the follow-up, rather than behind a button of its own: one round trip, so the
-        // message and the row it belongs to can never end up on opposite sides of a failure.
-        //
-        // Below `currentOwnedSession` because that guard is what an ORDINARY follow-up needs and this
-        // is the case where it cannot yet pass — there is no row. `promoteExternalSession` returns
-        // false for every ordinary send, so the guard still runs first for everything else.
-        await promoteExternalSession(input.slug, input.sessionId)
-        const row = currentOwnedSession(input.slug, input.sessionId)
-        if (hasPendingPermissionChange(row)) {
-          throw new Error("Wait for the current permission change to finish before sending a follow-up")
+      }, () => deliverFollowUp(input)),
+    }),
+
+    // ONE WORKER MESSAGING ANOTHER THREAD — `mcp__frizz__steer`. Claude Code's own cross-session
+    // `SendMessage` reaches only a session whose process is live, so before this a worker told to hand its
+    // results to a resting thread went looking for the board's `followUp` route and curled it by hand.
+    // This is that delivery, with the board's own bookkeeping: the target's CURRENT session is read here
+    // (the staleness guard a browser tab passes is the caller's to know, and a worker cannot), the body
+    // is wrapped so the receiver and the chat both see whose it is, and the sender's identity comes from
+    // the calling worker's env (the MCP shim), never from the model.
+    //
+    // No deliveryId, so no ledger bubble: that bubble exists to keep a HUMAN's words on screen through a
+    // failure, and here the words stay with the sender, whose tool call fails loudly instead.
+    //
+    // Same project only, as `spawn_thread` is: the shim addresses its own project and takes no project
+    // argument, so a worker cannot reach into another repo's board.
+    steerThread: mutation({
+      input: SteerThreadInput,
+      output: SteerThreadResult,
+      handler: ({ input }) => audit("steerThread", {
+        project: thisProject,
+        thread: input.to,
+        detail: { from: input.from, message: textDigest(input.message) },
+      }, async () => {
+        if (input.from === input.to) {
+          throw new Error("That is your own thread. `steer` messages ANOTHER thread; to keep a note for yourself, write it to your scratch directory")
         }
-        // The operator's "Restart worker" verb, enforced HERE and not only in the UI that offers it: a
-        // stale tab holds a button whose preconditions may have expired since it rendered.
-        //
-        // Both refusals THROW rather than degrading to an ordinary follow-up, because a restart that
-        // quietly becomes a plain message is the worst outcome — the operator believes their worker came
-        // back on the new build when it is still the old process.
-        if (input.freshProcess) {
-          if (!(row?.backend === "claude" && row.claude_runtime === "broker")) {
-            throw new Error("Only a broker-backed Claude worker can be restarted in place")
-          }
-          // Running sub-agents do NOT refuse this. They used to: the completion invariant says an agent
-          // runs to its terminal return, and a restart kills the parent's in-memory children. But that
-          // invariant binds frizz's OWN initiative — needsFreshProcessForLimit below still declines to
-          // kill a live child when FRIZZ is the one deciding to restart — and `freshProcess` is not frizz
-          // deciding, it is the operator instructing. Refusing it made the recovery verb unavailable in
-          // precisely the state that motivates it: a worker wedged behind background work that will not
-          // finish (maintainer 2026-08-01: "do not disable the button when there are sub-agents
-          // running"). The children die; that is what the operator asked for and already knows.
-        }
-        // Every refusal above is a send that never started. From here on the server holds the text —
-        // the write-ahead entry opens BEFORE the reopen and un-park below (the reopen's CAS can throw a
-        // RetryableDeliveryError) and before any transport. A deliveryId already accounted for is a
-        // replay: answer success and deliver nothing (see beginDelivery for which states count).
-        if (!openWriteAhead()) return
-        // Reopen an archived thread HERE, above the runtime branches, because only the LEGACY
-        // fall-through reaches resumeThread (where this used to live alone). A broker-backed Claude row
-        // and an app-server Codex row both return from their own branch below, so sending them a
-        // follow-up used to resume the WORKER while leaving the ROW archived: the thread executed away
-        // while the board read Done, and — an archived thread having no lifecycle verbs — offered no
-        // Mark-as-done button to stop it. That is the state the "send a message to reopen it" readout
-        // promises against, so it has to hold for every runtime. Raised 2026-07-31 against a live broker
-        // thread ("showing up as done… but it is actually running actively").
-        // THE GAP THE HUMAN LEFT, appended to what the worker receives — and to that ONLY. A worker has no
-        // clock of its own, so an answer arriving after four hours is indistinguishable from one arriving
-        // after four seconds; it will resume on a stale premise and re-run work whose result went cold.
-        //
-        // The BUBBLE and the delivery LEDGER keep the human's text untouched (see the `input.message`
-        // uses below): what the human typed is what the board shows. Only the copy handed to the worker
-        // carries the note, and the note names frizz as its author because the message it rides on is
-        // not frizz's.
-        const gapNote = humanGapNote(Date.now(), ctx.tailer.get(input.slug)?.lastAssistantAt)
-        const messageForWorker = gapNote ? `${input.message}\n\n${gapNote}` : input.message
-        if (row) reopenArchivedThreadForFollowUp(ctx, row)
-        // Un-park HERE, above the runtime branches, for the same reason the reopen is here: a broker
-        // Claude row and an app-server Codex row both return from their own branch below, so anything
-        // that must hold for every runtime has to run before the split.
-        if (row) wakeParkedThreadForFollowUp(ctx, row)
-        // Every Codex follow-up flows through the app-server bridge — no terminal composer, no queue, no
-        // stale-draft class. The bridge owns the steer-vs-start decision atomically and dedups on
-        // deliveryId. A LEGACY Codex row (dispatched before the cutover) is migrated on its first
-        // follow-up by adopting its rollout; from then on it is an ordinary app-server thread.
-        // An ACP follow-up goes to the bridge, which delivers it now, queues it behind a running turn
-        // (ACP has no steer), or re-opens the session first when the child is gone (a restart). The
-        // ledger entry is `delivered` or `enqueued` accordingly; a fresh ACP session id is re-pinned.
-        if (row?.backend === "acp") {
-          const bridge = ctx.acpBridge
-          if (!bridge) throw new Error("The ACP bridge is unavailable; cannot deliver this follow-up")
-          const result = await bridge.followUp({
-            threadSlug: input.slug, sessionId: row.session_id, cwd: ctx.project.dir,
-            agentId: row.acp_agent ?? "", modelId: acpModelIdFromModel(row.model), acpSessionId: row.agent_session_id,
-            text: messageForWorker, ...(input.deliveryId ? { deliveryId: input.deliveryId } : {}),
-          })
-          if (result.acpSessionId !== row.agent_session_id) ctx.storage.setAgentSession(input.slug, result.acpSessionId)
-          if (row.exited === 1) ctx.storage.setExitedIfCurrent(input.slug, row.session_id, row.runtime_generation ?? 0, false)
-          if (input.deliveryId) {
-            appendDelivery(ctx.storage, input.slug, { id: input.deliveryId, text: input.message, state: result.state === "queued" ? "enqueued" : "delivered" })
-            ctx.transcriptChange.emit([input.slug])
-          }
-          ctx.board.refresh()
-          return
-        }
-        if (row?.backend === "codex") {
-          const bridge = ctx.codexAppServer
-          if (!bridge) throw new Error("Codex app-server is unavailable; cannot deliver this follow-up")
-          if (row.codex_runtime !== "app-server") {
-            if (!row.agent_session_id) throw new Error("This legacy Codex thread has no resumable rollout id yet")
-            await bridge.adoptExternalRollout({ threadSlug: input.slug, sessionId: row.session_id, codexThreadId: row.agent_session_id, cwd: ctx.project.dir })
-            ctx.storage.setCodexRuntime(input.slug, "app-server")
-          }
-          const binding = bridge.binding(input.slug, row.session_id)
-          // Writer-yield: if the rollout shows an in-flight turn the bridge does NOT hold (it has no
-          // current turn of its own), someone is driving this thread in their own terminal via
-          // `codex resume`. Frizz keeps MIRRORING that turn (the tailer follows the same rollout), but it
-          // must not start/steer a second turn and race two writers. Yield until the external turn rests.
-          // A turn the app-server opens on its own — a codex thread goal's continuation — is NOT this
-          // case: the bridge adopts it from `turn/started` (codex-app-server.ts), so it holds a current
-          // turn and the follow-up steers it like any other.
-          //
-          // "In flight" must mean the rollout is ACTUALLY ADVANCING, not merely that it stopped
-          // mid-turn: a rollout frozen by a dead app-server looks identical to an external writer from
-          // here, and yielding to it left the operator unable to answer their own stalled thread at all.
-          // appServerTurnStalled tells the two apart — see board.ts.
-          const stalled = appServerTurnStalled(
-            bridge.turnLiveness(input.slug, row.session_id),
-            ctx.tailer.get(input.slug)?.lastActivityAt,
-            Date.now(),
+        const sender = ctx.storage.getSession(input.from)
+        if (!sender) throw new Error(`the calling thread ${input.from} is not registered in this project`)
+        const target = ctx.storage.getSession(input.to)
+        if (!target) {
+          throw new Error(
+            `no thread \`${input.to}\` in this project. Pass the slug exactly as a thread link names it ` +
+            "(`/thread/<slug>`); a thread in another project cannot be reached from here",
           )
-          const turnLive = ctx.tailer.get(input.slug)?.turn === "in-flight" && !stalled
-          if (turnLive && (!binding || binding.currentTurnId === null)) {
-            // Under 160 characters: sendEagerFollowUp toasts this after "Steer failed — " and cuts the rest.
-            throw new Error("This thread is being driven outside Frizz. Wait for that turn to end, then resend.")
-          }
-          if (!binding || binding.state !== "active") {
-            await bridge.resumeOwnedSession(input.slug, row.session_id)
-          }
-          await bridge.followUp({
-            threadSlug: input.slug,
-            sessionId: row.session_id,
-            text: messageForWorker,
-            deliveryId: input.deliveryId,
-            model: row.model ?? undefined,
-            effort: row.effort ?? undefined,
-          })
-          // Codex gets a ledger entry too — as SERVER TRUTH for the just-sent bubble, not as a delivery
-          // guess: the bridge already dedups on deliveryId and its return IS the receipt. Without it the
-          // ONLY thing rendering a just-sent codex steer is the client's optimistic bubble, and
-          // mergeOptimistic's ghost floor retires that once the transcript advances 60s past it —
-          // measured against frizz's own delivery records, 8 of 75 codex sends took longer than that to
-          // appear in the rollout (steers at 71s, 212s and 4.6h), so the message could vanish from the
-          // drawer entirely. The tailer drops the item the moment the rollout materialises the message.
-          //
-          // `delivered`, not `enqueued`: the receipt names the turn this message steered or STARTED, so
-          // by the time followUp returns the model is already working on it — codex has no queue for it
-          // to sit in. Rendering it gray for the rollout's whole materialization window (p50 3.3s,
-          // tails past an hour) is exactly the "still looks enqueued while the agent is answering it"
-          // report. `delivered` also never ages into the amber "no receipt" warning, which would be
-          // meaningless on a thread whose transport acknowledges every send.
-          if (input.deliveryId) {
-            appendDelivery(ctx.storage, input.slug, { id: input.deliveryId, text: input.message, state: "delivered" })
-            // The ledger is not JSONL bytes, so nothing else pushes a transcript frame for it — emit one
-            // now so the bubble (and its un-grayed state) reaches subscribed tabs immediately instead of
-            // riding the next byte-driven refresh.
-            ctx.transcriptChange.emit([input.slug])
-          }
-          ctx.board.refresh()
-          return
         }
-        // Claude session-broker follow-up: a broker-backed claude row owns a DETACHED daemon, so its
-        // follow-up is a message on that daemon's own control channel and nothing else can reach it.
-        // Route through the bridge — it reconnects the live daemon's socket (context intact) or
-        // cold-resumes a dead one. Branch on the ROW's runtime (not the flag): a row dispatched via the
-        // broker must always be served via the broker. The worker system prompt is rebuilt so a cold
-        // resume re-applies it (ignored when the daemon is still alive).
-        if (row?.backend === "claude" && row.claude_runtime === "broker") {
-          const bridge = ctx.claudeBroker
-          if (!bridge) throw new Error("Claude session broker is unavailable; cannot deliver this follow-up")
-          // Replay guard: `openWriteAhead` above already answered success for a deliveryId the ledger
-          // accounts for. This branch once had no guard at all — a replayed deliveryId sent the message
-          // a SECOND time — and it matters more now that the deliveryId IS the SDK input uuid: the SDK
-          // rejects an id that is still outstanding, so a replay would surface as an error on the
-          // operator's send instead of the no-op it should be.
-          const appendSystemPrompt = [
-            loadWorkerPrompt("claude"),
-            scratchpadOrientation(row.session_id, "claude"),
-            frizzConfigBlock(ctx.project.dir),
-          ].filter(Boolean).join("\n\n")
-          // Is this thread MID-TURN right now? Sampled BEFORE the bridge call on purpose: a cold resume
-          // takes seconds, and by the time it returns the turn this very message started reads as
-          // in-flight — which would gray the one send that is provably being read. The tailer's `turn`
-          // already folds in the runtime's own liveness. Unknown telemetry (a row not yet primed after a
-          // server boot) defaults to mid-turn — the conservative direction, since the gray bubble is
-          // honest for a queued send and merely late for a delivered one.
-          const midTurn = (ctx.tailer.get(input.slug)?.turn ?? "in-flight") === "in-flight"
-          // THE UPGRADE AT COMPACTION (claude-model-upgrade.ts): a thread that compacted on an edition its
-          // family has since moved past takes this message in a fresh process, forked from the current pin.
-          // Only at rest — the gate refuses a turn in flight, a sub-agent, a shell, an approval or an
-          // undelivered send, so a steer never restarts anything.
-          const upgradeCandidate = claudeUpgradeCandidate({ stateDir: ctx.project.stateDir, projectId: ctx.project.id, storage: ctx.storage, telemetry: ctx.tailer.get(input.slug) }, row)
-          const upgrade = upgradeCandidate
-            ? claudeModelUpgradeDue(upgradeCandidate, { catalogue: peekClaudeModels(), nowMs: Date.now(), serverStartedAtMs: SERVER_STARTED_AT_MS })
-            : undefined
-          if (upgrade?.due) frizzLog.info("server", `${input.slug}: compacted on ${upgrade.from}; this follow-up starts a fresh worker on ${upgrade.to}`)
-          await bridge.followUp({
-            threadSlug: input.slug,
-            sessionId: row.session_id,
-            cwd: ctx.project.dir,
-            text: messageForWorker,
-            // Rides through to the SDK as this input's uuid, which the SDK echoes back on the record
-            // that delivers it — the ledger then correlates by identity rather than by text.
-            deliveryId: input.deliveryId,
-            // A persisted per-thread mode, or the dispatch floor for a row that has none — see
-            // coldResumePermission for why a legacy row must not fall through to the bridge's `"default"`.
-            permissionMode: coldResumePermission(row, ctx.getSettings()),
-            appendSystemPrompt,
-            model: row.model ?? undefined,
-            effort: row.effort ?? undefined,
-            // The pause card's "Continue now" is the same act as the scheduler's auto-resume, so it
-            // needs the same treatment: while the process is still latched on its own 429, delivering
-            // into it does nothing at all. Restart it instead — otherwise the button is a no-op and
-            // reads as frizz having ignored the click.
-            //
-            // `input.freshProcess` is the operator asking for it OUTRIGHT (the "Restart worker" verb),
-            // which the server cannot derive: only the human knows they want the worker back on a newer
-            // build. It is OR'd in rather than replacing the derivation, so a restart clicked on a
-            // limit-latched thread still behaves. The live-sub-agent refusal above applies to both.
-            freshProcess: input.freshProcess === true || upgrade?.due === true || needsFreshProcessForLimit(
-              ctx.tailer.get(input.slug)?.limitFault,
-              Date.now(),
-              mayHaveLiveBackgroundWork(ctx.tailer.get(input.slug)),
-            ),
-          })
-          // `exited` records a deliberate stop (a dismiss, a retire, a hibernation). The bridge just
-          // accepted this send — it reconnected the live daemon or cold-resumed a dead one — so the stop
-          // is over, and the column has to say so. Nothing cleared it before: `beginRuntimeGeneration`
-          // is the only other writer of `exited = 0` and no path calls it, so a thread resumed by a
-          // follow-up kept `exited = 1` for as long as it then ran (four of them on 2026-09-03, each
-          // hours into a resumed task). The board derives a broker row's liveness live and never
-          // showed it, but every direct reader of the row — the CLI, a diagnostic, the next
-          // engineer — believed the column. Same CAS as every other row write: a replaced owner
-          // observes zero changes.
-          if (row.exited === 1) ctx.storage.setExitedIfCurrent(input.slug, row.session_id, row.runtime_generation ?? 0, false)
-          // The ledger's RELIABILITY half died with the terminal transport — the stuck-composer flush and
-          // the screen-inspected receipt were the only things it bought, and both were skipped for a
-          // headless row even then; no delivery marker is stamped either, because nothing rewrites bytes
-          // on the way to the SDK. But its RENDERING half applies here exactly as it does to codex:
-          // until the JSONL carries the message, the only thing showing the human their own just-sent
-          // steer is the client's optimistic bubble, and mergeOptimistic's ghost floor retires that once
-          // the transcript advances 60s past it. So the write-ahead entry settles here into a receipted
-          // state; the SDK call returning IS the receipt, which also keeps it out of the amber "no receipt" state that would be meaningless
-          // on a thread whose transport acknowledges every send. The tailer drops it as soon as the
-          // record lands.
-          //
-          // WHICH state depends on whether anything was ahead of it. Mid-turn, the SDK genuinely queues
-          // the message until the next sampling boundary — that is what the gray bubble is FOR, so it
-          // opens `enqueued`. With no turn in flight (a rested thread, above all one whose hibernated
-          // daemon this send just cold-resumed) the message is what STARTS the next turn, and graying
-          // it renders the one send the agent is provably reading as "still enqueued" for the whole
-          // resume-and-first-record window (~3s on a small session, longer on a big one). It opens
-          // `delivered` and renders as an ordinary bubble — which also keeps the daemon-death retire
-          // sweeps from dropping it mid-cold-resume, a race that made a just-sent message vanish from
-          // the chat for the resume's whole duration (observed live: rendered at +0.2s, gone from
-          // +0.3s to +2.3s, back at +2.3s). A `freshProcess` restart is delivered by the same logic:
-          // the old process's turn died with it and this message opens the new one's first turn.
-          // A restart RETIRED the process every earlier outstanding send was handed to, so those sends
-          // are dead and their queued bubbles are now claims about a process that no longer exists.
-          // Clear them here, BEFORE this restart's own entry is opened, so the continuation is the only
-          // thing left queued. Without this they linger the rest of the hour and cannot be dismissed by
-          // hand — the unqueue click asks the NEW daemon about a uuid it never heard of and answers
-          // "Too late — that message has already left the queue", which is exactly backwards.
-          if (input.freshProcess) retireOutstandingDeliveries(ctx.storage, input.slug)
-          // "Interrupt and send": preempt whatever the worker is doing so it reads this NOW. Strictly
-          // AFTER the delivery above, and that order is the whole mechanism — the SDK's interrupt
-          // aborts the turn without discarding queued inputs (its receipt reports `still_queued`), so
-          // a message queued first is what the next turn opens on. Interrupting first would abort into
-          // an empty queue and the message would merely start an ordinary new turn.
-          //
-          // Measured live (_live_broker_interrupt_send.mts) against a real 90s tool call in flight:
-          // 94.4s without it, seconds with it, and the session takes ordinary follow-ups afterwards.
-          //
-          // THE INTERRUPT ALSO ENDS EVERY BACKGROUND SUB-AGENT, and the runtime tells the worker nothing
-          // (interrupt-ended.ts). Snapshot the running children BEFORE the frame goes out, so the note can
-          // name exactly the ones the tailer then sees end — fire-and-forget, after the send succeeded.
-          const childrenBefore = input.interrupt === true ? runningSubAgentsOf(ctx.tailer.get(input.slug)) : []
-          const preempted = input.interrupt === true && bridge.interruptTurn({ threadSlug: input.slug, sessionId: row.session_id })
-          if (preempted) {
-            void noteSubAgentsEndedByInterrupt(
-              { tailer: ctx.tailer, storage: ctx.storage, log: (line) => frizzLog.info("interrupt", line) },
-              { slug: input.slug, sessionId: row.session_id, before: childrenBefore, interruptedAtMs: Date.now() },
-            )
-          }
-          if (input.deliveryId) {
-            appendDelivery(ctx.storage, input.slug, {
-              id: input.deliveryId,
-              text: input.message,
-              state: midTurn && input.freshProcess !== true ? "enqueued" : "delivered",
-            })
-          }
-          // A landed interrupt frees the WHOLE queue — the next turn opens on it — so nothing outstanding
-          // is still waiting to be read, this send included. Flipping it here rather than in the `state`
-          // above is what covers the sends already queued AHEAD of this one, which the same interrupt
-          // also delivers.
-          if (preempted) deliverOutstandingDeliveries(ctx.storage, input.slug)
-          // The ledger is not JSONL bytes, so nothing else pushes a transcript frame for it — emit one
-          // now so the bubble (gray or delivered) reaches subscribed tabs immediately instead of
-          // riding the next byte-driven refresh.
-          if (input.deliveryId || preempted) ctx.transcriptChange.emit([input.slug])
-          ctx.board.refresh()
-          return
+        const titleOf = (row: SessionRow) => {
+          const shown = resolveSessionTitle(row, ctx.tailer.get(row.slug))
+          return shown.aiTitle || shown.title || row.slug
         }
-        // Idempotency for a REPLAYED deliveryId is `openWriteAhead` above: an accepted send answers
-        // success and injects nothing.
-        //
-        // What actually guarantees the retry loop cannot double-send is the CLASSIFICATION, not that
-        // check: the client only replays an error typed RetryableDeliveryError, and every such throw is
-        // raised strictly upstream of the first write to the worker, so a replayed send never had a first
-        // copy to duplicate — which is also the only reason beginDelivery lets a `retryable` entry be
-        // re-opened under the same id. A throw misclassified as retryable AFTER an injection would
-        // therefore double-send on the replay. Keeping every retryable throw pre-injection is
-        // load-bearing, not optional.
-        // The LEGACY fall-through: a claude row that is not broker-backed, i.e. one dispatched before the
-        // cutover. The deliveryId rides along because the old terminal transport stamped each send with
-        // an invisible marker (delivery-marker.ts) — that is what let the tailer confirm delivery by
-        // IDENTITY instead of by comparing prose a paste channel was free to rewrite. Codex never takes
-        // this path, and frizz has no transport left for the rows that do: resumeThread refuses every one
-        // of them by design (see resume.ts), so this is a loud backstop, not a delivery.
-        resumeThread({ project: ctx.project, storage: ctx.storage, board: ctx.board, getSettings: ctx.getSettings, backendFor: ctx.backendFor }, input.slug, messageForWorker,
-          input.deliveryId && row?.backend !== "codex" ? input.deliveryId : undefined,
-          // "Continue now" on a limit-paused legacy thread relaunches it, for the same reason the broker
-          // branch above swaps its process: the running one is not listening.
-          {
-            freshProcess: needsFreshProcessForLimit(
-              ctx.tailer.get(input.slug)?.limitFault,
-              Date.now(),
-              mayHaveLiveBackgroundWork(ctx.tailer.get(input.slug)),
-            ),
-          })
-        // Injection accepted → open a delivery-ledger entry (Claude rows only; Codex has its own durable
-        // queue above). From here the send is a tracked state machine: the tailer correlates the JSONL
-        // evidence and the transcript projection renders the queued bubble as SERVER truth — reload-safe,
-        // consumed by the client's optimistic copy via this deliveryId instead of by text match.
-        if (input.deliveryId && row?.backend !== "codex") {
-          appendDelivery(ctx.storage, input.slug, { id: input.deliveryId, text: input.message })
-        }
-        ctx.board.refresh()
-      })),
+        const delivery: SteerThreadResult["delivery"] =
+          target.state === "archived" || target.archived === 1 ? "reopened"
+          : ctx.tailer.get(input.to)?.turn === "in-flight" ? "running"
+          : "resting"
+        await deliverFollowUp({
+          slug: input.to,
+          sessionId: target.session_id,
+          message: formatThreadMessage({ slug: sender.slug, title: titleOf(sender) }, input.message),
+        })
+        return { slug: target.slug, title: titleOf(target), delivery }
+      }),
     }),
 
     // The × on a FAILED send's bubble, and the second half of its Edit (the client has already put the

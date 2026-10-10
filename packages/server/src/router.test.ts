@@ -6,7 +6,7 @@ import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { Hono } from "hono"
 import { mountRouter } from "@frizz/rpc/server"
-import { DISPATCH_TASK_BANNER_MARKER, type BoardSnapshot, type Settings, type ThreadView, type TranscriptMessage } from "@frizz/shared"
+import { DISPATCH_TASK_BANNER_MARKER, parseThreadMessage, type BoardSnapshot, type Settings, type ThreadView, type TranscriptMessage } from "@frizz/shared"
 import type { BoardManager } from "./board.ts"
 import { appendDelivery, parseDeliveryLedger, projectDeliveryLedger } from "./delivery-ledger.ts"
 import { createWakeDeliveryStore } from "./wake-store.ts"
@@ -610,6 +610,59 @@ test("followUp wakes a snoozed thread and disarms the bump it owed", async () =>
   assert.equal(h.storage.getSession(slug)?.snooze_prompt, null, "and so is the bump it owed at that deadline")
   h.storage.close()
 })
+// ONE THREAD MESSAGING ANOTHER (`mcp__frizz__steer`). Same codex app-server stub as above, because the
+// delivery IS followUp's; what is pinned here is what steerThread adds on top of it: the sender's name
+// stamped from its own row, the target's current session read server-side, no gap note on a peer's
+// words, and the refusals a worker can trip over.
+test("steerThread delivers a wrapped, attributed message through the follow-up path", async () => {
+  const lastAssistantAt = "2026-01-01T00:00:00.000Z" // hours ago: a HUMAN's message would carry a gap note
+  const h = harness({ ...noopTailer, get: () => ({ lastAssistantAt, turn: "idle" }) } as unknown as Tailer)
+  h.storage.upsertSession(row("fresh-archive-audit"))
+  h.storage.setTitle("fresh-archive-audit", "Audit the fresh archive")
+  for (const slug of ["back-up-the-mac", "finished-thread"]) {
+    h.storage.upsertSession(row(slug))
+    h.storage.setBackend(slug, "codex")
+    h.storage.setCodexRuntime(slug, "app-server")
+  }
+  h.storage.setState("finished-thread", "archived")
+  const sent: Array<{ threadSlug: string; sessionId: string; text: string }> = []
+  ;(h.ctx as { codexAppServer?: unknown }).codexAppServer = {
+    binding: () => ({ state: "active", currentTurnId: null }),
+    turnLiveness: () => undefined,
+    resumeOwnedSession: async () => {},
+    followUp: async (input: { threadSlug: string; sessionId: string; text: string }) => void sent.push(input),
+  }
+
+  const receipt = await h.router.steerThread.handler({ input: { from: "fresh-archive-audit", to: "back-up-the-mac", message: "Three folders are missing from the archive." } })
+  assert.deepEqual(receipt, { slug: "back-up-the-mac", title: "back-up-the-mac", delivery: "resting" })
+  assert.equal(sent.length, 1)
+  assert.equal(sent[0].threadSlug, "back-up-the-mac")
+  assert.equal(sent[0].sessionId, "sid-back-up-the-mac", "the target's CURRENT session, read server-side")
+  assert.deepEqual(parseThreadMessage(sent[0].text), {
+    slug: "fresh-archive-audit",
+    title: "Audit the fresh archive",
+    body: "Three folders are missing from the archive.",
+  })
+  assert.doesNotMatch(sent[0].text, /⏱ Frizz/, "the human's gap note is not stamped on a peer's message")
+  assert.match(sent[0].text, /`steer` tool with `to: "fresh-archive-audit"`/, "the receiver is told how to answer")
+
+  // A thread marked done is reopened by the message, as a human's follow-up would reopen it.
+  const reopened = await h.router.steerThread.handler({ input: { from: "fresh-archive-audit", to: "finished-thread", message: "One more thing." } })
+  assert.equal(reopened.delivery, "reopened")
+  assert.equal(h.storage.getSession("finished-thread")?.state, "open")
+
+  await assert.rejects(
+    h.router.steerThread.handler({ input: { from: "fresh-archive-audit", to: "fresh-archive-audit", message: "note to self" } }),
+    /That is your own thread/,
+  )
+  await assert.rejects(
+    h.router.steerThread.handler({ input: { from: "fresh-archive-audit", to: "no-such-thread", message: "hello" } }),
+    /no thread `no-such-thread` in this project/,
+  )
+  assert.equal(sent.length, 2, "a refused steer reaches no worker")
+  h.storage.close()
+})
+
 // (A test for a deleted awaiting-hint kind was removed here on 2026-08-15. See the AwaitingHint doc
 // block in @frizz/shared for why `human:`, `timer: <instant>` and `pr-watch:` no longer exist.)
 

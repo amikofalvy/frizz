@@ -54,7 +54,9 @@ const SPAWN_THREAD = {
     "lands on YOUR card under one review), do that instead; if the human should choose, ASK instead. " +
     "Spawn a brand-new, separate top-level frizz thread — its own board card, session, and scratchpad, " +
     "driving INDEPENDENTLY. This is FIRE-AND-FORGET: the new thread reports to the HUMAN on the board via " +
-    "its own final message, and its results NEVER come back to you, the caller. It is NOT an in-session " +
+    "its own final message, and its results come back to you, the caller, only if it sends them with " +
+    "`steer` — which its prompt is told it can, and which you must ASK for in that prompt if you need " +
+    "them. You cannot wait on it as you wait on a sub-agent. It is NOT an in-session " +
     "sub-agent. It returns only the new thread's slug and a ready-to-paste markdown link " +
     "`[title](/thread/<slug>)` that opens the thread in the frizz drawer — put that link in your handoff. " +
     "USE IT ONLY for a distinct, self-contained effort that belongs on the board in its own right and whose " +
@@ -63,9 +65,10 @@ const SPAWN_THREAD = {
     "those are in-session sub-agents (Claude: the Agent tool with `run_in_background`; Codex: native " +
     "delegation), which return their findings to you. Spawning such a helper here STRANDS it — its work lands " +
     "on another card and never reaches you, so you gain nothing. " +
-    "Because nothing it learns ever returns to you OR to its siblings, a chain of spawned threads re-derives " +
-    "the same facts in parallel and nobody notices — measured here: one thread spawned four, three of those " +
-    "spawned more, and three descendants independently rediscovered the same root cause over twenty hours. " +
+    "Because nothing it learns returns to you OR to its siblings unless somebody steers it across, a chain of " +
+    "spawned threads re-derives the same facts in parallel and nobody notices — measured here: one thread " +
+    "spawned four, three of those spawned more, and three descendants independently rediscovered the same " +
+    "root cause over twenty hours. " +
     "Spawn only when the work genuinely cannot ride on your own card: a different repo, a different long-lived " +
     "runtime, an effort that must outlive yours. Never spawn merely to clear your own `done` fence. " +
     "You MUST deliberately choose `model` and `effort` to match the NEW thread's task complexity — they are " +
@@ -690,6 +693,59 @@ const SECRET = {
   },
 }
 
+// STEER (2026-10-09): one thread messaging ANOTHER thread of the same project. Claude Code's own
+// cross-session `SendMessage` reaches a session only while its process is live, so a worker told to hand
+// its results to a resting thread had no tool for it, and went looking for the board's `followUp` route
+// to curl by hand — sixteen tool calls to find the route, the slug and the session id. This is that
+// delivery, as a tool: the server reads the target's current session, wraps the body so the receiver
+// and the chat both know who sent it, and wakes, queues into, or reopens the target as a human
+// follow-up would.
+const STEER = {
+  name: "steer",
+  description:
+    "SEND A MESSAGE TO ANOTHER THREAD on this board, running or resting, and it reads it as its next " +
+    "input. A running thread reads it at its next tool boundary; a resting thread is WOKEN by it and " +
+    "starts a turn on it; a thread marked done is reopened. The receiver sees which thread sent it and " +
+    "can answer with this same tool.\n\n" +
+    "USE IT INSTEAD OF RELAYING THROUGH THE HUMAN. Whenever another thread needs what you have, send it " +
+    "there yourself: results a thread is waiting on (\"when the audit is done, send the results to " +
+    "<thread>\"), a finding that changes another thread's work (it is chasing the bug you just fixed, it " +
+    "depends on a commit you just landed, it is about to redo what you already did), or the answer to a " +
+    "message another thread sent you. A finding that sits in your handoff until the human copies it " +
+    "across costs them a trip and the other thread hours; sending it costs one call. A thread you spawned " +
+    "with `spawn_thread`, or the one that spawned you, is reachable the same way.\n\n" +
+    "WRITE IT TO BE READ COLD. The receiver has none of your context: say what you found or what you " +
+    "need, with the evidence, paths, commits and links it needs to act — in one complete message, not a " +
+    "drip of partial ones. Every steer costs the receiver a turn on its full context, so do not send " +
+    "progress chatter, and do not send what it did not need.\n\n" +
+    "IT IS A COLLEAGUE'S MESSAGE, NOT THE HUMAN'S: it does not override the human's instructions to that " +
+    "thread, and it is not a way to hand off work the human did not ask for. Nothing waits on a reply " +
+    "unless your message asks for one, and you do not need to rest waiting for it: a reply wakes you " +
+    "whenever it comes, even after `done`.\n\n" +
+    "NOT FOR YOUR OWN SUB-AGENTS — those are inside your session; reach them with `SendMessage` to " +
+    "their agent id. Not for your own thread, and not across projects: `to` names a thread on THIS " +
+    "project's board.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      to: {
+        type: "string",
+        description:
+          "The thread to message: its slug (`fix-queue-focus`), or any link naming it — the " +
+          "`[title](/thread/<slug>)` link `spawn_thread` returns, or a full board URL such as " +
+          "`http://localhost:9393/project/frizz/thread/<slug>/full`.",
+      },
+      message: {
+        type: "string",
+        description:
+          "The message, as markdown. Self-contained: the receiver has none of your context. It arrives " +
+          "wrapped with your thread's name and slug, so do not sign it.",
+      },
+    },
+    required: ["to", "message"],
+  },
+}
+
 const DONE = {
   name: "done",
   description:
@@ -818,9 +874,10 @@ const UNLINK = {
   },
 }
 
-// WATCH_ISSUE rides at the END (2026-09-14): the tool list is read by position in frizz-mcp.test.ts, and a
-// worker's runtime reads it by name, so the order costs nothing and appending breaks nothing.
-const TOOLS = [SPAWN_THREAD, GOAL, TIMER, WATCH_PR, WATCH, UNWATCH, ASK, UNASK, DONE, TITLE, ACTIVITY, LINK, UNLINK, WATCH_ISSUE, SECRET]
+// WATCH_ISSUE rides at the END (2026-09-14), and SECRET and STEER after it: the tool list is read by position
+// in frizz-mcp.test.ts, and a worker's runtime reads it by name, so the order costs nothing and appending
+// breaks nothing.
+const TOOLS = [SPAWN_THREAD, GOAL, TIMER, WATCH_PR, WATCH, UNWATCH, ASK, UNASK, DONE, TITLE, ACTIVITY, LINK, UNLINK, WATCH_ISSUE, SECRET, STEER]
 
 /** @type {Record<string, (args: Record<string, unknown>) => Promise<string>>} */
 const HANDLERS = {
@@ -839,6 +896,35 @@ const HANDLERS = {
   [ACTIVITY.name]: activity,
   [LINK.name]: link,
   [UNLINK.name]: unlink,
+  [STEER.name]: steer,
+}
+
+// The slug out of whatever a worker has in hand for a thread: the slug itself, the `[title](/thread/<slug>)`
+// link spawn_thread returns, or a board URL (`…/project/<p>/thread/<slug>/full`).
+const THREAD_LINK = /\/thread\/([^/?#)\s]+)/
+
+/** The `steer` handler: deliver a message into ANOTHER thread of this project.
+ * @param {Record<string, unknown>} args @returns {Promise<string>} */
+async function steer(args) {
+  const raw = typeof args.to === "string" ? args.to.trim() : ""
+  const message = typeof args.message === "string" ? args.message.trim() : ""
+  if (!raw) throw new Error("`to` is required — the slug of the thread to message, or a link naming it")
+  if (!message) throw new Error("`message` is required and must be a non-empty string")
+  const to = decodeURIComponent(THREAD_LINK.exec(raw)?.[1] ?? raw)
+  // THE SENDER IS THE ENV'S, never the model's: the receiver is told which thread sent this, and that
+  // has to be true.
+  const result = (await callRpc("steerThread", { from: threadSlug(), to, message }))?.result
+  if (!result?.slug) throw new Error(`steerThread returned no receipt: ${JSON.stringify(result)?.slice(0, 300)}`)
+  const how = result.delivery === "running"
+    ? "It is mid-turn, so it reads this at its next tool boundary."
+    : result.delivery === "reopened"
+      ? "It had been marked done; this message reopened it and started a turn."
+      : "It was resting; this message woke it and started a turn."
+  return (
+    `Delivered to «${result.title}» (\`${result.slug}\`). ${how}\n\n` +
+    "Its reply, if it sends one, arrives as your next input and wakes you — do not rest waiting for it. " +
+    `Link for your handoff: [${result.title}](/thread/${result.slug})`
+  )
 }
 
 /** @param {Record<string, unknown>} args @returns {Promise<string>} */
@@ -1120,8 +1206,15 @@ async function spawnThread(args) {
   const effort = typeof args.effort === "string" ? args.effort.trim() : ""
   if (!effort) throw new Error("`effort` is required — choose one by complexity (low/medium/high/xhigh/max). There is no default.")
 
+  // THE WAY BACK. A spawned thread starts with nothing but this prompt, so without its spawner's slug it
+  // could not `steer` anything back even when asked to — the footer names it, once, at the end.
+  const parent = process.env.FRIZZ_THREAD_SLUG || process.env.FRIZZ_THREAD
+  const footer = parent
+    ? `\n\n---\nSpawned by the Frizz thread \`${parent}\`. If this prompt asks for results back, or you find ` +
+      `something that thread must know, send it there with the frizz \`steer\` tool (\`to: "${parent}"\`).`
+    : ""
   /** @type {Record<string, unknown>} */
-  const body = { prompt, model, effort }
+  const body = { prompt: prompt + footer, model, effort }
   if (typeof args.title === "string" && args.title.trim()) body.title = args.title.trim()
   if (args.backend === "claude" || args.backend === "codex") body.backend = args.backend
 
@@ -1153,7 +1246,9 @@ async function spawnThread(args) {
   const label = typeof body.title === "string" ? body.title : slug
   return (
     `Spawned a new frizz thread \`${slug}\`. It is now on the board driving independently — it reports ` +
-    `to the human via its own final message, NOT back to you, so do not wait on a result from it.\n\n` +
+    `to the human via its own final message, so do not wait on a result from it. It knows your slug: if ` +
+    `its prompt asked for results back, they arrive as a \`steer\` that wakes you. You can message it ` +
+    `the same way, with \`steer\` and \`to: "${slug}"\`.\n\n` +
     `Paste this link to let the human open it in the drawer:\n\n[${label}](/thread/${slug})`
   )
 }

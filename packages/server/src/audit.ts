@@ -142,6 +142,7 @@ export type AuditAction =
   | "githubDispatch"
   | "followUp"
   | "subAgentSteer"
+  | "steerThread"
   | "answerQuestions"
   | "interactionResolve"
 

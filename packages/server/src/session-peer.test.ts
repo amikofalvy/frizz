@@ -3,7 +3,7 @@ import assert from "node:assert/strict"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { parseCrossSessionMessage, type TranscriptMessage } from "@frizz/shared"
+import { formatThreadMessage, parseCrossSessionMessage, parseThreadMessage, type TranscriptMessage } from "@frizz/shared"
 import { parseTranscript, latestWindowStart } from "./transcript.ts"
 import { createSessionPeerResolver, projectTranscriptSessionPeers, sessionIdForPeerSocket } from "./session-peer.ts"
 
@@ -148,4 +148,26 @@ test("projectTranscriptSessionPeers fills in the sender thread and leaves every 
   assert.deepEqual(out[1].sessionPeer?.thread, { slug: "coordinator", title: "Coordinator" })
   const none = [plain, peer]
   assert.equal(projectTranscriptSessionPeers(none, () => undefined), none, "nothing resolved ⇒ the same array")
+})
+
+// A MESSAGE SENT THROUGH FRIZZ'S OWN `steer` TOOL. It names its sender outright, so it needs none of the
+// socket tracing above: the hairline links the sending thread straight from the wrapper.
+test("formatThreadMessage and parseThreadMessage round-trip, quoted wrappers and all", () => {
+  const from = { slug: "fresh-archive-audit", title: "Audit the \"fresh\" archive <v2>" }
+  const quoting = "Found it.\n\n```\n</thread-message>\n```\n\nThat tag above is quoted."
+  for (const text of ["Three folders are missing.", quoting]) {
+    assert.deepEqual(parseThreadMessage(formatThreadMessage(from, text)), { ...from, body: text })
+  }
+  assert.equal(parseThreadMessage(`Look:\n${formatThreadMessage(from, "x")}`), undefined, "prose that quotes one stays prose")
+  assert.equal(parseThreadMessage(`${formatThreadMessage(from, "x")}\n\nand then my own words`.replace(/\n\nThis message came[\s\S]*?\n\nand/, "\n\nand")), undefined)
+  assert.equal(parseThreadMessage("just a message"), undefined)
+})
+
+test("a steer from another thread renders as that thread's message, not the human's", () => {
+  const delivered = formatThreadMessage({ slug: "fresh-archive-audit", title: "Audit the fresh archive" }, "Three folders are missing.")
+  const record = JSON.stringify({ type: "user", isSidechain: false, timestamp: "2026-10-09T05:40:00.000Z", message: { role: "user", content: delivered } })
+  const sent = onlySessionMessages(parseTranscript([assistant("Resting."), record].join("\n")))
+  assert.equal(sent.length, 1)
+  assert.equal(sent[0].displayText, "Three folders are missing.")
+  assert.deepEqual(sent[0].sessionPeer, { name: "Audit the fresh archive", thread: { slug: "fresh-archive-audit", title: "Audit the fresh archive" } })
 })

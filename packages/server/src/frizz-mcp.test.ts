@@ -64,7 +64,7 @@ test("the frizz MCP server identifies as `frizz` and exposes its worker tools", 
     rpc.send({ jsonrpc: "2.0", method: "notifications/initialized" })
     rpc.send({ jsonrpc: "2.0", id: 2, method: "tools/list" })
     const list = await rpc.next(2)
-    assert.deepEqual(list.result.tools.map((t: { name: string }) => t.name), ["spawn_thread", "goal", "timer", "watch_pr", "watch", "unwatch", "ask", "unask", "done", "title", "activity", "link", "unlink", "watch_issue", "secret"])
+    assert.deepEqual(list.result.tools.map((t: { name: string }) => t.name), ["spawn_thread", "goal", "timer", "watch_pr", "watch", "unwatch", "ask", "unask", "done", "title", "activity", "link", "unlink", "watch_issue", "secret", "steer"])
     assert.deepEqual(list.result.tools.find((t: { name: string }) => t.name === "link").inputSchema.required, ["label", "target"])
     assert.deepEqual(list.result.tools.find((t: { name: string }) => t.name === "unlink").inputSchema.required, ["id"])
     for (const required of ["prompt", "model", "effort"]) {
@@ -154,7 +154,7 @@ test("the frizz MCP server identifies as `frizz` and exposes its worker tools", 
     // `wch_…` id of any watch holding one. It takes NOTHING: there is no thread parameter and no filter,
     // because the only correct answer is "everything you have running", and a worker that has lost its
     // ids cannot be trusted to name them.
-    assert.equal(list.result.tools.length, 15)
+    assert.equal(list.result.tools.length, 16)
     assert.deepEqual(list.result.tools[10].inputSchema.required, [])
     assert.deepEqual(Object.keys(list.result.tools[10].inputSchema.properties), [])
     // `watch_issue` — the issue twin of `watch_pr`, same shape: `action` alone is required, and NO thread
@@ -165,6 +165,10 @@ test("the frizz MCP server identifies as `frizz` and exposes its worker tools", 
     // the human types it into the card, never the worker into the call.
     assert.deepEqual(list.result.tools[14].inputSchema.required, ["question"])
     assert.deepEqual(Object.keys(list.result.tools[14].inputSchema.properties), ["question", "header"])
+    // `steer` — a target and a message. NO sender parameter: the receiver is told which thread sent it,
+    // so the sender comes from the env alone.
+    assert.deepEqual(list.result.tools[15].inputSchema.required, ["to", "message"])
+    assert.deepEqual(Object.keys(list.result.tools[15].inputSchema.properties), ["to", "message"])
 
     // An unregistered name is a protocol error, not a crash — the registry routes by name now.
     rpc.send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "spawn_frizz_thread", arguments: {} } })
@@ -190,7 +194,8 @@ test("`spawn_thread` POSTs the real dispatch RPC and returns the thread's drawer
   const port = (http.address() as { port: number }).port
   const stateDir = mkdtempSync(join(tmpdir(), "frizz-mcp-"))
   writeFileSync(join(stateDir, "server.lock"), JSON.stringify({ port }))
-  const rpc = startServer({ FRIZZ_STATE_DIR: stateDir })
+  // No caller identity in the env (the test may itself run inside a frizz worker, which sets both).
+  const rpc = startServer({ FRIZZ_STATE_DIR: stateDir, FRIZZ_THREAD_SLUG: "", FRIZZ_THREAD: "" })
   try {
     rpc.send({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} })
     await rpc.next(1)
@@ -211,6 +216,97 @@ test("`spawn_thread` POSTs the real dispatch RPC and returns the thread's drawer
     const bad = await rpc.next(3)
     assert.equal(bad.result.isError, true)
     assert.match(bad.result.content[0].text, /`spawn_thread` failed: `model` is required/)
+  } finally {
+    rpc.kill()
+    http.close()
+  }
+})
+
+// THE WAY BACK: a spawned thread starts with nothing but its prompt, so the shim names the spawner at
+// the end of it — without that slug the child could not `steer` its results back even when asked to.
+test("`spawn_thread` names the spawning thread at the end of the prompt, so the child can steer back", async () => {
+  const seen: Array<{ url: string; body: any }> = []
+  const http = createServer((req, res) => {
+    let body = ""
+    req.on("data", (c) => (body += c))
+    req.on("end", () => {
+      seen.push({ url: req.url ?? "", body: JSON.parse(body) })
+      res.writeHead(200, { "content-type": "application/json" })
+      res.end(JSON.stringify({ result: { slug: "spawned-child" } }))
+    })
+  })
+  await new Promise<void>((resolve) => http.listen(0, "127.0.0.1", resolve))
+  const port = (http.address() as { port: number }).port
+  const stateDir = mkdtempSync(join(tmpdir(), "frizz-mcp-"))
+  writeFileSync(join(stateDir, "server.lock"), JSON.stringify({ port }))
+  const rpc = startServer({ FRIZZ_STATE_DIR: stateDir, FRIZZ_THREAD_SLUG: "the-coordinator" })
+  try {
+    rpc.send({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} })
+    await rpc.next(1)
+    rpc.send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "spawn_thread", arguments: { prompt: "do the thing", model: "opus", effort: "high" } } })
+    const call = await rpc.next(2)
+    assert.equal(call.result.isError, undefined)
+    const prompt: string = seen[0].body.prompt
+    assert.ok(prompt.startsWith("do the thing\n\n---\n"), "the task comes first, untouched")
+    assert.match(prompt, /Spawned by the Frizz thread `the-coordinator`/)
+    assert.match(prompt, /`steer` tool \(`to: "the-coordinator"`\)/)
+    // …and the spawner is told the child can now reach it, and how to reach the child.
+    assert.match(call.result.content[0].text, /It knows your slug/)
+    assert.match(call.result.content[0].text, /`to: "spawned-child"`/)
+  } finally {
+    rpc.kill()
+    http.close()
+  }
+})
+
+test("`steer` POSTs steerThread from the CALLING thread, to a slug read out of any link form", async () => {
+  const seen: Array<{ url: string; body: any }> = []
+  let reply: unknown = { slug: "back-up-the-mac", title: "Back up the Mac", delivery: "resting" }
+  const http = createServer((req, res) => {
+    let body = ""
+    req.on("data", (c) => (body += c))
+    req.on("end", () => {
+      seen.push({ url: req.url ?? "", body: JSON.parse(body || "{}") })
+      res.writeHead(200, { "content-type": "application/json" })
+      res.end(JSON.stringify({ result: reply }))
+    })
+  })
+  await new Promise<void>((resolve) => http.listen(0, "127.0.0.1", resolve))
+  const port = (http.address() as { port: number }).port
+  const stateDir = mkdtempSync(join(tmpdir(), "frizz-mcp-"))
+  writeFileSync(join(stateDir, "server.lock"), JSON.stringify({ port }))
+  const rpc = startServer({ FRIZZ_STATE_DIR: stateDir, FRIZZ_THREAD_SLUG: "fresh-archive-audit" })
+  try {
+    rpc.send({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} })
+    await rpc.next(1)
+    const forms = [
+      "back-up-the-mac",
+      "[Back up the Mac](/thread/back-up-the-mac)",
+      "http://localhost:9393/project/frizz/thread/back-up-the-mac/full",
+    ]
+    for (const [i, to] of forms.entries()) {
+      rpc.send({ jsonrpc: "2.0", id: 10 + i, method: "tools/call", params: { name: "steer", arguments: { to, message: "  The audit found 3 issues.  " } } })
+      const sent = await rpc.next(10 + i)
+      assert.equal(sent.result.isError, undefined, to)
+      assert.deepEqual(seen.at(-1), {
+        url: "/_frizz/rpc/steerThread",
+        body: { from: "fresh-archive-audit", to: "back-up-the-mac", message: "The audit found 3 issues." },
+      }, to)
+      assert.match(sent.result.content[0].text, /Delivered to «Back up the Mac» \(`back-up-the-mac`\)/)
+      assert.match(sent.result.content[0].text, /woke it/)
+      assert.match(sent.result.content[0].text, /do not rest waiting for it/)
+    }
+    reply = { slug: "back-up-the-mac", title: "Back up the Mac", delivery: "running" }
+    rpc.send({ jsonrpc: "2.0", id: 20, method: "tools/call", params: { name: "steer", arguments: { to: "back-up-the-mac", message: "x" } } })
+    assert.match((await rpc.next(20)).result.content[0].text, /next tool boundary/)
+
+    // Both arguments are refused in the HANDLER, before anything reaches the server.
+    const before = seen.length
+    rpc.send({ jsonrpc: "2.0", id: 30, method: "tools/call", params: { name: "steer", arguments: { to: "  ", message: "x" } } })
+    assert.match((await rpc.next(30)).result.content[0].text, /`to` is required/)
+    rpc.send({ jsonrpc: "2.0", id: 31, method: "tools/call", params: { name: "steer", arguments: { to: "a", message: " " } } })
+    assert.match((await rpc.next(31)).result.content[0].text, /`message` is required/)
+    assert.equal(seen.length, before)
   } finally {
     rpc.kill()
     http.close()
