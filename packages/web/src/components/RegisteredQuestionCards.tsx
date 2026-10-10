@@ -40,9 +40,6 @@ function errorText(error: unknown): string {
   return message.length > 240 ? `${message.slice(0, 239)}…` : message
 }
 
-const pickKey = (projectDir: string | undefined, slug: string, id: string, path: string) =>
-  `${draftKey.question(projectDir, slug, id, path)}:picks`
-
 /** The thread's whole answering state: what is staged on every open question, and the one send. */
 export interface RegisteredAnswering {
   slug: string | undefined
@@ -85,7 +82,7 @@ export function useRegisteredAnswering(thread: ThreadView | undefined): Register
   // all see the same staged answer. Secrets stay strictly in memory outside this subscription.
   const textKeys = useMemo(
     () => (slug ? questions.flatMap((q) => (q.spec.secret ? [] : allPaths(q).flatMap((path) => [
-      draftKey.question(projectDir, slug, q.id, path), pickKey(projectDir, slug, q.id, path),
+      draftKey.question(projectDir, slug, q.id, path), draftKey.questionPick(projectDir, slug, q.id, path),
     ]))) : []),
     [projectDir, slug, questions],
   )
@@ -93,7 +90,7 @@ export function useRegisteredAnswering(thread: ThreadView | undefined): Register
   const answerFor = (q: RegisteredQuestionView, path: string): BlockAnswer => {
     if (q.spec.secret) return { chosen: null, chosenSet: [], text: secrets.get(q.id) ?? "" }
     const spec = questionSpecAt(q.spec, path)
-    const pick = spec ? decodeQuestionPick(spec, slug ? persistedText.get(pickKey(projectDir, slug, q.id, path)) ?? "" : "") : undefined
+    const pick = spec ? decodeQuestionPick(spec, slug ? persistedText.get(draftKey.questionPick(projectDir, slug, q.id, path)) ?? "" : "") : undefined
     return {
       chosen: pick?.chosen ?? null,
       chosenSet: pick?.chosenSet ?? [],
@@ -116,8 +113,10 @@ export function useRegisteredAnswering(thread: ThreadView | undefined): Register
     mutationFn: async (submission: { answers: QuestionAnswer[]; drafts: Array<{ id: string; keys: string[] }> }) =>
       rpc.answerQuestions({ slug: slug!, answers: submission.answers }),
     onSuccess: (result, submission) => {
-      // The board push removes these rows, so the staged state for them is dead weight;
-      // dropping the drafts too keeps a re-asked question from opening pre-filled with a stale answer.
+      // The board push removes these rows, so the staged state for them is dead weight. Left behind, it
+      // would sit in the tab's draft store, whose reload snapshot keeps only the most recent entries
+      // (lib/drafts MAX_ENTRIES), and could push an older, still-live draft out of it. A re-ask is not
+      // the reason: it mints a fresh `qst_` id, so it can never match these keys.
       for (const id of result.answered) {
         setSecrets((prev) => {
           if (!prev.has(id)) return prev
@@ -180,7 +179,7 @@ export function useRegisteredAnswering(thread: ThreadView | undefined): Register
     send.mutate({
       answers: staged,
       drafts: stagedPairs.map(({ q }) => ({ id: q.id, keys: q.spec.secret ? [] : allPaths(q).flatMap((path) => [
-        draftKey.question(projectDir, slug, q.id, path), pickKey(projectDir, slug, q.id, path),
+        draftKey.question(projectDir, slug, q.id, path), draftKey.questionPick(projectDir, slug, q.id, path),
       ]) })),
     })
   }
@@ -196,7 +195,7 @@ export function useRegisteredAnswering(thread: ThreadView | undefined): Register
       // focus clears it via onText below).
       const spec = questionSpecAt(q.spec, path)
       if (!slug || !spec || q.spec.secret || !spec.options?.[optIdx]) return
-      const key = pickKey(projectDir, slug, q.id, path)
+      const key = draftKey.questionPick(projectDir, slug, q.id, path)
       // Read the store at the event, not the last render: rapid toggles must compose, including
       // when another mounted copy of this question just staged a pick.
       const pick = decodeQuestionPick(spec, draftStore.get(key))
@@ -215,7 +214,7 @@ export function useRegisteredAnswering(thread: ThreadView | undefined): Register
       // SINGLE: the free-text box taking over — a keystroke OR just focusing it — drops the chosen chip,
       // as the fence producer does. The card's onFocus calls this with the text unchanged for exactly
       // that reason, so writing the draft alone left the chip lit beside a focused box (2026-08-28).
-      if (!isMulti) draftStore.clear(pickKey(projectDir, slug, q.id, path))
+      if (!isMulti) draftStore.clear(draftKey.questionPick(projectDir, slug, q.id, path))
     },
     dismiss: (id) => dismiss.mutate(id),
     dismissing: dismiss.isPending,

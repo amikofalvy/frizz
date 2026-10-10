@@ -1,7 +1,6 @@
 import assert from "node:assert/strict"
-import { execFile, execFileSync } from "node:child_process"
+import { execFileSync } from "node:child_process"
 import { join } from "node:path"
-import { promisify } from "node:util"
 import test from "node:test"
 import { createRpcClient } from "../../../../scripts/lib/rpc-client.mjs"
 
@@ -107,31 +106,6 @@ test("registered picks survive fullscreen, project switches and reload, then cle
     await check()
     await page.reload({ waitUntil: "networkidle2" })
     await check()
-    if (process.env.FRIZZ_QUESTION_NAVIGATION_E2E_SHOT) {
-      const path = process.env.FRIZZ_QUESTION_NAVIGATION_E2E_SHOT
-      await page.screenshot({ path, fullPage: true })
-      console.log("Optical spacing", (await promisify(execFile)("nub", ["scripts/ink-gaps.mjs", page.url(),
-        `${tree} [data-question-option]:first-child > span, ${tree} [data-question-option]:first-child .md-inline`,
-        `--browser=${browser.wsEndpoint()}`, "--w=820", "--h=1100", "--dsf=6", "--wait=300",
-      ], { encoding: "utf8" })).stdout)
-      console.log("Keycap alignment", await page.$eval(`${tree} [data-question-option]`, (row) => {
-        const baseline = (element: Element) => {
-          const node = [...element.childNodes].find((n) => n.nodeType === Node.TEXT_NODE && n.textContent?.trim())!
-          const wrap = document.createElement("span"), probe = document.createElement("span")
-          node.parentNode!.insertBefore(wrap, node); wrap.appendChild(node)
-          probe.style.cssText = "display:inline-block;width:0;height:0;padding:0;margin:0;border:0"
-          wrap.appendChild(probe)
-          const y = probe.getBoundingClientRect().bottom
-          probe.remove(); wrap.parentNode!.insertBefore(node, wrap); wrap.remove()
-          return y
-        }
-        const cap = row.querySelector(":scope > span")!, label = row.querySelector(".md-inline")!
-        return { baselineDeltaPx: baseline(cap) - baseline(label), font: getComputedStyle(label).fontFamily }
-      }))
-      await page.setViewport({ width: 820, height: 1100, deviceScaleFactor: 6 })
-      await (await page.$(tree))!.screenshot({ path: path.replace(/\.png$/, "-narrow.png") })
-      await page.setViewport({ width: 1200, height: 1100, deviceScaleFactor: 2 })
-    }
     // A rejected send keeps staged picks. A successful real answerQuestions clears the cache.
     let reject = true
     await page.setRequestInterception(true)
@@ -144,11 +118,22 @@ test("registered picks survive fullscreen, project switches and reload, then cle
     await page.$eval("[data-send-answers]", (el) => (el as HTMLButtonElement).click())
     await page.waitForSelector("[role='alert']")
     await check()
+    // Both shapes are staged before the send: the picks and the follow-up's typed text.
+    const ids = asked.registered.map((q) => q.id)
+    const draftKeys = () => page.evaluate((ids) => {
+      const raw = sessionStorage.getItem("frizz-drafts:v1")
+      return Object.keys(raw ? JSON.parse(raw).entries : {}).filter((k) => k.startsWith("question:") && ids.some((id) => k.includes(id)))
+    }, ids)
+    const before = await draftKeys()
+    assert.ok(before.some((k) => k.endsWith(":picks")) && before.some((k) => !k.endsWith(":picks")), before.join(" "))
     await page.$eval("[data-send-answers]", (el) => (el as HTMLButtonElement).click())
+    // The board push can drop the registration before the reply lands, so only the keys captured at send
+    // can clear the text draft. Wait for the answer to settle, then require that every key is gone.
     await page.waitForFunction(() => {
       const raw = sessionStorage.getItem("frizz-drafts:v1")
       return !raw || !Object.keys(JSON.parse(raw).entries).some((k) => k.includes("question-navigation") && k.endsWith(":picks"))
     })
+    assert.deepEqual(await draftKeys(), [])
     const settled = JSON.parse(execFileSync("sqlite3", [db, `SELECT answer FROM thread_question WHERE id = '${asked.registered[0].id}'`], { encoding: "utf8" }))
     assert.deepEqual(settled.chosen, ["Land it"])
     assert.deepEqual(settled.followUps[0].chosen, ["Tests", "Browser"])
