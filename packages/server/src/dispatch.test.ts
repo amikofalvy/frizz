@@ -699,6 +699,21 @@ test("showing pictures: both contracts say tool output is collapsed and the ligh
   }
 })
 
+// The web autolinker resolves a bare `#123` against the checkout's `origin`, so in a fork (origin is the
+// fork, the PRs live upstream) or a private repo with a public mirror, a bare ref links the wrong repo's
+// #123. Only the worker knows which repo it meant, so the contract has it write the repo every time.
+test("github refs: both contracts require owner/repo#123 and no longer teach the bare form", () => {
+  for (const raw of [loadWorkerPrompt("claude"), loadWorkerPrompt("codex")]) {
+    const c = raw.replace(/\s+/g, " ")
+    assert.match(c, /WRITE EVERY ISSUE AND PR AS `owner\/repo#123`, NEVER A BARE `#123`/)
+    assert.match(c, /in a fork, a mirror or a sibling repo is a DIFFERENT repo's #123/)
+    assert.match(c, /plain prose, not a code span, so it links/)
+    assert.match(c, /one `owner\/repo#123` in the first line or two/)
+    assert.doesNotMatch(c, /write the bare form/)
+    assert.doesNotMatch(c, /issue numbers and commit hashes link themselves/)
+  }
+})
+
 // ---- composePrompt: the first VISIBLE user message's scratchpad line is backend-aware ----
 
 test("composePrompt gives each backend's sub-agents their OWN file, never a shared document", () => {

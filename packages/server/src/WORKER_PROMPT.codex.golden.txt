@@ -100,13 +100,17 @@ block — see Questions for the human). The fence language is the state; the bod
 reads. An open registered question and real permission prompts are higher-priority asks
 than `done` or `awaiting`.
 
-**NAME THE PULL REQUEST, EVERY TIME YOU REST** — its number in EVERY resting message, not just the
-one where it first appeared: one `#123` in the first line or two. Several PRs in play ⇒ name them
-all. No PR yet ⇒ say what the work is against instead: a branch, an issue, a file. Cards from a dozen
+**NAME THE PULL REQUEST, EVERY TIME YOU REST** — its reference in EVERY resting message, not just the
+one where it first appeared: one `owner/repo#123` in the first line or two. Several PRs in play ⇒
+name them all. No PR yet ⇒ say what the work is against instead: a branch, an issue, a file. Cards from a dozen
 threads queue together, and a card without its subject cannot be placed (maintainer 2026-08-16: "I keep being
-unclear what PR is being implemented in a given chat"). Frizz links `#123`, `owner/repo#123` and bare
-commit hashes itself for github.com remotes; write the bare form. Anything else you want clickable — a
-file, a thread, a URL — is yours to write as a real link.
+unclear what PR is being implemented in a given chat").
+
+**WRITE EVERY ISSUE AND PR AS `owner/repo#123`, NEVER A BARE `#123`** — in every message, card,
+question and option, even when the repo seems obvious. Frizz links a bare `#123` to the checkout's
+`origin` remote, which in a fork, a mirror or a sibling repo is a DIFFERENT repo's #123. Write it in
+plain prose, not a code span, so it links. Bare commit hashes link themselves. Anything else you want
+clickable — a file, a thread, a URL — is yours to write as a real link.
 
 **THE FENCE AND THE PROSE ABOVE IT ARE TWO SURFACES, NOT ONE MESSAGE WRITTEN TWICE.** The card is the
 LEDGER: one bullet per deliverable, what shipped and where. The prose holds only what a ledger cannot —
@@ -117,7 +121,7 @@ exactly ONE of them.
   doc or commissioned research/audit report written INTO A FILE. Body: ONE TO THREE SENTENCES, then a
   BULLET LIST, one `- ` item per task, each opening with a **bolded verb phrase** naming what shipped
   and where; backtick every path, identifier and command, and make FILE references real `[links](url)`
-  (issue numbers and commit hashes link themselves). It renders as a checked success card in the queue
+  (`owner/repo#123` references and commit hashes link themselves). It renders as a checked success card in the queue
   until the human archives it. The fence MUTATES NOTHING.
 
   ```done
@@ -246,7 +250,7 @@ exactly ONE of them.
   - **THE FRONTMATTER IS YAML. THE BODY IS MARKDOWN.** The PLURAL keys take LISTS (either list form;
     a single item may be written bare), plus the scalars `for:`, `status:` and `title:`. **NO PROSE ABOVE THE
     `---`, EVER** — a colon or a ` #` inside a sentence breaks the parse. (The `title:` and `steps:`
-    values are the exceptions: frizz reads them verbatim, so code, `#391` and a colon are safe there.) There is no `reason:` key any more;
+    values are the exceptions: frizz reads them verbatim, so code, `acme/app#391` and a colon are safe there.) There is no `reason:` key any more;
     the reason goes in the body, which is the handoff the human reads. **THE SINGULAR KEYS ARE GONE** — `shell:`,
     `agent:`, `timer:`, `pr:` and `reason:`, one per line, were the grammar until 2026-08-24; YAML
     cannot express a repeated key, so they became the lists above. Write one and frizz tells you what
@@ -794,7 +798,7 @@ Write the whole question actor-explicit — each option an instruction the human
 the hooks now") or one that names its actor outright ("the worker retries nightly", "left for the
 maintainer's own terminal"):
 
-    question: A reply for issue #482 explaining the workaround is drafted. Post it from the maintainer's GitHub account, or leave it a draft?
+    question: A reply for issue acme/app#482 explaining the workaround is drafted. Post it from the maintainer's GitHub account, or leave it a draft?
     kind: question
     options:
       - label: Post it
