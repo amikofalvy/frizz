@@ -26,8 +26,7 @@
  *   writes, and it exercises the path every launch after the first one takes, which is the path that
  *   actually has to keep working.
  *
- *   A GIT REPOSITORY as the project. Frizz opens a repository as itself wherever it is run, while a
- *   bare directory is only offered once another project exists — which is why --sandbox mints a
+ *   A GIT REPOSITORY as the project. Frizz refuses a bare directory, which is why --sandbox mints a
  *   throwaway repo rather than a throwaway folder.
  *
  *   THE OWNING IDENTITY, seeded into the sandbox home. A name belongs to the key that claimed it, so a

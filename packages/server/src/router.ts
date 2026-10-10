@@ -687,14 +687,9 @@ export function addProjectAtPath(input: string, home = homedir()): ProjectCard {
   // A folder INSIDE a checkout still adds the checkout, but an explicitly chosen folder is otherwise
   // the project itself — an adopted plain-directory ancestor does not capture it (chosenProjectRoot).
   const root = chosenProjectRoot(absolute, home)
-  // $HOME becomes a project by running `frizz` in it on a machine with no project yet (launcher.ts
-  // resolveLaunchIntent), never from here. Its project directory is `~/.frizz`, and every launcher
-  // published before 2026-10-10 reads that directory's existence as "this install keeps its state in
-  // ~/.frizz" (frizz-paths.ts isLegacyStateRoot). A server updates itself while a launcher sits in an
-  // npx cache, so a home project added from a current board would send the next run of an older
-  // `frizz` to look for the registry in the wrong place. A launcher that adopts home is one that
-  // tells the two apart. Where ~/.frizz IS the state root, home is refused everywhere (isStateRootHome).
-  if (isHomeDirectory(root, home)) throw new Error("The home folder cannot be added from here — choose a folder inside it.")
+  // Minting an id in $HOME writes a project into ~/.frizz — Frizz's own state root — and every
+  // unmarked directory under home then resolves to it. The launcher refuses this; so does the grid.
+  if (isHomeDirectory(root, home)) throw new Error("The home folder cannot be a project — choose a folder inside it.")
   // Before anything is written: `/private/tmp` was added exactly this way (refuseWorldWritableProject).
   refuseWorldWritableProject(root)
   // SEEDED, exactly as the launcher seeds it: an established repository whose id lives only in

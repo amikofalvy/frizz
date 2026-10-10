@@ -45,7 +45,6 @@ import {
   allocatePort,
   boardAddress,
   canBindPort,
-  emptyLaunchMessage,
   resolveLaunchIntent,
   expectedOwnerHealth,
   FIRST_ARTIFACT_LAUNCH_LOCK_TIMEOUT_MS,
@@ -205,13 +204,21 @@ try {
     if (interactiveLaunch) assertLaunchPrerequisites();
     else assertRequiredExecutables();
   }
-  // Running the command does not always ADOPT the directory it was run in — see resolveLaunchIntent.
-  // Beside existing projects, an unknown directory hosts the server on the most recent one and asks
-  // about itself on the grid; with none, the directory is the first project.
+  // Running the command no longer ADOPTS the directory it was run in — see resolveLaunchIntent. An
+  // unknown directory hosts the server on the most recent real project and asks about itself on the
+  // grid; $HOME is never asked about at all.
   let hosted: Workspace | undefined;
   if (!internal) {
     const intent = resolveLaunchIntent();
-    if (intent.kind === "empty") throw new Error(emptyLaunchMessage(intent));
+    if (intent.kind === "empty") {
+      throw new Error(
+        intent.reason === "home"
+          ? "frizz cannot open your home directory as a project, and there is no other project to show yet. cd into a repository and run frizz there."
+          : intent.reason === "world-writable"
+            ? `A folder every account can write to cannot be a project: ${intent.directory}. Run frizz in a folder only you can write to.`
+            : `${intent.directory} is not a Frizz project yet, and there is no other project to show. Run frizz inside a repository, or add this one from the projects page once a board is open.`
+      );
+    }
     launchIntent = intent;
     hosted = intent.workspace;
   }

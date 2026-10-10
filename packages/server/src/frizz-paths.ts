@@ -12,8 +12,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 // have no backup anywhere else. So: DETECT first, and only choose for a machine that has never run
 // Frizz.
 //
-//   1. `~/.frizz` exists  -> use it for everything, unchanged, forever. Nobody migrates. (Unless it
-//                           is only the home folder's own project directory; see isLegacyStateRoot.)
+//   1. `~/.frizz` exists  -> use it for everything, unchanged, forever. Nobody migrates.
 //   2. otherwise         -> the platform's idiomatic locations, XDG variables honored individually.
 //
 // The three roots exist because the content genuinely differs in kind, which is the whole point of
@@ -60,7 +59,7 @@ export interface FrizzPaths {
   state: string
   /** Promoted artifacts, staged plugins, browser profiles, quota snapshots. Safe to delete. */
   cache: string
-  /** True when an existing `~/.frizz` state root was found and every root collapsed onto it. */
+  /** True when an existing `~/.frizz` was found and every root collapsed onto it. */
   legacy: boolean
 }
 
@@ -76,27 +75,6 @@ export const LEGACY_DIR_NAME = ".frizz"
 
 export function legacyFrizzRoot(home = homedir()): string {
   return join(home, LEGACY_DIR_NAME)
-}
-
-/**
- * Is this `~/.frizz` an old install's state root, or only the home folder's own project directory?
- *
- * Both are spelled `~/.frizz`. A project keeps its id and its threads' scratch files in
- * `<project>/.frizz`, so opening `$HOME` as a project creates that directory — and reading its mere
- * existence as "legacy install" moved every root there from the next launch on: the registry, the
- * projects and the database under the platform roots looked gone. The same trap caught the claim
- * identity (2026-08-28) and the remote-access setup (2026-09-23), which both stopped writing a literal
- * `~/.frizz`; a home project cannot, because the directory's name is the project's.
- *
- * So ask what is IN it. A state root holds `projects/` from its first launch on, and `registry.json`
- * from its first registration. A project directory holds `.gitignore` and then `.id`, written in that
- * order (project-root.ts writeProjectIdFile), and never the other two. Anything else — an EMPTY
- * `~/.frizz` above all, which is how every sandbox pins the collapsed layout — is still an install.
- */
-function isLegacyStateRoot(root: string, exists: (path: string) => boolean): boolean {
-  if (!exists(root)) return false
-  if (!exists(join(root, ".id")) && !exists(join(root, ".gitignore"))) return true
-  return exists(join(root, "projects")) || exists(join(root, "registry.json"))
 }
 
 /** An XDG variable counts only when it is SET and ABSOLUTE; the spec says to ignore relative values. */
@@ -178,7 +156,7 @@ export function frizzPaths(options: FrizzPathOptions = {}): FrizzPaths {
   const exists = options.exists ?? existsSync
 
   const legacyRoot = legacyFrizzRoot(home)
-  if (isLegacyStateRoot(legacyRoot, exists)) {
+  if (exists(legacyRoot)) {
     return { data: legacyRoot, state: legacyRoot, cache: legacyRoot, legacy: true }
   }
 

@@ -1952,8 +1952,8 @@ test("projectAdd: a picked folder under an adopted plain directory becomes its o
   }
 })
 
-// Home's project directory is `~/.frizz`, which a launcher published before 2026-10-10 reads as an old
-// install's state root. Only a launcher that tells them apart may adopt home; the grid never does.
+// Minting an id in $HOME writes a project into ~/.frizz, Frizz's own state root, and every unmarked
+// directory under home then resolves to it. The launcher refuses this (2026-08-06); the grid must too.
 test("projectAdd: the home directory itself is refused, and nothing is written", () => {
   const home = mkdtempSync(join(tmpdir(), "frizz-add-home-"))
   try {

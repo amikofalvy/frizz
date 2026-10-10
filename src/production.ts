@@ -43,7 +43,6 @@ import {
   prepareSandbox,
   probeFrizz,
   readPreferredPort,
-  emptyLaunchMessage,
   resolveLaunchIntent,
   resolveLaunchControlTarget,
   runningFrizzStatus,
@@ -209,7 +208,14 @@ const workspace: Workspace = (() => {
   // `~/.frizz` state root, the failure frizz-dev was fixed for in 95d81bd and this file was not.
   // A repository still opens as itself and is still adopted on sight; see resolveLaunchIntent.
   const intent = resolveLaunchIntent();
-  if (intent.kind === "empty") throw new Error(emptyLaunchMessage(intent));
+  if (intent.kind === "empty")
+    throw new Error(
+      intent.reason === "home"
+        ? "frizz cannot open your home directory as a project, and there is no other project to show yet. cd into a repository and run frizz there."
+        : intent.reason === "world-writable"
+          ? `A folder every account can write to cannot be a project: ${intent.directory}. Run frizz in a folder only you can write to.`
+          : `${intent.directory} is not a Frizz project yet, and there is no other project to show. Run frizz inside a repository, or add this one from the projects page once a board is open.`,
+    );
   launchIntent = intent;
   return intent.workspace;
   } catch (error) { return fail(error); }
