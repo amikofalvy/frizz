@@ -62,11 +62,13 @@ createRoot(document.getElementById("root")!).render(
   <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
     <TooltipProvider>
       {/* App's own wrapper for this branch: the workpane's readable measure, centered, with the sidebar
-          absent. TodosView centers itself vertically inside a full-height parent. */}
+          absent. The inner element copies App's <main> — a min-h-screen FLEX COLUMN — because
+          TodosView centers itself vertically with `my-auto`, which only resolves against a flex
+          parent. A plain block here top-aligned the prompt box, which the app never does. */}
       <div className="flex min-h-screen justify-center bg-bg px-5 text-fg text-sm">
-        <div className="w-[720px] min-w-0">
+        <main className="flex min-h-screen w-[720px] max-w-[62vw] min-w-0 flex-col py-5">
           <TodosView />
-        </div>
+        </main>
       </div>
     </TooltipProvider>
   </QueryClientProvider>
