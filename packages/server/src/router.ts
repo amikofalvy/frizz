@@ -1692,6 +1692,8 @@ export function createRouter(ctx: AppContext) {
         permissionMode: coldResumePermission(row, ctx.getSettings()),
         model: row.model ?? undefined,
         effort: row.effort ?? undefined,
+        // Frizz's own notice, not the operator's reply to anything: an open card stays open.
+        keepOpenCards: true,
       })
       return null
     } catch (error) {

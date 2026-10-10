@@ -94,7 +94,11 @@ function deriveRuntime(
   // turn state. Probing for one here would mark every headless thread "exited" (and, mid-turn, trip
   // the crash-net). Never do that.
   if (isHeadlessRow(row)) {
-    if (permPrompt) return "perm-prompt"
+    // ONLY WHILE THE PROCESS IS THERE TO BE ANSWERED. A marker is a file, and it outlives the daemon
+    // that was parked on it: a worker whose daemon died mid-request kept reading as a live approval,
+    // the operator pressed Grant into a dead socket, the block cleared, and the row turned Stalled —
+    // so approving looked like the thing that crashed it. A dead process falls through to the stall.
+    if (permPrompt && !appServerStalled) return "perm-prompt"
     // Checked BEFORE the idle branch, which is the whole point. A worker that came to rest holding live
     // sub-agents and whose daemon then died is NOT at rest: an Agent child runs IN-PROCESS inside that
     // `claude` (orphan-reaper.ts: "a worker's only OS-level agent process is its session root — Agent

@@ -468,6 +468,10 @@ export function deliverClaudeBrokerWake(deps: {
     model: row.model ?? undefined,
     effort: row.effort ?? undefined,
     freshProcess,
+    // A wake is not the operator answering: an approval or question card open on this thread stays open,
+    // and the wake is read once they have answered it. Without this a timer coming due, a schedule beat
+    // or a report held past the mid-turn ceiling DENIED the open approval on the operator's behalf.
+    keepOpenCards: true,
   })
 }
 

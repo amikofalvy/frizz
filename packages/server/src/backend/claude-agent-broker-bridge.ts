@@ -164,8 +164,14 @@ export interface ClaudeAgentBrokerBridge {
    * instant, because the process latched on its 429 and refuses every input until then (see
    * usage-limit.ts `limitResumeNeedsFreshProcess`). Costs the in-memory sub-agents, which is why it is
    * opt-in per call rather than the default.
+   *
+   * `keepOpenCards` is for a message NOBODY TYPED — a scheduled wake, a notice frizz writes itself. A
+   * follow-up from the operator supersedes an open approval or question card (they typed instead of
+   * clicking, so the card is denied and the turn reads their message). A machine's message must not:
+   * a timer coming due is not the operator declining a command. With it set the cards stay open and the
+   * message waits in the daemon's queue behind the parked turn, to be read once the operator answers.
    */
-  followUp(input: { threadSlug: string; sessionId: string; cwd: string; text: string; deliveryId?: string; permissionMode?: ClaudeBrokerConfig["permissionMode"]; appendSystemPrompt?: string; model?: string; effort?: string; freshProcess?: boolean }): Promise<void>
+  followUp(input: { threadSlug: string; sessionId: string; cwd: string; text: string; deliveryId?: string; permissionMode?: ClaudeBrokerConfig["permissionMode"]; appendSystemPrompt?: string; model?: string; effort?: string; freshProcess?: boolean; keepOpenCards?: boolean }): Promise<void>
   /**
    * Steer ONE running Agent-tool sub-agent: deliver `text` into the child's own conversation rather
    * than the thread's main turn. `subAgentId` is the dispatch tool_use id — the same id the board's
@@ -711,7 +717,7 @@ export function createClaudeAgentBrokerBridge(deps: ClaudeBrokerBridgeDeps): Cla
       // never consume what we send, so the deny has to be in flight first for the frame to land on a turn
       // that can actually read it. Ordering aside, this is also the answer to "they typed instead of
       // clicking" — see retirePendingFor.
-      retirePendingFor(input.threadSlug, input.sessionId, "user-cancelled")
+      if (!input.keepOpenCards) retirePendingFor(input.threadSlug, input.sessionId, "user-cancelled")
       // AWAITED, and that is the fix for the other half of 2026-09-30: this used to be `sendInput`, which
       // buffers the frame while the socket is down and returns — so a follow-up bound to a socket that
       // never came back resolved, the router recorded "GO!!" as delivered, and the client dropped the
