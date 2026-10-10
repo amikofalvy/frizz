@@ -456,7 +456,8 @@ how you break it. Take the first exit that fits:
    stale — is exit 1. **Size is not what disqualifies it** — a big job you can finish is still exit 1. If it
    is more than one sitting, dispatch an in-session
    SUB-AGENT: its result comes BACK to you, so the follow-up lands on YOUR card, in your diff, under one
-   review. Then \`done\` is honest with nothing left over.
+   review. A finished child that already covered the topic takes the follow-up first: re-steer it rather
+   than dispatching a fresh one. Then \`done\` is honest with nothing left over.
 2. **ASK** — \`mcp__frizz__ask\`: the human should choose whether or how it happens; "nothing was
    pending" is not an objection. This is the exit for work you cannot bound or verify, or that is
    genuinely the human's call — and it is where a separable effort goes, as an OPTION they pick, rather
@@ -884,7 +885,17 @@ the handoff.
 **Steer your children, and let them steer each other.** \`SendMessage({to: "<agent id>", …})\` — the full
 id the Agent tool returned, nothing shorter — reaches a RUNNING child when its current tool call returns,
 and resumes a FINISHED one from its transcript. Correct a child's course that way the moment you know it
-is wrong, rather than waiting for it to return the wrong result. A child reaches a SIBLING the same way
+is wrong, rather than waiting for it to return the wrong result.
+
+**A FINISHED child is still yours to use — re-steer it before you dispatch a new one.** A child that
+returned keeps its whole context: the files it read, the evidence it gathered, the scratch files it
+wrote. When a follow-up extends a topic a child already covered — the next question about the same
+code, a fix for the bug it found, a second pass over its own report — send it to THAT child with
+\`SendMessage\`. It resumes in the background ("Resuming agent …") and reports back with a completion
+notification, exactly as a fresh dispatch would, without redoing the groundwork. A new \`Agent\` call is
+for a NEW topic, or for when you deliberately want a clean read with none of that child's assumptions.
+Its id is the \`agentId:\` in the Agent tool's launch result. \`SendMessage\` is often a DEFERRED tool: load
+it with \`ToolSearch\` using \`select:SendMessage\` before the first call. A child reaches a SIBLING the same way
 once it holds that sibling's id, so when one prong feeds another, hand the dependent its sibling's id in
 its prompt (or send it after dispatch) and tell it to message that sibling directly. A child also has the
 frizz tools: when its result belongs to another thread, tell it to \`steer\` it there, with the slug.
@@ -1022,7 +1033,11 @@ When delegation is explicitly authorized:
    checks, and expected return. You own every child you create: collect and reconcile all returns into
    the original TASK before resting or reporting completion. Once spawned, a child runs to a terminal
    return: use \`send_message\` or a queued follow-up for changed direction, never \`interrupt_agent\`,
-   except on an explicit user instruction naming that interruption. When you want a child's notes on
+   except on an explicit user instruction naming that interruption. A child that has RETURNED keeps its
+   context, and a follow-up re-opens it: when new work extends a topic a child already covered, give it to
+   that child (current Codex: \`followup_task\`) rather than spawning a fresh one. Spawn new for a new
+   topic, or when you want a clean read without that child's assumptions. A child does not survive the
+   app-server exiting, so after a restart \`list_agents\` says which ones you can still reach. When you want a child's notes on
    disk, tell it to write its OWN file under the thread's scratch directory — one file per writer, so
    there is nothing to merge and nothing to clobber. It must never edit or delete a file another agent
    wrote.
