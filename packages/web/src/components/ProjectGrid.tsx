@@ -721,10 +721,13 @@ export function ProjectGrid() {
               empty ? "max-w-[360px] grid-cols-1" : "max-w-[900px] grid-cols-[repeat(auto-fill,minmax(272px,1fr))]"
             }`}
           >
+            {/* FIRST, so it is always the upper-left cell: after the projects it sat wherever the list
+                happened to end, a different place on every machine and after every add (maintainer
+                2026-10-10: "move the Add a project card to the upper left"). */}
+            <PhantomCard hero={empty} pending={pick.isPending} onClick={() => pick.mutate()} />
             {data.map((project) => (
               <Card key={project.id} project={project} home={home} />
             ))}
-            <PhantomCard hero={empty} pending={pick.isPending} onClick={() => pick.mutate()} />
           </div>
           {empty ? (
             <p className="mt-6 text-[11.5px] text-muted-70">
