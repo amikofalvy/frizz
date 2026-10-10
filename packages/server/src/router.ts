@@ -3936,13 +3936,19 @@ export function createRouter(ctx: AppContext) {
      * Frizz is an index over folders somebody else owns, and a "delete" that reached into a working
      * tree would be a different product.
      *
-     * THE LAUNCHING PROJECT IS REFUSED. This process publishes exactly one `server.lock` — that
-     * project's — and it is the address every worker daemon on the machine resolves the port out of
-     * (see AppContext.launchProjectId). Deleting it is not one card disappearing; it is every live
-     * worker losing the server. Forgetting it without deleting anything is refused for a smaller but
-     * still real reason: the tenant cannot be closed independently of the boot phases that own it, so
-     * the project would keep tailing, keep firing its timers and keep serving its board while the grid
-     * insisted it did not exist.
+     * THE LAUNCHING PROJECT CAN BE FORGOTTEN, BUT ITS DATA CANNOT BE DELETED. This process publishes
+     * exactly one `server.lock` — that project's — and it is the address every worker daemon on the
+     * machine resolves the port out of (see AppContext.launchProjectId); the launcher's own lease and
+     * sign-in sessions sit beside it. Removing that directory is not one card disappearing; it is
+     * every live worker losing the server, so `deleteData` is refused there.
+     *
+     * Forgetting it was refused too until 2026-10-10, and the operator could not act on the refusal:
+     * a `frizz` run from `$HOME` or an unadopted folder is hosted on the most recently opened project
+     * (launcher.ts `resolveLaunchIntent`), so "the launching project" is routinely one nobody chose,
+     * and "restart from another folder" picked the same one again. Forgetting needs none of what the
+     * refusal protects — only the registry entry goes. The tenant itself stays open until the process
+     * ends, because it is also the app every unprefixed request is answered by: its card and its URL
+     * are gone at once, and its tailer and timers stop with the server rather than with the click.
      *
      * Idempotent: an id the registry has already forgotten reports `removed: false` rather than
      * failing, so a double-click and a stale tab both land softly.
@@ -3962,12 +3968,18 @@ export function createRouter(ctx: AppContext) {
         async () => {
           const entry = findById(input.id)
           if (!entry) return { removed: false, deletedData: false, stoppedWorkers: 0 }
-          // The message deliberately does NOT name the project: the confirmation's title already does,
-          // and naming it here reads "Frizz is running from frizz" in this very repository.
-          if (ctx.launchProjectId === entry.id) {
-            throw new Error("Frizz is serving from this project, so it cannot be deleted. Restart Frizz from another folder first.")
-          }
           const deleteData = input.deleteData === true
+          if (ctx.launchProjectId === entry.id) {
+            // The message deliberately does NOT name the project: the confirmation's title already
+            // does, and naming it here reads "Frizz is running from frizz" in this very repository.
+            // It names another PROJECT's folder because any other folder is hosted on the most
+            // recently opened project, which is this one.
+            if (deleteData) {
+              throw new Error("Frizz keeps its own running state with this project, so its threads and history cannot be deleted right now. Delete it without them, or quit Frizz and start it from inside another project's folder.")
+            }
+            // No teardown: the tenant is the server's own (see above), and the state dir is kept.
+            return { removed: forgetProject(entry.id), deletedData: false, stoppedWorkers: 0 }
+          }
           // The resources go FIRST and in one call, because their order matters and the server owns it:
           // a worker is stopped through its own tenant's broker, and `ui.db` is released before the
           // directory holding it is unlinked (see AppContext.teardownProject).
@@ -4068,7 +4080,7 @@ export function createRouter(ctx: AppContext) {
      * It moves the folder to a sibling of the same name and re-registers the id there, then closes
      * the tenant so the next request reopens it at the new path — a context built on the old one
      * would spawn every worker into a directory that no longer exists. The launching project is
-     * refused for the same reason `projectRemove` refuses it: this process is standing in it.
+     * refused: this process is standing in it, and its context is pinned to the old path.
      */
     projectRename: mutation({
       input: z.object({
@@ -4084,7 +4096,7 @@ export function createRouter(ctx: AppContext) {
         let path = entry.path
         if (input.renameDirectory && name !== basename(entry.path)) {
           if (ctx.launchProjectId === entry.id) {
-            throw new Error("Frizz is serving from this project, so its folder cannot be renamed. Restart Frizz from another folder first.")
+            throw new Error("Frizz is running from this project's folder, so the folder cannot be renamed right now. Quit Frizz and start it from inside another project's folder first.")
           }
           path = moveProjectDirectory(entry.id, name).path
           // Detached workers keep running through the rename (their cwd follows the inode); only

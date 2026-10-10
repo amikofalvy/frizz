@@ -621,7 +621,8 @@ export async function startServer(opts: StartOptions = {}): Promise<StartedServe
    *
    * It refuses the launching project for the reason AppContext.launchProjectId spells out: this
    * process publishes exactly one `server.lock`, that project's, and the boot phases below own its
-   * teardown. The router refuses it first with a message the operator can act on; this is the backstop.
+   * teardown. The router never asks — it refuses deleting that project's data and forgets its card
+   * without a teardown; this is the backstop.
    */
   const teardownProject: NonNullable<AppContext["teardownProject"]> = async (projectId, options) => {
     if (projectId === project.id) return { closed: false, stoppedWorkers: 0 }

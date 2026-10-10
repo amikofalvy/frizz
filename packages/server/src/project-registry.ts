@@ -72,6 +72,14 @@ export interface RegistryEntry {
 export interface Registry {
   version: 1
   projects: RegistryEntry[]
+  /**
+   * Ids the operator deleted from the grid while KEEPING their state — see `forgetProject`.
+   *
+   * The state dir is what `backfillRegistry` recovers a project from, so without this a forgotten
+   * project came straight back at the next boot. Cleared by `registerProject`, which is every
+   * deliberate way of opening a project again.
+   */
+  forgotten?: string[]
 }
 
 export type RegisterAction = "created" | "reopened" | "moved" | "rekeyed" | "duplicate"
@@ -117,11 +125,13 @@ export function readRegistry(home = homedir()): Registry {
     if (parsed?.version !== 1 || !Array.isArray(parsed.projects)) return { ...EMPTY, projects: [] }
     // A malformed entry is dropped rather than poisoning the whole list — this is an index, and the
     // cost of forgetting one card is that opening that project re-registers it.
+    const forgotten = Array.isArray(parsed.forgotten) ? parsed.forgotten.filter((id) => typeof id === "string") : []
     return {
       version: 1,
       projects: parsed.projects.filter(
         (p) => p && typeof p.id === "string" && typeof p.path === "string" && typeof p.slug === "string",
       ),
+      ...(forgotten.length > 0 ? { forgotten } : {}),
     }
   } catch {
     return { ...EMPTY, projects: [] }
@@ -214,6 +224,12 @@ export function registerProject(
 ): { entry?: RegistryEntry; action: RegisterAction } {
   input = { ...input, dir: canonicalPath(input.dir) }
   const registry = readRegistry(home)
+  // Opening a project again is what undoes forgetting it. Every branch below that registers this id
+  // writes the registry, so the cleared list rides along; `duplicate` writes nothing and keeps it.
+  if (registry.forgotten) {
+    registry.forgotten = registry.forgotten.filter((id) => id !== input.id)
+    if (registry.forgotten.length === 0) delete registry.forgotten
+  }
   const at = (input.now ?? (() => new Date()))().toISOString()
   const byId = registry.projects.find((p) => p.id === input.id)
 
@@ -290,9 +306,14 @@ export function backfillRegistry(
   } catch {
     return 0 // no state dirs yet — a genuinely new machine has nothing to recover
   }
-  const known = new Set(readRegistry(home).projects.map((p) => p.path))
+  const registry = readRegistry(home)
+  const known = new Set(registry.projects.map((p) => p.path))
+  // A project the operator deleted from the grid keeps its state dir, and its folder still claims the
+  // id — which is exactly what this pass adopts. Recovering it would undo the delete at every boot.
+  const forgotten = new Set(registry.forgotten)
   let added = 0
   for (const id of dirs) {
+    if (forgotten.has(id)) continue
     // Canonical BEFORE the known-check: the registry stores canonical paths, so comparing a raw
     // recorded one misses its own entry and re-registers the same project on every single boot.
     const recorded = recordedProjectDir(join(frizzPaths({ home }).data, "projects", id))
@@ -594,11 +615,22 @@ export function moveProjectDirectory(id: string, newBasename: string, home = hom
   return moved.entry ?? entry
 }
 
+/**
+ * Drop a project's card, and REMEMBER that it was dropped for as long as its state dir exists.
+ *
+ * The remembering is what makes the delete last: `backfillRegistry` adopts any state dir whose folder
+ * still claims its id, and forgetting touches neither. A project whose state was deleted as well has
+ * nothing left to recover, so its id is not kept — the caller removes the state dir first.
+ */
 export function forgetProject(id: string, home = homedir()): boolean {
   const registry = readRegistry(home)
   const before = registry.projects.length
   registry.projects = registry.projects.filter((p) => p.id !== id)
   if (registry.projects.length === before) return false
+  const stateRoot = join(frizzPaths({ home }).data, "projects")
+  const forgotten = [...new Set([...(registry.forgotten ?? []), id])].filter((each) => existsSync(join(stateRoot, each)))
+  if (forgotten.length > 0) registry.forgotten = forgotten
+  else delete registry.forgotten
   writeRegistry(registry, home)
   return true
 }

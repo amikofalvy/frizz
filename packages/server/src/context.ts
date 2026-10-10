@@ -223,12 +223,15 @@ export interface AppContext {
     options?: { stopWorkers?: boolean; deleteState?: boolean },
   ) => Promise<{ closed: boolean; stoppedWorkers: number }>
   /**
-   * The project this server was LAUNCHED from, which is the one project it cannot let go of.
+   * The project this server is HOSTED on — the one whose state dir and tenant it cannot let go of.
+   * Not necessarily one the operator chose: a launch from `$HOME` or an unadopted folder is hosted on
+   * the most recently opened project.
    *
    * Its `<stateDir>/server.lock` is the only status file this process publishes, and every worker on
-   * the machine resolves the port out of it (`serverLockPathFor`, index.ts) — so removing that project
-   * is not one card disappearing, it is every live worker losing the server. Undefined under a test
-   * context, where there is no launcher to protect.
+   * the machine resolves the port out of it (`serverLockPathFor`, index.ts) — so removing that state
+   * dir is not one card disappearing, it is every live worker losing the server. Its registry entry
+   * is not held the same way: `projectRemove` forgets it and leaves the rest standing. Undefined
+   * under a test context, where there is no launcher to protect.
    */
   launchProjectId?: string
   /**
