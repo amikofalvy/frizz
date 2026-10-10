@@ -18,11 +18,18 @@ import { CLAUDE_BROKER_CAPABILITY_INPUT_ACK, CLAUDE_INPUT_DROP_DIAGNOSTIC_PREFIX
 import { claudeBrokerDiagnosticLogPath } from "./claude-broker-diagnostics.ts"
 import { WORKER_MAX_CONCURRENT_SUBAGENTS, WORKER_MAX_SUBAGENTS, WORKER_MAX_WEB_SEARCHES } from "./types.ts"
 
-/** Did this argv resume a transcript? Either spelling: `--resume <id>` (SDK ≤ 0.3.207) or `--resume=<id>` (0.3.260+). */
-const resumes = (argv: readonly string[] | undefined, sessionId?: string): boolean => {
+/** The value the SDK passed for a CLI flag, in either spelling: `--flag <value>` or `--flag=<value>`. The
+ *  SDK moved `--resume` and `--session-id` to the second in 0.3.260, and every other value flag
+ *  (`--permission-mode`, `--model`, `--effort`…) in 0.3.296; the real CLI accepts both. */
+const flagValue = (argv: readonly string[] | undefined, flag: string): string | undefined => {
   const args = argv ?? []
-  const index = args.indexOf("--resume")
-  const value = index >= 0 ? args[index + 1] : args.find((arg) => arg.startsWith("--resume="))?.slice("--resume=".length)
+  const index = args.indexOf(flag)
+  return index >= 0 ? args[index + 1] : args.find((arg) => arg.startsWith(`${flag}=`))?.slice(flag.length + 1)
+}
+
+/** Did this argv resume a transcript? */
+const resumes = (argv: readonly string[] | undefined, sessionId?: string): boolean => {
+  const value = flagValue(argv, "--resume")
   return value !== undefined && (sessionId === undefined || value === sessionId)
 }
 
@@ -196,7 +203,7 @@ test("retireDaemon retires the process without ending the conversation, and the 
     while (startups().length < n && Date.now() < deadline) await sleep(50)
     assert.equal(startups().length, n, `expected ${n} claude process(es) by now`)
   }
-  const modeOf = (argv: string[] | undefined) => argv?.[(argv?.indexOf("--permission-mode") ?? -1) + 1]
+  const modeOf = (argv: string[] | undefined) => flagValue(argv, "--permission-mode")
   try {
     await bridge.spawnDispatch({ threadSlug: slug, sessionId, cwd: dir, prompt: "start the work", permissionMode: "auto" })
     const first = recordOf()
