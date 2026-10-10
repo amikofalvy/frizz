@@ -303,9 +303,13 @@ function SendButton({ armed, title, menu, menuOpen, onToggleMenu, onSend }: Send
         title={title}
         onMouseDown={(e) => e.preventDefault()}
         onClick={onSend}
-        className={`flex items-center rounded-l-lg pl-2.5 pr-1.5 text-[12px] font-medium leading-none outline-none transition-[color,background-color,opacity,scale] ${tone} ${armed ? "hover:opacity-90 active:scale-95" : ""}`}
+        className={`flex items-center rounded-l-lg pl-[7.75px] pr-2 text-[12px] font-medium leading-none outline-none transition-[color,background-color,opacity,scale] ${tone} ${armed ? "hover:opacity-90 active:scale-95" : ""}`}
       >
-        {/* The word never changes, so nothing beside the button moves when the way of sending does. */}
+        {/* The word never changes, so nothing beside the button moves when the way of sending does.
+            Its padding is uneven on purpose: 7.75px and 8px of box paint 8.42px of ink-to-edge on the
+            left and 8.75px ink-to-seam on the right (pixels, dsf 12, sans), and the round S reads a
+            little further from its edge than the d's stem does from the seam. The caret's segment
+            paints 7.58px on each side of the chevron. */}
         <span data-send-label>Send</span>
       </button>
       <span aria-hidden className={`flex w-px items-center ${armed ? "bg-fg" : "bg-panel-2"}`}>
@@ -318,7 +322,7 @@ function SendButton({ armed, title, menu, menuOpen, onToggleMenu, onSend }: Send
         aria-expanded={menuOpen}
         onMouseDown={(e) => e.preventDefault()}
         onClick={onToggleMenu}
-        className={`flex w-[23px] items-center pl-[3.75px] rounded-r-lg outline-none transition-[color,background-color,opacity] ${tone} ${armed ? "hover:opacity-90" : "hover:text-fg"}`}
+        className={`flex w-[23px] items-center pl-[4.75px] rounded-r-lg outline-none transition-[color,background-color,opacity] ${tone} ${armed ? "hover:opacity-90" : "hover:text-fg"}`}
       >
         <ChevronDown data-send-caret size={13} strokeWidth={2.5} />
       </button>
