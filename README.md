@@ -267,7 +267,7 @@ Frizz has its own small vocabulary. Most of it names a feature, so this doubles 
 
 <h2 align="center">Contributing</h2>
 
-Issues and pull requests are welcome. Fork the repo, branch off `main`, and open the PR against `main` — CI runs on every pull request.
+Issues and pull requests are welcome. Fork the repo, branch off `main`, and open the PR against `main` — CI runs on every pull request. Keep **Allow edits by maintainers** checked, so a follow-up commit from the maintainer can land in your PR rather than separately on `main`.
 
 Three checks run in CI, and they need no install:
 
