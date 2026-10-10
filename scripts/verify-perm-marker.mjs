@@ -13,7 +13,7 @@ import { join, resolve } from "node:path"
 import { permMarkerPath, permRequestDir, PERM_DIR_ENV } from "../packages/server/src/project.ts"
 import { markerDecision } from "../packages/server/src/tailer.ts"
 
-const HOOK = resolve(import.meta.dirname, "../../cc-worker/hooks/perm-policy.mjs")
+const HOOK = resolve(import.meta.dirname, "../cc-worker/hooks/perm-policy.mjs")
 const results = []
 const check = (name, ok, detail) => { results.push(ok); console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? `  — ${detail}` : ""}`) }
 
@@ -71,6 +71,17 @@ try {
   const m3 = marker()
   check("defer: marker records the defer + rule", m3.decision === "defer" && m3.rule === "restrictive-mode", `${m3.decision}/${m3.rule}`)
   check("defer: the tailer reads this AS a human block", markerDecision(m3) === "defer")
+
+  for (const mode of ["acceptEdits", "plan", "some-future-mode"]) {
+    check(`defer: \`${mode}\` emits NOTHING (unknown must mean ask)`, runHook(bash("touch y", { permission_mode: mode })) === "" && marker().rule === "restrictive-mode")
+  }
+
+  // 4b. BYPASS IS NOT RESTRICTIVE — it is the one mode more permissive than auto, so a prompt Claude
+  // Code still raises under it is approved like auto's, behind the same two refusals.
+  const bypass = JSON.parse(runHook(bash("touch y", { permission_mode: "bypassPermissions" })) || "{}")
+  check("allow: bypassPermissions is approved, not handed to a human", bypass.hookSpecificOutput?.decision?.behavior === "allow" && marker().rule === "worker-autonomy", marker().rule)
+  const bypassRm = JSON.parse(runHook(bash("rm -rf ~", { permission_mode: "bypassPermissions" })) || "{}")
+  check("deny: bypassPermissions still refuses a catastrophic delete", bypassRm.hookSpecificOutput?.decision?.behavior === "deny" && marker().rule === "catastrophic-delete")
 
   // 5. DEFER — the review-policy escape hatch, without changing how workers launch.
   const review = runHook(bash("touch z"), { FRIZZ_PERM_POLICY: "review" })

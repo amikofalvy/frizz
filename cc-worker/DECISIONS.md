@@ -271,8 +271,12 @@ being indistinguishable from bypass.
 THE TABLE ships UNIVERSAL rules only; this plugin loads for every project frizz drives, so a rule that
 is right for one repo is wrong for the next. `catastrophic-delete` and `raw-disk-write` deny outright
 (strictly safer than bypass, which would have allowed both). `restrictive-mode` DEFERS whenever
-`permission_mode !== "auto"`, which is what makes a genuine lower-permission mode usable: move a thread
-to `default` with the live permission control and its prompts come back. `FRIZZ_PERM_POLICY=review`
+`permission_mode` is anything but `auto` or `bypassPermissions`, which is what makes a genuine lower-permission mode usable: move a thread
+to `default` with the live permission control and its prompts come back. (Until 2026-10-10 the test
+was `!== "auto"`, which swept in `bypassPermissions` — the one mode MORE permissive than auto — so a
+bypass thread was handed every prompt Claude Code still raises under bypass, as approval cards an auto
+thread never showed. Bypass now falls through to `worker-autonomy`; any other or unknown mode still
+defers.) `FRIZZ_PERM_POLICY=review`
 defers everything. Fail-safe INVERTS the old observer's fail-open — for a hook that can APPROVE, any
 error must fall back to asking, never to allowing.
 
