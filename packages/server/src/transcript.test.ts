@@ -1599,6 +1599,23 @@ test("real Claude Code 2.1.207 SDK lifecycle dedupes its prompt and back-fills c
   assert.equal(cancelled.output, "Interrupted by user")
 })
 
+// A dispatched prompt that ends in a newline — a programmatic caller building it from a template. The
+// delivered record is read trimmed, so a raw enqueue key never matched it: the prompt rendered once as
+// the real first message and again as a gray "queued" bubble stuck at the tail of the thread.
+test("a dispatched prompt with surrounding whitespace still resolves its enqueue", () => {
+  const prompt = "Work the following ticket.\n\n> started from a ticket comment\n"
+  const raw = [
+    JSON.stringify({ type: "queue-operation", operation: "enqueue", timestamp: "2026-10-08T23:25:35.804Z", content: prompt }),
+    JSON.stringify({ type: "queue-operation", operation: "dequeue", timestamp: "2026-10-08T23:25:35.805Z" }),
+    JSON.stringify({ type: "user", timestamp: "2026-10-08T23:25:35.927Z", message: { role: "user", content: prompt }, promptSource: "sdk" }),
+    JSON.stringify({ type: "assistant", timestamp: "2026-10-08T23:25:40.000Z", message: { id: "m1", content: [{ type: "text", text: "On it." }] } }),
+    JSON.stringify({ type: "queue-operation", operation: "enqueue", timestamp: "2026-10-08T23:26:00.000Z", content: "  and the follow-up\n" }),
+    JSON.stringify({ type: "attachment", timestamp: "2026-10-08T23:26:01.000Z", attachment: { type: "queued_command", commandMode: "prompt", prompt: "  and the follow-up\n", source_uuid: "u-1" } }),
+  ].join("\n")
+  const users = parseTranscript(raw).filter((m) => m.role === "user")
+  assert.deepEqual(users.map((m) => m.queued ?? false), [false, false], "each prompt renders once, delivered")
+})
+
 test("a recorded Claude call without its result remains visibly pending", () => {
   const call = parseTranscript(
     JSON.stringify({
@@ -2367,6 +2384,19 @@ test("the SDK path coalesces two queued messages into one record — both resolv
   assert.deepEqual(users.map((m) => m.text), [a, b], "both messages, in the order sent, and no merged third copy")
   assert.deepEqual(users.map((m) => m.queued), [false, false], "neither may stay gray")
   assert.equal(users[0].at, "2026-07-01T00:00:05.000Z", "each keeps the moment the human sent it")
+})
+
+// The coalesced record keeps each message's own whitespace in its INTERIOR — only its outer ends are
+// trimmed — so the walk needs the queued keys byte-exact even though a single delivery is matched trimmed.
+test("a coalesced delivery whose earlier message ends in a newline still resolves both", () => {
+  const a = "first message\n"
+  const b = "second message"
+  const drain = JSON.stringify({ type: "queue-operation", timestamp: "2026-07-01T00:00:09.000Z", operation: "dequeue", content: "" })
+  const msgs = parseTranscript(
+    [enqueueLine(a, "2026-07-01T00:00:05.000Z"), enqueueLine(b, "2026-07-01T00:00:07.000Z"), drain, drain, userLine(`${a}\n${b}`)].join("\n"),
+  )
+  const users = msgs.filter((m) => m.role === "user")
+  assert.deepEqual(users.map((m) => m.queued), [false, false], "both resolve, and no merged third copy")
 })
 
 // The broker/SDK path writes NO `origin` on its queued_command attachments — measured over this
