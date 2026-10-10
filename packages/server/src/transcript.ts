@@ -334,8 +334,8 @@ function pushToolPart(m: TranscriptMessage, call: TranscriptToolCall): void {
 }
 
 // ── Queued-follow-up delivery shapes ────────────────────────────────────────────────────────────────
-// A queued human message is matched to its DELIVERY by raw text (see the queue-operation handling in the
-// fold). Three harness paths deliver text that is no longer byte-identical to what was enqueued, so the
+// A queued human message is matched to its DELIVERY by its text, trimmed at the comparison (see findQueued
+// in the fold). Three harness paths deliver text that is no longer byte-identical to what was enqueued, so the
 // exact-key lookup misses and the gray bubble becomes IMMORTAL — the "stuck enqueued" bug. Each shape
 // below reconstructs the enqueued text STRUCTURALLY rather than fuzzy-matching: a plain
 // `deliveredText.includes(queuedText)` was measured against all 681 transcripts on this machine and
@@ -361,6 +361,11 @@ function pushToolPart(m: TranscriptMessage, call: TranscriptToolCall): void {
 // where its cancellation tombstone (or the FIFO backstop) accounts for it. Backtracking, not greedy: a
 // consumed prefix that strands the remainder must be retried as a skip, or key sets like ["a","a\nb"]
 // mis-resolve.
+//
+// The delivered text arrives TRIMMED (it is read through `userText`), while the keys stay raw. So the
+// whitespace of the run's two OUTER ends is gone: the first message's leading whitespace and the last
+// one's trailing whitespace. The walk forgives exactly those two edges and nothing in the interior, where
+// each message keeps its own whitespace byte for byte.
 export function coalescedQueuedKeys(deliveredText: string, pendingKeys: Iterable<string>): string[] {
   if (!deliveredText) return []
   const keys = [...pendingKeys]
@@ -369,10 +374,12 @@ export function coalescedQueuedKeys(deliveredText: string, pendingKeys: Iterable
     if (index >= keys.length) return null
     const state = cursor * (keys.length + 1) + index
     if (dead.has(state)) return null
-    const key = keys[index]
-    if (key && deliveredText.startsWith(key, cursor)) {
-      const next = cursor + key.length
-      if (next === deliveredText.length) return [key]
+    const key = keys[index] ?? ""
+    const body = cursor === 0 ? key.trimStart() : key
+    const last = body.trimEnd()
+    if (last && cursor + last.length === deliveredText.length && deliveredText.startsWith(last, cursor)) return [key]
+    if (body && deliveredText.startsWith(body, cursor)) {
+      const next = cursor + body.length
       if (deliveredText.startsWith("\n", next)) {
         const rest = walk(next + 1, index + 1)
         if (rest) return [key, ...rest]
@@ -1053,7 +1060,8 @@ export function createTranscriptFold(identityPrefix = "claude"): TranscriptFold 
         // Belt-and-suspenders: a normal user record that echoes a JUST-delivered queued message would
         // otherwise render it twice. Skip the immediately-following identical text. (Unobserved in the
         // evidence — the queued text only ever arrives via the attachment — but cheap to guard.)
-        if (deliveredDedupe !== null && text === deliveredDedupe) {
+        // `text` is trimmed (userText) and the attachment's prompt is raw, so compare trimmed.
+        if (deliveredDedupe !== null && text === deliveredDedupe.trim()) {
           deliveredDedupe = null
           return
         }

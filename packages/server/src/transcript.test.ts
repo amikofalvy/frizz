@@ -2399,6 +2399,30 @@ test("a coalesced delivery whose earlier message ends in a newline still resolve
   assert.deepEqual(users.map((m) => m.queued), [false, false], "both resolve, and no merged third copy")
 })
 
+// The coalesced record is read trimmed, so the run's OUTER ends lose their whitespace: the first
+// message's leading space and the last one's trailing newline. Only those two edges are forgiven.
+test("a coalesced delivery resolves when the run's outer ends carry whitespace", () => {
+  const drain = JSON.stringify({ type: "queue-operation", timestamp: "2026-07-01T00:00:09.000Z", operation: "dequeue", content: "" })
+  for (const [a, b] of [["first", "second\n"], ["  first", "second"]]) {
+    const msgs = parseTranscript(
+      [enqueueLine(a, "2026-07-01T00:00:05.000Z"), enqueueLine(b, "2026-07-01T00:00:07.000Z"), drain, drain, userLine(`${a}\n${b}`)].join("\n"),
+    )
+    const users = msgs.filter((m) => m.role === "user")
+    assert.deepEqual(users.map((m) => m.queued), [false, false], `${JSON.stringify([a, b])}: both resolve, and no merged third copy`)
+  }
+  assert.deepEqual(coalescedQueuedKeys("a\nb", ["a", "b\n"]), ["a", "b\n"])
+  assert.deepEqual(coalescedQueuedKeys("a\nb", [" a", "b"]), [" a", "b"])
+  assert.deepEqual(coalescedQueuedKeys("a\nb", ["a\n", "b"]), [], "interior whitespace stays byte-exact")
+})
+
+test("a user record echoing an attachment that ended in a newline renders once", () => {
+  const raw = [
+    JSON.stringify({ type: "attachment", timestamp: "2026-07-01T00:00:05.000Z", attachment: { type: "queued_command", commandMode: "prompt", prompt: "hello\n", source_uuid: "u-1" } }),
+    userLine("hello\n"),
+  ].join("\n")
+  assert.equal(parseTranscript(raw).filter((m) => m.role === "user").length, 1)
+})
+
 // The broker/SDK path writes NO `origin` on its queued_command attachments — measured over this
 // machine's corpus, all 78 sdk prompt attachments carry none while 1664 pre-broker CLI ones carry
 // origin.kind "human", and every sdk one carries `source_uuid` instead. Requiring origin made the
