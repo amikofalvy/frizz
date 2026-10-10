@@ -52,7 +52,6 @@ export function childPath(parent: string, optionIndex: number, followUpIndex: nu
 /** Convert one question node into the neutral model the card renders. */
 export function toParsedQuestion(spec: AskedQuestion): { question: ParsedQuestion; optionLabels: string[] } {
   const options = spec.options ?? []
-  const recommendedIdx = options.findIndex((o) => o.recommended)
   const parts = options.map((o, i) => optionParts(i, o))
   return {
     question: {
@@ -61,7 +60,7 @@ export function toParsedQuestion(spec: AskedQuestion): { question: ParsedQuestio
       ...(spec.secret ? { secret: true } : {}),
       contextMd: spec.question,
       options: parts.map((p) => p.line),
-      recommendedIdx: recommendedIdx === -1 ? null : recommendedIdx,
+      recommendedIdxs: options.flatMap((o, i) => (o.recommended ? [i] : [])),
       ...(parts.some((p) => p.body) ? { optionBodies: parts.map((p) => p.body) } : {}),
     },
     optionLabels: options.map((o) => o.label),
@@ -173,13 +172,12 @@ export function settledQuestionNodes(spec: AskedQuestion, answer: QuestionAnswer
     }
     kept.sort((a, b) => a - b)
     const text = [unmatched.join(", "), said.text?.trim()].filter(Boolean).join(" — ") || undefined
-    const rec = question.recommendedIdx
     out.push({
       path,
       question: {
         ...question,
         options: kept.map((i) => question.options[i]),
-        recommendedIdx: rec !== null && kept.includes(rec) ? kept.indexOf(rec) : null,
+        recommendedIdxs: kept.flatMap((i, j) => (question.recommendedIdxs.includes(i) ? [j] : [])),
         ...(question.optionBodies ? { optionBodies: kept.map((i) => question.optionBodies![i]) } : {}),
       },
       settled: { chosenIdxs: kept.map((_, j) => j), ...(text ? { text } : {}) },

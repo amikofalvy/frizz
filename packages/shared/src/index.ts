@@ -2518,8 +2518,10 @@ export interface AskedOption {
    *  block, the diff the option would produce — visible before the human picks anything, because a
    *  detail that decides a choice is useless once the choice is already made. */
   description?: string
-  /** Marks the one option the worker recommends. At most one per question — a second is refused, since
-   *  "recommended" means nothing if it is on two of three choices. */
+  /** Marks an option the worker recommends. A pick-ONE question takes at most one — a second is
+   *  refused, since "recommended" means nothing if it is on two of three choices. A `multi` takes as
+   *  many as the worker would tick: one chip in a list the human ticks several of reads as "pick only
+   *  this" (maintainer 2026-10-10: "weird that there's a recommended chip on only a single item"). */
   recommended?: boolean
   /** RETIRED 2026-09-01 (it revealed markdown under the option only once picked — detail that should
    *  inform a choice arrived after the choice; maintainer: "you should just be rendering it as part of
@@ -2617,7 +2619,8 @@ export function askedQuestionFaults(q: AskedQuestion): string[] {
     // A MULTI-SELECT WITH NO OPTIONS IS A FREE-TEXT BOX WEARING THE WRONG LABEL, and it renders as one —
     // silently, so the worker never learns its `multi` did nothing.
     if (node.kind === "multi" && options.length === 0) faults.push(`${path}: \`kind: "multi"\` needs options — a question with none is free text`)
-    if (options.filter((o) => o.recommended).length > 1) faults.push(`${path}: only ONE option may be \`recommended\` — a recommendation on two of three choices says nothing`)
+    // A `multi` is exempt: its recommendation is a SET — every option the worker would tick.
+    if (node.kind !== "multi" && options.filter((o) => o.recommended).length > 1) faults.push(`${path}: only ONE option may be \`recommended\` on a pick-one question — a recommendation on two of three choices says nothing (a \`multi\` may mark every option worth ticking)`)
     // FOLLOW-UPS HANG OFF AN OPTION, so a free-text question cannot carry one: there is no answer to
     // branch on. A worker wanting a second question should register a second ROOT.
     for (const [i, option] of options.entries()) {

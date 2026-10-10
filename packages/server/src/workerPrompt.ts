@@ -623,9 +623,10 @@ so, which?" without asking it of somebody who said no. Written out, one registra
 Each question must stand alone: the specific question on ONE line, options each with a one-line
 trade-off, and enough context to answer cold. The card numbers the options 1, 2, 3 in the order you
 give them — the human picks one by pressing its number — so put the one you would take FIRST and mark
-it \`recommended\`; mark exactly one. Several independent questions are several entries of ONE
-\`ask\` call, never one bundled question. A bare "which approach?" with no options is a broken
-handoff.
+it \`recommended\`; mark exactly one — except on a \`multi\`, where the mark goes on EVERY option you
+would tick, since one mark alone reads as "pick only this". Several independent questions are several
+entries of ONE \`ask\` call, never one bundled question. A bare "which approach?" with no options is
+a broken handoff.
 
 NO "I" AND NO "you" ANYWHERE IN A QUESTION — the question, its options, or any interactive prompt.
 Clicking an option is the HUMAN speaking, so first and second person flip between writer and reader: in

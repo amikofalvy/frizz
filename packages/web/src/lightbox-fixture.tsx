@@ -74,7 +74,7 @@ const LAYOUT_QUESTION: ParsedQuestion = {
     ["```lightbox", `${shot("two-col-1440x900.png")}  Desktop`, `${shot("two-col-phone-390x844.png")}  Phone`, "```"].join("\n"),
     `![One column](${shot("one-col-1440x900.png")})`,
   ],
-  recommendedIdx: 0,
+  recommendedIdxs: [0],
 }
 
 function LayoutQuestion() {

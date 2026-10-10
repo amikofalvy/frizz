@@ -110,7 +110,8 @@ const GATES: RegisteredQuestionView = {
   spec: {
     question: "Which gates should run before every commit?",
     kind: "multi",
-    options: [{ label: "Typecheck" }, { label: "Unit tests" }, { label: "The browser e2e pass", description: "slow — about 90s" }],
+    // TWO recommended on a `multi`: the recommendation there is the set worth ticking, so each wears the badge.
+    options: [{ label: "Typecheck", recommended: true }, { label: "Unit tests", recommended: true }, { label: "The browser e2e pass", description: "slow — about 90s" }],
   },
 }
 

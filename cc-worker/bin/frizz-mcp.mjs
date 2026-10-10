@@ -505,8 +505,10 @@ function questionSchema(depth) {
       recommended: {
         type: "boolean",
         description:
-          "Mark the ONE option you would take, and put it first. At most one per question — a " +
-          "recommendation on two of three choices says nothing. IF YOU CAN MARK ONE, ASK YOURSELF WHY " +
+          "Mark the ONE option you would take, and put it first. At most one per pick-one question — a " +
+          "recommendation on two of three choices says nothing. ON A `multi`, MARK EVERY OPTION YOU " +
+          "WOULD TICK, or none: the human ticks several there, so one mark alone reads as \"pick only " +
+          "this\". IF YOU CAN MARK ONE, ASK YOURSELF WHY " +
           "YOU ARE ASKING: you already know the answer, so implement it and say which way you went. " +
           "This is for the fork you genuinely cannot take yourself.",
       },

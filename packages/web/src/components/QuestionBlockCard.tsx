@@ -92,7 +92,7 @@ export function QuestionBlockCard({
   )
   const html = useMarkdownHtml(parsed.contextMd)
   const trailingHtml = useMarkdownHtml(parsed.trailingMd ?? "")
-  const recIdx = parsed.recommendedIdx
+  const recIdxs = parsed.recommendedIdxs
   const recHtml = useInlineMarkdownHtml(parsed.recommendation ?? "")
   const isMulti = parsed.kind === "multi"
   const isDanger = parsed.danger
@@ -229,8 +229,9 @@ export function QuestionBlockCard({
               multi={isMulti}
               // The recommendation renders INSIDE its option as a badge (not as a caption below);
               // the inline `(recommended: why)` rationale (or a legacy rec line) rides the chip's title.
-              recommended={recIdx === i}
-              recTitle={recIdx === i ? parsed.recommendedNote : undefined}
+              // A `multi` may badge several options — the set worth ticking; the note is the first's.
+              recommended={recIdxs.includes(i)}
+              recTitle={recIdxs[0] === i ? parsed.recommendedNote : undefined}
               // MULTI: selected == toggled in the set (coexists with freetext). SINGLE: selected while
               // the chip is the staged answer — re-clicking it toggles it off, and the free-text box
               // taking focus clears it (via onText). Text left in the box is an unselected draft, so it
@@ -401,7 +402,7 @@ export function QuestionBlockCard({
         </div>
       )}
       {/* The caption fallback survives ONLY when the recommendation didn't match an option. */}
-      {parsed.recommendation && recIdx === null && (
+      {parsed.recommendation && recIdxs.length === 0 && (
         <LinkedHtml className="md-inline mt-1.5 text-[11px] text-muted-70" html={recHtml} />
       )}
     </TranscriptCard>

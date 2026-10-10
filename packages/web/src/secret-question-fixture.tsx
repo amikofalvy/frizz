@@ -19,7 +19,7 @@ const question: ParsedQuestion = {
   contextMd:
     "A NEW OpenRouter management key for Pullfrog production: open https://openrouter.ai/settings/management-keys, click Create New Key, name it vercel-production-2026-10-09, and paste the key here.",
   options: [],
-  recommendedIdx: null,
+  recommendedIdxs: [],
 }
 
 const stored = secretAnswerText("/Users/someone/.frizz/projects/029a30af/secrets/a-thread/qst_d792566b3316")
