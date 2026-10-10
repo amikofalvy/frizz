@@ -10,8 +10,10 @@ import {
   existingProjectId,
   isExistingProjectRoot,
   isHomeDirectory,
+  isStateRootHome,
   projectIdPath,
   readProjectIdFile,
+  refuseStateRootHome,
   writeProjectIdFile,
 } from "./project-root.ts"
 import { randomUUID } from "node:crypto"
@@ -70,15 +72,17 @@ test("a directory that already has an id is the root", () => {
   }
 })
 
-// A stray ~/package.json would otherwise make the whole home directory one project, with agents
-// dispatched at it.
-test("the home directory is never adopted as a project root", () => {
+// A stray ~/package.json, or home opened as a project in its own right, would otherwise make every
+// unmarked folder under it resolve to that one project.
+test("the home directory is never the root of a directory below it", () => {
   const home = sandbox("guard")
   try {
     writeFileSync(join(home, "package.json"), "{}")
     mkdirSync(join(home, "loose"), { recursive: true })
     assert.equal(discoverProjectRoot(join(home, "loose"), home), join(home, "loose"))
     assert.equal(discoverProjectRoot(home, home), home, "cwd itself is still returned, just not adopted by a child")
+    writeProjectIdFile(home, "88abce4f-16e9-42b3-899d-2576382b2ff3")
+    assert.equal(discoverProjectRoot(join(home, "loose"), home), join(home, "loose"), "nor by a home that is a project")
   } finally {
     rmSync(home, { recursive: true, force: true })
   }
@@ -216,9 +220,8 @@ test("a seed that is not a UUID is refused rather than recorded", () => {
   }
 })
 
-// $HOME is where Frizz keeps its OWN state (~/.frizz), so adopting it as a project writes a project
-// id into the global state root — and from then on the walk-up finds it from every unmarked
-// directory under home. It happened on the maintainer's machine (2026-08-06).
+// The walk-up stops at home, and home's project directory must not be mistaken for an old install's
+// state root — both ask this, and both were once fooled by a home spelled two ways.
 test("the home directory is recognised even when it is reached through a symlink", () => {
   const real = realpathSync(mkdtempSync(join(tmpdir(), "frizz-realhome-")))
   const link = join(realpathSync(tmpdir()), `frizz-linkhome-${randomUUID().slice(0, 8)}`)
@@ -232,9 +235,34 @@ test("the home directory is recognised even when it is reached through a symlink
     const child = join(real, "a-project")
     mkdirSync(child, { recursive: true })
     assert.equal(isHomeDirectory(child, real), false, "a directory inside home is not home")
+    // The walk-up: a launch directory arrives resolved while homedir() stays symlinked, and a home
+    // that is a project must still not capture the folder below it.
+    writeProjectIdFile(real, "88abce4f-16e9-42b3-899d-2576382b2ff3")
+    assert.equal(discoverProjectRoot(child, link), child)
+    assert.equal(discoverProjectRoot(join(link, "a-project"), real), join(link, "a-project"))
   } finally {
     rmSync(link, { force: true })
     rmSync(real, { recursive: true, force: true })
+  }
+})
+
+// `<project>/.frizz` is where a project keeps its id; `~/.frizz` is where an old install keeps
+// everything. Only where those are the same directory is home not a project.
+test("home is refused only where ~/.frizz is Frizz's own state root", () => {
+  const home = sandbox("state-root")
+  try {
+    assert.equal(isStateRootHome(home, home), false, "a machine that has never had ~/.frizz")
+    writeProjectIdFile(home, "88abce4f-16e9-42b3-899d-2576382b2ff3")
+    assert.equal(isStateRootHome(home, home), false, "home's own project directory is not a state root")
+    assert.doesNotThrow(() => refuseStateRootHome(home, home))
+
+    mkdirSync(join(home, ".frizz", "projects"))
+    assert.equal(isStateRootHome(home, home), true)
+    assert.throws(() => refuseStateRootHome(home, home), /home folder cannot be a project here/u)
+    mkdirSync(join(home, "inside"))
+    assert.equal(isStateRootHome(join(home, "inside"), home), false, "a folder inside home is an ordinary project")
+  } finally {
+    rmSync(home, { recursive: true, force: true })
   }
 })
 

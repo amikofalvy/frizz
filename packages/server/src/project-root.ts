@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto"
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join, parse, resolve } from "node:path"
+import { frizzPaths } from "./frizz-paths.ts"
 import { acquireNamedLaunchLockSync, readGitProjectId, validateProjectId } from "./project-identity.ts"
 
 // WHAT A PROJECT IS, WITHOUT ASKING GIT.
@@ -159,25 +160,12 @@ function hasAny(dir: string, names: readonly string[]): boolean {
 }
 
 /**
- * The project root for `cwd`, without running `git`.
+ * Is `dir` the home directory?
  *
- * Walks UP, because sub-directory equivalence is the property a naive "just use cwd" loses and the
- * one users notice: `frizz` in `~/proj` and in `~/proj/src` must open the same board, not two boards
- * with two thread histories and nothing explaining why.
- *
- * Stops at `$HOME` and never returns it. A stray `~/package.json` would otherwise make a user's whole
- * home directory one project, with agents dispatched at it.
- */
-/**
- * THE HOME DIRECTORY IS NOT A PROJECT, and adopting it is not merely untidy.
- *
- * Frizz's own global state lives in `~/.frizz` — the registry, every project's state dir, the launch
- * locks. Making $HOME a project writes `~/.frizz/.id` and `~/.frizz/.gitignore` INTO that state
- * root, and from then on the walk-up below finds that `.frizz/.id` from any unmarked directory under
- * $HOME, so every one of them resolves to the home "project". That happened (2026-08-06).
- *
- * discoverProjectRoot still ANSWERS with the directory it was given — "where would the root be" has
- * an answer even in $HOME. Refusing to adopt it is the caller's job, and this is the predicate.
+ * $HOME is an ordinary folder to open as a project — except in the two places that ask this. The
+ * walk-up below never climbs into it, so a folder under home is never captured by a home project.
+ * And on an install that keeps its own state in `~/.frizz`, home's project directory would BE that
+ * state root (isStateRootHome).
  */
 export function isHomeDirectory(dir: string, home = homedir()): boolean {
   // REALPATH BOTH SIDES. `resolve` alone compares the paths as written, and on macOS the launch
@@ -196,6 +184,29 @@ export function isHomeDirectory(dir: string, home = homedir()): boolean {
   } catch {
     return false
   }
+}
+
+/**
+ * $HOME ON AN INSTALL WHOSE STATE ROOT IS `~/.frizz` IS NOT A PROJECT.
+ *
+ * A project keeps its id and its threads' scratch files in `<project>/.frizz`. On an install from
+ * before the platform roots (frizz-paths.ts), `~/.frizz` is also where Frizz keeps the registry,
+ * every project's state dir and the launch locks — so adopting home wrote `~/.frizz/.id` and
+ * `~/.frizz/.gitignore` INTO that state root, and pointed the board's watcher at it. That happened
+ * (2026-08-06), and it is why home was refused everywhere until 2026-10-10.
+ *
+ * Every install since keeps its state under the platform's own directories, and there `~/.frizz` is
+ * nothing but home's project directory: a new user who runs `frizz` in a fresh terminal is standing
+ * in $HOME, and refusing them was the relic.
+ */
+export function isStateRootHome(dir: string, home = homedir()): boolean {
+  return isHomeDirectory(dir, home) && frizzPaths({ home }).legacy
+}
+
+/** Throw the one sentence every way into a project uses when the folder is that home directory. */
+export function refuseStateRootHome(dir: string, home = homedir()): void {
+  if (isStateRootHome(dir, home))
+    throw new Error("Frizz keeps its own files in ~/.frizz on this machine, so the home folder cannot be a project here — choose a folder inside it.")
 }
 
 /**
@@ -263,13 +274,25 @@ export function isExistingProjectRoot(dir: string): boolean {
  * The markers discoverProjectRoot walks UP for, asked about ONE directory. That is what separates the
  * two cases the launcher has to tell apart: `frizz` in a repository is someone opening that
  * repository, and Frizz adopts it on the spot; `frizz` in `~/Downloads` is a command typed in the
- * wrong terminal, and gets offered rather than adopted. Never a substitute for isHomeDirectory —
- * $HOME frequently carries a marker and is still never a project.
+ * wrong terminal, and gets offered rather than adopted. $HOME frequently carries a marker — a stray
+ * `package.json`, a dotfiles repository — and that makes it no more a checkout than `~/Downloads`,
+ * so the launcher asks this of every directory but that one.
  */
 export function hasProjectMarker(dir: string): boolean {
   return hasAny(dir, REPO_MARKERS) || hasAny(dir, PROJECT_MARKERS)
 }
 
+/**
+ * The project root for `cwd`, without running `git`.
+ *
+ * Walks UP, because sub-directory equivalence is the property a naive "just use cwd" loses and the
+ * one users notice: `frizz` in `~/proj` and in `~/proj/src` must open the same board, not two boards
+ * with two thread histories and nothing explaining why.
+ *
+ * Stops at `$HOME` and never returns it for a directory below it. Home may itself be a project, and
+ * routinely carries a stray `package.json`; either would otherwise make every unmarked folder under
+ * it resolve to that one project (2026-08-06).
+ */
 export function discoverProjectRoot(cwd = process.cwd(), home = homedir()): string {
   let dir: string
   try {
@@ -282,9 +305,10 @@ export function discoverProjectRoot(cwd = process.cwd(), home = homedir()): stri
 
   for (let at = dir; ; at = dirname(at)) {
     // Never climb INTO or past the home directory. Note this does not stop `dir` itself from BEING
-    // $HOME — the loop simply breaks and the launch directory is returned unchanged. Whether that is
-    // adoptable is isHomeDirectory's question, asked by the launcher, not answered here.
-    if (at === stop || at === filesystemRoot) break
+    // $HOME — the loop simply breaks and the launch directory is returned unchanged. The realpath
+    // compare is for a home reached through a link: the launch directory arrives resolved
+    // (`/private/var/…`) while `homedir()` does not, and the literal compare walks straight past it.
+    if (at === stop || at === filesystemRoot || isHomeDirectory(at, home)) break
     // An existing Frizz project wins over the VCS or manifest it happens to sit in.
     if (existsSync(projectIdPath(at))) return at
     if (hasAny(at, REPO_MARKERS)) return at
