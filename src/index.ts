@@ -204,21 +204,12 @@ try {
     if (interactiveLaunch) assertLaunchPrerequisites();
     else assertRequiredExecutables();
   }
-  // Running the command no longer ADOPTS the directory it was run in — see resolveLaunchIntent. An
-  // unknown directory hosts the server on the most recent real project and asks about itself on the
-  // grid; $HOME is never asked about at all.
+  // Running the command never ADOPTS the directory it was run in — see resolveLaunchIntent. A
+  // directory that is not already a project hosts the server on the most recent real one (or on
+  // Frizz's own stand-in when there is none) and lands on the dashboard.
   let hosted: Workspace | undefined;
   if (!internal) {
     const intent = resolveLaunchIntent();
-    if (intent.kind === "empty") {
-      throw new Error(
-        intent.reason === "home"
-          ? "frizz cannot open your home directory as a project, and there is no other project to show yet. cd into a repository and run frizz there."
-          : intent.reason === "world-writable"
-            ? `A folder every account can write to cannot be a project: ${intent.directory}. Run frizz in a folder only you can write to.`
-            : `${intent.directory} is not a Frizz project yet, and there is no other project to show. Run frizz inside a repository, or add this one from the projects page once a board is open.`
-      );
-    }
     launchIntent = intent;
     hosted = intent.workspace;
   }
@@ -258,7 +249,9 @@ if (!internalLaunch) {
   logger.info("launcher", `${sourceCommand} starting in ${options.dev ? "source" : "artifact"} mode`);
   logger.info("launcher", `workspace ${workspace.name} (${workspace.root})`);
 }
-readout?.settle("workspace", "done", workspace.name);
+// Only an `open` launch is ABOUT its workspace. Any other is hosted on a project the operator did
+// not pick, and naming that one here reads as "this is the project you opened".
+readout?.settle("workspace", "done", launchIntent && launchIntent.kind !== "open" ? "dashboard" : workspace.name);
 const expectedHealth = { projectId: workspace.id, projectDir: workspace.root };
 const launchTarget = workspaceLaunchTarget(workspace);
 /**
@@ -855,7 +848,9 @@ async function openOrPrint(
     [
       { label: "Local", value: boardAddress(url), accent: true },
       ...(publicOrigin ? [{ label: "Public", value: accessLink?.url ?? `${publicOrigin}/`, accent: true }] : []),
-      { label: "Project", value: `${workspace.name} — ${tildePath(workspace.root, home)}` },
+      ...(launchIntent && launchIntent.kind !== "open"
+        ? []
+        : [{ label: "Project", value: `${workspace.name} — ${tildePath(workspace.root, home)}` }]),
       { label: "Source", value: tildePath(sourceLabel(), home) },
       ...(logger.file ? [{ label: "Logs", value: tildePath(logger.file, home) }] : []),
     ],

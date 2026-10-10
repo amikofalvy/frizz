@@ -732,7 +732,7 @@ export function ProjectGrid() {
               <code className="rounded border border-border bg-panel px-1.5 py-0.5 font-mono text-muted">
                 frizz
               </code>{" "}
-              inside any folder — it registers itself and opens.
+              inside a repository, and this page offers to add it.
             </p>
           ) : null}
         </>

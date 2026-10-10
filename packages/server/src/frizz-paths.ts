@@ -220,6 +220,18 @@ export function projectStateDir(projectId: string, home?: string): string {
 }
 
 /**
+ * `<data>/host` — the folder the server is launched on when the machine has no project yet.
+ *
+ * A server serves a board, so it needs a project to start with; a launch from a folder that is not
+ * one rides on the most recently opened project, and a new machine has none. The launcher stands
+ * this folder in (launcher.ts hostWorkspace). It is a project in every way but one: it is never in
+ * the registry, so the dashboard does not list it.
+ */
+export function launchHostDir(home?: string): string {
+  return join(home ? frizzPaths({ home }).data : frizzRoots().data, "host")
+}
+
+/**
  * True for a file under `<data>/projects/<id>/attachments/` — something the human dropped onto a
  * prompt. The composer already shows those inline in the human's own bubble, so a worker's `Read` (or
  * Codex `view_image`) of one is the one image read whose picture the transcript should NOT repeat
