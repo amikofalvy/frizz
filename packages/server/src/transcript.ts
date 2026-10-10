@@ -638,8 +638,14 @@ export function createTranscriptFold(identityPrefix = "claude"): TranscriptFold 
   // drains in order), falling back to the oldest registered one because the remove/attachment pair
   // deliberately leaves an entry registered after un-graying it, so the attachment can re-resolve the
   // SAME object instead of pushing a second copy. For a unique key this is exactly the old Map.get.
+  // The comparison is TRIMMED: an ordinary user record is read through `userText`, which trims, while the
+  // enqueue and the attachment carry the raw text. A dispatched prompt ending in "\n" therefore never
+  // matched its own delivery and rendered twice — once delivered, once stuck gray at the thread's tail.
+  // The stored key stays RAW: coalescedQueuedKeys and peerSessionQueuedKey match keys against the
+  // delivered text's interior, where each message keeps its own whitespace.
   function findQueued(key: string): QueuedEntry | undefined {
-    return queuedPending.find((e) => e.key === key && e.message.queued) ?? queuedPending.find((e) => e.key === key)
+    const k = key.trim()
+    return queuedPending.find((e) => e.key.trim() === k && e.message.queued) ?? queuedPending.find((e) => e.key.trim() === k)
   }
   // A cross-session message's enqueue and its delivery do not carry identical text: the enqueue's
   // wrapper can hold a `hop-chain` attribute the delivered one drops (15 of 48 enqueues in this
@@ -777,7 +783,8 @@ export function createTranscriptFold(identityPrefix = "claude"): TranscriptFold 
         // styling). Do NOT reset lastAssistantId: this bubble is transient (it may be spliced out on
         // delivery), and the assistant-merge tail-role check already blocks merging across a live bubble.
         // `text` stays the RAW queued content — it is the key `queuedPending` matches the delivery
-        // attachment against — so a wake token riding a queued follow-up is dropped only for display.
+        // against (trimmed only at comparison, see findQueued) — so a wake token riding a queued
+        // follow-up is dropped only for display.
         const queuedProjection = userProjection(content, out.length === 0)
         const m: TranscriptMessage = { sourceId, role: "user", text: content, ...queuedProjection, tools: [], parts: [], at: thisTs, queued: true }
         out.push(m)
