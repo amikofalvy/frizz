@@ -94,7 +94,7 @@ export const RuntimeState = z.enum([
   "none", // no session ever spawned for this thread
   "spawning",
   "running", // process alive, turn in flight
-  "perm-prompt", // process alive, paused on an interactive permission prompt (answer in the terminal)
+  "perm-prompt", // process alive, parked on a permission request a person has not answered yet
   "turn-idle", // process alive, waiting at the prompt
   "exited", // the worker process that owned this session is gone, or is no longer driving its turn
 ])

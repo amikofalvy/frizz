@@ -97,6 +97,7 @@ import { FRAMED_IMAGE, IMAGE_FRAME_MAT, ImageFrame } from "./ImageFrame.tsx"
 // deliberately pass no action — see the module header).
 import { AwaitingBackgroundCard, AwaitingWaitTable, issueStatusLine, showsRestingCard, watchStatusLine } from "./AwaitingBackgroundCard.tsx"
 import { SnoozeCard, showsSnoozeCard } from "./SnoozeCard.tsx"
+import { drawsWorking, frozenPendingAsk } from "../lib/operatorBlock.ts"
 // Re-exported from their new homes so existing importers (TodosView, the fixtures) keep one
 // import path while the definitions live where both question producers can reach them.
 export { CARD_BODY, CARD_PRIMARY_BUTTON, CardActions, TranscriptCard } from "./TranscriptCard.tsx"
@@ -751,7 +752,7 @@ type VirtualThreadRow =
 // yet — the copies still agreed, rung for rung — but every one of them had to be edited in lockstep
 // forever, and that is not a property to rely on. So the ladder is stated ONCE, here: `runtimeStatusRung`
 // decides which rung wins, and everything else is derived from that answer rather than re-deriving it.
-export type RuntimeStatusRung = "provider-fault" | "provider-error" | "limit-pause" | "pending-ask" | "perm-prompt" | "working" | "snooze" | "resting" | "registered-done" | "rested"
+export type RuntimeStatusRung = "provider-fault" | "provider-error" | "limit-pause" | "pending-ask" | "working" | "snooze" | "resting" | "registered-done" | "rested"
 
 /** What each caller knows that the ladder cannot work out for itself. `registeredDone`/`restedCard` are
  *  keyed on the final assistant message, which each path computes off its own list. */
@@ -763,44 +764,18 @@ export interface RuntimeStatusState {
   errorVisible?: boolean
 }
 
-/** THE PREMISE BOTH TERMINAL-BOUND SAFETY NETS REST ON: that frizz has nothing answerable to offer, so
- *  the operator's own terminal is the only way through. A pending typed interaction falsifies it — the
- *  broker path journals the same escalation as an answerable interaction, which the transcript's ask row
- *  draws with its real buttons — and pointing someone at a terminal while an answerable copy sits on
- *  screen is worse than saying nothing.
- *
- *  `pendingInteraction`, NOT `actionableInteraction`: the question is whether a card is on SCREEN, and an
- *  answered request stays pending-and-readable while its provider delivery drains.
- *
- *  Both nets still cover the sessions they exist for — pre-contract, adopted or foreign threads that
- *  reach the tool with no broker to intercept it, and any escalation buildClaudePermissionInteraction
- *  could not represent — because none of those journals anything. */
-function terminalNetStandsDown(thread: ThreadViewData | undefined): boolean {
-  return thread?.pendingInteraction === true
-}
-
-/** The safety-net readout for a session frozen at a native AskUserQuestion — "answer it in your external
- *  terminal". */
-function frozenPendingAsk(thread: ThreadViewData | undefined): PendingAsk | undefined {
-  return terminalNetStandsDown(thread) ? undefined : thread?.pendingAsk
-}
-
 /** WHICH RUNG WINS, or null when the slot draws nothing at all. The order is the ladder: a provider auth
  *  fault outranks everything (nothing in the thread can make progress until the credential is restored),
- *  a frozen ask outranks the generic perm banner and the Working… spinner, the human's own park outranks
- *  the benign resting card, and `rested` is the residual. Background sub-agents and shells are NOT here:
- *  they live in the anchored ops strip, which stays visible mid-turn. */
+ *  a foreign session's frozen ask outranks the Working… spinner, the human's own park outranks the benign
+ *  resting card, and `rested` is the residual. Background sub-agents and shells are NOT here: they live
+ *  in the anchored ops strip, which stays visible mid-turn. There is no permission-prompt rung: a prompt
+ *  is the ask row's own card, and what this slot may say around one is lib/operatorBlock.ts. */
 export function runtimeStatusRung({ thread, showWorking, registeredDone, restedCard, errorVisible }: RuntimeStatusState): RuntimeStatusRung | null {
   if (thread?.providerError?.retrying) return "provider-error"
   if (thread?.providerFault && !thread.foreign) return "provider-fault"
   if (thread?.limitPause && !thread.foreign) return "limit-pause"
   if (frozenPendingAsk(thread)) return "pending-ask"
-  // The generic banner stands down on the SAME premise the frozen ask does — see terminalNetStandsDown.
-  // It did not until 2026-09-05, and a broker-path escalation sets `runtime: "perm-prompt"` AND journals
-  // an answerable interaction, so the ask row's "Run a command?" card drew with Grant/Deny and this rung
-  // told the operator to go and answer it in a terminal directly underneath.
-  if (thread?.runtime === "perm-prompt" && !terminalNetStandsDown(thread)) return "perm-prompt"
-  if (showWorking) return "working"
+  if (drawsWorking(thread, showWorking)) return "working"
   if (thread?.providerError) return errorVisible ? null : "provider-error"
   if (showsSnoozeCard(thread)) return "snooze"
   // showsRestingCard, NOT the raw awaitingBackground flag: gating on the bare flag opened the slot for a
@@ -856,8 +831,6 @@ export function RuntimeStatusLadder({
       return <LimitPauseCard slug={slug} sessionId={thread!.sessionId} pause={thread!.limitPause!} />
     case "pending-ask":
       return <PendingAskCard ask={frozenPendingAsk(thread)!} onTerminal={onTerminal} />
-    case "perm-prompt":
-      return <PermPromptBanner onTerminal={onTerminal} />
     case "working":
       return <WorkingIndicator since={thread?.lastUserAt} startedAt={liveRuntimeStart} activityLabel={liveActivityLabel} run={liveToolRun} />
     case "snooze":
@@ -4078,10 +4051,6 @@ export function FenceCard({ fenceKind, body, hints, wrap }: { fenceKind: FenceKi
   return <AwaitingBackgroundCard thread={fenceThread} fence={{ body, hints }} />
 }
 
-// A permission-blocked agent is INVISIBLE in the transcript (the turn is parked mid-tool_use, so no
-// message exists yet) — without this banner the card looks like a quietly-working agent. Rendered by
-// the queue card and the thread view whenever runtime is perm-prompt; the action lands the user in
-// an external terminal, the only place the prompt can be answered.
 // Trusted provider-auth recovery card (claude-auth plan). Rendered ONLY from the server's TYPED
 // providerFault field — never parsed from assistant-authored content — so a model cannot manufacture
 // a sign-in affordance in Chat. "Sign in" opens the same modal as the dispatch gate (copyable
@@ -4211,28 +4180,6 @@ export function LimitPauseCard({ slug, sessionId, pause }: { slug: string; sessi
           className={`disabled:opacity-45 ${CARD_PRIMARY_ACTION}`}
         >
           Continue now
-        </button>
-      </CardActions>
-    </TranscriptCard>
-  )
-}
-
-// ATTENTION tone, like the two native-input cards below it: all three mean the same thing — the agent
-// is blocked on you and the only place to answer is your external terminal — and they used to wear
-// three different treatments (neutral / accent+shadow / accent wash) for that one meaning.
-export function PermPromptBanner({ onTerminal }: { onTerminal: () => void }) {
-  return (
-    <TranscriptCard tone="attention" icon={KeyRound} label="Permission approval">
-      <span className={CARD_BODY}>
-        The agent is waiting on your approval — respond in your external terminal.
-      </span>
-      <CardActions>
-        <button
-          onClick={() => onTerminal()}
-          onMouseDown={(e) => e.preventDefault()}
-          className={CARD_PRIMARY_ACTION}
-        >
-          Copy terminal command
         </button>
       </CardActions>
     </TranscriptCard>
