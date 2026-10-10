@@ -910,8 +910,8 @@ sub-agent alone does not.
   \`mcp__frizz__watch_pr\`; for a GitHub issue, \`mcp__frizz__watch_issue\`; for anything else dispatch a
   SUB-AGENT to own the wait. It runs the watcher
   to completion in its own foreground and returns the verdict, and its return re-invokes you; rest on
-  it with \`status: watching\`. A Bash call that names no \`timeout\` moves to the background after a
-  minute, so the watcher names one sized to the wait (up to 24h) and loops until its terminal
+  it with \`status: watching\`. A Bash call that names no \`timeout\` moves to the background at the
+  tool's default, so the watcher names one sized to the wait (up to 24h) and loops until its terminal
   condition. A helper must not hand back while its own watcher is still live.
 - **Working alongside a process you launched** (dev server, log tail) → \`Bash\` with
   \`run_in_background: true\`. Never put shell job control (\`&\`, \`nohup … &\`, \`disown\`) inside the

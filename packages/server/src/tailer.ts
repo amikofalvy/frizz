@@ -114,12 +114,12 @@ const MAX_POLL_MS = 10_000
 //
 // The window MUST exceed the longest a LIVE child can legitimately stay silent. A child writes its
 // tool_use record, then blocks, and a foreground Bash call that names no `timeout` is moved to the
-// background at BASH_DEFAULT_TIMEOUT_MS (60 s in a frizz worker) — so a call the child did not size
-// buys at most a minute of silence. The old 5-minute window sat UNDER the 10-minute ceiling any Bash
-// call had then (Claude's own BASH_MAX_TIMEOUT_MS) and therefore declared healthy children dead: a
-// child dispatched to own a CI wait (the contract's prescribed way to wait) flipped to "stale" at 312s
-// while blocked in its watcher, dropping hasLiveBackgroundWork and queueing its parent mid-wait —
-// measured on the live board 2026-07-22.
+// background at Claude Code's default timeout (120 s; frizz pinned 60 s until 2026-10-10) — so a call
+// the child did not size buys at most two minutes of silence. The old 5-minute window sat UNDER the
+// 10-minute ceiling any Bash call had then (Claude's own BASH_MAX_TIMEOUT_MS) and therefore declared
+// healthy children dead: a child dispatched to own a CI wait (the contract's prescribed way to wait)
+// flipped to "stale" at 312s while blocked in its watcher, dropping hasLiveBackgroundWork and queueing
+// its parent mid-wait — measured on the live board 2026-07-22.
 // 15 minutes clears that with headroom and still clears a genuinely dead child promptly; across 1366
 // real child transcripts (176k inter-record gaps) only 0.04% exceed it, while the p99 gap is 95s.
 //
@@ -146,7 +146,7 @@ const SUBAGENT_STALE_MS = 15 * 60_000
 //
 // So when a child's transcript ENDS in such a call, the staleness window opens at that call's deadline
 // instead of at the last append. A child quiet for any other reason keeps the plain clock, and a call
-// that names no `timeout` changes nothing (it bounces at BASH_DEFAULT_TIMEOUT_MS, well inside the
+// that names no `timeout` changes nothing (it bounces at Claude Code's default, well inside the
 // window). The returned deadline is clamped to the worker's own ceiling, so no record can buy more.
 const BASH_TIMEOUT_CEILING_MS = Number(CLAUDE_WORKER_ENV.BASH_MAX_TIMEOUT_MS)
 

@@ -504,7 +504,7 @@ export function createClaudeAgentBrokerBridge(deps: ClaudeBrokerBridgeDeps): Cla
     const we = deps.workerEnv
     const workerEnv: Record<string, string> = {
       FRIZZ_THREAD: slug,
-      // Every Claude worker's environment — the token budget, the bash timeouts, and the lifted
+      // Every Claude worker's environment — the token budget, the bash timeout ceiling, and the lifted
       // web-search / sub-agent caps — as ONE record, so a cap added there cannot miss this path. It
       // used to spread CLAUDE_WORKER_ENV, which carried the first two and not the caps, and since the
       // broker is the only transport that meant no worker ever received a lift (fixed 2026-08-19; see
