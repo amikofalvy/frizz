@@ -16,8 +16,9 @@
 // cards through the prose — a placed card inside one message, its sibling at the tail — so the staged
 // picks cannot live in the card that draws them. `useRegisteredAnswering` holds them for the whole
 // thread; the surface mounts it ONCE (RegisteredAnsweringProvider) and every card and every stack on
-// that surface reads it through context. A stack mounted with no provider above it (a surface that
-// never places) owns a state of its own, exactly as it did before.
+// that surface reads it through context. Picks and text are shared through the tab's draft store
+// across providers and remounts; secrets, errors and send state remain per hook instance. A stack
+// mounted with no provider above it (a surface that never places) owns its own hook instance.
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { X } from "lucide-react"
@@ -28,6 +29,7 @@ import { clearSteered, markSteered } from "../lib/steering.ts"
 import type { BlockAnswer } from "../lib/questionBlocks.ts"
 import type { PairedAnswer } from "../lib/answersMessage.ts"
 import { ROOT_PATH, liveQuestionNodes, nodeAnswered, registeredAnswer, settledQuestionNodes } from "../lib/registeredQuestion.ts"
+import { decodeQuestionPick, encodeQuestionPick, questionSpecAt } from "../lib/registeredPicks.ts"
 import { AnswersCard } from "./AnswersCard.tsx"
 import { QueueDismissContext } from "./ChatView.tsx"
 import { QuestionBlockCard } from "./QuestionBlockCard.tsx"
@@ -37,11 +39,6 @@ function errorText(error: unknown): string {
   const message = error instanceof Error ? error.message : "The answer could not be sent."
   return message.length > 240 ? `${message.slice(0, 239)}…` : message
 }
-
-/** The chip/toggle half of a staged answer, keyed by `<question id>|<node path>`. The free-text half
- *  lives in the draft store instead, so a half-typed answer survives a remount and a worker restart. */
-type Picks = Map<string, { chosen: number | null; chosenSet: number[] }>
-const pickKey = (id: string, path: string) => `${id}|${path}`
 
 /** The thread's whole answering state: what is staged on every open question, and the one send. */
 export interface RegisteredAnswering {
@@ -67,7 +64,6 @@ export function useRegisteredAnswering(thread: ThreadView | undefined): Register
   const slug = thread?.id
   const questions = thread?.questions ?? []
   const projectDir = useProjectDir()
-  const [picks, setPicks] = useState<Picks>(() => new Map())
   // A SECRET's typed value, keyed by question id. In React state and nowhere else: the draft store
   // mirrors into sessionStorage, and a pasted credential must not outlive the tab in a cache (lib/drafts
   // says so for the typed interaction cards too). The cost is that a reload loses a half-pasted code,
@@ -82,16 +78,19 @@ export function useRegisteredAnswering(thread: ThreadView | undefined): Register
   // thread page, where there is no card to dismiss.
   const queueDismiss = useContext(QueueDismissContext)
 
-  // Every free-text box of every question, subscribed as one batch — the draft store's own hook takes a
-  // key list, and the set only changes when a question is registered or settled.
+  // Picks and text share the tab's draft store, so queue, drawer, fullscreen and project remounts
+  // all see the same staged answer. Secrets stay strictly in memory outside this subscription.
   const textKeys = useMemo(
-    () => (slug ? questions.flatMap((q) => (q.spec.secret ? [] : allPaths(q).map((path) => draftKey.question(projectDir, slug, q.id, path)))) : []),
+    () => (slug ? questions.flatMap((q) => (q.spec.secret ? [] : allPaths(q).flatMap((path) => [
+      draftKey.question(projectDir, slug, q.id, path), draftKey.questionPick(projectDir, slug, q.id, path),
+    ]))) : []),
     [projectDir, slug, questions],
   )
   const persistedText = useDraftValues(textKeys)
   const answerFor = (q: RegisteredQuestionView, path: string): BlockAnswer => {
-    const pick = picks.get(pickKey(q.id, path))
     if (q.spec.secret) return { chosen: null, chosenSet: [], text: secrets.get(q.id) ?? "" }
+    const spec = questionSpecAt(q.spec, path)
+    const pick = spec ? decodeQuestionPick(spec, slug ? persistedText.get(draftKey.questionPick(projectDir, slug, q.id, path)) ?? "" : "") : undefined
     return {
       chosen: pick?.chosen ?? null,
       chosenSet: pick?.chosenSet ?? [],
@@ -111,23 +110,23 @@ export function useRegisteredAnswering(thread: ThreadView | undefined): Register
   const queryClient = useQueryClient()
 
   const send = useMutation({
-    mutationFn: async (answers: QuestionAnswer[]) => rpc.answerQuestions({ slug: slug!, answers }),
-    onSuccess: (result) => {
-      // The rows are gone from the board push that follows, so the staged state for them is dead weight;
-      // dropping the drafts too keeps a re-asked question from opening pre-filled with a stale answer.
+    mutationFn: async (submission: { answers: QuestionAnswer[]; drafts: Array<{ id: string; keys: string[] }> }) =>
+      rpc.answerQuestions({ slug: slug!, answers: submission.answers }),
+    onSuccess: (result, submission) => {
+      // The board push removes these rows, so the staged state for them is dead weight. Left behind, it
+      // would sit in the tab's draft store, whose reload snapshot keeps only the most recent entries
+      // (lib/drafts MAX_ENTRIES), and could push an older, still-live draft out of it. A re-ask is not
+      // the reason: it mints a fresh `qst_` id, so it can never match these keys.
       for (const id of result.answered) {
-        setPicks((prev) => {
-          const next = new Map(prev)
-          for (const key of [...next.keys()]) if (key.startsWith(`${id}|`)) next.delete(key)
-          return next
-        })
-        const q = questions.find((entry) => entry.id === id)
-        if (q?.spec.secret) setSecrets((prev) => {
+        setSecrets((prev) => {
+          if (!prev.has(id)) return prev
           const next = new Map(prev)
           next.delete(id)
           return next
         })
-        else if (q && slug) for (const path of allPaths(q)) draftStore.set(draftKey.question(projectDir, slug, q.id, path), "")
+        // The board push may remove the question before the HTTP reply arrives. Clear the keys
+        // captured at send, not the current board's questions (which may already be empty).
+        for (const key of submission.drafts.find((entry) => entry.id === id)?.keys ?? []) draftStore.clear(key)
       }
     },
     onError: (cause) => {
@@ -177,7 +176,12 @@ export function useRegisteredAnswering(thread: ThreadView | undefined): Register
         answer: q.spec.secret ? { ...answer, text: "(secret sent)" } : answer,
       })),
     ])
-    send.mutate(staged)
+    send.mutate({
+      answers: staged,
+      drafts: stagedPairs.map(({ q }) => ({ id: q.id, keys: q.spec.secret ? [] : allPaths(q).flatMap((path) => [
+        draftKey.question(projectDir, slug, q.id, path), draftKey.questionPick(projectDir, slug, q.id, path),
+      ]) })),
+    })
   }
 
   return {
@@ -189,20 +193,16 @@ export function useRegisteredAnswering(thread: ThreadView | undefined): Register
       // producers. The typed draft is never cleared (maintainer 2026-09-02): it stays in the box as an
       // unselected draft, and registeredAnswer submits the chip while one is chosen (the box taking
       // focus clears it via onText below).
-      setPicks((prev) => {
-        const next = new Map(prev)
-        const key = pickKey(q.id, path)
-        const pick = next.get(key) ?? { chosen: null, chosenSet: [] }
-        if (isMulti) {
-          const set = pick.chosenSet.includes(optIdx)
-            ? pick.chosenSet.filter((v) => v !== optIdx)
-            : [...pick.chosenSet, optIdx]
-          next.set(key, { ...pick, chosenSet: set })
-        } else {
-          next.set(key, { ...pick, chosen: pick.chosen === optIdx ? null : optIdx })
-        }
-        return next
-      })
+      const spec = questionSpecAt(q.spec, path)
+      if (!slug || !spec || q.spec.secret || !spec.options?.[optIdx]) return
+      const key = draftKey.questionPick(projectDir, slug, q.id, path)
+      // Read the store at the event, not the last render: rapid toggles must compose, including
+      // when another mounted copy of this question just staged a pick.
+      const pick = decodeQuestionPick(spec, draftStore.get(key))
+      const next = isMulti
+        ? { ...pick, chosenSet: pick.chosenSet.includes(optIdx) ? pick.chosenSet.filter((v) => v !== optIdx) : [...pick.chosenSet, optIdx] }
+        : { ...pick, chosen: pick.chosen === optIdx ? null : optIdx }
+      draftStore.set(key, encodeQuestionPick(spec, next))
     },
     onText: (q, path, isMulti, text) => {
       if (!slug) return
@@ -214,12 +214,7 @@ export function useRegisteredAnswering(thread: ThreadView | undefined): Register
       // SINGLE: the free-text box taking over — a keystroke OR just focusing it — drops the chosen chip,
       // as the fence producer does. The card's onFocus calls this with the text unchanged for exactly
       // that reason, so writing the draft alone left the chip lit beside a focused box (2026-08-28).
-      if (!isMulti) setPicks((prev) => {
-        const key = pickKey(q.id, path)
-        const pick = prev.get(key)
-        if (!pick || pick.chosen === null) return prev
-        return new Map(prev).set(key, { ...pick, chosen: null })
-      })
+      if (!isMulti) draftStore.clear(draftKey.questionPick(projectDir, slug, q.id, path))
     },
     dismiss: (id) => dismiss.mutate(id),
     dismissing: dismiss.isPending,
