@@ -31,6 +31,13 @@ import "./styles.css"
 // that have been filled out." Then: "The button should turn white as soon as any answers are filled
 // out. Basically, mock this all up."
 //
+// ROUND TWO, the same day, on the first sheet (a button that read Steer or Queue): "I kind of think the
+// button should always say 'Send', no matter what, and the user can hit the dropdown to change it
+// between the values. Send as steer / Send to queue / Send as force steer. But the button should always
+// say 'Send', which also is broad enough to encapsulate the fact that it may also be sending question
+// answers." So the word never changes, the caret is always there, and the three ways to send are the
+// menu's three rows. What says which row is ticked, with the menu shut, is the placeholder.
+//
 // WHAT IS TRUE TODAY (read from the code on 2026-10-10, so the sheet can say what is new):
 //   · A typed message to a working agent is already a steer: `rpc.followUp` hands it to the provider at
 //     once (the Claude SDK reads it at its next step, Codex takes a `turn/steer`). An ACP agent cannot
@@ -49,7 +56,7 @@ import "./styles.css"
 //
 //   nubx vite --port 5478 --strictPort   (from packages/web), then
 //   http://localhost:5478/steer-button-mockup-fixture.html
-//   ?theme=light · ?menu=3 (Force steer in the menu) · ?rest=send (the button reads "Send" at rest)
+//   ?theme=light
 const params = new URLSearchParams(location.search)
 document.documentElement.dataset.font = "sans"
 document.documentElement.dataset.theme = params.get("theme") === "light" ? "light" : "dark"
@@ -134,10 +141,8 @@ const WORKING_ASKED: ChatMessage[] = [
 
 // ── a frame's state ─────────────────────────────────────────────────────────────────────────────────
 
-/** What the button does on Enter. Force steer is an ACT in the menu (and ⌘⏎), never a standing mode: a
- *  box that interrupts on every Enter is not something to leave armed. */
-type Mode = "steer" | "queue"
-type Kind = Mode | "force"
+/** How the button sends — the row ticked in its menu. The button's word is "Send" under all three. */
+type Mode = "steer" | "queue" | "force"
 
 interface Staged { q: RegisteredQuestionView; answer: QuestionAnswer }
 
@@ -163,7 +168,7 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
 
 /** THE ONE SEND. Whatever is staged on the question cards and whatever is typed in the box leave
  *  together, as one turn: the answers card first, the note under it. */
-function send(s: FrameState, staged: Staged[], kind: Kind): FrameState {
+function send(s: FrameState, staged: Staged[], kind: Mode): FrameState {
   const note = s.text.trim()
   if (staged.length === 0 && !note) return s
   const hold = s.running && kind === "queue"
@@ -255,38 +260,39 @@ const thread = (slug: string, questions: RegisteredQuestionView[], running: bool
   permissionMode: "default", subAgents: [], bgShells: [], watches: [], lastActivityAt: at(3),
 }) as unknown as ThreadView
 
-// ── the sheet's switches ────────────────────────────────────────────────────────────────────────────
+// ── the placeholder ──────────────────────────────────────────────────────────────────────────────────
 
-interface Variant {
-  /** Whether the menu also offers Force steer. */
-  force: boolean
-  /** What the button reads while the agent is at rest, where Steer and Queue are the same act. */
-  restLabel: "steer" | "send"
-}
-
+/** With the menu shut, this is what says how the button will send. A staged answer outranks it: the box
+ *  is then a note on the answers, whichever way they go. */
 function placeholderFor(staged: number, open: number, running: boolean, mode: Mode): string {
   if (staged > 0) return staged === 1 ? "Add a note to send with your answer…" : `Add a note to send with your ${staged} answers…`
   if (open > 0) return "Or skip the questions and reply…"
   if (running && mode === "queue") return "Queue a message for when the agent rests…"
+  if (running && mode === "force") return "Interrupt the agent with a message…"
   return "Reply to the agent…"
 }
 
 // ── the button ────────────────────────────────────────────────────────────────────────────────────
 
-const LABEL: Record<Mode, string> = { steer: "Steer", queue: "Queue" }
+const ROWS: { mode: Mode; name: string; says: string }[] = [
+  { mode: "steer", name: "Send as steer", says: "The agent reads it at its next step." },
+  { mode: "queue", name: "Send to queue", says: "Frizz holds it until the agent comes to rest." },
+  { mode: "force", name: "Send as force steer", says: "Interrupts the agent, which reads it now." },
+]
+const ROW_NAME = Object.fromEntries(ROWS.map((r) => [r.mode, r.name])) as Record<Mode, string>
 
 interface SendButtonProps {
   /** White: there is something to send — typed text, or an answer staged on any card. */
   armed: boolean
-  label: string
-  /** The caret and its menu. Absent in the "Send at rest" variant while the agent rests. */
+  /** The hover title: the one place the shut button names its way of sending. */
+  title?: string
   menu?: ReactNode
   menuOpen?: boolean
   onToggleMenu?: () => void
   onSend?: () => void
 }
 
-function SendButton({ armed, label, menu, menuOpen, onToggleMenu, onSend }: SendButtonProps) {
+function SendButton({ armed, title, menu, menuOpen, onToggleMenu, onSend }: SendButtonProps) {
   const tone = armed ? "bg-fg text-bg" : "bg-panel-2 text-muted"
   return (
     <span data-send-split className="relative flex h-7 shrink-0">
@@ -294,67 +300,63 @@ function SendButton({ armed, label, menu, menuOpen, onToggleMenu, onSend }: Send
         type="button"
         data-send
         disabled={!armed}
+        title={title}
         onMouseDown={(e) => e.preventDefault()}
         onClick={onSend}
-        className={`flex items-center text-[12px] font-medium leading-none outline-none transition-[color,background-color,opacity,scale] ${menu ? "rounded-l-lg pl-2.5 pr-[7px]" : "rounded-lg px-2.5"} ${tone} ${armed ? "hover:opacity-90 active:scale-95" : ""}`}
+        className={`flex items-center rounded-l-lg pl-2.5 pr-1.5 text-[12px] font-medium leading-none outline-none transition-[color,background-color,opacity,scale] ${tone} ${armed ? "hover:opacity-90 active:scale-95" : ""}`}
       >
-        <span data-send-label>{label}</span>
+        {/* The word never changes, so nothing beside the button moves when the way of sending does. */}
+        <span data-send-label>Send</span>
       </button>
-      {menu && (
-        <>
-          <span aria-hidden className={`flex w-px items-center ${armed ? "bg-fg" : "bg-panel-2"}`}>
-            <span className={`h-3.5 w-px ${armed ? "bg-bg/25" : "bg-fg/15"}`} />
-          </span>
-          <button
-            type="button"
-            data-send-menu
-            aria-label="Choose how this is sent"
-            aria-expanded={menuOpen}
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={onToggleMenu}
-            className={`flex w-[23px] items-center pl-[3.75px] rounded-r-lg outline-none transition-[color,background-color,opacity] ${tone} ${armed ? "hover:opacity-90" : "hover:text-fg"}`}
-          >
-            <ChevronDown data-send-caret size={13} strokeWidth={2.5} />
-          </button>
-        </>
-      )}
+      <span aria-hidden className={`flex w-px items-center ${armed ? "bg-fg" : "bg-panel-2"}`}>
+        <span className={`h-3.5 w-px ${armed ? "bg-bg/25" : "bg-fg/15"}`} />
+      </span>
+      <button
+        type="button"
+        data-send-menu
+        aria-label="Choose how this is sent"
+        aria-expanded={menuOpen}
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={onToggleMenu}
+        className={`flex w-[23px] items-center pl-[3.75px] rounded-r-lg outline-none transition-[color,background-color,opacity] ${tone} ${armed ? "hover:opacity-90" : "hover:text-fg"}`}
+      >
+        <ChevronDown data-send-caret size={13} strokeWidth={2.5} />
+      </button>
       {menuOpen && menu}
     </span>
   )
 }
 
-function ModeMenu({ mode, running, force, canSend, onMode, onForce }: { mode: Mode; running: boolean; force: boolean; canSend: boolean; onMode: (m: Mode) => void; onForce: () => void }) {
-  const row = "flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left outline-none transition-colors hover:bg-panel-2 disabled:opacity-40 disabled:hover:bg-transparent"
-  const body = (name: string, key: string | undefined, says: string) => (
-    <span className="min-w-0 flex-1">
-      <span className="flex items-baseline justify-between gap-4 leading-[18px]">
-        <span className="text-[12px] font-medium text-fg">{name}</span>
-        {key && <span className="text-[11px] text-muted-70">{key}</span>}
-      </span>
-      <span className="block text-[11.5px] leading-[16px] text-muted">{says}</span>
-    </span>
-  )
-  const tick = (on: boolean) => <span className="flex h-[18px] w-3.5 shrink-0 items-center justify-center text-fg">{on && <Check size={13} strokeWidth={2.5} />}</span>
+function ModeMenu({ mode, running, onMode }: { mode: Mode; running: boolean; onMode: (m: Mode) => void }) {
   return (
     <div data-send-modes role="menu" className={`absolute bottom-full right-0 z-40 mb-1.5 w-[304px] rounded-lg p-1 ${OPAQUE_SURFACE_BASE}`}>
-      <button type="button" role="menuitemradio" aria-checked={mode === "steer"} className={row} onMouseDown={(e) => e.preventDefault()} onClick={() => onMode("steer")}>
-        {tick(mode === "steer")}
-        {body("Steer", mode === "steer" ? "⏎" : undefined, "The agent reads it at its next step.")}
-      </button>
-      <button type="button" role="menuitemradio" aria-checked={mode === "queue"} className={row} onMouseDown={(e) => e.preventDefault()} onClick={() => onMode("queue")}>
-        {tick(mode === "queue")}
-        {body("Queue", mode === "queue" ? "⏎" : undefined, "Frizz holds it until the agent comes to rest.")}
-      </button>
-      {force && (
-        <>
-          <div className="my-1 h-px bg-border" />
-          <button type="button" role="menuitem" disabled={!running || !canSend} className={row} onMouseDown={(e) => e.preventDefault()} onClick={onForce}>
-            {tick(false)}
-            {body("Force steer", "⌘⏎", "Interrupts the turn. The agent reads it now.")}
+      {ROWS.map((row) => {
+        const on = row.mode === mode
+        // Enter sends the ticked row. ⌘⏎ is today's forced send and stays one, whichever row is ticked.
+        const key = on ? "⏎" : row.mode === "force" ? "⌘⏎" : undefined
+        return (
+          <button
+            key={row.mode}
+            type="button"
+            role="menuitemradio"
+            aria-checked={on}
+            data-send-mode={row.mode}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => onMode(row.mode)}
+            className="flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left outline-none transition-colors hover:bg-panel-2"
+          >
+            <span className="flex h-[18px] w-3.5 shrink-0 items-center justify-center text-fg">{on && <Check size={13} strokeWidth={2.5} />}</span>
+            <span className="min-w-0 flex-1">
+              <span className="flex items-baseline justify-between gap-4 leading-[18px]">
+                <span className="text-[12px] font-medium text-fg">{row.name}</span>
+                {key && <span className="text-[11px] text-muted-70">{key}</span>}
+              </span>
+              <span className="block text-[11.5px] leading-[16px] text-muted">{row.says}</span>
+            </span>
           </button>
-        </>
-      )}
-      {!running && <div className="px-2 pb-1 pt-1.5 text-[11px] leading-[15px] text-muted-70">The agent is at rest, so either one sends now.</div>}
+        )
+      })}
+      {!running && <div className="px-2 pb-1 pt-1.5 text-[11px] leading-[15px] text-muted-70">The agent is at rest, so all three send now.</div>}
     </div>
   )
 }
@@ -415,7 +417,7 @@ function PromptBox({ value, onChange, placeholder, onEnter, onForce, button }: {
 
 // ── a frame: one queue card ───────────────────────────────────────────────────────────────────────────
 
-function Frame({ scene, variant }: { scene: Scene; variant: Variant }) {
+function Frame({ scene }: { scene: Scene }) {
   const [s, setS] = useState(() => initial(scene))
   const [menuOpen, setMenuOpen] = useState(Boolean(scene.menuOpen))
   // A frame that opens with its menu drawn keeps it drawn until the human uses it.
@@ -445,7 +447,7 @@ function Frame({ scene, variant }: { scene: Scene; variant: Variant }) {
     return () => document.removeEventListener("mousedown", close)
   }, [menuOpen, pinned])
 
-  const go = (kind: Kind) => {
+  const go = (kind: Mode) => {
     const now = stagedRef.current
     setS((prev) => send(prev, now, kind))
     for (const { q } of now) {
@@ -463,20 +465,15 @@ function Frame({ scene, variant }: { scene: Scene; variant: Variant }) {
   }
 
   const armed = s.text.trim() !== "" || staged.length > 0
-  const sendAtRest = !s.running && variant.restLabel === "send"
-  const label = sendAtRest ? "Send" : LABEL[s.mode]
-  const menu = sendAtRest ? undefined : (
+  const menu = (
     <ModeMenu
       mode={s.mode}
       running={s.running}
-      force={variant.force}
-      canSend={armed}
       onMode={(mode) => {
         setS((prev) => ({ ...prev, mode }))
         setMenuOpen(false)
         setPinned(false)
       }}
-      onForce={() => go("force")}
     />
   )
   // Enter inside a question card's own text box is the same send as the button.
@@ -515,7 +512,7 @@ function Frame({ scene, variant }: { scene: Scene; variant: Variant }) {
                   <div data-held-line className="mt-1.5 flex items-baseline justify-end gap-2 text-[11.5px] leading-[16px] text-muted">
                     <span>Queued until the agent rests</span>
                     <span className="text-muted-60">·</span>
-                    <button type="button" className="underline decoration-border underline-offset-2 hover:text-fg" onClick={() => setS((prev) => ({ ...prev, tail: [...prev.tail, ...delivered(prev.held)], held: [], said: "Steered the queued messages now. The agent reads them at its next step." }))}>Steer now</button>
+                    <button type="button" className="underline decoration-border underline-offset-2 hover:text-fg" onClick={() => setS((prev) => ({ ...prev, tail: [...prev.tail, ...delivered(prev.held)], held: [], said: "Sent the queued messages now. The agent reads them at its next step." }))}>Send now</button>
                     <span className="text-muted-60">·</span>
                     <button type="button" className="underline decoration-border underline-offset-2 hover:text-fg" onClick={() => setS((prev) => ({ ...prev, held: [], text: [...prev.held.filter((m) => !m.text.startsWith("Answers")).map((m) => m.text), prev.text].filter(Boolean).join("\n\n"), said: "Took the queued messages back into the prompt box." }))}>Take back</button>
                   </div>
@@ -532,7 +529,7 @@ function Frame({ scene, variant }: { scene: Scene; variant: Variant }) {
               onForce={() => go(s.running ? "force" : s.mode)}
               button={(
                 <span ref={split} className="flex">
-                  <SendButton armed={armed} label={label} menu={menu} menuOpen={menuOpen} onToggleMenu={() => { setMenuOpen((v) => !v); setPinned(false) }} onSend={() => go(s.mode)} />
+                  <SendButton armed={armed} title={`${ROW_NAME[s.mode]} (⏎)`} menu={menu} menuOpen={menuOpen} onToggleMenu={() => { setMenuOpen((v) => !v); setPinned(false) }} onSend={() => go(s.mode)} />
                 </span>
               )}
             />
@@ -600,7 +597,7 @@ const SCENES: Scene[] = [
   {
     id: "sb-run-menu",
     title: "Agent working — the menu",
-    note: "The caret opens the choice. The row that Enter sends is ticked and carries the key. Picking a row changes what the button says and does; it sends nothing.",
+    note: "The caret opens the three ways to send. The ticked row is what Enter and the button do. Picking a row sends nothing, and the button goes on saying Send.",
     meta: "Working",
     messages: WORKING,
     running: true,
@@ -611,8 +608,8 @@ const SCENES: Scene[] = [
   },
   {
     id: "sb-run-queue",
-    title: "Agent working — Queue chosen",
-    note: "The button says Queue, and so does the placeholder. A queued message sits dimmed under the Working line, where a waiting message sits today, with a line that says who holds it. Let the agent come to rest to see Frizz send it.",
+    title: "Agent working — Send to queue chosen",
+    note: "The button still says Send; the placeholder says the message will be queued. A queued message sits dimmed under the Working line, where a waiting message sits today, with a line that says who holds it. Let the agent come to rest to see Frizz send it.",
     meta: "Working",
     messages: WORKING,
     running: true,
@@ -622,9 +619,21 @@ const SCENES: Scene[] = [
     height: 520,
   },
   {
+    id: "sb-run-force",
+    title: "Agent working — Send as force steer chosen",
+    note: "The placeholder says the message will interrupt. Enter or the button stops the turn, and the agent reads the message at once.",
+    meta: "Working",
+    messages: WORKING,
+    running: true,
+    questions: [],
+    mode: "force",
+    text: "Stop. That test file is generated; edit the template instead.",
+    height: 520,
+  },
+  {
     id: "sb-run-question",
     title: "Agent working, with a question open",
-    note: "A worker can ask and keep going. The picked answer makes the button white. Steer hands the answer over now; Queue holds it, with any note, until the agent rests.",
+    note: "A worker can ask and keep going. The picked answer makes the button white. As a steer the answer is handed over now; to the queue, Frizz holds it, with any note, until the agent rests.",
     meta: "Working",
     messages: WORKING_ASKED,
     running: true,
@@ -674,61 +683,54 @@ function Specimen({ caption, children }: { caption: string; children: ReactNode 
   )
 }
 
-const noMenu = <span />
-
 const MODES: { name: string; working: string; rest: string; key: string; today: string }[] = [
   {
-    name: "Steer",
+    name: "Send as steer",
     working: "Goes to the agent at once. It reads the message at its next step and keeps going.",
     rest: "Sends now and wakes the agent.",
-    key: "⏎ while the button says Steer",
+    key: "⏎ while its row is ticked",
     today: "What Enter does today for typed text. New for answers, which today wait for the agent to rest.",
   },
   {
-    name: "Queue",
-    working: "Frizz holds it. When the agent comes to rest, Frizz sends everything queued as its next turn. Until then a queued message can be steered now or taken back.",
-    rest: "The same as Steer.",
-    key: "⏎ while the button says Queue",
+    name: "Send to queue",
+    working: "Frizz holds it. When the agent comes to rest, Frizz sends everything queued as its next turn. Until then a queued message can be sent now or taken back.",
+    rest: "The same as a steer.",
+    key: "⏎ while its row is ticked",
     today: "New for typed text: nothing holds a human message until rest today. It is how answers already travel.",
   },
   {
-    name: "Force steer",
+    name: "Send as force steer",
     working: "Interrupts the turn, and the agent reads the message now. Claude threads only.",
-    rest: "The same as Steer.",
-    key: "⌘⏎",
+    rest: "The same as a steer.",
+    key: "⏎ while its row is ticked; ⌘⏎ always",
     today: "Exists today as ⌘⏎, and as the ↑ beside a waiting message. It has no button in the prompt box.",
   },
 ]
 
 const OPEN_POINTS: string[] = [
-  "The choice is per thread and goes back to Steer when the agent comes to rest, so a thread left on Queue cannot hold back a message days later.",
-  "Force steer is drawn as an act in the menu, not a mode the button can be left on: a box that interrupts on every Enter is easy to forget.",
-  "Queue has no key of its own in this draft. ⌥⏎ and ⇧⏎ are both a new line today.",
+  "The button always reads Send. With the menu shut, the ticked row shows in the placeholder (while no answer is staged) and in the button's hover title, and nowhere else.",
+  "The ticked row is per thread and goes back to Send as steer when the agent comes to rest. A thread left on the queue then cannot hold back a message days later, and one left on force steer cannot interrupt a later turn by surprise.",
+  "⌘⏎ stays the forced send whichever row is ticked. The queue has no key of its own: ⌥⏎ and ⇧⏎ are both a new line today.",
   "The fenced and native question cards lose their Send answers button under the same rule; only registered questions are drawn here.",
-  "The phone is not drawn. It answers in a sheet with its own Send, and its bar has no room for a label and a caret.",
-  "A Codex thread steers natively, so Steer and Queue both work there. An ACP agent cannot be steered: it only queues, so its button would read Queue with no menu. Force steer exists on Claude threads only.",
+  "The phone is not drawn. It answers in a sheet with its own Send, and its bar has no room for a word and a caret.",
+  "A Codex thread steers natively, so the steer and queue rows both work there. An ACP agent cannot be steered: it only queues, so its menu would have one row. Force steer exists on Claude threads only.",
 ]
 
 function Page() {
   const [theme, setTheme] = useState(document.documentElement.dataset.theme ?? "dark")
-  const [menu, setMenu] = useState<"2" | "3">(params.get("menu") === "3" ? "3" : "2")
-  const [restLabel, setRestLabel] = useState<"steer" | "send">(params.get("rest") === "send" ? "send" : "steer")
   useEffect(() => { document.documentElement.dataset.theme = theme }, [theme])
-  const variant: Variant = { force: menu === "3", restLabel }
   return (
     <main className="min-h-screen bg-bg pb-24 text-fg">
       <header className="mx-auto max-w-[1480px] px-8 pb-6 pt-9">
         <h1 className="text-[22px] font-semibold tracking-tight">One send for answers and a steer</h1>
         <div className="mt-2 max-w-[860px] space-y-2 text-[13px] leading-[20px] text-muted">
           <p>Today the question cards have their own Send answers button, and it reads only the cards. A note typed in the prompt box is a second send. This sheet drops that button: the prompt box's send button sends the staged answers and whatever is typed, together, as one turn.</p>
-          <p>The send button becomes a white button with a word on it and a caret. The word is what Enter does: Steer, or Queue. It turns white when there is text in the box or an answer on any card.</p>
+          <p>The send button becomes a white button that always says Send, with a caret. The caret opens the three ways to send: as a steer, to the queue, or as a force steer. The button turns white when there is text in the box or an answer on any card.</p>
           <p>Every card below is live. Pick answers, type, press the button, open the caret. Nothing is sent anywhere.</p>
         </div>
       </header>
       <nav className="sticky top-0 z-50 border-y border-border bg-bg/95 backdrop-blur">
         <div className="mx-auto flex max-w-[1480px] flex-wrap items-center gap-x-6 gap-y-2 px-8 py-2.5">
-          <Seg label="The menu offers" value={menu} onChange={setMenu} options={[{ value: "2", label: "Steer and Queue" }, { value: "3", label: "Steer, Queue and Force steer" }]} />
-          <Seg label="At rest the button reads" value={restLabel} onChange={setRestLabel} options={[{ value: "steer", label: "Steer, with the caret" }, { value: "send", label: "Send, no caret" }]} />
           <Seg label="Theme" value={theme} onChange={setTheme} options={[{ value: "dark", label: "Dark" }, { value: "light", label: "Light" }]} />
         </div>
       </nav>
@@ -736,11 +738,8 @@ function Page() {
         <section data-specimens>
           <h2 className="mb-4 text-[16px] font-semibold tracking-tight">The button, at twice its size</h2>
           <div className="flex flex-wrap gap-x-8 gap-y-6">
-            <Specimen caption="Nothing typed and nothing answered. The caret still opens the menu."><SendButton armed={false} label="Steer" menu={noMenu} /></Specimen>
-            <Specimen caption="Text in the box, or an answer on any card."><SendButton armed label="Steer" menu={noMenu} /></Specimen>
-            <Specimen caption="Queue chosen."><SendButton armed label="Queue" menu={noMenu} /></Specimen>
-            <Specimen caption="Queue chosen, nothing to send."><SendButton armed={false} label="Queue" menu={noMenu} /></Specimen>
-            <Specimen caption="The other reading at rest: Send, with no caret, because Steer and Queue are then one act."><SendButton armed label="Send" /></Specimen>
+            <Specimen caption="Nothing typed and nothing answered. The caret still opens the menu."><SendButton armed={false} /></Specimen>
+            <Specimen caption="Text in the box, or an answer on any card. The same word under all three ways of sending."><SendButton armed /></Specimen>
             <Specimen caption="Today's button, for scale."><span className="flex h-7 w-7 items-center justify-center rounded-lg bg-fg text-bg"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m5 12 7-7 7 7" /><path d="M12 19V5" /></svg></span></Specimen>
           </div>
         </section>
@@ -755,20 +754,20 @@ function Page() {
                   <h3 className="text-[13.5px] font-medium text-fg/90">{scene.title}</h3>
                 </div>
                 <p className="mb-3 max-w-[680px] text-[12px] leading-[18px] text-muted-80">{scene.note}</p>
-                <Frame scene={scene} variant={variant} />
+                <Frame scene={scene} />
               </div>
             ))}
           </div>
         </section>
 
         <section className="mt-16 max-w-[1180px]">
-          <h2 className="mb-3 text-[16px] font-semibold tracking-tight">What each choice does</h2>
+          <h2 className="mb-3 text-[16px] font-semibold tracking-tight">What each row does</h2>
           <table className="w-full border-collapse text-[12.5px] leading-[18px]">
             <thead>
               <tr className="border-b border-border text-left text-muted">
-                <th className="w-[110px] py-2 pr-4 font-medium" />
+                <th className="w-[150px] py-2 pr-4 font-medium" />
                 <th className="py-2 pr-6 font-medium">While the agent works</th>
-                <th className="w-[190px] py-2 pr-6 font-medium">While it rests</th>
+                <th className="w-[170px] py-2 pr-6 font-medium">While it rests</th>
                 <th className="w-[190px] py-2 pr-6 font-medium">Key</th>
                 <th className="py-2 font-medium">Against today</th>
               </tr>
