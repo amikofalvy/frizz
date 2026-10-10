@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { test } from "node:test"
@@ -25,35 +25,6 @@ test("an existing ~/.frizz keeps every root, on every platform, whatever XDG say
       assert.equal(paths.cache, join(base, ".frizz"), platform)
     }
     assert.equal(projectStateDir("p1", base), join(base, ".frizz", "projects", "p1"))
-  } finally {
-    rmSync(base, { recursive: true, force: true })
-  }
-})
-
-// Home's own project directory is ALSO spelled `~/.frizz`. Reading its existence as "an install lives
-// here" moved every root on the launch after a home project was opened, and the registry, the
-// projects and the database under the platform roots looked gone.
-test("a ~/.frizz that is only the home folder's project directory is not an install", () => {
-  const base = mkdtempSync(join(tmpdir(), "frizz-paths-home-project-"))
-  try {
-    const root = legacyFrizzRoot(base)
-    const fresh = frizzPaths({ home: base, platform: "darwin", env: {} })
-    assert.equal(fresh.legacy, false)
-
-    // writeProjectIdFile's order: the directory, its `.gitignore`, then the id. Each step answers the same.
-    mkdirSync(root)
-    writeFileSync(join(root, ".gitignore"), "*\n")
-    assert.deepEqual(frizzPaths({ home: base, platform: "darwin", env: {} }), fresh)
-    writeFileSync(join(root, ".id"), "9f2b7c40-0000-4000-8000-000000000001\n")
-    mkdirSync(join(root, "threads"))
-    assert.deepEqual(frizzPaths({ home: base, platform: "darwin", env: {} }), fresh)
-
-    // An old install that ALSO had home adopted (2026-08-06) is still an install: its state is here.
-    for (const state of ["projects", "registry.json"]) {
-      mkdirSync(join(root, state))
-      assert.equal(frizzPaths({ home: base, platform: "darwin", env: {} }).data, root, state)
-      rmSync(join(root, state), { recursive: true })
-    }
   } finally {
     rmSync(base, { recursive: true, force: true })
   }

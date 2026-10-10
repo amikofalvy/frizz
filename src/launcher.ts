@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createServer } from "node:net";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, hostname as osHostname, networkInterfaces, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -32,7 +33,7 @@ import {
   normalizePublicOrigin,
 } from "@frizz/server/local-origin";
 import { BOOT_HARD_TIMEOUT_MS, BOOT_STALL_TIMEOUT_MS, readBootProgress } from "@frizz/server/boot-progress";
-import { frizzPaths, projectStateDir } from "@frizz/server/frizz-paths";
+import { frizzPaths, launchHostDir, projectStateDir } from "@frizz/server/frizz-paths";
 import { claimIdentityPath } from "./identity.ts";
 import {
   discoverProjectRoot,
@@ -41,10 +42,9 @@ import {
   isExistingProjectRoot,
   isHomeDirectory,
   isNotAGitWorktree,
-  isStateRootHome,
   isWorldWritable,
-  refuseStateRootHome,
   refuseWorldWritableProject,
+  writeProjectIdFile,
 } from "@frizz/server/project-root";
 import { defaultLogRoot, latestLogPath } from "@frizz/server/logging";
 import { DEFAULT_PORT, fallbackPort, FRIZZ_ROUTE_PREFIX } from "@frizz/shared";
@@ -335,12 +335,13 @@ export function prepareSandbox(env: NodeJS.ProcessEnv = process.env, realHome: s
   mkdirSync(project, { recursive: true });
   writeFileSync(join(project, "README.md"), "# frizz sandbox\n\nA throwaway project; everything here is deleted when the sandbox exits.\n");
   try {
-    // A repository is adopted on sight (resolveLaunchIntent), so a git repo is the cheapest way to be
-    // a project without touching any real registry.
     execFileSync("git", ["init", "-q"], { cwd: project, stdio: "ignore" });
   } catch {
     throw new Error("--sandbox mints a throwaway git repository and git is not available — install git, or play in a repo of your own with a temp HOME");
   }
+  // Only a folder Frizz already knows opens its own board (resolveLaunchIntent); a fresh repository
+  // lands on the dashboard. A sandbox is a board to try things in, so its project is made one here.
+  writeProjectIdFile(project, randomUUID());
   process.chdir(project);
   return { home, project };
 }
@@ -421,10 +422,11 @@ export function helpText(command = "frizz-dev"): string {
 
 Usage: ${command} [options]
 
-Run it in the directory you want to work in. One server serves EVERY project on this machine,
-each at its own /project/<name> URL, so a second run joins the one already going. Frizz serves a
-verified immutable artifact, selecting or safely building one on first launch, then opens it in
-your default browser; source edits never restart the shared board.
+Run it anywhere. One server serves EVERY project on this machine, each at its own
+/project/<name> URL, so a second run joins the one already going. In a folder that is already a
+project it opens that project's board; anywhere else it opens the dashboard, where projects are
+added. Frizz serves a verified immutable artifact, selecting or safely building one on first
+launch, then opens it in your default browser; source edits never restart the shared board.
 
 Options:
   --no-app               print the URL without opening a browser
@@ -461,48 +463,33 @@ An immutable artifact is the default. --dev is the only explicit unsafe source w
 /**
  * What a `frizz` in THIS directory should actually do.
  *
- * RUNNING FRIZZ IN A REPOSITORY OPENS THAT REPOSITORY, minting `.frizz/.id` on the spot if it has
- * none. That is the whole command: `cd` somewhere and run it, and the board you get is the board for
- * where you are. Making adoption a confirmation step instead broke exactly that — running it in a new
- * checkout hosted on some OTHER project and landed on the grid, so the maintainer's `frizz-dev` in
- * `ccbroker` opened `frizz` (2026-08-11).
+ * A FOLDER FRIZZ ALREADY KNOWS OPENS ITS BOARD. ANYTHING ELSE OPENS THE DASHBOARD. One server serves
+ * every project on the machine, so the command starts Frizz; it does not pick a project, and it never
+ * makes one. Projects are added on the dashboard (maintainer 2026-10-10: "If the folder that you run
+ * it in is not a pre-existing Frizz project, it should just bring you to the root of the dashboard").
  *
- * What that confirmation step was actually protecting against is narrower. A directory with no marker
- * of its own — `~/Downloads`, a scratch folder, a typo — is a command in the wrong terminal, not a
- * project, so it is OFFERED on the grid of a board that already has projects. $HOME is the same case
- * whatever it carries (a stray `package.json` makes it no more a checkout), and it lands on the grid
- * without an offer: the grid's own add still refuses home (router.ts addProjectAtPath).
+ * It was the other way round twice. Running the command ADOPTED the directory until 2026-08-06, which
+ * minted a project in $HOME, inside Frizz's own `~/.frizz` state root. Then a repository was adopted
+ * on sight and everything else refused or offered (2026-08-11) — so a new user's first `npx frizz`,
+ * typed in a fresh terminal or in `~/Documents`, ended in "cd into a repository and run frizz
+ * there". Both came from the days of one server per project, when where the command ran had to mean
+ * something.
  *
- * WITH NO PROJECT AT ALL, THE DIRECTORY IS OPENED, WHATEVER IT IS. A server is a process that has to
- * serve something, and the host for an offer is the most recently opened registered project. A new
- * user has none, so their first `npx frizz` — typed in a fresh terminal, which is $HOME, or in
- * `~/Documents` — used to end in "cd into a repository and run frizz there". That was a rule from
- * when Frizz ran once per project; one server serves every project now, and where it is started
- * from is not worth an error (maintainer 2026-10-10). The folder becomes the first project, and the
- * rest are added from its board.
+ *  - `open`  — a directory Frizz knows, from `.frizz/.id` or from the registry: its own board.
+ *  - `offer` — a repository or a manifest root Frizz has not seen: the dashboard, asking whether to
+ *               add it. Nothing is written until the operator says yes there.
+ *  - `grid`  — every other directory: the dashboard, and nothing else. `~/Downloads` is a command
+ *               in the wrong terminal. $HOME and a world-writable folder (`/tmp`) are never offered
+ *               because the dashboard's own add refuses them (isHomeDirectory, isWorldWritable).
  *
- *  - `open`  — a directory Frizz knows, one that IS a project (hasProjectMarker), or the directory of
- *               a first launch: its own board.
- *  - `offer` — an unmarked, unadopted directory beside existing projects: open the grid and let it
- *               ask. Nothing is written.
- *  - `grid`  — $HOME beside existing projects, and the two folders that are never a project.
- *  - `empty` — one of those two with nothing else to show. A world-writable folder (`/tmp`): any
- *               account can plant what a worker there would run (isWorldWritable). And $HOME on an
- *               install that keeps its own state in `~/.frizz`, where the project directory would be
- *               the state root itself (isStateRootHome).
+ * The last two still need a project to LAUNCH with, because a server is a process that serves a
+ * board; the most recently opened registered project is that host. A machine with no project yet is
+ * hosted on a folder of Frizz's own instead (hostWorkspace), so the dashboard is always reachable.
  */
 export type LaunchIntent =
   | { kind: "open"; workspace: Workspace }
   | { kind: "offer"; workspace: Workspace; directory: string }
   | { kind: "grid"; workspace: Workspace }
-  | { kind: "empty"; directory: string; reason: "home" | "world-writable" }
-
-/** What `frizz` says when the directory it was run in can never be a project and nothing else exists. */
-export function emptyLaunchMessage(intent: Extract<LaunchIntent, { kind: "empty" }>): string {
-  return intent.reason === "home"
-    ? "Frizz keeps its own files in ~/.frizz on this machine, so it cannot open your home directory as a project, and there is no other project to show yet. cd into another folder and run frizz there."
-    : `A folder every account can write to cannot be a project: ${intent.directory}. Run frizz in a folder only you can write to.`
-}
 
 export function resolveLaunchIntent(
   cwd = process.cwd(),
@@ -511,29 +498,49 @@ export function resolveLaunchIntent(
 ): LaunchIntent {
   const candidate = realpathSync(discoverProjectRoot(cwd, home))
   const known = isExistingProjectRoot(candidate) || findByPath(candidate, home) !== undefined
-  const isHome = isHomeDirectory(candidate, home)
-  const refused = isWorldWritable(candidate) ? "world-writable" : isStateRootHome(candidate, home) ? "home" : undefined
+  const refused = isHomeDirectory(candidate, home) || isWorldWritable(candidate)
   // A directory Frizz already knows opens as itself — including one it knows only from the registry,
-  // so forgetting to commit `.frizz/.id` never costs someone their board. So does a repository it has
-  // never seen: that is the eager adoption above, and resolveWorkspace is what mints the id.
-  if (!refused && (known || (hasProjectMarker(candidate) && !isHome)))
-    return { kind: "open", workspace: resolveWorkspace(cwd, home, env) }
+  // so forgetting to commit `.frizz/.id` never costs someone their board.
+  if (known && !refused) return { kind: "open", workspace: resolveWorkspace(cwd, home, env) }
 
-  const host = mostRecentProject(home, env)
-  if (!host) {
-    if (refused) return { kind: "empty", directory: candidate, reason: refused }
-    // The first launch on this machine: nothing to host an offer on, so this folder is the project.
-    return { kind: "open", workspace: resolveWorkspace(cwd, home, env) }
+  const host = mostRecentProject(home, env) ?? hostWorkspace(home)
+  return !refused && hasProjectMarker(candidate)
+    ? { kind: "offer", workspace: host, directory: candidate }
+    : { kind: "grid", workspace: host }
+}
+
+/**
+ * The server's host on a machine with no project to be one: a folder of Frizz's own, never registered.
+ *
+ * The server builds a whole board around the project it is launched with — its state dir holds the
+ * launch record and the `server.lock` every worker reads the port from — so "no project" is not a
+ * state it has. This is the smallest thing that stands in: a real, empty project the registry never
+ * hears about, so the dashboard lists nothing and says "Welcome to Frizz". The first project the
+ * operator adds there is an ordinary tenant, and from the next start it is the host.
+ */
+export function hostWorkspace(home = homedir()): Workspace {
+  const dir = launchHostDir(home)
+  mkdirSync(dir, { recursive: true })
+  const root = realpathSync(dir)
+  const id = ensureProjectIdFile(root, home)
+  const stateDir = projectStateDir(id, home)
+  mkdirSync(stateDir, { recursive: true })
+  return { root, id, stateDir, name: basename(root), identityScope: "repository" }
+}
+
+/** Is this workspace that stand-in? Its folder must never be registered, named or offered as a project. */
+export function isHostWorkspace(workspace: Pick<Workspace, "root">, home = homedir()): boolean {
+  try {
+    return workspace.root === realpathSync(launchHostDir(home))
+  } catch {
+    return false
   }
-  return refused || isHome
-    ? { kind: "grid", workspace: host }
-    : { kind: "offer", workspace: host, directory: candidate }
 }
 
 /** The most recently opened project that still exists — the server's host when the cwd is not one. */
 function mostRecentProject(home: string, env: NodeJS.ProcessEnv): Workspace | undefined {
   for (const entry of listProjects(home)) {
-    if (entry.stale || isStateRootHome(entry.path, home) || isWorldWritable(entry.path)) continue
+    if (entry.stale || isHomeDirectory(entry.path, home) || isWorldWritable(entry.path)) continue
     try {
       return resolveWorkspace(entry.path, home, env)
     } catch {
@@ -568,10 +575,8 @@ export function resolveWorkspace(
   }
   const root0 = realpathSync(gitRoot ?? discoverProjectRoot(cwd, home));
   // Before ensureProjectIdFile below writes `.frizz/.id` into it. resolveLaunchIntent already routes
-  // both to the grid; this is the floor for every other caller, and for a launch directory Git
-  // resolves to a root the walk-up did not (a folder inside a dotfiles repository in $HOME).
+  // a world-writable cwd to the grid; this is the floor for every other caller.
   refuseWorldWritableProject(root0);
-  refuseStateRootHome(root0, home);
   const identity = gitRoot ? resolveGitProjectIdentity(root0, home) : undefined;
   const root = identity?.root ?? root0;
   // The id lives at `.frizz/.id`; a repository's existing `git config frizz.id` seeds it, so an

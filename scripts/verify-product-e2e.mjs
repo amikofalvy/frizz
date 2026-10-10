@@ -26,9 +26,9 @@
  *   writes, and it exercises the path every launch after the first one takes, which is the path that
  *   actually has to keep working.
  *
- *   A GIT REPOSITORY as the project. Frizz opens a repository as itself wherever it is run, while a
- *   bare directory is only offered once another project exists — which is why --sandbox mints a
- *   throwaway repo rather than a throwaway folder.
+ *   A GIT REPOSITORY as the launch directory, from when Frizz refused a bare one. Neither is adopted
+ *   any more — a launch from a folder that is not already a project lands on the dashboard, hosted
+ *   on Frizz's own folder — and nothing below asks which board is open.
  *
  *   THE OWNING IDENTITY, seeded into the sandbox home. A name belongs to the key that claimed it, so a
  *   fresh key is correctly refused with "that name is already taken" — verified below, because that

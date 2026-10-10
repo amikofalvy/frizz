@@ -27,22 +27,20 @@ Frizz is for you if you have any of these opinions:
 
 **Requirements.** Node 22.13+, and a [Claude Code](https://claude.com/claude-code) or [Codex](https://developers.openai.com/codex) subscription you are signed in to — Frizz drives the subscription you already pay for. Frizz brings its own pinned copy of each CLI (downloaded once, on first start), so the version on your PATH is yours to manage and never changes what a thread runs.
 
-Then run it in any directory — a repo, a jj checkout, or a folder of scripts. Frizz has no opinion about version control and does not require Git.
+Then run it, from anywhere.
 
 ```sh
-$ cd path/to/acme
 $ npx frizz
 
   FRIZZ v0.4.0  ready in 4.0s
 
-  ➜  Local:    http://127.0.0.1:9393/project/acme/
-  ➜  Project:  acme — path/to/acme
+  ➜  Local:    http://127.0.0.1:9393/
   ➜  Logs:     ~/Library/Application Support/Frizz/projects/979dae3c-fe15-4038-817e-11d0e7491959/logs/frizz-2026-08-01T13-44-43-16931.log
 
   press ctrl-c to stop · run with --debug for the full event feed
 ```
 
-A browser tab opens at `http://127.0.0.1:9393/project/acme/`. Frizz always listens on port 9393 (19393 if something else holds it), and one server serves every project on the machine. Each directory you run it in becomes a **project** with its own board at `/project/<name>`, so running `npx frizz` in a second repo registers that project and opens its board in the server already running rather than starting another. Runs on macOS, Linux, and Windows.
+A browser tab opens on the dashboard at `http://127.0.0.1:9393/`. Add a **project** there — any folder: a repo, a jj checkout, or a folder of scripts. Frizz has no opinion about version control and does not require Git. Each project gets its own board at `/project/<name>`, and from then on running `npx frizz` inside that folder opens its board. Frizz always listens on port 9393 (19393 if something else holds it), and one server serves every project on the machine, so a second run joins the server already running rather than starting another. Runs on macOS, Linux, and Windows.
 
 <p align="center">
   <img src="assets/board.png" alt="The Frizz board: the project rail down the left, the composer and the queue of threads beside it, and on the right a card where an agent is asking an answerable question with numbered options drawn as keycaps, with its snooze clock and done check in the card's header." width="100%">
@@ -67,7 +65,7 @@ Frizz is a browser tab, a queue, and the agent CLIs you already pay for. It brin
 
 ### Projects
 
-Every directory you run `npx frizz` in becomes a project with its own board, all served by the one Frizz on your machine. The home page at `http://127.0.0.1:9393/` lists them.
+Every folder you add becomes a project with its own board, all served by the one Frizz on your machine. The dashboard at `http://127.0.0.1:9393/` lists them, and it is where `npx frizz` lands when it is run outside one.
 
 <p align="center">
   <img src="assets/projects.png" alt="The Frizz home page: a rail of project icons down the left, and four project cards — design-system, acme-web, acme-api, frizz — each with its home-relative path and when it was last opened, plus an Add a project card." width="100%">
@@ -134,10 +132,11 @@ Frizz production launcher
 
 Usage: npx frizz [options]
 
-Run it in the directory you want to work in. One server serves EVERY project on this machine,
-each at its own /project/<name> URL, so a second run joins the one already going. Runs the
-npm-resolved immutable Frizz package, then opens it in your default browser. Use frizz-dev only
-for a source checkout.
+Run it anywhere. One server serves EVERY project on this machine, each at its own
+/project/<name> URL, so a second run joins the one already going. In a folder that is already a
+project it opens that project's board; anywhere else it opens the dashboard, where projects are
+added. Runs the npm-resolved immutable Frizz package, then opens it in your default browser. Use
+frizz-dev only for a source checkout.
 
 Options:
   --no-app               print the URL without opening a browser

@@ -43,7 +43,6 @@ import {
   prepareSandbox,
   probeFrizz,
   readPreferredPort,
-  emptyLaunchMessage,
   resolveLaunchIntent,
   resolveLaunchControlTarget,
   runningFrizzStatus,
@@ -127,10 +126,11 @@ if (options.help) {
 
 Usage: npx ${PACKAGE_NAME} [options]
 
-Run it in the directory you want to work in. One server serves EVERY project on this machine,
-each at its own /project/<name> URL, so a second run joins the one already going. Runs the
-npm-resolved immutable Frizz package, then opens it in your default browser. Use frizz-dev only
-for a source checkout.
+Run it anywhere. One server serves EVERY project on this machine, each at its own
+/project/<name> URL, so a second run joins the one already going. In a folder that is already a
+project it opens that project's board; anywhere else it opens the dashboard, where projects are
+added. Runs the npm-resolved immutable Frizz package, then opens it in your default browser. Use
+frizz-dev only for a source checkout.
 
 Options:
   --no-app               print the URL without opening a browser
@@ -207,9 +207,8 @@ const workspace: Workspace = (() => {
   // ONE launch policy for both launchers. This called resolveWorkspace directly, which adopts
   // whatever directory it is handed — so `frizz` in $HOME minted a project id inside Frizz's own
   // `~/.frizz` state root, the failure frizz-dev was fixed for in 95d81bd and this file was not.
-  // A repository still opens as itself and is still adopted on sight; see resolveLaunchIntent.
+  // Only a directory Frizz already knows opens as itself now; see resolveLaunchIntent.
   const intent = resolveLaunchIntent();
-  if (intent.kind === "empty") throw new Error(emptyLaunchMessage(intent));
   launchIntent = intent;
   return intent.workspace;
   } catch (error) { return fail(error); }
@@ -429,7 +428,7 @@ async function openOrPrint(port: number, reused: boolean, path = ""): Promise<vo
   if (sandbox) warnings.push(`Sandbox: everything here is throwaway (${sandbox.home}) and is deleted when this terminal closes.`);
   if (sessionNotice && !reused) warnings.push(sessionNotice);
   if (!readout) {
-    console.log(`${reused ? "reusing" : "started"} Frizz for ${workspace.root}`);
+    console.log(`${reused ? "reusing" : "started"} Frizz${launchIntent && launchIntent.kind !== "open" ? "" : ` for ${workspace.root}`}`);
     console.log(url);
     if (publicOrigin) console.log(activeAccessLink?.url ?? `${publicOrigin}/`);
     for (const warning of warnings) console.log(warning);
@@ -440,7 +439,11 @@ async function openOrPrint(port: number, reused: boolean, path = ""): Promise<vo
     [
       { label: "Local", value: boardAddress(url), accent: true },
       ...(publicOrigin ? [{ label: "Public", value: activeAccessLink?.url ?? `${publicOrigin}/`, accent: true }] : []),
-      { label: "Project", value: `${workspace.name} — ${tildePath(workspace.root, home)}` },
+      // Only an `open` launch is ABOUT its workspace; any other is hosted on a project the operator
+      // did not pick (launcher.ts resolveLaunchIntent), and naming it here reads as "you opened this".
+      ...(launchIntent && launchIntent.kind !== "open"
+        ? []
+        : [{ label: "Project", value: `${workspace.name} — ${tildePath(workspace.root, home)}` }]),
       ...(logger.file ? [{ label: "Logs", value: tildePath(logger.file, home) }] : []),
     ],
     reused

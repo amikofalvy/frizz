@@ -26,7 +26,7 @@ import {
   type ProcessPlatformAdapter,
   type ProjectLaunchTarget,
 } from "../packages/server/src/project-launch.ts";
-import { frizzPaths, projectStateDir } from "@frizz/server/frizz-paths";
+import { frizzPaths, launchHostDir, projectStateDir } from "@frizz/server/frizz-paths";
 import {
   acquireGlobalLaunchLock,
   allocatePort,
@@ -39,7 +39,8 @@ import {
   expectedOwnerHealth,
   liveWorkspaceOwner,
   parseCliArgs,
-  emptyLaunchMessage,
+  hostWorkspace,
+  isHostWorkspace,
   resolveLaunchIntent,
   prepareBeforeGlobalLaunchLock,
   probeFrizz,
@@ -63,7 +64,7 @@ import {
 } from "./launcher.ts";
 import { claimIdentityFingerprint, claimIdentityPath, loadOrCreateClaimIdentity } from "./identity.ts";
 import { DEFAULT_PORT, DEFAULT_DEV_PORT } from "@frizz/shared";
-import { registerProject } from "@frizz/server/project-registry";
+import { listProjects, registerProject } from "@frizz/server/project-registry";
 
 test("artifact re-exec keeps the original canonical Frizz source directory", () => {
   const source = mkdtempSync(join(tmpdir(), "frizz-canonical-source-"));
@@ -2340,7 +2341,48 @@ test("waitForWorkspace: with no state dir the historical flat deadline is unchan
  * Untested until 2026-08-11, and the gap showed: running it in a fresh checkout opened the LAST
  * project instead of that checkout. Each case below is one directory the operator can be standing in.
  */
-test("launch intent: a repository opens as itself, adopted on sight", () => {
+test("launch intent: a directory Frizz already knows opens its own board", () => {
+  const base = mkdtempSync(join(tmpdir(), "frizz launch intent known "));
+  const home = join(base, "home");
+  const other = join(base, "other repo");
+  const repo = join(base, "known repo");
+  const plain = join(base, "notes");
+  try {
+    mkdirSync(home, { recursive: true });
+    mkdirSync(plain, { recursive: true });
+    execFileSync("git", ["init", "-q", other]);
+    execFileSync("git", ["init", "-q", repo]);
+    // Known from the REGISTRY alone, with another project opened more recently — the state in which
+    // the wrong board used to win.
+    const known = resolveWorkspace(repo, home);
+    registerProject({ dir: known.root, id: known.id }, home);
+    const recent = resolveWorkspace(other, home);
+    registerProject({ dir: recent.root, id: recent.id }, home);
+
+    const intent = resolveLaunchIntent(repo, home, {});
+    assert.ok(intent.kind === "open");
+    assert.equal(intent.workspace.id, known.id);
+    // A sub-directory of that repository is the same board, not a second one.
+    const child = join(repo, "packages", "web");
+    mkdirSync(child, { recursive: true });
+    const sub = resolveLaunchIntent(child, home, {});
+    assert.ok(sub.kind === "open");
+    assert.equal(sub.workspace.id, known.id);
+
+    // Known from `.frizz/.id` alone: a folder added once and since dropped from the registry file.
+    writeFileSync(join(plain, "todo.md"), "");
+    const adopted = resolveWorkspace(plain, home);
+    const again = resolveLaunchIntent(plain, home, {});
+    assert.ok(again.kind === "open");
+    assert.equal(again.workspace.id, adopted.id);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+// Maintainer 2026-10-10: "If the folder that you run it in is not a pre-existing Frizz project, it
+// should just bring you to the root of the dashboard." A repository was adopted on sight until then.
+test("launch intent: a repository Frizz has not seen lands on the dashboard, offered and unadopted", () => {
   const base = mkdtempSync(join(tmpdir(), "frizz launch intent repo "));
   const home = join(base, "home");
   const host = join(base, "host repo");
@@ -2349,147 +2391,82 @@ test("launch intent: a repository opens as itself, adopted on sight", () => {
     mkdirSync(home, { recursive: true });
     execFileSync("git", ["init", "-q", host]);
     execFileSync("git", ["init", "-q", fresh]);
-    // A registered project exists and is more recent, which is exactly the state that used to win.
     const hosted = resolveWorkspace(host, home);
     registerProject({ dir: hosted.root, id: hosted.id }, home);
 
-    assert.equal(existsSync(join(fresh, ".frizz", ".id")), false);
-    const intent = resolveLaunchIntent(fresh, home, {});
-    assert.equal(intent.kind, "open");
-    assert.ok(intent.kind === "open");
-    assert.equal(intent.workspace.root, realpathSync(fresh));
-    // EAGER: the id is minted by resolving it, not by a confirmation on the grid.
-    assert.equal(existsSync(join(fresh, ".frizz", ".id")), true);
-
-    // A sub-directory of that repository is the same board, not a second one.
-    const child = join(fresh, "packages", "web");
-    mkdirSync(child, { recursive: true });
-    const sub = resolveLaunchIntent(child, home, {});
-    assert.ok(sub.kind === "open");
-    assert.equal(sub.workspace.id, intent.workspace.id);
+    const intent = resolveLaunchIntent(join(fresh), home, {});
+    assert.ok(intent.kind === "offer");
+    assert.equal(intent.directory, realpathSync(fresh));
+    assert.equal(intent.workspace.root, hosted.root);
+    assert.equal(existsSync(join(fresh, ".frizz")), false);
+    assert.equal(listProjects(home).length, 1);
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
 });
 
-test("launch intent: an unmarked directory beside existing projects is offered, never adopted", () => {
+test("launch intent: an unmarked directory and $HOME land on the dashboard and are not asked about", () => {
   const base = mkdtempSync(join(tmpdir(), "frizz launch intent bare "));
   const home = join(base, "home");
   const host = join(base, "host repo");
-  const bare = join(base, "downloads");
+  const bare = join(home, "Documents");
   try {
-    mkdirSync(home, { recursive: true });
     mkdirSync(bare, { recursive: true });
-    execFileSync("git", ["init", "-q", host]);
-
-    const hosted = resolveWorkspace(host, home);
-    registerProject({ dir: hosted.root, id: hosted.id }, home);
-    const intent = resolveLaunchIntent(bare, home, {});
-    assert.ok(intent.kind === "offer");
-    assert.equal(intent.directory, realpathSync(bare));
-    assert.equal(intent.workspace.root, hosted.root);
-    assert.equal(existsSync(join(bare, ".frizz", ".id")), false);
-  } finally {
-    rmSync(base, { recursive: true, force: true });
-  }
-});
-
-// A new user's first `npx frizz` is typed in a fresh terminal — $HOME — or in ~/Documents. With no
-// project to host an offer on, both used to end in "cd into a repository and run frizz there".
-test("launch intent: the first launch opens the directory it was run in, repository or not", () => {
-  const base = mkdtempSync(join(tmpdir(), "frizz launch intent first "));
-  const home = join(base, "home");
-  const documents = join(home, "Documents");
-  try {
-    mkdirSync(documents, { recursive: true });
-
-    const intent = resolveLaunchIntent(documents, home, {});
-    assert.ok(intent.kind === "open");
-    assert.equal(intent.workspace.root, realpathSync(documents));
-    assert.equal(existsSync(join(documents, ".frizz", ".id")), true);
-  } finally {
-    rmSync(base, { recursive: true, force: true });
-  }
-});
-
-test("launch intent: $HOME is the first project when there is no other, and stays an ordinary one", () => {
-  const base = mkdtempSync(join(tmpdir(), "frizz launch intent first home "));
-  const home = join(base, "home");
-  const downloads = join(home, "Downloads");
-  try {
-    mkdirSync(downloads, { recursive: true });
-
-    const intent = resolveLaunchIntent(home, home, {});
-    assert.ok(intent.kind === "open");
-    assert.equal(intent.workspace.root, realpathSync(home));
-    assert.equal(existsSync(join(home, ".frizz", ".id")), true);
-    // THE TRAP: home's project directory is spelled `~/.frizz`, the name of an old install's state
-    // root. Read as one, every root moves there and the state this launch just wrote looks gone.
-    assert.equal(frizzPaths({ home }).legacy, false);
-    assert.equal(intent.workspace.stateDir, projectStateDir(intent.workspace.id, home));
-    assert.equal(intent.workspace.stateDir.startsWith(join(realpathSync(home), ".frizz")), false);
-    registerProject({ dir: intent.workspace.root, id: intent.workspace.id }, home);
-
-    // The same board on the next launch, and the host for a folder that is not a project yet —
-    // which is offered, not swallowed by the home project above it.
-    const again = resolveLaunchIntent(home, home, {});
-    assert.ok(again.kind === "open");
-    assert.equal(again.workspace.id, intent.workspace.id);
-    const below = resolveLaunchIntent(downloads, home, {});
-    assert.ok(below.kind === "offer");
-    assert.equal(below.directory, realpathSync(downloads));
-    assert.equal(below.workspace.id, intent.workspace.id);
-  } finally {
-    rmSync(base, { recursive: true, force: true });
-  }
-});
-
-test("launch intent: $HOME beside existing projects lands on the grid, marker or not", () => {
-  const base = mkdtempSync(join(tmpdir(), "frizz launch intent home "));
-  const home = join(base, "home");
-  const host = join(base, "host repo");
-  try {
-    mkdirSync(home, { recursive: true });
-    // Home directories carry manifests all the time — a package.json, a Makefile. Eager adoption of a
-    // marked directory must not turn a terminal opened to start the server into a card for $HOME.
+    // Home directories carry manifests all the time — a package.json, a Makefile. That makes $HOME
+    // no more a project than `~/Documents`, and the dashboard's own add refuses it anyway.
     writeFileSync(join(home, "package.json"), "{}\n");
     execFileSync("git", ["init", "-q", host]);
     const hosted = resolveWorkspace(host, home);
     registerProject({ dir: hosted.root, id: hosted.id }, home);
 
-    const intent = resolveLaunchIntent(home, home, {});
-    assert.ok(intent.kind === "grid");
-    assert.equal(intent.workspace.root, hosted.root);
-    assert.equal(existsSync(join(home, ".frizz", ".id")), false);
+    for (const cwd of [bare, home]) {
+      const intent = resolveLaunchIntent(cwd, home, {});
+      assert.ok(intent.kind === "grid", cwd);
+      assert.equal(intent.workspace.root, hosted.root, cwd);
+      assert.equal(existsSync(join(cwd, ".frizz")), false, cwd);
+    }
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
 });
 
-// On an install from before the platform roots, `~/.frizz` holds the registry, every project's state
-// and the launch locks. Home's project directory would be that same directory (2026-08-06).
-test("launch intent: $HOME is never a project where ~/.frizz is Frizz's own state root", () => {
-  const base = mkdtempSync(join(tmpdir(), "frizz launch intent legacy home "));
+// A new user's first `npx frizz` is typed in a fresh terminal — $HOME — or in ~/Documents, on a
+// machine with no project to host the server on. It used to end in "cd into a repository and run
+// frizz there".
+test("launch intent: with no project at all, every directory still reaches the dashboard", () => {
+  const base = mkdtempSync(join(tmpdir(), "frizz launch intent first "));
   const home = join(base, "home");
-  const host = join(base, "host repo");
+  const documents = join(home, "Documents");
+  const repo = join(home, "code", "acme");
   try {
-    mkdirSync(join(home, ".frizz", "projects"), { recursive: true });
-    execFileSync("git", ["init", "-q", host]);
-    assert.equal(frizzPaths({ home }).legacy, true);
+    mkdirSync(documents, { recursive: true });
+    execFileSync("git", ["init", "-q", repo]);
 
-    const orphan = resolveLaunchIntent(home, home, {});
-    assert.ok(orphan.kind === "empty");
-    assert.equal(orphan.reason, "home");
-    assert.match(emptyLaunchMessage(orphan), /cannot open your home directory/u);
-    assert.throws(() => resolveWorkspace(home, home), /home folder cannot be a project here/u);
-    assert.equal(existsSync(join(home, ".frizz", ".id")), false);
+    const fromHome = resolveLaunchIntent(home, home, {});
+    assert.ok(fromHome.kind === "grid");
+    const fromDocuments = resolveLaunchIntent(documents, home, {});
+    assert.ok(fromDocuments.kind === "grid");
+    const fromRepo = resolveLaunchIntent(repo, home, {});
+    assert.ok(fromRepo.kind === "offer");
+    assert.equal(fromRepo.directory, realpathSync(repo));
 
-    const hosted = resolveWorkspace(host, home);
-    registerProject({ dir: hosted.root, id: hosted.id }, home);
-    const intent = resolveLaunchIntent(home, home, {});
-    assert.ok(intent.kind === "grid");
-    assert.equal(intent.workspace.root, hosted.root);
-    assert.equal(existsSync(join(home, ".frizz", ".id")), false);
+    // ONE stand-in host, Frizz's own folder, the same on every launch — and never a project: no
+    // directory the operator was standing in is written to, and the registry stays empty.
+    const host = hostWorkspace(home);
+    assert.equal(host.root, realpathSync(launchHostDir(home)));
+    assert.equal(isHostWorkspace(host, home), true);
+    for (const intent of [fromHome, fromDocuments, fromRepo]) assert.deepEqual(intent.workspace, host);
+    for (const dir of [home, documents, repo]) assert.equal(existsSync(join(dir, ".frizz")), false, dir);
+    assert.equal(registerProject({ dir: host.root, id: host.id }, home).entry, undefined);
+    assert.equal(listProjects(home).length, 0);
+
+    // The first real project replaces it as the host from the next launch on.
+    const first = resolveWorkspace(repo, home);
+    registerProject({ dir: first.root, id: first.id }, home);
+    const later = resolveLaunchIntent(documents, home, {});
+    assert.ok(later.kind === "grid");
+    assert.equal(later.workspace.id, first.id);
+    assert.equal(isHostWorkspace(later.workspace, home), false);
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
@@ -2508,22 +2485,23 @@ test("launch intent: a folder every account can write to is never a project, rep
     execFileSync("git", ["init", "-q", shared]);
     chmodSync(shared, 0o1777);
 
+    // The dashboard, not an offer: the add it would offer is refused too. With no project to host it,
+    // that is Frizz's own folder rather than the shared one.
     const orphan = resolveLaunchIntent(shared, home, {});
-    assert.ok(orphan.kind === "empty");
-    assert.equal(orphan.reason, "world-writable");
+    assert.ok(orphan.kind === "grid");
+    assert.equal(isHostWorkspace(orphan.workspace, home), true);
     assert.throws(() => resolveWorkspace(shared, home), /A folder every account can write to cannot be a project/);
 
     const hosted = resolveWorkspace(host, home);
     registerProject({ dir: hosted.root, id: hosted.id }, home);
     const intent = resolveLaunchIntent(shared, home, {});
-    // The grid, not an offer: the add it would offer is refused too.
     assert.ok(intent.kind === "grid");
     assert.equal(intent.workspace.root, hosted.root);
     assert.equal(existsSync(join(shared, ".frizz", ".id")), false);
 
     // A registered project that has since become world-writable is not chosen to host the server.
     chmodSync(hosted.root, 0o777);
-    assert.equal(resolveLaunchIntent(shared, home, {}).kind, "empty");
+    assert.equal(isHostWorkspace(resolveLaunchIntent(shared, home, {}).workspace, home), true);
     chmodSync(hosted.root, 0o755);
   } finally {
     rmSync(base, { recursive: true, force: true });
@@ -2579,8 +2557,10 @@ test("--sandbox parses, refuses the running-board queries, and prepares a dispos
     assert.equal(env.HOME, sandbox.home);
     assert.equal(env.USERPROFILE, sandbox.home);
     assert.equal(process.cwd(), realpathSync(sandbox.project));
-    // The throwaway project is a repository, so the launcher adopts it on sight.
+    // The throwaway project is one Frizz already knows, so the launch opens its board rather than
+    // the dashboard — and a repository, so a worker there has somewhere to commit.
     assert.ok(existsSync(join(sandbox.project, ".git")));
+    assert.equal(resolveLaunchIntent(sandbox.project, sandbox.home, env).kind, "open");
     assert.ok(sandbox.home.startsWith(realpathSync(tmpdir())) || sandbox.home.startsWith(tmpdir()));
   } finally {
     process.chdir(cwd);

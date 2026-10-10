@@ -2,7 +2,7 @@ import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, re
 import { homedir } from "node:os"
 import { basename, dirname, join } from "node:path"
 import { slugify } from "@frizz/shared"
-import { frizzPaths } from "./frizz-paths.ts"
+import { frizzPaths, launchHostDir } from "./frizz-paths.ts"
 import { existingProjectId } from "./project-root.ts"
 
 // THE MACHINE'S LIST OF PROJECTS.
@@ -82,7 +82,7 @@ export interface Registry {
   forgotten?: string[]
 }
 
-export type RegisterAction = "created" | "reopened" | "moved" | "rekeyed" | "duplicate"
+export type RegisterAction = "created" | "reopened" | "moved" | "rekeyed" | "duplicate" | "unlisted"
 
 const EMPTY: Registry = { version: 1, projects: [] }
 
@@ -223,6 +223,10 @@ export function registerProject(
   home = homedir(),
 ): { entry?: RegistryEntry; action: RegisterAction } {
   input = { ...input, dir: canonicalPath(input.dir) }
+  // The folder the server is launched on when the machine has no project yet (frizz-paths.ts
+  // launchHostDir) has an id and a state dir like any project, and every caller that registers one —
+  // the launchers, the boot backfill, the dashboard's add — comes through here. It is never listed.
+  if (input.dir === canonicalPath(launchHostDir(home))) return { action: "unlisted" }
   const registry = readRegistry(home)
   // Opening a project again is what undoes forgetting it. Every branch below that registers this id
   // writes the registry, so the cleared list rides along; `duplicate` writes nothing and keeps it.
