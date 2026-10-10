@@ -962,6 +962,28 @@ test("settledSince: true only when nothing is pending AND something reached a te
   h.close()
 })
 
+test("withdraw terminalizes one provider-withdrawn request, once, and leaves its siblings alone", () => {
+  const h = dbHarness()
+  const first = h.store.create(request()).interaction
+  const second = h.store.create(request(undefined, { providerRequestId: "provider-request-2" })).interaction
+  const changes: string[] = []
+  h.store.subscribe((change) => changes.push(`${change.interactionId}:${change.lifecycle}`))
+
+  const withdrawn = h.store.withdraw(scope(first), first.id)
+  assert.equal(withdrawn?.lifecycle, "cancelled")
+  assert.equal(withdrawn?.cancellationReason, "provider-cancelled")
+  assert.deepEqual(changes, [`${first.id}:cancelled`], "observers hear it, so the card leaves the board")
+  assert.deepEqual(h.store.listPending(scope(first)).map((record) => record.id), [second.id])
+  assert.equal(h.store.withdraw(scope(first), first.id), undefined, "already terminal")
+  assert.equal(h.store.withdraw({ ...scope(first), sessionId: "another-session" }, second.id), undefined, "not this session's to withdraw")
+  expectCode(() => h.store.resolve(scope(first), resolutionInput(first)), "not-pending")
+
+  // A delivery-bound request has a provider response path that must be cancelled with it.
+  const bound = h.store.createProviderRequest(request(undefined, { providerRequestId: "provider-request-3" }), providerBinding()).interaction
+  expectCode(() => h.store.withdraw(scope(bound), bound.id), "invalid-response")
+  h.close()
+})
+
 test("user cancellation is CAS-safe, idempotent, and cannot overwrite a resolution", () => {
   const h = dbHarness()
   const pending = h.store.create(request()).interaction

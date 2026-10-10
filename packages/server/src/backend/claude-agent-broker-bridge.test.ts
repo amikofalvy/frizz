@@ -95,6 +95,44 @@ async function runCase(decisionId: string, expectBehavior: "allow" | "deny") {
   }
 }
 
+// A request the worker's own hook settles after the operator was already shown its card: the card must
+// LEAVE, at once and for the right reason — not sit there with dead buttons until the turn's `result`
+// sweeps it as `turn-ended` (measured against real claude 2026-10-10: 23s, and as long as the turn).
+test("a card whose request the CLI settles is withdrawn from the journal before the turn ends", { timeout: 25_000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "cbrk-perm-"))
+  const exe = join(dir, "fake-claude--permission-settled-late.mjs")
+  copyFileSync(fakeCli, exe); chmodSync(exe, 0o700)
+  const db = new Database(":memory:")
+  const store = createInteractionStore(db)
+  let results = 0
+  const bridge = createClaudeAgentBrokerBridge({
+    stateDir: dir, executablePath: exe,
+    env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" },
+    interactions: store, projectId: "proj-1",
+    onEvent: (_slug: string, _sid: string, ev: ClaudeQueryEvent) => { if (ev.kind === "result") results++ },
+  })
+  const sessionId = randomUUID()
+  const slug = "perm-thread"
+  const scope = { projectId: "proj-1", threadSlug: slug, sessionId }
+  const waitFor = async (cond: () => boolean, ms = 10_000) => { const d = Date.now() + ms; while (!cond()) { if (Date.now() > d) throw new Error("timeout"); await sleep(20) } }
+  try {
+    await bridge.spawnDispatch({ threadSlug: slug, sessionId, cwd: dir, prompt: "do the thing", permissionMode: "default" })
+    await waitFor(() => store.listPending(scope).length > 0)
+    const [rec] = store.listPending(scope)
+    await waitFor(() => store.listPending(scope).length === 0)
+    assert.equal(results, 0, "the card left BEFORE the turn ended, not because it did")
+    const after = store.get(scope, rec.id)
+    assert.equal(after?.lifecycle, "cancelled")
+    assert.equal(after?.cancellationReason, "provider-cancelled", "withdrawn by the daemon, not swept as turn-ended")
+    await waitFor(() => results > 0)
+  } finally {
+    bridge.releaseSession(slug, sessionId, "session-deleted")
+    bridge.close()
+    try { const r = readBrokerRecord(claudeBrokerRecordPath(dir, sessionId)); if (r) process.kill(r.daemonPid, "SIGKILL") } catch {}
+    await rmEventually(dir)
+  }
+})
+
 test("broker routes a permission escalation to the InteractionStore and APPROVES on the human decision", { timeout: 25_000 }, async () => {
   await runCase("grant-turn", "allow")
 })

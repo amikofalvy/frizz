@@ -223,6 +223,8 @@ function handleHostResponse(message) {
   record({ kind: "host-response", requestId, response })
   if (requestId === "permission-request-1") {
     permissionResponses += 1
+    // The CLI already took this request back; whatever the host says now answers nothing.
+    if (scenario === "permission-settled-fast" || scenario === "permission-settled-late") return
     if ((scenario === "redelivery" || scenario === "conflicting-redelivery") && permissionResponses === 1) return
     emitToolResult("tool-use-permission-1", "permission accepted")
     emitResult("permission complete")
@@ -275,6 +277,17 @@ function handleUserMessage(message) {
   }
   if (scenario === "permission" || scenario === "redelivery") {
     send(permissionRequest)
+    return
+  }
+  // What the real CLI does when a PermissionRequest hook settles a request it has also asked the host
+  // about: it cancels the host's copy and carries on. `fast` cancels well inside the broker's hold,
+  // `late` well after it.
+  if (scenario === "permission-settled-fast" || scenario === "permission-settled-late") {
+    send(permissionRequest)
+    setTimeout(() => {
+      send({ type: "control_cancel_request", request_id: permissionRequest.request_id })
+      setTimeout(() => { emitToolResult("tool-use-permission-1", "settled by a hook"); emitResult("permission complete") }, 400)
+    }, scenario === "permission-settled-fast" ? 30 : 900)
     return
   }
   if (scenario === "conflicting-redelivery") {

@@ -367,6 +367,21 @@ export function createClaudeAgentBrokerBridge(deps: ClaudeBrokerBridgeDeps): Cla
     pendingPerms.set(id, { client, requestId, scope, ...(ask ? { ask } : {}) })
   }
 
+  // The daemon took a request back (a worker hook settled it, or the turn was interrupted): retire its
+  // card. Dropped from `pendingPerms` FIRST, so the observer below does not answer a request that no
+  // longer exists. Before this frame existed nothing retired such a card until the turn's `result`.
+  const withdrawPermission = (slug: string, sessionId: string, requestId: string): void => {
+    if (!deps.interactions) return
+    // By the DAEMON's request id, which is what `pendingPerms` holds and what the frame carries — the
+    // journal's own `providerRequestId` is the SDK's id for the same request, a different string.
+    for (const [interactionId, pending] of pendingPerms) {
+      if (pending.requestId !== requestId || pending.scope.threadSlug !== slug || pending.scope.sessionId !== sessionId) continue
+      pendingPerms.delete(interactionId)
+      // Hygiene, never fatal: the turn-ended sweep still retires a card this could not.
+      try { deps.interactions.withdraw(pending.scope, interactionId) } catch {}
+    }
+  }
+
   // A resolved/cancelled/expired interaction → the decision the daemon applies. The daemon is the durable
   // holder of the canUseTool promise, so this simply relays the answer over the live socket.
   //
@@ -480,6 +495,7 @@ export function createClaudeAgentBrokerBridge(deps: ClaudeBrokerBridgeDeps): Cla
           .then((decision) => client.answerPermission(requestId, decision))
           .catch(() => client.answerPermission(requestId, { behavior: "deny", message: "permission decision failed" }))
       },
+      onPermissionWithdrawn: (requestId) => withdrawPermission(slug, sessionId, requestId),
     })
     const session: ActiveSession = { slug, sessionId, cwd, generation: record.generation, client, acksInput: record.capabilities?.includes(CLAUDE_BROKER_CAPABILITY_INPUT_ACK) === true }
     sessions.set(slug, session)

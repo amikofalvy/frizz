@@ -10,6 +10,7 @@
 //                  | {t:"cancel-input", requestId, id} | {t:"stop-task", requestId, taskId}
 //                  | {t:"reload-plugins", requestId} | {t:"rename", requestId, description} | {t:"list-skills", requestId}
 //   broker -> frizz:  {t:"hello", sessionId, generation} | {t:"event", event} | {t:"permission-request", requestId, request} | {t:"diagnostic", diagnostic}
+//                  | {t:"permission-withdrawn", requestId}   (a request frizz was shown that nothing can answer any more)
 //                  | {t:"input-result", requestId, error?}   (only for an input that carried a requestId)
 //                  | {t:"cancel-result", requestId, cancelled, error?} | {t:"stop-result", requestId, error?}
 //                  | {t:"reload-result", requestId, reloaded?, error?} | {t:"rename-result", requestId, title?, error?} | {t:"skills-result", requestId, skills?, error?}
@@ -107,6 +108,10 @@ export interface BrokerRecord {
 const BROKER_CAPABILITIES = [CLAUDE_BROKER_CAPABILITY_SUBAGENT_STEER, CLAUDE_BROKER_CAPABILITY_CANCEL_INPUT, CLAUDE_BROKER_CAPABILITY_STOP_TASK, CLAUDE_BROKER_CAPABILITY_RELOAD_PLUGINS, CLAUDE_BROKER_CAPABILITY_RENAME, CLAUDE_BROKER_CAPABILITY_LIST_SKILLS, CLAUDE_BROKER_CAPABILITY_INPUT_ACK]
 
 const IDLE_EXIT_MS = 6 * 60 * 60 * 1000
+// How long a permission request waits in this process before frizz is shown it — long enough for the
+// worker's PermissionRequest hook to settle it first (see canUseTool below), short enough that a
+// person never notices it on the way to a card.
+const PERMISSION_SHOW_HOLD_MS = 250
 const REACHABILITY_CHECK_MS = 30_000
 const REACHABILITY_STRIKES = 2
 // Consecutive event-stream mapping failures tolerated before the session is treated as genuinely
@@ -141,7 +146,8 @@ export function runClaudeBroker(config: ClaudeBrokerConfig, options: RunClaudeBr
   const MAX_BACKLOG_BYTES = 64 * 1024 * 1024
   const eventBacklog: string[] = []
   let eventBacklogBytes = 0
-  const pendingPermissions = new Map<string, { request: ClaudePermissionRequest; resolve: (d: ClaudePermissionDecision) => void }>()
+  // `shown` — frizz has been sent this request, so frizz has to be told if it is taken back.
+  const pendingPermissions = new Map<string, { request: ClaudePermissionRequest; resolve: (d: ClaudePermissionDecision) => void; shown: boolean }>()
   let permSeq = 0
   let published = false
   let idleTimer: NodeJS.Timeout | undefined
@@ -233,16 +239,41 @@ export function runClaudeBroker(config: ClaudeBrokerConfig, options: RunClaudeBr
         // put a card in front of the operator for a tool call that no longer exists. So an abort
         // settles the waiter with a deny and drops it, exactly like an answer would.
         let settled = false
+        let showTimer: NodeJS.Timeout | undefined
+        const entry = { request, shown: false, resolve: (decision: ClaudePermissionDecision) => settle(decision) }
         const settle = (decision: ClaudePermissionDecision) => {
           if (settled) return
           settled = true
+          clearTimeout(showTimer)
           pendingPermissions.delete(requestId)
           resolve(decision)
         }
-        pendingPermissions.set(requestId, { request, resolve: settle })
-        if (context.signal.aborted) settle({ behavior: "deny", message: "The turn was interrupted before this was answered." })
-        else context.signal.addEventListener("abort", () => settle({ behavior: "deny", message: "The turn was interrupted before this was answered." }), { once: true })
-        if (!settled && client) write(client, { t: "permission-request", requestId, request })
+        // THE SDK ASKS THIS CALLBACK AND RUNS THE PermissionRequest HOOKS SIDE BY SIDE, and aborts the
+        // callback when a hook settles the request first. The worker's policy hook does exactly that for
+        // nearly every request (cc-worker/hooks/perm-policy.mjs: approve, ~70ms), so an abort here is
+        // the COMMON case, not just an interrupt. Two things follow, both measured against real claude
+        // on 2026-10-10 (a bypass worker, a command Claude Code still prompts for):
+        //  * frizz must be TOLD. It was not, so the card it had already journaled stayed in front of the
+        //    operator until the turn ended — 23s in the measurement, Grant and Deny both dead.
+        //  * frizz should not be shown the request in the first place. Hence the short hold below: a
+        //    request a hook settles inside it never leaves this process, so no card flashes and nothing
+        //    queues the thread. A request that outlives the hold is one a person has to answer, and
+        //    250ms on the way to a human is nothing.
+        const withdraw = () => {
+          const wasShown = entry.shown
+          settle({ behavior: "deny", message: "The turn was interrupted before this was answered." })
+          if (wasShown && client) write(client, { t: "permission-withdrawn", requestId })
+        }
+        pendingPermissions.set(requestId, entry)
+        if (context.signal.aborted) withdraw()
+        else context.signal.addEventListener("abort", withdraw, { once: true })
+        if (!settled) {
+          showTimer = setTimeout(() => {
+            if (settled || entry.shown || !client) return
+            entry.shown = true
+            write(client, { t: "permission-request", requestId, request })
+          }, PERMISSION_SHOW_HOLD_MS)
+        }
       })
     },
     onDiagnostic: (diagnostic: ClaudeDiagnostic) => {
@@ -340,7 +371,7 @@ export function runClaudeBroker(config: ClaudeBrokerConfig, options: RunClaudeBr
   const server = net.createServer((sock) => {
     client = sock; clearTimeout(idleTimer)
     write(sock, { t: "hello", sessionId: handle.sessionId, generation })
-    for (const [requestId, { request }] of pendingPermissions) write(sock, { t: "permission-request", requestId, request })
+    for (const [requestId, entry] of pendingPermissions) { entry.shown = true; write(sock, { t: "permission-request", requestId, request: entry.request }) }
     while (eventBacklog.length) sock.write(eventBacklog.shift()!)
     eventBacklogBytes = 0
     let buf = ""

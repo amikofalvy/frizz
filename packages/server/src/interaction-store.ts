@@ -165,6 +165,11 @@ export interface InteractionStore {
     reason: "provider-cancelled" | "turn-ended",
   ): InvalidateProviderRequestResult
   cancel(scope: InteractionSessionScope, input: CancelInteractionInputType): CancelStoredInteractionResult
+  /** Terminalize ONE pending interaction its PROVIDER took back — the request no longer exists, so no
+   *  answer can reach anything (`provider-cancelled`). For an interaction journaled with `create`, which
+   *  carries no delivery row; a delivery-bound one goes through `invalidateProviderRequest`. Returns the
+   *  cancelled record, or undefined when it was not there or already terminal. */
+  withdraw(scope: InteractionSessionScope, interactionId: string): InteractionRecordType | undefined
   cancelForSession(threadSlug: string, sessionId: string, reason: Exclude<InteractionCancellationReasonType, "expired">): InteractionRecordType[]
   expireDue(at?: string): InteractionRecordType[]
   subscribe(listener: (change: InteractionChange) => void): () => void
@@ -1397,6 +1402,14 @@ export function createInteractionStore(db: Database, options: InteractionStoreOp
     return before.map((row) => rowToRecord(byId.get(row.id)!))
   })
 
+  const withdrawTxn = db.transaction((scope: InteractionSessionScope, interactionId: string): InteractionRecordType | undefined => {
+    const row = byScopedId.get(interactionId, scope.projectId, scope.threadSlug, scope.sessionId)
+    if (!row || row.lifecycle !== "pending") return undefined
+    if (deliveryByInteraction.get(row.id)) throw new InteractionStoreError("invalid-response", "a provider-delivered interaction is withdrawn through invalidateProviderRequest")
+    if (providerCancelStmt.run({ id: row.id, at: iso(now) }).changes !== 1) return undefined
+    return rowToRecord(byId.get(row.id)!)
+  })
+
   const expireTxn = db.transaction((at: string) => {
     const before = dueStmt.all(at)
     if (before.length === 0) return []
@@ -1494,6 +1507,11 @@ export function createInteractionStore(db: Database, options: InteractionStoreOp
       const result = cancelTxn(scope, input)
       if (result.effect === "cancelled") emit([result.interaction])
       return result
+    },
+    withdraw(scope, interactionId) {
+      const record = withdrawTxn.immediate(scope, interactionId)
+      if (record) emit([record])
+      return record
     },
     cancelForSession(threadSlug, sessionId, reason) {
       const parsedReason = InteractionCancellationReason.safeParse(reason)

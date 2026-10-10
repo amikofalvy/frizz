@@ -24,15 +24,16 @@ function shortSocket(): string {
   return frizzIpcPath(`cbt-${createHash("sha256").update(randomUUID()).digest("hex").slice(0, 16)}`)
 }
 
-interface Captured { events: ClaudeQueryEvent[]; perms: { requestId: string; request: ClaudePermissionRequest }[]; hellos: string[]; diagnostics: ClaudeDiagnostic[] }
+interface Captured { events: ClaudeQueryEvent[]; perms: { requestId: string; request: ClaudePermissionRequest }[]; withdrawn: string[]; hellos: string[]; diagnostics: ClaudeDiagnostic[] }
 function clientWith(socketPath: string): { client: ClaudeBrokerClient; cap: Captured; waitPerm: (ms?: number) => Promise<{ requestId: string; request: ClaudePermissionRequest }>; waitEvent: (pred: (e: ClaudeQueryEvent) => boolean, ms?: number) => Promise<ClaudeQueryEvent> } {
-  const cap: Captured = { events: [], perms: [], hellos: [], diagnostics: [] }
+  const cap: Captured = { events: [], perms: [], withdrawn: [], hellos: [], diagnostics: [] }
   const permWaiters: ((v: any) => void)[] = []
   const eventWaiters: { pred: (e: ClaudeQueryEvent) => boolean; resolve: (e: ClaudeQueryEvent) => void }[] = []
   const client = connectClaudeBroker(socketPath, {
     onHello: (sid) => cap.hellos.push(sid),
     onEvent: (e) => { cap.events.push(e); for (let i = eventWaiters.length - 1; i >= 0; i--) if (eventWaiters[i].pred(e)) { eventWaiters[i].resolve(e); eventWaiters.splice(i, 1) } },
     onPermissionRequest: (requestId, request) => { const p = { requestId, request }; cap.perms.push(p); const w = permWaiters.shift(); if (w) w(p) },
+    onPermissionWithdrawn: (requestId) => cap.withdrawn.push(requestId),
     onDiagnostic: (diagnostic) => cap.diagnostics.push(diagnostic),
   })
   return {
@@ -187,6 +188,36 @@ test("broker relays a typed permission request and forwards the decision", { tim
     c.client.answerPermission(perm.requestId, { behavior: "allow" })
     const result = await c.waitEvent((e) => e.kind === "result")
     assert.equal(result.kind, "result")
+    c.client.close()
+  } finally { await b.close() }
+})
+
+// The SDK asks the host AND runs the PermissionRequest hooks side by side, and takes the host's copy
+// back when a hook settles the request first — which the worker's policy hook does for nearly every
+// request. Measured against real claude 2026-10-10: frizz was never told, so the card it had journaled
+// sat in front of the operator, dead, until the turn ended.
+test("a request the CLI settles inside the hold never reaches frizz at all", { timeout: 15_000 }, async () => {
+  const b = startBroker("permission-settled-fast")
+  try {
+    const c = clientWith(b.socketPath)
+    await new Promise((r) => setTimeout(r, 300))
+    c.client.sendInput({ id: randomUUID(), text: "do the thing" })
+    await c.waitEvent((e) => e.kind === "result")
+    assert.deepEqual(c.cap.perms, [], "no card for a request a hook answered in 30ms")
+    assert.deepEqual(c.cap.withdrawn, [], "and nothing to take back, because nothing was shown")
+    c.client.close()
+  } finally { await b.close() }
+})
+
+test("a request frizz WAS shown is taken back when the CLI settles it", { timeout: 15_000 }, async () => {
+  const b = startBroker("permission-settled-late")
+  try {
+    const c = clientWith(b.socketPath)
+    await new Promise((r) => setTimeout(r, 300))
+    c.client.sendInput({ id: randomUUID(), text: "do the thing" })
+    const perm = await c.waitPerm()
+    await c.waitEvent((e) => e.kind === "result")
+    assert.deepEqual(c.cap.withdrawn, [perm.requestId], "frizz is told the request it is showing no longer exists")
     c.client.close()
   } finally { await b.close() }
 })
