@@ -573,6 +573,9 @@ function createContextUnchecked(opts: ContextOptions, resources: PartialContextR
   // Late-bound for the journal observer and tailer callbacks; boot expiry runs before assignment and
   // needs no board edge because the first build reads authoritative pending state directly.
   let board!: BoardManager
+  // The same late binding for the tailer's half of that observer: boot expiry answers nothing a tailer
+  // that has not primed yet could be holding a permission block for.
+  let permissionAnswered: ((slug: string) => void) | undefined
   const contextUnsubscribers: (() => void)[] = []
   let subscriptionsStopped = false
   const stopSubscriptions = () => {
@@ -610,6 +613,9 @@ function createContextUnchecked(opts: ContextOptions, resources: PartialContextR
       lifecycle: change.lifecycle,
       recordRevision: change.recordRevision,
     })
+    // BEFORE the board hears it: the refresh below must not pair "nothing pending" with a permission
+    // block the tailer has not re-read yet (see Tailer.permissionAnswered).
+    if (change.lifecycle !== "pending") permissionAnswered?.(change.threadSlug)
     board?.interactionChanged?.(change)
   }))
   storage.interactions.expireDue()
@@ -923,6 +929,10 @@ function createContextUnchecked(opts: ContextOptions, resources: PartialContextR
     codexModels: () => readCodexModels(undefined, opts.codexVersion),
     onChange: () => board.refresh(),
     onTranscriptChange: (slugs) => transcriptChange.emit(slugs),
+    // The journal's word on whether a deferred permission request has been answered — the transcript
+    // only says so once the approved tool call returns.
+    permissionSettled: (slug, sessionId, markerAt) =>
+      storage.interactions.settledSince({ projectId: project.id, threadSlug: slug, sessionId }, markerAt),
     // The SDK's own reading of a headless broker session: its turn (so the fold's 5s unknown-stop_reason
     // guess need not run out before a finished turn reaches the queue) and its event count (so a tick
     // can tell the provider has reported activity its own disk write has not caught up with yet).
@@ -942,6 +952,7 @@ function createContextUnchecked(opts: ContextOptions, resources: PartialContextR
   })
   resources.tailer = tailer
   opts.startup?.afterPhase?.("tailer")
+  permissionAnswered = (slug) => tailer.permissionAnswered?.(slug)
   // The bridge is the authority on whether a codex app-server TURN is actually running — a rollout
   // frozen by a dead app-server reads "in-flight" forever on its own. Without this the board spins
   // such a thread on `running` and never queues it (live stall 2026-07-22).

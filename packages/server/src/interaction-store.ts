@@ -137,6 +137,13 @@ export interface InteractionStore {
   createProviderRequest(request: InteractionRequestType, binding: ProviderRequestBinding): CreateProviderInteractionResult
   get(scope: InteractionSessionScope, interactionId: string): InteractionRecordType | undefined
   listPending(scope: InteractionSessionScope): InteractionRecordType[]
+  /** "Has everything this session asked since `since` been dealt with?" — nothing is pending for it AND
+   *  at least one interaction reached a terminal lifecycle at or after `since` (an ISO instant in
+   *  `toISOString` form, compared as text against `completed_at`). Both halves matter: a session that
+   *  never journaled anything has settled nothing, and one answered card does not settle a session that
+   *  still has another open. A pure read — it expires nothing and notifies nobody, so it is safe to call
+   *  from inside a store observer. */
+  settledSince(scope: InteractionSessionScope, since: string): boolean
   resolve(scope: InteractionSessionScope, input: ResolveInteractionInputType): ResolveStoredInteractionResult
   providerDelivery(scope: InteractionSessionScope, interactionId: string): ProviderDelivery | undefined
   queueProviderResponse(
@@ -691,6 +698,12 @@ export function createInteractionStore(db: Database, options: InteractionStoreOp
   const pendingCount = db.prepare<[string, string, string], { count: number }>(`
     SELECT COUNT(*) AS count FROM interaction_journal
     WHERE project_id = ? AND thread_slug = ? AND session_id = ? AND lifecycle = 'pending'
+  `)
+  const terminalSince = db.prepare<[string, string, string, string], { found: number }>(`
+    SELECT EXISTS (
+      SELECT 1 FROM interaction_journal
+      WHERE project_id = ? AND thread_slug = ? AND session_id = ? AND lifecycle != 'pending' AND completed_at >= ?
+    ) AS found
   `)
   const insert = db.prepare(`
     INSERT INTO interaction_journal (
@@ -1423,6 +1436,10 @@ export function createInteractionStore(db: Database, options: InteractionStoreOp
       const expired = expireTxn(iso(now))
       emit(expired)
       return listPendingStmt.all(scope.projectId, scope.threadSlug, scope.sessionId, INTERACTION_LIST_MAX).map(rowToRecord)
+    },
+    settledSince(scope, since) {
+      if ((pendingCount.get(scope.projectId, scope.threadSlug, scope.sessionId)?.count ?? 0) > 0) return false
+      return terminalSince.get(scope.projectId, scope.threadSlug, scope.sessionId, since)?.found === 1
     },
     resolve(scope, input) {
       const expired = expireTxn(iso(now))
