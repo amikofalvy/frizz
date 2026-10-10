@@ -38,7 +38,6 @@ import { trackQueueDock } from "../lib/queueDockInset.ts"
 import { ThreadTitle } from "./ThreadTitle.tsx"
 import { DispatchForm } from "./NewThreadModal.tsx"
 import { StatusRow } from "./StatusRow.tsx"
-import { FrizzMdQuestionnaire, useFrizzMdQuestionnaire } from "./FrizzMdQuestionnaire.tsx"
 import { InteractionStack } from "./InteractionCards.tsx"
 import { RegisteredAnsweringProvider, RegisteredQuestionStack, SettledQuestionStack, openQuestionsOf, useSettledQuestions } from "./RegisteredQuestionCards.tsx"
 import { WakeDivider } from "./WakeDivider.tsx"
@@ -516,7 +515,21 @@ export function TodosView() {
       )}
 
       {nothingAtAll ? (
-        <FirstRunScreen />
+        // BRAND-NEW repo (zero threads of any status; the sidebar is hidden in lockstep): the prompt
+        // box IS the whole screen, centered. The FIRST dispatch adds an active thread → the sidebar
+        // appears and this same box shunts to its top; this column then holds only the queue.
+        <div className="w-full flex flex-col gap-3">
+          <h2 className="text-[15px] font-medium text-center">What should the agent do?</h2>
+          {/* The status row rides the top of the PROMPT BOX, and on a brand-new project this is the
+              prompt box — the sidebar that normally carries it is hidden here. Without this the one
+              screen a fresh install starts on would have no project identity, no way to settings, no
+              reload and no quota reading at all. It sits below the heading rather than above it: the
+              heading is this screen's title, the row belongs to the composer under it. */}
+          <StatusRow />
+          {/* The GitHub picker's door rides inside DispatchForm's composer now (a small icon left of
+              the send button), so no separate trigger here. */}
+          <DispatchForm autoFocus />
+        </div>
       ) : renderItems.length === 0 ? (
         // Nothing's queued: the calm empty-inbox (NO dispatch box — the prompt box lives in the
         // sidebar). It STANDS whether or not anything is currently active — a board whose threads are
@@ -530,32 +543,6 @@ export function TodosView() {
           <div className="text-[13px] text-muted-80">No threads awaiting human input</div>
         </div>
       ) : null}
-    </div>
-  )
-}
-
-// BRAND-NEW repo (zero threads of any status; the sidebar is hidden in lockstep). A project with no
-// FRIZZ.md asks first how its agents should work (FrizzMdQuestionnaire) — once, until it is saved or
-// skipped — and then the prompt box IS the whole screen, centered. The FIRST dispatch adds an active
-// thread → the sidebar appears and this same box shunts to its top; the column then holds only the queue.
-function FirstRunScreen() {
-  const questionnaire = useFrizzMdQuestionnaire()
-  // Nothing while the answer loads (one local read): painting the prompt box and then swapping it for
-  // the questionnaire would put a focused, half-typed composer under the operator's hands and take it away.
-  if (questionnaire.ask === undefined) return null
-  if (questionnaire.ask && questionnaire.status) return <FrizzMdQuestionnaire status={questionnaire.status} />
-  return (
-    <div className="w-full flex flex-col gap-3">
-      <h2 className="text-[15px] font-medium text-center">What should the agent do?</h2>
-      {/* The status row rides the top of the PROMPT BOX, and on a brand-new project this is the
-          prompt box — the sidebar that normally carries it is hidden here. Without this the one
-          screen a fresh install starts on would have no project identity, no way to settings, no
-          reload and no quota reading at all. It sits below the heading rather than above it: the
-          heading is this screen's title, the row belongs to the composer under it. */}
-      <StatusRow />
-      {/* The GitHub picker's door rides inside DispatchForm's composer now (a small icon left of
-          the send button), so no separate trigger here. */}
-      <DispatchForm autoFocus />
     </div>
   )
 }
