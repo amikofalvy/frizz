@@ -206,12 +206,17 @@ function release(stream: MediaStream): void {
 // The hook opens the microphone ITSELF and hands the recognizer that track, so the same audio can feed
 // the level meter on the button (DictationLevel): one capture, one permission prompt, and the browser's
 // recording indicator goes out the moment the session ends, because ending it stops the track.
+//
+// `enabled` is the operator's Settings switch (prefs.dictation). Off reads as "unsupported": no button,
+// no capability probe, and a session that was listening when it flipped is cancelled.
 export function useDictation({
   read,
   write,
+  enabled = true,
 }: {
   read: () => { prose: string; start: number; end: number }
   write: (prose: string, caret: number) => void
+  enabled?: boolean
 }) {
   const [support, setSupport] = useState<DictationSupport | null>(null)
   const [state, setState] = useState<Exclude<DictationState, "unsupported">>("idle")
@@ -226,10 +231,11 @@ export function useDictation({
   writeRef.current = write
 
   useEffect(() => {
+    if (!enabled) return
     let live = true
     void detectDictation().then((s) => { if (live) setSupport(s) })
     return () => { live = false }
-  }, [])
+  }, [enabled])
 
   // Stop listening and keep what the box shows. Handlers come off FIRST, so nothing the engine still
   // has in flight can write after the operator took the box back.
@@ -257,6 +263,9 @@ export function useDictation({
       cancel()
     }
   }, [cancel])
+  useEffect(() => {
+    if (!enabled) cancel()
+  }, [enabled, cancel])
 
   const listen = useCallback(async (lang: string) => {
     const SR = recognizerClass()
@@ -365,5 +374,5 @@ export function useDictation({
     await listen(support.lang)
   }, [support, state, listen])
 
-  return { state: support ? state : ("unsupported" as const), stream, toggle, cancel }
+  return { state: support && enabled ? state : ("unsupported" as const), stream, toggle, cancel }
 }

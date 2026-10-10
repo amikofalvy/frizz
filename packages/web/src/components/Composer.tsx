@@ -1,4 +1,5 @@
 import { createContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react"
+import { useSnapshot } from "valtio"
 import { ArrowUp, FileText, Loader2, Mic, Paperclip, Plus, X } from "lucide-react"
 import { ATTACHMENT_ACCEPT, ATTACHMENT_MAX_BYTES, isAllowedAttachmentName, type ThreadSkill } from "@frizz/shared"
 import { showToast } from "../store.ts"
@@ -9,6 +10,7 @@ import { queueComposerHandlesOptionEnter } from "../lib/queueComposerKeyboard.ts
 import { focusQuestionFrom } from "../lib/questionKeys.ts"
 import { composerRail } from "../lib/iconRhythm.ts"
 import { useDictation } from "../lib/dictation.ts"
+import { prefs } from "../lib/prefs.ts"
 import { DictationLevel } from "./DictationLevel.tsx"
 import { apiBase } from "../lib/base-path.ts"
 import { localImageUrl } from "../lib/markdownTargets.ts"
@@ -475,6 +477,7 @@ export function Composer({
   // DICTATION (lib/dictation.ts): the microphone beside Send, on the desktop layout only — a phone's
   // keyboard carries its own. It writes into the prose at the caret (or at the end, when the box was
   // not focused), and any edit that is not its own ends it: typing, sending, Escape.
+  const { dictation: dictationEnabled } = useSnapshot(prefs)
   const dictation = useDictation({
     read: () => {
       const el = taRef.current
@@ -486,6 +489,7 @@ export function Composer({
       setProse(next)
       requestAnimationFrame(() => taRef.current?.setSelectionRange(caret, caret))
     },
+    enabled: dictationEnabled,
   })
   const micShown = !phone && dictation.state !== "unsupported"
   const submit = () => {

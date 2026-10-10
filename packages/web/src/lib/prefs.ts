@@ -25,6 +25,10 @@ export interface Prefs {
   // reason the page has a rail at all — and remembered here rather than in the store because a
   // 22-file list a human folded once should stay folded on the next thread and the next reload.
   railFilesCollapsed: boolean
+  // The prompt box's on-device dictation microphone (lib/dictation.ts). On by default; off for an
+  // operator who dictates with a system-wide tool and does not want a second microphone in the box
+  // (maintainer 2026-10-10, using Wispr Flow).
+  dictation: boolean
 }
 
 function coerceQueueOrder(v: unknown, fallback: QueueDirection): QueueDirection {
@@ -46,6 +50,7 @@ export function parseStoredPrefs(raw: string | null): Prefs {
     snoozePreset: DEFAULT_SNOOZE_PRESET,
     queueOrder: "fifo",
     railFilesCollapsed: false,
+    dictation: true,
     diffsRedefaulted: true,
   }
   try {
@@ -65,6 +70,7 @@ export function parseStoredPrefs(raw: string | null): Prefs {
       snoozePreset: isSnoozePreset(stored.snoozePreset) ? stored.snoozePreset : fallback.snoozePreset,
       queueOrder: coerceQueueOrder(stored.queueOrder, fallback.queueOrder),
       railFilesCollapsed: typeof stored.railFilesCollapsed === "boolean" ? stored.railFilesCollapsed : fallback.railFilesCollapsed,
+      dictation: typeof stored.dictation === "boolean" ? stored.dictation : fallback.dictation,
     }
   } catch {
     return fallback
