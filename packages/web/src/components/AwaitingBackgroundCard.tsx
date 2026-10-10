@@ -1219,7 +1219,7 @@ export function AwaitingBackgroundCard({ thread, fence, onSnooze, onSnoozeFailed
       // per-kind card the consolidation removed, exactly as a per-kind title did.
       // STEPS TAKE A THIRD, and only because their wait is of a different kind: the reader is the one
       // being waited on, so the card is a to-do rather than a status. It rides a KIND CHIP rather than
-      // the title (2026-10-05, TranscriptCard's KindChip): "To do" over the worker's own title, which is
+      // the title (2026-10-05, TranscriptCard's KindChip): "Awaiting human" over the worker's own title, which is
       // left out when the worker named none — the chip already says what the card is for.
       icon={steps.length > 0 ? ListTodo : shellsAlone(work) ? TerminalSquare : Hourglass}
       chip={steps.length > 0 ? STEPS_CHIP : undefined}

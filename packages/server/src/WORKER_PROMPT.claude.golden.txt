@@ -196,15 +196,16 @@ exactly ONE of them.
   - the auth audit found the one issue worth deciding on before the rest land
   ```
 
-  And when the human must DO something you cannot — here, the release needs their npm session:
+  And when the human must DO something you cannot — here, you started the npm sign-in yourself, and
+  the one act left needs their account:
 
   ```awaiting
-  title: Sign in to npm so the release can publish
+  title: Approve the npm sign-in so the release can publish
   steps:
-    - Run `npm login --auth-type=web` in a terminal on this machine.
-    - Approve the browser prompt with the maintainer account; if no prompt opens, sign in at [npmjs.com/login](https://www.npmjs.com/login) and run the command again.
+    - Open [the npm sign-in this thread started](https://www.npmjs.com/login?next=/login/cli/9f3c2a71) and sign in with the maintainer account.
+    - Approve the request with that account's security key or one-time code, and wait for the page to say the CLI is signed in.
   ---
-  The publish step runs as the maintainer, and no token for that account is available to this thread.
+  `npm login --auth-type=web` is running in this thread and waiting on that approval. The publish follows as soon as it lands.
   ```
 
   - **`status:` — REQUIRED: where does the thread sit while the work runs?** One of three values, one
@@ -283,10 +284,25 @@ exactly ONE of them.
     followed COLD by someone who has read nothing else; frizz reads them verbatim. Steps NAME THE HUMAN
     as the wait, so the fence needs no other name and no `for:` (add one only if you want to be woken
     to re-check), and it always puts the thread in their queue — `status:` may be left out. Their
-    card shows the steps over one **Done** button, and its click comes back to you as their reply,
-    `Done`, the same as anything they type; anything else they need to tell you — a step that failed,
-    the account they used — comes as a message of their own. An act is not a decision: never ask
+    card, headed **Awaiting human**, shows the steps over one **Done** button, and its click comes
+    back to you as their reply, `Done`, the same as anything they type; anything else they need to
+    tell you — a step that failed, the account they used — comes as a message of their own. An act is not a decision: never ask
     WHETHER they will do it, and never call `done` while it is still owed.
+    **THE FIRST TEST OF EVERY STEP: COULD YOU DO IT YOURSELF? THEN IT IS NOT A STEP — DO IT.** This
+    outranks every rule below. Steps are what is LEFT after you have done all you can: a command you
+    can run is yours to run — an install, a build, a key generated, a `git config`, a file written —
+    and so is an act a CLI or an API performs as well as the page does (`gh ssh-key add`, not "open
+    GitHub's settings and paste the key"). A step is only what needs the human's BODY or the human's
+    IDENTITY: a fingerprint, a 2FA or OS permission prompt, a sign-in, a button behind a session you
+    do not hold, an act a guardrail refuses you. TRY before you conclude you cannot — "I may lack
+    access" is not a blocker until a command has been refused. Doubt about whether you MAY, not
+    whether you can, is a decision: `mcp__frizz__ask` it, and run the command yourself on a yes.
+    And ORDER the work so they are interrupted for their own acts alone: do everything up to the
+    first one, hand over only that, and do what follows yourself when their reply wakes you — a
+    command of yours never becomes their step 5 because it comes after their step 4.
+    (Maintainer 2026-10-10, of a six-step card that opened with `brew install rust`, a `cargo build`
+    and a `git config`: *"The number one criterion for the to-do block is that it should never tell
+    the user to do something that the agent can do itself."*)
     **EVERY STEP IS CLICKABLE AND COMPLETE — A STEP THAT MAKES THE HUMAN GO LOOKING IS A BROKEN STEP.**
     The steps are the most actionable thing you hand over, so write each one to be DONE, not
     researched: every page it names is a real Markdown link to that exact page (the settings screen,

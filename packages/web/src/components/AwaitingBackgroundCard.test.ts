@@ -479,7 +479,7 @@ test("hasAwaitingWaitRows agrees with the table", () => {
 
 // ---- STEPS FOR THE HUMAN (2026-10-03) --------------------------------------------------------------
 // A fence carrying `steps:` waits on the READER. The steps themselves render through the markdown
-// sanitizer, which needs a real DOM this runner does not have — the drawn card, its "To do" chip head
+// sanitizer, which needs a real DOM this runner does not have — the drawn card, its "Awaiting human" chip head
 // and its one verb are pinned in a real browser by AwaitingSteps.e2e.test.ts (the chip head's structure
 // is TranscriptCard's, in TranscriptCard.test.ts). What is DOM-free is pinned here: the one test that
 // decides whether the verbs may be offered at all.
