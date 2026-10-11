@@ -19,7 +19,7 @@ The workflows exist ([`workers-deploy.yml`](../.github/workflows/workers-deploy.
 3. At [new environment](https://github.com/colinhacks/frizz/settings/environments/new), create `workers-deploy`. Tick **Required reviewers** and add `colinhacks`. Under **Deployment branches and tags** choose **Selected branches and tags** and add `main`. Under **Environment secrets** add `CLOUDFLARE_API_TOKEN` = the deploy token.
 4. At [new repository secret](https://github.com/colinhacks/frizz/settings/secrets/actions/new), add `CLOUDFLARE_READ_TOKEN` = the read token.
 5. At [notification settings](https://github.com/settings/notifications), under **System → Actions**, tick **Email** and **Only notify for failed workflows**.
-6. Push `main`, then run the deploy at [Workers deploy → Run workflow](https://github.com/colinhacks/frizz/actions/workflows/workers-deploy.yml) with target `both`, and approve it.
+6. Push `main`, then run the deploy at [Workers deploy → Run workflow](https://github.com/colinhacks/frizz/actions/workflows/workers-deploy.yml) with target `both`, and approve it. Once it is green, `nub scripts/verify-relay-live.mjs` checks the relay that is now serving.
 7. Open the first [Workers drift run](https://github.com/colinhacks/frizz/actions/workflows/workers-drift.yml). It fails with `WORKERS_CI_AUTHOR is not set` and prints the CI author. Add that value as a [repository variable](https://github.com/colinhacks/frizz/settings/variables/actions/new) named `WORKERS_CI_AUTHOR`, then re-run it until it is green.
 
 ## 2. Bring custom names back (optional)
