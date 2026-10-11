@@ -318,7 +318,33 @@ try {
   const initialPid = shellPid
   await healthy("0.13.0")
   await until("initial selection committed", () => selected().version === "0.13.0")
-  const api = createRpcClient(base)
+  const registered = (directory) => JSON.parse(readFileSync(join(home, "data/frizz/registry.json"), "utf8")).projects.find((project) => project.path === realpathSync(directory))
+  // The launch was typed in the project, and that is all the project is to the launcher: the server
+  // runs on Frizz's own folder, and it was the SERVER that opened the project — registered it and
+  // said where to land — when the launcher asked it (POST /_frizz/control/launch). A 0.12.10 launcher
+  // predates all of this and still runs the server on the project.
+  let opened
+  if (!legacyTarball) {
+    opened = await until("the server opened the project the launch was typed in", () => registered(repo), 30_000)
+    await until("the launcher landed where the server said", () => launcherLogs().includes(`started Frizz at ${base}/project/${opened.slug}`), 30_000)
+    assert.doesNotMatch(launcherLogs(), /did not say where this launch lands/, "the server answered; the launcher's own rules were not used")
+    const server = children().find((event) => event.event === "ready").pid
+    if (cwdOf(server) !== undefined) {
+      assert.equal(cwdOf(server), realpathSync(join(home, "data/frizz/host")), "the server runs on Frizz's own folder, not the project")
+      assert.equal(cwdOf(shellPid), realpathSync(repo), "the launcher stays in the folder the command was typed in")
+    }
+    // A second launch, typed in another project, joins this server and lands on THAT project.
+    const other = join(root, "other-project")
+    mkdirSync(other); execFileSync("git", ["init", "-q"], { cwd: other }); ensureProjectIdFile(other, home)
+    const before = children().length
+    const joining = start(`join-${processes.length}`, [npmCli, "exec", "--yes", "--package=frizz@0.13.0", "--", "frizz", "--no-app"], other)
+    await until("the second launch exits", () => joining.exitCode !== null || joining.signalCode !== null, 60_000)
+    assert.equal(joining.exitCode, 0)
+    assert.equal(children().slice(before).some((event) => event.event === "start"), false, "a second launch starts no server")
+    assert.ok(launcherLogs().includes(`reusing Frizz at ${base}/project/${registered(other).slug}`), "the second launch lands on the project it was typed in")
+    record("server-routed-the-launch", { opened: opened.slug, joined: registered(other).slug, host: cwdOf(server) })
+  }
+  const api = createRpcClient(base, opened?.slug)
   await api.query("board")
   const workers = []
   for (const backend of workerBackends) {
@@ -344,7 +370,7 @@ try {
   page ??= await browser.newPage()
   page.on("pageerror", (error) => failures.push({ page: String(error) }))
   page.on("console", (message) => { if (message.type() === "error") consoleErrors.push(message.text()) })
-  const project = JSON.parse(readFileSync(join(home, "data/frizz/registry.json"), "utf8")).projects[0]
+  const project = opened ?? JSON.parse(readFileSync(join(home, "data/frizz/registry.json"), "utf8")).projects[0]
   await page.setViewport({ width: 1280, height: 850, deviceScaleFactor: 2 })
   await page.goto(`${base}/project/${project.slug}/`, { waitUntil: "networkidle2" })
   await page.screenshot({ path: join(out, "before-desktop.png") })
@@ -503,63 +529,36 @@ try {
   probeOutage = false
   await api.query("board")
   record("failed-probe-logged")
-  // The folder Frizz was started from is deleted while it runs, which leaves the launcher with a
-  // dead working directory (2026-10-11: a board started in a scratch folder removed a day later;
-  // its Update failed on npm dying with `uv_cwd ENOENT`). A restart or an update forks the next
-  // server in that folder, and so does the fork that would put the old one back — so both must
-  // refuse BEFORE draining the server that is up, say why, and leave it serving.
+  // The folder Frizz was started FROM is deleted while it runs. On 2026-10-11 a board started in a
+  // scratch folder that was removed a day later could no longer update or restart: the server ran ON
+  // that folder, and nothing forks into a directory that is gone. The folder is now only where the
+  // command was typed — the server runs on Frizz's own — so the board restarts and updates with it
+  // gone, and with the launcher itself left standing in a directory that no longer exists.
   const serving = children().filter((event) => event.event === "ready").at(-1).pid
   rmSync(repo, { recursive: true, force: true })
-  packages.get("frizz-server").latest = "0.13.12"
-  const refusedAndServing = async (control, refused) => {
-    assert.equal(refused.state, "failed")
-    assert.match(refused.message ?? "", /no longer exists/, `${control} must name the missing folder, not: ${refused.message}`)
-    // A drain that was NOT refused has stopped the serving child by now.
-    await delay(3000)
-    assert.equal(selected().version, "0.13.7")
-    assert.equal(alive(shellPid), true)
-    assert.equal(alive(serving), true, `${control} drained the server it could not replace`)
-    assert.equal((await status()).version, "0.13.7")
-    await api.query("board")
-    record("refused-without-launch-folder", { control, message: refused.message })
-  }
-  // Update acknowledges at once and reports through /status; Restart answers with its own result.
-  await action()
-  await refusedAndServing("update-restart", await until("update refused", async () => { const value = await status(); return value.state === "failed" && value }, 30_000))
-  const restart = await fetch(`${base}/_frizz/control/restart`, { method: "POST", headers: { origin: base }, signal: AbortSignal.timeout(90_000) })
-  assert.equal(restart.status, 503)
-  await refusedAndServing("restart", await restart.json())
-  // A launch typed OUTSIDE a project depends on no project at all. Until 2026-10-11 it borrowed the
-  // most recently opened one as its host and moved into it — `npx frizz` in $HOME ran from
-  // `~/Documents/scratch` — so deleting a folder nobody had launched from left exactly the refusal
-  // above. Now the launcher stays where the command was typed, the server is hosted on Frizz's own
-  // folder, and the board restarts and updates with that project gone.
-  await stopShell()
-  const known = join(root, "known-project"), outside = join(root, "outside")
-  mkdirSync(known); mkdirSync(outside)
-  execFileSync("git", ["init", "-q"], { cwd: known }); ensureProjectIdFile(known, home)
-  await launch("0.13.0", known); await healthy("0.13.7")
-  const registered = () => JSON.parse(readFileSync(join(home, "data/frizz/registry.json"), "utf8")).projects.map((project) => project.path)
-  assert.ok(registered().includes(realpathSync(known)), "the project a launch opened is the most recently opened one")
-  await stopShell()
-  await launch("0.13.0", outside); await healthy("0.13.7")
-  const hosted = children().filter((event) => event.event === "ready").at(-1).pid
-  if (cwdOf(shellPid) !== undefined) {
-    assert.equal(cwdOf(shellPid), realpathSync(outside), "the launcher stays in the folder the command was typed in")
-    assert.equal(cwdOf(hosted), realpathSync(join(home, "data/frizz/host")), "the server is hosted on Frizz's own folder")
-  }
-  rmSync(known, { recursive: true, force: true })
+  const machine = createRpcClient(base)
   await action("restart")
-  const restarted = await until("a restart after the project is gone", async () => {
+  const restarted = await until("a restart after the launch folder is gone", async () => {
     const pid = children().filter((event) => event.event === "ready").at(-1).pid
-    return pid !== hosted && (await status()).state === "ready" && pid
+    return pid !== serving && (await status()).state === "ready" && pid
   })
-  assert.equal(alive(hosted), false)
+  assert.equal(alive(serving), false)
+  packages.get("frizz-server").latest = "0.13.12"
   await action(); await healthy("0.13.12")
-  assert.equal(selected().version, "0.13.12")
+  await until("the update is committed", () => selected().version === "0.13.12")
   assert.equal(alive(restarted), false)
-  await api.query("board")
-  record("outside-launch-survives-a-deleted-project", { launcher: cwdOf(shellPid), host: cwdOf(children().filter((event) => event.event === "ready").at(-1).pid) })
+  assert.equal(alive(shellPid), true)
+  await machine.query("projectsList")
+  record("launch-folder-deleted-restart-and-update-work", { launcher: cwdOf(shellPid) })
+  // A launch typed outside any project is about no project: it lands on the dashboard.
+  await stopShell()
+  const outside = join(root, "outside")
+  mkdirSync(outside)
+  await launch("0.13.0", outside); await healthy("0.13.12")
+  await until("an outside launch lands on the dashboard", () => new RegExp(`started Frizz at ${base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/$`, "m").test(launcherLogs()), 30_000)
+  if (cwdOf(shellPid) !== undefined) assert.equal(cwdOf(shellPid), realpathSync(outside), "the launcher stays in the folder the command was typed in")
+  await machine.query("projectsList")
+  record("outside-launch-lands-on-the-dashboard")
   // A shell newer than the installed server is the ordinary pairing, not a rare one: npx fetches the
   // newest shell on every run and the server moves only on Update. So a shell that depends on what a
   // server release learned says so (`frizzServer.minimum`), and starts an older machine on its
@@ -600,8 +599,8 @@ try {
   const listed = async () => (await createRpcClient(base).query("projectsList")).map((project) => project.path)
   // A published server reports nothing to the fixtures' event file, so the launcher is found by the
   // record it publishes and readiness by the supervisor's own status.
-  const launchPublished = async (shell, server) => {
-    start(`launcher-${processes.length}`, [npmCli, "exec", "--yes", `--package=frizz@${shell}`, "--", "frizz", "--no-app", "--port", new URL(base).port], nowhere)
+  const launchPublished = async (shell, server, cwd = nowhere) => {
+    start(`launcher-${processes.length}`, [npmCli, "exec", "--yes", `--package=frizz@${shell}`, "--", "frizz", "--no-app", "--port", new URL(base).port], cwd)
     await until(`server ${server} under shell ${shell}`, async () => { const value = await status(); return value.state === "ready" && value.version === server }, 300_000)
     const projects = join(newHome, "data/frizz/projects")
     const pidIn = (name) => readdirSync(projects).map((project) => {
@@ -614,16 +613,23 @@ try {
   assert.equal(selected(newHome).version, OLD_SERVER)
   await stopShell()
   // The pairing as it ships without a minimum: the installed server stands, whatever the shell pins,
-  // and the dashboard has a project the operator never added and cannot open usefully.
-  await launchPublished("0.13.21", OLD_SERVER)
+  // and the dashboard has a project the operator never added and cannot open usefully. Typed in a
+  // project this time, against a server from before the launch route: the launcher gets no answer,
+  // and its own rules open the project exactly as they always did.
+  const theirs = join(root, "their-project")
+  mkdirSync(theirs); execFileSync("git", ["init", "-q"], { cwd: theirs }); ensureProjectIdFile(theirs, newHome)
+  await launchPublished("0.13.21", OLD_SERVER, theirs)
   assert.equal(selected(newHome).version, OLD_SERVER, "a shell without a minimum never moves the installed server")
+  assert.match(launcherLogs(newHome), /did not say where this launch lands; using this launcher's own rules/)
+  assert.match(launcherLogs(newHome), new RegExp(`started Frizz at ${base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/project/their-project$`, "m"))
   await until("the older server lists Frizz's own launch folder", async () => (await listed()).includes(launchFolder()), 30_000)
+  assert.ok((await listed()).includes(realpathSync(theirs)))
   record("older-server-lists-the-launch-folder", { server: OLD_SERVER, listed: await listed() })
   await stopShell()
   await launch("0.13.22", nowhere); await healthy("0.15.99")
   await until("the pinned release is selected once it is up", () => selected(newHome).version === "0.15.99", 30_000)
   assert.match(launcherLogs(newHome), new RegExp(`the installed Frizz server ${OLD_SERVER.replaceAll(".", "\\.")} is older than this launcher works with \\(0\\.15\\.21\\); starting on 0\\.15\\.99`))
-  assert.deepEqual(await listed(), [], "the entry the older server wrote is gone from the dashboard")
+  assert.deepEqual(await listed(), [realpathSync(theirs)], "the entry the older server wrote is gone from the dashboard")
   record("minimum-starts-an-older-machine-on-the-pinned-server", { from: OLD_SERVER, to: selected(newHome).version, listed: await listed() })
   assert.equal(children().some((event) => event.event === "overlapping-server"), false, "no server process may overlap its predecessor")
   assert.ok(children().every((event) => event.node === runtimeVersion), "npm bin shebang and all server forks must use the requested Node version")

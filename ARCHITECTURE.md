@@ -249,6 +249,14 @@ Two entry points, deliberately distinct:
   or builds and promotes one. **The running server never watches the checkout and never runs HMR** —
   edits do nothing until you stop frizz and relaunch.
 
+### What a launch is about, and who decides
+
+**`npx frizz` holds no rule about folders.** The folder the command is typed in is what the launch is about and nothing else: the server always runs on Frizz's own folder (`<data>/host`, `hostWorkspace`), never on a project, and the launcher asks the running server where to land — `POST /_frizz/control/launch` with the folder, answered by [`launch-routing.ts`](packages/server/src/launch-routing.ts). The server classifies it (a project Frizz knows opens; one that looks like a project is offered at `/?add=`; anything else is the dashboard), registers a known one, and returns the path. The request carries the owner token from the record that names the server, as `/control/stop` does, because answering can register a folder.
+
+Two things follow, and both are why it is built this way ([`plans/server-side-launch-routing.md`](plans/server-side-launch-routing.md)). A change to launch behaviour is a `frizz-server` release, where it used to need a `frizz` shell release because the launcher carried its own bundled copy of the rule: four of the seven shell releases between 2026-10-01 and 2026-10-11 changed nothing else. And no user folder is load-bearing for the machine's board: the folder a launch was typed in can be deleted, moved or unmounted and Restart and Update still work, and the remote sign-in key no longer depends on where Frizz was started (it lives in the stand-in's state folder, carried over once by `adoptSessionState`).
+
+The launcher keeps the rules it used to apply as a **frozen fallback** (`legacyLanding` in [`src/production.ts`](src/production.ts)), for a server that predates the route or is not answering. Change the rule in `launch-routing.ts`; an edit to the fallback reaches nobody until the next shell release. `frizz-dev` is unchanged: it has no release to wait for, and still runs its server on the project it is typed in.
+
 State is keyed by a stable checkout UUID: an ordinary worktree keeps it in `git config --local frizz.id`,
 each linked worktree in its private Git admin dir, so siblings stay isolated. Canonical real paths make
 a checkout opened through a symlink reuse the same instance. The project id and its state dir are the
