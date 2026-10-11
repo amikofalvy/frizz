@@ -6184,8 +6184,9 @@ export const ProjectCard = z.object({
    * Three states, not a boolean, because the two "no icon to draw right now" cases must behave
    * differently and a boolean collapses them:
    *   · `icon`    — one is stored; draw it.
-   *   · `none`    — scanned, nothing found. Draw the monogram and DO NOT request the icon route,
-   *                 which is what stops an iconless project flashing its initials and then swapping.
+   *   · `none`    — scanned recently, nothing found. Draw the monogram and DO NOT request the icon
+   *                 route, which is what stops an iconless project flashing its initials and then
+   *                 swapping. An OLD miss reads `unknown` again, so an icon added since is found.
    *   · `unknown` — never scanned. The monogram shows, but the request MUST still go out, because
    *                 that request is what triggers the (lazy, cached) scan in the first place.
    *

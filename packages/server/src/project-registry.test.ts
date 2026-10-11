@@ -10,6 +10,7 @@ import {
   findBySlug,
   findProjectBySegment,
   forgetProject,
+  ICON_RESCAN_AFTER_MS,
   ICON_SCAN_VERSION,
   listProjects,
   moveProjectDirectory,
@@ -17,6 +18,7 @@ import {
   registerProject,
   registryPath,
   renameProject,
+  projectIconStatus,
   reorderProjects,
   resolveProjectIcon,
   setProjectIcon,
@@ -613,19 +615,70 @@ test("a miss from an OLDER scanner reads as unknown, so the client asks again", 
   // still read as `none`, a widened scan would never be asked about the very projects it was widened
   // for. This is the exact shape of nub on the real machine: its icon resolves correctly on demand,
   // and the grid never demanded it.
-  //
-  // The derivation lives in router.ts projectCard; this pins the RULE it encodes so the two cannot
-  // drift apart silently.
-  const status = (entry: { icon?: string; iconScannedAt?: string; iconScanVersion?: number }) =>
-    entry.icon
-      ? "icon"
-      : entry.iconScannedAt && (entry.iconScanVersion ?? 0) === ICON_SCAN_VERSION
-        ? "none"
-        : "unknown"
+  const now = Date.parse("2026-08-07T00:05:00.000Z")
+  const scannedAt = "2026-08-07T00:00:00.000Z"
+  assert.equal(projectIconStatus({ icon: "/x/icon.svg" }, now), "icon")
+  assert.equal(projectIconStatus({}, now), "unknown", "never scanned")
+  assert.equal(projectIconStatus({ iconScannedAt: scannedAt }, now), "unknown", "scanned before versioning existed")
+  assert.equal(projectIconStatus({ iconScannedAt: scannedAt, iconScanVersion: ICON_SCAN_VERSION - 1 }, now), "unknown", "an older scanner")
+  assert.equal(projectIconStatus({ iconScannedAt: scannedAt, iconScanVersion: ICON_SCAN_VERSION }, now), "none", "the current scanner really did find nothing")
+})
 
-  assert.equal(status({ icon: "/x/icon.svg" }), "icon")
-  assert.equal(status({}), "unknown", "never scanned")
-  assert.equal(status({ iconScannedAt: "2026-08-07T00:00:00.000Z" }), "unknown", "scanned before versioning existed")
-  assert.equal(status({ iconScannedAt: "2026-08-07T00:00:00.000Z", iconScanVersion: ICON_SCAN_VERSION - 1 }), "unknown", "an older scanner")
-  assert.equal(status({ iconScannedAt: "2026-08-07T00:00:00.000Z", iconScanVersion: ICON_SCAN_VERSION }), "none", "the current scanner really did find nothing")
+test("an OLD miss reads as unknown and is re-scanned, so an icon added since the scan is found", () => {
+  // keyward, ccbroker and macwatch on the real machine (2026-10-11): each was scanned in the morning,
+  // found nothing, and committed a `logo.svg` hours later. The card said `none`, so the client never
+  // asked, so the server's own retry never ran, and none of the three ever showed its new icon.
+  const home = sandbox()
+  try {
+    const dir = project(home, "code/keyward", A)
+    registerProject({ dir, id: A }, home)
+    const scannedAt = Date.parse("2026-10-11T15:59:23.740Z")
+    let asked = 0
+    assert.equal(resolveProjectIcon(A, () => { asked++; return undefined }, { home, now: () => scannedAt }), undefined)
+    const miss = () => readRegistry(home).projects[0]!
+
+    // Inside the window: the miss stands, on BOTH halves, and nothing is re-walked.
+    const soon = scannedAt + ICON_RESCAN_AFTER_MS - 1
+    assert.equal(projectIconStatus(miss(), soon), "none")
+    assert.equal(resolveProjectIcon(A, () => { asked++; return undefined }, { home, now: () => soon }), undefined)
+    assert.equal(asked, 1)
+
+    // Past it: the card tells the client to ask, and the asking finds the logo.
+    const later = scannedAt + ICON_RESCAN_AFTER_MS
+    assert.equal(projectIconStatus(miss(), later), "unknown", "the client has to request the icon for the rescan to run")
+    const logo = join(dir, "logo.svg")
+    assert.equal(resolveProjectIcon(A, () => { asked++; return logo }, { home, now: () => later }), logo)
+    assert.equal(asked, 2)
+    assert.equal(projectIconStatus(miss(), later), "icon")
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("an old detected pick is re-scanned too, so a better icon added beside it replaces it", () => {
+  const home = sandbox()
+  try {
+    const dir = project(home, "code/app", A)
+    registerProject({ dir, id: A }, home)
+    const favicon = join(dir, "favicon.ico")
+    const logo = join(dir, "logo.svg")
+    writeFileSync(favicon, "")
+    writeFileSync(logo, "")
+    const scannedAt = Date.parse("2026-10-11T09:00:00.000Z")
+    resolveProjectIcon(A, () => favicon, { home, now: () => scannedAt })
+
+    let asked = 0
+    const soon = scannedAt + ICON_RESCAN_AFTER_MS - 1
+    assert.equal(resolveProjectIcon(A, () => { asked++; return logo }, { home, now: () => soon }), favicon)
+    assert.equal(asked, 0, "a current pick that is still on disk is served without a walk")
+
+    const later = scannedAt + ICON_RESCAN_AFTER_MS
+    assert.equal(resolveProjectIcon(A, () => { asked++; return logo }, { home, now: () => later }), logo)
+    assert.equal(asked, 1)
+    const entry = readRegistry(home).projects[0]!
+    assert.equal(entry.icon, logo)
+    assert.equal(entry.iconScannedAt, new Date(later).toISOString(), "a new scan is a new iconVersion, so the client's URL changes")
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
 })
