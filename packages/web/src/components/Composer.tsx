@@ -285,7 +285,7 @@ export function Composer({
     // message was sent (or the draft deliberately cleared) mid-upload — committing the path then
     // would plant an orphan chip that silently rides along with the user's NEXT, unrelated message.
     // Discard with a toast instead. (Enter/Send inside this box are gated on `uploading`, but a
-    // surface can still clear the draft externally — the queue card's "Send answers" button.)
+    // surface can still clear the draft externally — a question card's own Enter, which sends this box.)
     // Best-effort heuristic, not airtight: typing NEW text after such an external clear makes the
     // draft non-empty again before the upload lands, and the path then joins that newer draft.
     const baseValue = valueRef.current

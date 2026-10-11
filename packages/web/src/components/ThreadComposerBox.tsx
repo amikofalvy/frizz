@@ -81,7 +81,7 @@ export function ThreadComposerBox({
   // by the caller — this component does not decide which ops a surface shows.
   above?: ReactNode
   // Replaces the default eager follow-up send. The queue card passes its useLiveAnswering `sendMessage`,
-  // so the card's free-form reply and its "Send answers" reply are literally the same send — one
+  // so the card's free-form reply and a reply that carries answers are literally the same send — one
   // controller, one optimistic card dissolve, one scroll policy (the queue suppresses the bottom pin;
   // it fights card exit/reorder). Callers WITHOUT an answering controller (the drawer) omit it and get
   // the plain eager follow-up. Deliberately not split into separate `onSent`/`scrollToBottom` props:

@@ -1423,7 +1423,7 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
       <>
       {/* Message body — the same chat renderer ChatView uses, tail-first with "Load earlier messages"
           above. The card grows to its content; the PAGE is what scrolls.
-          The bottom pad TIGHTENS while an ask is open: the "Send answers" action below belongs to the
+          The bottom pad TIGHTENS while the fallback "Send answers" is drawn: that action belongs to the
           question stack it answers, so it has to hang CLOSE off the last question block and leave the
           bigger gap for the prompt box under it. At the standard pb-5 the button floated midway and read
           as an appendage of the prompt box instead. */}
@@ -1755,16 +1755,17 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
       {/* A REGISTERED question reads AFTER the tail, not above it — unlike a pending interaction, which
           is a gate on a turn already in flight. The tail IS the context for the question, so the card
           reads top to bottom: what happened, then what the worker needs decided, then the prompt box.
-          It carries its own Send answers verb, so it sits above the fence path's identical button. */}
+          Its answers leave through the prompt box's Send (lib/sendScope); the stack draws a Send
+          answers of its own only where no prompt box is mounted. */}
       <RegisteredQuestionStack thread={thread} questions={questionAnchors.tail} inFlight={inFlightAnswers} showSend={questionAnchors.tailSend} className="shrink-0 px-5 pb-4 pt-0" />
-      {/* Bottom of the card. Answerable question blocks add a "Send answers" action that composes the
-          per-block answers into one reply — but the free-form composer stays PRESENT underneath it
-          (maintainer 2026-07-22): answering the question is the primary path, not the only one, and
-          ignoring the options to steer with a plain prompt has to stay one keystroke away. The button
-          sits above the box so it stays adjacent to the question it answers, and the card's bottom edge
-          is the same prompt box in every state. Its spacing is deliberately ASYMMETRIC — 8px up to the
-          last question block, 16px down to the prompt box — so it reads as hanging off the questions
-          rather than hovering over the box. */}
+      {/* Bottom of the card. THE FALLBACK "Send answers", drawn only where no prompt box sends for this
+          card (`showSendAnswers` is false whenever one is mounted — since 2026-10-11 the box's own Send
+          carries the staged answers and the typed message as one turn). The free-form composer stays
+          PRESENT underneath (maintainer 2026-07-22): answering the question is the primary path, not
+          the only one. Where the button does draw it sits above the box, adjacent to the question it
+          answers, with deliberately ASYMMETRIC spacing — 8px up to the last question block, 16px down
+          to the prompt box — so it reads as hanging off the questions rather than hovering over the
+          box. */}
       {showSendAnswers && (
         <div className="shrink-0 px-5 pt-0">
           <div className="mb-4 flex items-center justify-start gap-2">
@@ -1784,8 +1785,8 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
       </div>
       {/* THE standard prompt box — the exact block the drawer renders (ThreadActionBar), differing only
           in its padding wrapper, the line of op counts above it, and the send. `submitOverride` routes
-          this box through the card's own answering controller so a free-form reply and a "Send answers"
-          reply are one send: same optimistic dissolve, same suppressed bottom-pin.
+          this box through the card's own answering controller so a free-form reply and a reply that
+          carries answers are one send: same optimistic dissolve, same suppressed bottom-pin.
 
           DOCKED: `sticky bottom-0` holds it to the bottom of the screen while any of the card is above
           it, the way /full holds its prompt box, so a reply never means scrolling to the card's end
