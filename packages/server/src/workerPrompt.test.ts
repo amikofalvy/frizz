@@ -151,3 +151,24 @@ test("the contract teaches steps: as the wait on a human's act, and routes to it
     assert.doesNotMatch(c, /mcp__frizz__instruct|\buninstruct\b/)
   }
 })
+
+// COMMAND WATCHES ARE CLAUDE-ONLY (2026-10-11). The server refuses every Codex and ACP thread one
+// (command-watch.ts `commandWatchRefusal`), so only Claude's contract may teach the key, the week-long
+// ceiling and the route to it; anywhere else each mention is a refused call per wait. Claude's must
+// also say why a polling shell is the wrong wait, and where the loop goes when Frizz refuses.
+test("only the Claude contract teaches command watches, and it routes outside-condition waits to them", () => {
+  const claude = buildWorkerPrompt("claude")
+  assert.match(claude, /`commands:` — command watches you REGISTERED with `frizzctl watch-command add`/)
+  assert.match(claude, /`commands:` with nothing but those, where it runs to a week/)
+  assert.match(claude, /`frizzctl watch-command add "<check that exits 0 once it holds>" --every 5m --for 6h`/)
+  assert.match(claude, /Not a polling loop in a background shell/)
+  assert.match(claude, /can never be hibernated/)
+  assert.match(claude, /Only when Frizz REFUSES it[\s\S]{0,140}does the loop go in a background shell/)
+  for (const backend of ["codex", "acp"] as const) {
+    const prompt = buildWorkerPrompt(backend)
+    assert.doesNotMatch(prompt, /watch-command|commands:|cmw_/, backend)
+    assert.doesNotMatch(prompt, /\{\{FRIZZ_/, backend)
+    assert.match(prompt, /where it runs to a year\.\n/, backend)
+    assert.match(prompt, /`frizzctl watch-issue`\.\n    For anything else stay ACTIVE/, backend)
+  }
+})

@@ -16,20 +16,42 @@
 //   - A new rule earns its tokens only if a worker measurably gets it wrong without it.
 export type BackendKind = "claude" | "codex" | "acp"
 
-const INLINE: Record<BackendKind, Record<"SESSION_KIND" | "RESUME_CMD", string>> = {
+// COMMAND WATCHES ARE CLAUDE-ONLY, so only Claude's contract teaches them (2026-10-11). The server runs a
+// watched command with no permission check, so `commandWatchRefusal` (command-watch.ts) refuses every
+// Codex and ACP thread outright: nothing in Codex's own sandbox or approval policy reaches a command
+// the SERVER runs. A contract line telling those workers about a key they can never register is a
+// refused call per wait, and a ceiling they can never reach. Each token carries its own leading
+// punctuation and line break, so the empty value leaves the shared prose exactly as it was.
+const COMMANDS_KEY_CLAUDE = `
+  - \`commands:\` — command watches you REGISTERED with \`frizzctl watch-command add\`, by their \`cmw_…\`
+    id: a shell command the SERVER re-runs on a cadence until it exits 0, then wakes you once with its
+    output. Only in \`bypassPermissions\` mode with Claude Code's sandbox off; Frizz refuses it otherwise.`
+const COMMANDS_FOR_CLAUDE = `, and one naming
+    \`commands:\` with nothing but those, where it runs to a week`
+const COMMANDS_CI_CLAUDE = `;
+    for anything a shell command can check — a version published, a release run finished, a URL up —
+    \`frizzctl watch-command\` where Frizz allows it`
+const NO_COMMAND_WATCHES = { "COMMANDS_KEY": "", "COMMANDS_FOR": "", "COMMANDS_CI": "" }
+
+const INLINE: Record<BackendKind, Record<"SESSION_KIND" | "RESUME_CMD" | "COMMANDS_KEY" | "COMMANDS_FOR" | "COMMANDS_CI", string>> = {
   "claude": {
     "SESSION_KIND": "claude",
-    "RESUME_CMD": "claude -r"
+    "RESUME_CMD": "claude -r",
+    "COMMANDS_KEY": COMMANDS_KEY_CLAUDE,
+    "COMMANDS_FOR": COMMANDS_FOR_CLAUDE,
+    "COMMANDS_CI": COMMANDS_CI_CLAUDE,
   },
   "codex": {
     "SESSION_KIND": "codex",
-    "RESUME_CMD": "codex resume"
+    "RESUME_CMD": "codex resume",
+    ...NO_COMMAND_WATCHES,
   },
   // An ACP agent has no resume command Frizz can name: the session lives inside the agent and Frizz
   // re-opens it over the protocol. The token still has to resolve, so it names the mechanism.
   "acp": {
     "SESSION_KIND": "coding-agent",
-    "RESUME_CMD": "(Frizz re-opens the session over ACP)"
+    "RESUME_CMD": "(Frizz re-opens the session over ACP)",
+    ...NO_COMMAND_WATCHES,
   }
 }
 
@@ -406,10 +428,10 @@ exactly ONE of them.
   - \`issues:\` — GitHub issues you REGISTERED with \`frizzctl watch-issue add\`, written \`owner/repo#N\`.
     Same shape as \`prs:\`, same register-first rule. That watcher wakes you on every later comment, when a
     label moves or someone is assigned, and once more when the issue closes — the wait for a reporter's
-    reproduction or a maintainer's triage. An issue has no CI and no merge, so it never says either.
+    reproduction or a maintainer's triage. An issue has no CI and no merge, so it never says either.{{FRIZZ_COMMANDS_KEY}}
   - \`for:\` — **REQUIRED**, and a DURATION: \`30s\`, \`15m\`, \`2h\`, \`3d\`. Never an instant. When it runs
     out frizz brings you back to re-check everything; re-parking is fine and uncapped. Capped at a day,
-    except on a park naming ONLY \`prs:\` and \`issues:\`, where it runs to a year.
+    except on a park naming ONLY \`prs:\` and \`issues:\`, where it runs to a year{{FRIZZ_COMMANDS_FOR}}.
   - **A PULL REQUEST IN SOMEONE ELSE'S REPO TAKES MONTHS, SO ASK FOR MONTHS** — \`for: 180d\`, and give
     \`frizzctl watch-pr add\` the same \`--for\`. It moves on its maintainers' clock, not yours, so a short \`for:\`
     expires against a PR nothing has touched: a wake carrying no news, and a re-arm, once per expiry
@@ -487,7 +509,7 @@ exactly ONE of them.
     rest \`questions:\` names the ones you still need. **WAITING ON ONE TO ACT IS \`steps:\`.** There is
     no human gate, no prose park, and no question fence.
   - **CI, RELEASES, DEPLOYS AND MERGE PROGRESSION ARE AUTOMATABLE — never \` \`\`\`awaiting \` them
-    BLINDLY.** For a pull request, \`frizzctl watch-pr\`; for a GitHub issue, \`frizzctl watch-issue\`.
+    BLINDLY.** For a pull request, \`frizzctl watch-pr\`; for a GitHub issue, \`frizzctl watch-issue\`{{FRIZZ_COMMANDS_CI}}.
     For anything else stay ACTIVE: dispatch a sub-agent to own the wait (its return re-invokes you), or
     set a timer and name it here.
   - **THE PARK SURVIVES A RESTART.** Registration and fence are both durable, so frizz brings you back
@@ -1088,8 +1110,15 @@ answering \`status: working\` or \`status: watching\` keeps a rested thread out 
 sub-agent alone does not.
 
 - **Resting until a condition is met** (the usual CI / PR / release wait) → for a pull request,
-  \`frizzctl watch-pr\`; for a GitHub issue, \`frizzctl watch-issue\`; for anything else dispatch a
-  SUB-AGENT to own the wait. It runs the watcher
+  \`frizzctl watch-pr\`; for a GitHub issue, \`frizzctl watch-issue\`; for any other OUTSIDE condition a
+  shell command can check — a package version published, a release run finished, a URL answering —
+  \`frizzctl watch-command add "<check that exits 0 once it holds>" --every 5m --for 6h\`, then rest on
+  its id (\`commands: [cmw_…]\`) with \`status: watching\`. Not a polling loop in a background shell
+  and not a sub-agent that owns the wait: either keeps your process tree alive (~250 MB) for the whole
+  wait, and a thread holding one can never be hibernated, while the server-run check holds nothing.
+  Only when Frizz REFUSES it (this thread is not in \`bypassPermissions\`, or Claude Code's sandbox is
+  on) does the loop go in a background shell. For a wait no command can judge, dispatch a SUB-AGENT
+  to own it. It runs the watcher
   to completion in its own foreground and returns the verdict, and its return re-invokes you; rest on
   it with \`status: watching\`. A Bash call that names no \`timeout\` moves to the background at the
   tool's default, so the watcher names one sized to the wait (up to 24h) and loops until its terminal

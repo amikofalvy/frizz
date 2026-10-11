@@ -578,7 +578,7 @@ export function parseAskUserQuestionAnswers(result: unknown, questions: readonly
 //   prose bodies       narrowed to `reason:` so the fence is machine-checkable — then given back in full
 //                      below the `---` delimiter, where prose cannot be mistaken for structure.
 export const AwaitingHint = z.object({
-  kind: z.enum(["shell", "agent", "timer", "pr", "issue", "for", "title", "status", "needs_input", "step", "question"]),
+  kind: z.enum(["shell", "agent", "timer", "pr", "issue", "command", "for", "title", "status", "needs_input", "step", "question"]),
   value: z.string(),
 })
 export type AwaitingHint = z.infer<typeof AwaitingHint>
@@ -663,7 +663,7 @@ const AWAITING_KEY_RE = /^([a-z][a-z_-]*):\s*(\S.*)?$/i
  *  recognised here so they never fall to the body, but are read verbatim rather than as YAML (see
  *  splitAwaitingFrontmatter). Anything else falls through to the body. `needs-input` is the same key
  *  spelled the way the other hyphenated kinds are. */
-const AWAITING_YAML_KEYS = new Set(["shells", "agents", "timers", "prs", "issues", "questions", "for", "title", "steps", "status", "needs_input", "needs-input"])
+const AWAITING_YAML_KEYS = new Set(["shells", "agents", "timers", "prs", "issues", "commands", "questions", "for", "title", "steps", "status", "needs_input", "needs-input"])
 
 /** Which singular hint kind each plural sequence key produces. The WIRE SHAPE is unchanged by the
  *  2026-08-24 cutover — every consumer still reads a flat `{kind, value}` list with SINGULAR kinds — so
@@ -677,6 +677,9 @@ const AWAITING_SEQUENCE_KEYS: { [key: string]: AwaitingItemKind | undefined } = 
   // rather than a second spelling under `prs:`, because the two are different registrations: an issue
   // has no CI and no merge, and the correction for an unregistered one names a different command.
   issues: "issue",
+  // `commands:` (2026-10-11) names a command watch registered with `frizzctl watch-command`, by its
+  // `cmw_…` id. Checked like a timer: the row must be armed on THIS thread.
+  commands: "command",
 }
 
 /** Defensive caps, shared so the sidebar gloss and the in-chat card can never render a divergent row.
@@ -1010,7 +1013,7 @@ export function awaitingNeedsInput(hints: readonly AwaitingHint[] | undefined): 
   return needsInput
 }
 
-export const AWAITING_ITEM_KINDS = ["shell", "agent", "timer", "pr", "issue"] as const
+export const AWAITING_ITEM_KINDS = ["shell", "agent", "timer", "pr", "issue", "command"] as const
 export type AwaitingItemKind = (typeof AWAITING_ITEM_KINDS)[number]
 export function isAwaitingItemKind(kind: string): kind is AwaitingItemKind {
   return (AWAITING_ITEM_KINDS as readonly string[]).includes(kind)
@@ -1679,6 +1682,8 @@ export interface SignoffLiveOps {
   prs?: { id?: string; label: string }[]
   /** Registered GitHub issues, by ref (`owner/repo#N`) — what an `issues:` entry names. */
   issues?: { id?: string; label: string }[]
+  /** Armed command watches, by row id (`cmw_…`) — what a `commands:` entry names. */
+  commands?: { id?: string; label: string }[]
 }
 
 // THE NUDGE PRINTS THE IDS, and that is not a convenience — it is what makes the fence writable at all.
@@ -1713,6 +1718,7 @@ export function liveOpsLines(ops?: SignoffLiveOps, needsInput = false): string[]
   section("Timers you have armed:", "timers", ops?.timers ?? [])
   section("Pull requests you registered:", "prs", ops?.prs ?? [])
   section("Issues you registered:", "issues", ops?.issues ?? [])
+  section("Command watches you registered:", "commands", ops?.commands ?? [])
   return lines
 }
 
@@ -2441,6 +2447,201 @@ export type DropOwnWatchResult = z.infer<typeof DropOwnWatchResult>
 /** How many watches one thread may hold at once. A bound, not an opinion — the same shape as
  *  PR_WATCH_MAX_ARMED, and generous enough that no honest fan-out meets it. */
 export const OWN_WATCH_MAX_ARMED = 24
+
+// ---- THE WORKER'S COMMAND WATCHES (2026-10-11) -------------------------------------------------------
+// `frizzctl watch-command`. A wait on an OUTSIDE condition a shell command can check — a package version
+// appearing on npm, a release run finishing, a URL coming up — run by the SERVER on a cadence, so the
+// wait holds nothing in the thread's own process tree and a resting thread can hibernate under it.
+//
+// WHY IT EXISTS. A worker parked on a polling background shell (`until npm view pkg@1.2.3 version; do
+// sleep 300; done`) pins its whole daemon tree, ~250 MB, for the life of the loop: hibernation refuses
+// any thread holding a background shell, because tearing the CLI down kills it. On the maintainer's
+// machine on 2026-10-11 three threads idle between 1h47m and 21h were pinned exactly that way (~750 MB),
+// one of them on an npm version for 21 hours. The shell bought nothing but re-running a check.
+//
+// THE CONDITION IS EXIT STATUS 0, and nothing else: no output matching, no state carried between runs.
+// The first run that exits 0 settles the row and wakes the thread once, with the command and the tail of
+// its output. `for` running out cancels it and wakes the thread to re-decide, the `watch` semantics.
+
+/** The shortest cadence. A check every minute is already a process every minute for as long as the wait
+ *  lasts; anything faster is a busy loop the server would run on the worker's behalf. */
+export const COMMAND_WATCH_EVERY_MIN_MS = 60_000
+/** The longest cadence — a day. A check rarer than that is a timer's job, not a watch's. */
+export const COMMAND_WATCH_EVERY_MAX_MS = 24 * 60 * 60 * 1000
+/** The ceiling on `for`: a WEEK. Long enough for every wait this exists for (npm's review hold has been
+ *  measured at up to ~4h, a release run at under 6h, a deploy at minutes) with days to spare, and short
+ *  enough that a forgotten watch stops spawning a process a minute within the week. Nothing like a PR
+ *  watcher's year: a PR moves on someone else's clock, while a command checks something this machine's
+ *  own work set in motion. Clamped and REPORTED, never refused, the same rule every other `for` follows. */
+export const COMMAND_WATCH_FOR_MAX_MS = 7 * 24 * 60 * 60 * 1000
+/** Per thread. Each one is a process on a clock, so this is far below the PR watcher's 32. */
+export const COMMAND_WATCH_MAX_ARMED = 8
+/** The longest command accepted, in characters. A check is one line; a script belongs in a file. */
+export const COMMAND_WATCH_COMMAND_MAX = 4000
+/** How much of a run's output is kept and handed back: the TAIL, in bytes, stdout and stderr interleaved. */
+export const COMMAND_WATCH_OUTPUT_MAX_BYTES = 4096
+/** One run's limit. Killed with its whole process group past this, and counted as a failed check. */
+export const COMMAND_WATCH_RUN_TIMEOUT_MS = 2 * 60_000
+
+/** One finished check, as stored on the row and read back. `exitCode` is null for every outcome but
+ *  `exit`: a run killed by its timeout, by a signal, or that never started has no exit status to report. */
+export const CommandWatchRun = z.object({
+  at: z.string(),
+  outcome: z.enum(["exit", "timeout", "signal", "error"]),
+  exitCode: z.number().int().nullable(),
+  output: z.string(),
+}).strict()
+export type CommandWatchRun = z.infer<typeof CommandWatchRun>
+
+export const CommandWatchState = z.enum(["armed", "dropped", "passed", "expired", "cancelled"])
+export type CommandWatchState = z.infer<typeof CommandWatchState>
+
+/** One registered command watch, as the worker's own command reads it back. */
+export const CommandWatchView = z.object({
+  id: z.string(),
+  command: z.string(),
+  /** The cadence in the house duration grammar (`5m`, `1h 30m`). */
+  every: z.string(),
+  state: CommandWatchState,
+  createdAt: z.string(),
+  expiresAt: z.string(),
+  /** How many checks have run since it was armed, the registration's own first check included. */
+  runs: z.number().int().nonnegative(),
+  lastRun: CommandWatchRun.optional(),
+}).strict()
+export type CommandWatchView = z.infer<typeof CommandWatchView>
+
+export const AddOwnCommandWatchInput = z.object({
+  slug: ThreadSlug,
+  /** Run with `/bin/sh -c` in the project root, with the server's environment. Exit status 0 is "passed". */
+  command: z.string().trim().min(1).max(COMMAND_WATCH_COMMAND_MAX),
+  /** How often to check, as a DURATION (`5m`; parseAwaitingDurationRaw). Clamped to [1m, 24h] and reported. */
+  every: z.string().trim().min(1).max(16),
+  /** How long to keep checking, as a DURATION. Clamped to COMMAND_WATCH_FOR_MAX_MS and reported. */
+  for: z.string().trim().min(1).max(16),
+}).strict()
+export type AddOwnCommandWatchInput = z.infer<typeof AddOwnCommandWatchInput>
+
+export const AddOwnCommandWatchResult = z.object({
+  /** Present when the call was REFUSED — the thread may not run commands outside the CLI's permission
+   *  system, or the command cannot run here at all. A refusal is an answer, not a fault: the text says
+   *  why and what to use instead, and nothing was stored. */
+  refused: z.string().optional(),
+  /** The armed row's id. Absent when nothing was armed: a refusal, or a first check that already passed. */
+  id: z.string().optional(),
+  /** This exact command was already watched on this thread, so the call registered nothing new. */
+  alreadyArmed: z.boolean().default(false),
+  /** The FIRST CHECK, run before anything was stored. Exit 0 there means the condition already holds:
+   *  nothing is armed, and the worker proceeds now rather than waiting a cadence to be told so. */
+  firstRun: CommandWatchRun.optional(),
+  passed: z.boolean().default(false),
+  expiresAt: z.string().optional(),
+  every: z.string().optional(),
+  /** The `every` / `for` the worker wrote, present ONLY when it was clamped — a clamp nobody is told about
+   *  is a worker resting on coverage it does not have. */
+  clamped: z.object({ every: z.string().optional(), for: z.string().optional() }).strict().optional(),
+  watches: z.array(CommandWatchView),
+}).strict()
+export type AddOwnCommandWatchResult = z.infer<typeof AddOwnCommandWatchResult>
+
+export const DropOwnCommandWatchInput = z.object({
+  slug: ThreadSlug,
+  id: z.string().min(1).max(64),
+}).strict()
+export type DropOwnCommandWatchInput = z.infer<typeof DropOwnCommandWatchInput>
+
+export const DropOwnCommandWatchResult = z.object({
+  dropped: z.boolean(),
+  watches: z.array(CommandWatchView),
+}).strict()
+export type DropOwnCommandWatchResult = z.infer<typeof DropOwnCommandWatchResult>
+
+export const ListOwnCommandWatchesInput = z.object({ slug: ThreadSlug }).strict()
+export type ListOwnCommandWatchesInput = z.infer<typeof ListOwnCommandWatchesInput>
+
+export const OwnCommandWatchesResult = z.object({ watches: z.array(CommandWatchView) }).strict()
+export type OwnCommandWatchesResult = z.infer<typeof OwnCommandWatchesResult>
+
+/** A code fence that cannot be closed early by what it holds: one backtick longer than the longest run
+ *  of backticks inside. A command or its output may carry ``` of its own. */
+function fenceFor(text: string): string {
+  const longest = Math.max(0, ...[...text.matchAll(/`+/g)].map((m) => m[0].length))
+  return "`".repeat(Math.max(3, longest + 1))
+}
+
+function codeBlock(text: string, info = ""): string {
+  const fence = fenceFor(text)
+  return `${fence}${info}\n${text.replace(/\n+$/, "")}\n${fence}`
+}
+
+/** How one check ended, as a clause: "exited 1", "timed out after 2m", "was killed by SIGKILL". */
+function commandRunClause(run: Pick<CommandWatchRun, "outcome" | "exitCode">): string {
+  if (run.outcome === "exit") return `exited ${run.exitCode ?? "?"}`
+  if (run.outcome === "timeout") return `timed out after ${formatElapsed(COMMAND_WATCH_RUN_TIMEOUT_MS)}`
+  if (run.outcome === "signal") return "was killed by a signal"
+  return "could not be started"
+}
+
+const COMMAND_WATCH_PASSED_HEAD = /^✅ Your command watch `(cmw_[a-z0-9]+)` PASSED\b/
+const COMMAND_WATCH_EXPIRED_HEAD = /^⏰ Your command watch `(cmw_[a-z0-9]+)` has expired and is no longer armed\b/
+const COMMAND_WATCH_CANCELLED_HEAD = /^⚠️ Frizz cancelled your command watch `(cmw_[a-z0-9]+)`/
+
+/** The wake a command watch sends when a check exits 0 — the one piece of news it exists to deliver. */
+export function commandWatchPassedWakeMessage(input: { id: string; command: string; output: string; runs: number; armedMs: number }): string {
+  const checks = `${input.runs} check${input.runs === 1 ? "" : "s"}`
+  const output = input.output.trim()
+  return [
+    `✅ Your command watch \`${input.id}\` PASSED — its command exited 0 on check ${input.runs} (${checks} over ${formatElapsed(input.armedMs)}):`,
+    "",
+    codeBlock(input.command, "sh"),
+    "",
+    output ? `Its output ended:\n\n${codeBlock(output)}` : "It printed nothing.",
+    "",
+    "The watch is settled and runs no more. Carry on with whatever you were waiting on it for.",
+  ].join("\n")
+}
+
+/** The wake a command watch sends when its `for` runs out — the twin of ownWatchExpiredWakeMessage. */
+export function commandWatchExpiredWakeMessage(input: { id: string; command: string; lastRun?: Pick<CommandWatchRun, "outcome" | "exitCode" | "output"> }): string {
+  const last = input.lastRun
+  const tail = last?.output.trim()
+  return [
+    `⏰ Your command watch \`${input.id}\` has expired and is no longer armed — its command never exited 0, and nothing about it will wake you now:`,
+    "",
+    codeBlock(input.command, "sh"),
+    "",
+    last
+      ? `Its last check ${commandRunClause(last)}${tail ? `, ending:\n\n${codeBlock(tail)}` : " and printed nothing."}`
+      : "It never completed a check.",
+    "",
+    "If you still mean to wait, find out why it never passed, then register it again with `frizzctl watch-command add` " +
+      "and a fresh `--for`. If you do not, and it was the only thing you were waiting on, end in a proper terminal " +
+      "state instead of parking on it again.",
+  ].join("\n")
+}
+
+/** The wake a command watch sends when Frizz stops it before it passed or expired — the thread's
+ *  permission mode or sandbox changed under it, so the server may no longer run the command for it. */
+export function commandWatchCancelledWakeMessage(input: { id: string; command: string; reason: string }): string {
+  return [
+    `⚠️ Frizz cancelled your command watch \`${input.id}\` and will not run it again: ${input.reason}`,
+    "",
+    codeBlock(input.command, "sh"),
+    "",
+    "Nothing about it will wake you now. If you still need the wait, run the check in a background shell instead.",
+  ].join("\n")
+}
+
+/** A command watch's wake, read back — which of the three it is and the watch's id — or null. */
+export function parseCommandWatchWake(text: string): { kind: "passed" | "expired" | "cancelled"; id: string } | null {
+  const first = text.trim()
+  const passed = COMMAND_WATCH_PASSED_HEAD.exec(first)
+  if (passed) return { kind: "passed", id: passed[1] }
+  const expired = COMMAND_WATCH_EXPIRED_HEAD.exec(first)
+  if (expired) return { kind: "expired", id: expired[1] }
+  const cancelled = COMMAND_WATCH_CANCELLED_HEAD.exec(first)
+  return cancelled ? { kind: "cancelled", id: cancelled[1] } : null
+}
 
 // ---- THE WORKER'S REGISTERED QUESTIONS (2026-08-26) ------------------------------------------------
 // `frizzctl ask` / `frizzctl unask`. See plans/rest-by-registration.md.
@@ -4328,7 +4529,7 @@ export type OwnThreadTimersResult = z.infer<typeof OwnThreadTimersResult>
 // compaction, a long turn, a wake it did not expect) cannot write a correct fence at all. This is how it
 // gets them back, and it is the same list the sign-off nudge prints, so the two can never disagree.
 export const ThreadActivityItem = z.object({
-  kind: z.enum(["shell", "agent", "timer", "pr", "issue"]),
+  kind: z.enum(["shell", "agent", "timer", "pr", "issue", "command"]),
   /** The string a `<kind>:` fence line must carry. For a shell that is the runtime task id the worker
    *  was shown; for a PR, `owner/repo#N`; for a timer, its `tmr_…` row id. */
   id: z.string(),
@@ -5983,8 +6184,9 @@ export const ProjectCard = z.object({
    * Three states, not a boolean, because the two "no icon to draw right now" cases must behave
    * differently and a boolean collapses them:
    *   · `icon`    — one is stored; draw it.
-   *   · `none`    — scanned, nothing found. Draw the monogram and DO NOT request the icon route,
-   *                 which is what stops an iconless project flashing its initials and then swapping.
+   *   · `none`    — scanned recently, nothing found. Draw the monogram and DO NOT request the icon
+   *                 route, which is what stops an iconless project flashing its initials and then
+   *                 swapping. An OLD miss reads `unknown` again, so an icon added since is found.
    *   · `unknown` — never scanned. The monogram shows, but the request MUST still go out, because
    *                 that request is what triggers the (lazy, cached) scan in the first place.
    *

@@ -450,13 +450,13 @@ const UNWATCH = {
     "it blocks `done` until it is withdrawn.\n\n" +
     "You do NOT need this when the work simply finishes: frizz settles the row itself and wakes you. " +
     "`frizzctl activity` prints the id of everything you hold. A `watch-pr` / `watch-issue` id (`prw_…` / " +
-    "`isw_…`) or a `timer` id (`tmr_…`) is withdrawn here too.",
+    "`isw_…`), a `timer` id (`tmr_…`) or a `watch-command` id (`cmw_…`) is withdrawn here too.",
   inputSchema: {
     type: "object",
     properties: {
       id: {
         type: "string",
-        description: "The watch id `frizzctl watch` printed (or that `frizzctl activity` lists), or a PR, issue or timer id. Only your own thread's.",
+        description: "The watch id `frizzctl watch` printed (or that `frizzctl activity` lists), or a PR, issue, timer or command-watch id. Only your own thread's.",
       },
     },
     required: ["id"],
@@ -863,10 +863,74 @@ const UNLINK = {
   },
 }
 
-// WATCH_ISSUE rides at the END (2026-09-14), and SECRET and STEER after it: the tool list is read by position
+// A wait on an OUTSIDE condition that a command can check, run by the SERVER (2026-10-11). It exists
+// because the alternative was a polling loop in a background shell, which pins the thread's whole
+// process tree: hibernation refuses a thread holding one. See packages/server/src/command-watch.ts.
+const WATCH_COMMAND = {
+  name: "watch_command",
+  description:
+    "WAIT ON AN OUTSIDE CONDITION WITHOUT HOLDING A PROCESS. Give Frizz a shell command that exits 0 once " +
+    "the thing you are waiting for is true — a package version npm serves, a release run that finished, a " +
+    "URL that answers — and the SERVER runs it every `--every` until it does, then wakes you ONCE with " +
+    "the command and the end of its output. Nothing of yours runs meanwhile, so your thread can be " +
+    "hibernated while it rests. A polling loop in a background shell (`until …; do sleep 300; done`) pins " +
+    "your whole process tree, ~250 MB, for as long as it loops; this is that loop without the cost.\n\n" +
+    "THE CONDITION IS EXIT STATUS 0, and nothing else. Write the check so it FAILS until the condition " +
+    "holds: `npm view frizz@0.13.12 version` (non-zero while npm does not serve it), `gh run view 123 " +
+    "--json conclusion -q .conclusion | grep -qx success`, `curl -fsS http://localhost:5173/health`.\n\n" +
+    "IT RUNS ON THE SERVER, NOT IN YOUR SHELL: `/bin/sh -c` in the project root, with the server's " +
+    "environment and PATH, stdin closed, killed after 2m. Nothing your session exported, no aliases, no " +
+    "functions. A first check runs at registration: exit 0 means the condition already holds and nothing " +
+    "is armed, and a command the server cannot run at all (`command not found`) is refused.\n\n" +
+    "ONLY ON A THREAD WITH NO PERMISSION CHECKS. The server runs the command with no permission prompt and " +
+    "outside any sandbox, so Frizz refuses it unless this thread runs in `bypassPermissions` mode with " +
+    "Claude Code's sandbox off, and refuses it on Codex. The refusal says why; wait in a background shell " +
+    "then.\n\n" +
+    "ONE-SHOT: the first passing check settles it. When `--for` runs out it is cancelled and you are woken " +
+    "to re-decide. Name its id in your ```awaiting fence — `commands: [cmw_…]` with `status: watching`. " +
+    "Registering is idempotent on the exact command text. `list` reads back what is armed, with each " +
+    "watch's last check; `drop` withdraws one (so does `frizzctl unwatch <id>`). Only ever your OWN thread's.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      action: {
+        type: "string",
+        enum: ["add", "list", "drop"],
+        description:
+          "`add` registers a watch (idempotent per command); `drop` withdraws one by id; `list` reads back " +
+          "every watch armed on this thread, with its last check, without changing anything.",
+      },
+      command: {
+        type: "string",
+        description:
+          "Required for `add`. The check, as one shell command line run with `/bin/sh -c` in the project " +
+          "root. Exit 0 means the condition holds. Use absolute paths for anything not on a plain PATH.",
+      },
+      every: {
+        type: "string",
+        description:
+          "Required for `add`. How often to check, as a DURATION — `1m`, `5m`, `1h` (min 1m, max 24h). " +
+          "Pick it for how soon you need to know: a release in npm's review is minutes to hours, so `5m`.",
+      },
+      for: {
+        type: "string",
+        description:
+          "Required for `add`. How long to keep checking, as a DURATION — `2h`, `1d`, `7d` (max 7d). When it " +
+          "runs out the watch is cancelled and you are woken to decide what the silence means.",
+      },
+      id: {
+        type: "string",
+        description: "Required for `drop`. The `cmw_…` id `add` printed (or that `list` and `frizzctl activity` show).",
+      },
+    },
+    required: ["action"],
+  },
+}
+
+// WATCH_ISSUE rides at the END (2026-09-14), and SECRET, STEER and WATCH_COMMAND after it: the tool list is read by position
 // in frizz-mcp.test.ts, and a worker's runtime reads it by name, so the order costs nothing and appending
 // breaks nothing.
-const TOOLS = [SPAWN_THREAD, GOAL, TIMER, WATCH_PR, WATCH, UNWATCH, ASK, UNASK, DONE, TITLE, ACTIVITY, LINK, UNLINK, WATCH_ISSUE, SECRET, STEER]
+const TOOLS = [SPAWN_THREAD, GOAL, TIMER, WATCH_PR, WATCH, UNWATCH, ASK, UNASK, DONE, TITLE, ACTIVITY, LINK, UNLINK, WATCH_ISSUE, SECRET, STEER, WATCH_COMMAND]
 
 /** @type {Record<string, (args: Record<string, unknown>) => Promise<string>>} */
 const HANDLERS = {
@@ -886,6 +950,7 @@ const HANDLERS = {
   [LINK.name]: link,
   [UNLINK.name]: unlink,
   [STEER.name]: steer,
+  [WATCH_COMMAND.name]: watchCommand,
 }
 
 // The slug out of whatever a worker has in hand for a thread: the slug itself, the `[title](/thread/<slug>)`
@@ -1003,9 +1068,9 @@ async function activity() {
   // keys are PLURAL sequences, so an id printed on its own line is no longer something a worker can copy
   // into a fence — it has to see the shape. This command is where the contract sends a worker that has lost
   // an id, so printing the retired one-line-per-item form would teach the very grammar frizz refuses.
-  const byKind = { shell: [], agent: [], timer: [], pr: [], issue: [] }
+  const byKind = { shell: [], agent: [], timer: [], pr: [], issue: [], command: [] }
   for (const i of items) if (byKind[i.kind] && i.id) byKind[i.kind].push(i.id)
-  const block = Object.entries({ shells: byKind.shell, agents: byKind.agent, timers: byKind.timer, prs: byKind.pr, issues: byKind.issue })
+  const block = Object.entries({ shells: byKind.shell, agents: byKind.agent, timers: byKind.timer, prs: byKind.pr, issues: byKind.issue, commands: byKind.command })
     .filter(([, ids]) => ids.length > 0)
     .map(([key, ids]) => `  ${key}: [${ids.join(", ")}]`)
   // Every open question rides the fence too: a fence that leaves one out is refused, and a fence on
@@ -1688,6 +1753,13 @@ async function unwatch(args) {
       : `No ARMED ${kind} watcher ${id} on this thread — it was already settled, or the id is not one of yours.`
     return `${head}\n\n${id.startsWith("isw_") ? armedIssueWatchList(dropped) : armedPrWatchList(dropped)}`
   }
+  if (id.startsWith("cmw_")) {
+    const dropped = (await callRpc("dropOwnCommandWatch", { slug, id }))?.result
+    const head = dropped?.dropped
+      ? `Command watch ${id} dropped. Frizz will not run it again, and it will not wake you.`
+      : `No ARMED command watch ${id} on this thread — it already passed, expired or was cancelled, or the id is not one of yours.`
+    return `${head}\n\n${armedCommandWatchList(dropped)}`
+  }
   if (id.startsWith("tmr_")) {
     const cancelled = (await callRpc("cancelOwnThreadTimer", { slug, id }))?.result
     const head = cancelled?.cancelled
@@ -1809,7 +1881,7 @@ async function done(args) {
     parts.push(
       `${watches.length} registration${watches.length === 1 ? "" : "s"} still armed:\n${watches.join("\n")}\n` +
       "A live wait means the thing you were waiting for has not happened. Wait for it, or drop the ones " +
-      "that stopped mattering (`frizzctl unwatch <id>` takes a watch, a PR or issue watcher, or a timer).",
+      "that stopped mattering (`frizzctl unwatch <id>` takes a watch, a PR or issue watcher, a timer, or a command watch).",
     )
   }
   parts.push("There is no force flag. Resolve them and run `frizzctl done` again.")
@@ -1911,6 +1983,103 @@ async function watchIssue(args) {
   )
 }
 
+/** The command watches armed on this thread, as every `watch-command` action reads them back.
+ * @param {{ watches?: Array<{id: string, command: string, every: string, expiresAt: string, runs: number, lastRun?: {outcome: string, exitCode: number|null}}> }|undefined} result */
+function armedCommandWatchList(result) {
+  const watches = Array.isArray(result?.watches) ? result.watches : []
+  if (!watches.length) return "No command watches are armed on this thread — none will wake you."
+  const lines = watches.map((w) => {
+    const last = !w.lastRun
+      ? "no check finished yet"
+      : `last check ${commandRunClause(w.lastRun)}`
+    return `  ${w.id}  every ${w.every}, until ${w.expiresAt} — ${w.runs} check${w.runs === 1 ? "" : "s"}, ${last}\n    $ ${w.command}`
+  })
+  return `Command watches on this thread now:\n${lines.join("\n")}`
+}
+
+/** "exited 1", "timed out", … — how one check ended. @param {{outcome: string, exitCode: number|null}} run */
+function commandRunClause(run) {
+  if (run.outcome === "exit") return `exited ${run.exitCode}`
+  if (run.outcome === "timeout") return "timed out"
+  if (run.outcome === "signal") return "was killed by a signal"
+  return "could not start"
+}
+
+/** The end of a check's output, short enough to read inline. @param {string|undefined} output */
+function outputTail(output) {
+  const text = String(output ?? "").trim()
+  if (!text) return "It printed nothing."
+  const tail = text.length > 800 ? `…${text.slice(-800)}` : text
+  return `Its output ended:\n${tail.split("\n").map((l) => `  ${l}`).join("\n")}`
+}
+
+/** The `watch_command` handler: register, withdraw, or read back this thread's command watches.
+ * @param {Record<string, unknown>} args @returns {Promise<string|Refused>} */
+async function watchCommand(args) {
+  const slug = threadSlug()
+  const action = typeof args.action === "string" ? args.action.trim() : ""
+  if (action !== "add" && action !== "list" && action !== "drop") {
+    throw new Error("`action` must be one of \"add\", \"list\" or \"drop\"")
+  }
+
+  if (action === "list") {
+    return armedCommandWatchList((await callRpc("listOwnCommandWatches", { slug }))?.result)
+  }
+
+  if (action === "drop") {
+    const id = typeof args.id === "string" ? args.id.trim() : ""
+    if (!id) throw new Error("`id` is required to drop a command watch — take it from `add` or from `list`")
+    const result = (await callRpc("dropOwnCommandWatch", { slug, id }))?.result
+    const head = result?.dropped
+      ? `Command watch ${id} dropped. Frizz will not run it again, and it will not wake you.`
+      : `No ARMED command watch ${id} on this thread — it already passed, expired or was cancelled, or the id is not one of yours.`
+    return `${head}\n\n${armedCommandWatchList(result)}`
+  }
+
+  const command = typeof args.command === "string" ? args.command.trim() : ""
+  if (!command) throw new Error("`command` is required — a shell command that exits 0 once the condition holds")
+  const every = typeof args.every === "string" ? args.every.trim() : ""
+  if (!every) throw new Error("`every` is required — how often to check, a DURATION like `5m` (min 1m, max 24h)")
+  const forValue = typeof args.for === "string" ? args.for.trim() : ""
+  if (!forValue) throw new Error("`for` is required — how long to keep checking, a DURATION like `6h` or `3d` (max 7d)")
+  const result = (await callRpc("addOwnCommandWatch", { slug, command, every, for: forValue }))?.result
+  // A REFUSAL is the gate doing its job, not a fault: exit 2, with the reason and the background-shell
+  // fallback in the server's own words.
+  if (result?.refused) {
+    const ran = result.firstRun ? `\n\n${outputTail(result.firstRun.output)}` : ""
+    return new Refused(`NOT registered. ${result.refused}${ran}`)
+  }
+  if (result?.passed) {
+    return (
+      "NOTHING WAS ARMED: your command exited 0 on its first check, so the condition already holds. Carry on " +
+      `with whatever you were going to wait for.\n\n${outputTail(result.firstRun?.output)}`
+    )
+  }
+  const id = result?.id ?? "(unknown)"
+  if (result?.alreadyArmed) {
+    return (
+      `Already watching this command as ${id} (every ${result.every}, until ${result.expiresAt}) — nothing new was ` +
+      `registered, and its original expiry stands.\n\n${armedCommandWatchList(result)}`
+    )
+  }
+  const first = result?.firstRun
+    ? result.firstRun.outcome === "timeout"
+      ? "Its first check did not finish in time, so Frizz runs it again now with the full 2m."
+      : `Its first check ${commandRunClause(result.firstRun)}. ${outputTail(result.firstRun.output)}`
+    : "Frizz runs its first check within the next minute."
+  // A CLAMP IS NEWS, as on every other `for` — a worker told nothing rests on coverage it does not have.
+  const clamps = []
+  if (result?.clamped?.every) clamps.push(`\`--every ${result.clamped.every}\` was clamped to ${result.every}`)
+  if (result?.clamped?.for) clamps.push(`\`--for ${result.clamped.for}\` was capped at the 7d ceiling`)
+  const clamped = clamps.length ? `\n\nYOUR ${clamps.join(", and ")} — what is listed below is what you hold.` : ""
+  return (
+    `Watching as ${id}: Frizz runs it every ${result?.every} until it exits 0, or until ${result?.expiresAt}, and ` +
+    `then wakes you once with its output. Nothing of yours runs meanwhile.\n\n${first}${clamped}\n\n` +
+    `NAME IT IN YOUR \`\`\`awaiting FENCE (\`commands: [${id}]\`, \`status: watching\`) and come to rest. DROP IT ` +
+    `when it stops mattering (\`frizzctl watch-command drop ${id}\`).\n\n${armedCommandWatchList(result)}`
+  )
+}
+
 /**
  * HOW EACH COMMAND IS SPELLED ON A COMMAND LINE. The schema above already says what a command takes;
  * this says the three things a schema cannot:
@@ -2001,6 +2170,17 @@ const CLI = {
     positional: ["action"],
     then: { add: ["target"], drop: ["id"] },
     examples: ["frizzctl watch-issue add acme/app#482 --for 30d", "frizzctl watch-issue list", "frizzctl watch-issue drop isw_ab12cd34"],
+  },
+  watch_command: {
+    group: "Waiting",
+    summary: "Wake when a shell command the server re-runs exits 0 (a version published, a URL up)",
+    positional: ["action"],
+    then: { add: ["command"], drop: ["id"] },
+    examples: [
+      'frizzctl watch-command add "npm view frizz@0.13.12 version" --every 5m --for 6h',
+      "frizzctl watch-command list",
+      "frizzctl watch-command drop cmw_ab12cd34ef56",
+    ],
   },
   timer: {
     group: "Waiting",

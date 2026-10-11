@@ -36,7 +36,9 @@ import { readCodexModels } from "./backend/codex-models.ts"
 import { createAcpBackend } from "./backend/acp-transcript.ts"
 import { createAcpBridge, type AcpBridge } from "./backend/acp-bridge.ts"
 import { readClaudePreflightAuth, readCodexAuthState, readCodexBinaryState } from "./backend/auth-status.ts"
-import type { AgentBackend } from "./backend/types.ts"
+import { frizzCliEnv, withFrizzCliOnPath, type AgentBackend } from "./backend/types.ts"
+import { sanitizeProviderChildEnvironment } from "./backend/claude-agent-sdk.ts"
+import { commandWatchEnvironment, createCommandWatchService, type CommandWatchService } from "./command-watch.ts"
 import { needsFreshProcessForLimit } from "./backend/usage-limit.ts"
 import { onClaudeModelsResolved, peekClaudeModels, readClaudeModels } from "./backend/claude-models.ts"
 import { claudeModelUpgradeDue, claudeUpgradeCandidate, SERVER_STARTED_AT_MS } from "./backend/claude-model-upgrade.ts"
@@ -174,6 +176,9 @@ export interface AppContext {
   probePr: (ref: PrRef) => Promise<PrProbe>
   /** The issue twin, for `frizzctl watch-issue` — `probeIssueReadable` (one `gh issue view`). */
   probeIssue: (ref: PrRef) => Promise<PrProbe>
+  /** `frizzctl watch-command`'s gate and runner, bound to this project (command-watch.ts). Shared with the
+   *  scheduler, so registration and every later check ask the same gate. */
+  commandWatches: CommandWatchService
   // Per-thread permission changes. Idle standalone TUIs are reopened on the same persisted
   // conversation with backend-native launch flags; busy/ambiguous states fail explicitly.
   // Proves an injected Claude follow-up was actually SUBMITTED, and re-presses Enter when the TUI
@@ -1008,11 +1013,35 @@ function createContextUnchecked(opts: ContextOptions, resources: PartialContextR
     preflightCodexBinary: () => readCodexBinaryState(opts.codexBin ?? "codex"),
   })
 
+  // COMMAND WATCHES (`frizzctl watch-command`): checks run in the project root with the server's own
+  // environment — scrubbed of the toolchain injection a provider child is scrubbed of — plus the thread's
+  // Frizz identity and `frizzctl` on PATH, so a check may itself call `frizzctl`. Everything about the
+  // process and the gate is in command-watch.ts.
+  const commandWatches = createCommandWatchService({
+    cwd: project.dir,
+    env: (slug) => {
+      const base = sanitizeProviderChildEnvironment(process.env)
+      const cli = resolveFrizzCli(frizzMcpTarget)
+      if (!cli) {
+        return commandWatchEnvironment(base, {
+          FRIZZ_STATE_DIR: frizzMcpTarget.stateDir,
+          ...(frizzMcpTarget.serverLock ? { FRIZZ_SERVER_LOCK: frizzMcpTarget.serverLock } : {}),
+          ...(frizzMcpTarget.projectId ? { FRIZZ_PROJECT_ID: frizzMcpTarget.projectId } : {}),
+          FRIZZ_THREAD_SLUG: slug,
+        })
+      }
+      const env = commandWatchEnvironment(base, frizzCliEnv(cli, slug))
+      const defined = Object.fromEntries(Object.entries(env).filter((e): e is [string, string] => typeof e[1] === "string"))
+      return withFrizzCliOnPath(defined, cli)
+    },
+  })
+
   // Durable timer waker + legacy pr/ci compatibility. Reuses the SAME resume path as followUp;
   // boot-safe because it only fires on a condition it witnesses cross.
   const scheduler = createScheduler({
     storage,
     tailer,
+    commandWatches,
     // Second wake source: every thread a subscription window cut off mid-turn gets its own "continue"
     // once that window rolls, over this same delivery path. The quota reader supplies the fallback
     // instant for a weekly limit, whose message text carries a clock but no date; readQuota memoizes,
@@ -1159,6 +1188,7 @@ function createContextUnchecked(opts: ContextOptions, resources: PartialContextR
     scheduler,
     probePr: probePrReadable,
     probeIssue: probeIssueReadable,
+    commandWatches,
     stopSubscriptions,
     backendFor,
     getSettings: () => getSettings(storage, home),

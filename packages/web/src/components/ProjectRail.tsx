@@ -100,7 +100,12 @@ export function ProjectSquare({ project, size }: { project: ProjectCard; size: n
   // no request means no scan means never any icon. `iconVersion` cannot decide this on its own: it is
   // stamped whenever a scan RAN, found or not. See ProjectCard.iconStatus.
   const hasIcon = project.iconStatus !== "none"
-  const [failed, setFailed] = useState(false)
+  const src = projectIconSrc(project)
+  // The URL that failed, not a flag. A flag outlived the failure: once one request 404'd, the square
+  // rendered no image for the rest of the page's life, so a later rescan, an upload or a found icon
+  // never showed until a reload. A new `iconVersion` is a new URL, and gets its own request.
+  const [failedSrc, setFailedSrc] = useState<string>()
+  const failed = failedSrc === src
   const showMonogram = !hasIcon || failed
   // Below ~22px two letters at 0.4em are 6–8px type, which is noise, not a monogram. A small square —
   // the Console's 16px row mark — carries the first letter alone, larger, the way Slack's do.
@@ -144,7 +149,7 @@ export function ProjectSquare({ project, size }: { project: ProjectCard; size: n
       )}
       {hasIcon && !failed && (
       <img
-        src={projectIconSrc(project)}
+        src={src}
         alt=""
         width={size}
         height={size}
@@ -159,7 +164,7 @@ export function ProjectSquare({ project, size }: { project: ProjectCard; size: n
           }
           setLoaded(true)
         }}
-        onError={() => setFailed(true)}
+        onError={() => setFailedSrc(src)}
         // object-contain, never cover: a logo cropped to fill its square is a mangled logo, and the
         // scan admits some non-square marks (a 300×331 `.github/logo.webp` is a real case). The
         // padding keeps a full-bleed icon off the rounded corners without shrinking a letterboxed one

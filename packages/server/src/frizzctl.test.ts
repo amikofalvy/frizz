@@ -38,6 +38,9 @@ function plausible(procedure: string, body: any): unknown {
     case "dropOwnWatch": return { dropped: true }
     case "addOwnPrWatch": return { id: "prw_1", target: body.target }
     case "dropOwnPrWatch": return { dropped: true }
+    case "addOwnCommandWatch": return { id: "cmw_1", alreadyArmed: false, passed: false, every: "5m", expiresAt: "2026-10-11T20:00:00.000Z", firstRun: { at: "2026-10-11T14:00:00.000Z", outcome: "exit", exitCode: 1, output: "" }, watches: [] }
+    case "dropOwnCommandWatch": return { dropped: true, watches: [] }
+    case "listOwnCommandWatches": return { watches: [] }
     case "setOwnThreadTimer": return { id: "tmr_1", fireAt: "2026-10-11T20:00:00.000Z", prompt: body.prompt, timers: [] }
     case "cancelOwnThreadTimer": return { cancelled: true, timers: [] }
     case "setOwnThreadRecurringPrompt": return { recurringPrompt: body.action === "stop" ? null : { prompt: body.prompt, stopHook: !!body.stopHook, postCompaction: !!body.postCompaction } }
@@ -323,6 +326,60 @@ test("exit 0 is done, 1 is a failure, and 2 is a gate that held", async () => {
     const ok = await run(["unask", "qst_open"], { env: worker(fake) })
     assert.equal(ok.code, 0)
     assert.match(ok.stdout, /^Question qst_open withdrawn\./)
+  } finally {
+    fake.close()
+  }
+})
+
+// `watch-command` (2026-10-11): the server runs the check, so what the command line owes is the right
+// body, the refusal as exit 2 (it is the permission gate holding, with the background-shell fallback in
+// it), a first check that already passed read as "nothing armed", and `unwatch` reaching the right RPC.
+test("`watch-command` registers for the calling thread, reads a refusal as exit 2, and `unwatch` drops a cmw_ id", async () => {
+  let mode: "armed" | "refused" | "passed" = "armed"
+  const fake = await fakeFrizz((procedure, body) => {
+    if (procedure !== "addOwnCommandWatch") return undefined
+    if (mode === "refused") {
+      return { result: { refused: "Frizz will not run a command watch for this thread: this thread runs in `default` permission mode. Run the check in a background shell instead.", alreadyArmed: false, passed: false, watches: [] } }
+    }
+    if (mode === "passed") {
+      return { result: { alreadyArmed: false, passed: true, firstRun: { at: "2026-10-11T14:00:00.000Z", outcome: "exit", exitCode: 0, output: "0.13.12\n" }, watches: [] } }
+    }
+    return { result: {
+      id: "cmw_abc", alreadyArmed: false, passed: false, every: "5m", expiresAt: "2026-10-11T20:00:00.000Z",
+      firstRun: { at: "2026-10-11T14:00:00.000Z", outcome: "exit", exitCode: 1, output: "npm error 404 No match found for version 0.13.12" },
+      watches: [{ id: "cmw_abc", command: body.command, every: "5m", state: "armed", createdAt: "2026-10-11T14:00:00.000Z", expiresAt: "2026-10-11T20:00:00.000Z", runs: 1, lastRun: { at: "2026-10-11T14:00:00.000Z", outcome: "exit", exitCode: 1, output: "" } }],
+    } }
+  })
+  try {
+    const armed = await run(["watch-command", "add", "npm view frizz@0.13.12 version", "--every", "5m", "--for", "6h"], { env: worker(fake) })
+    assert.equal(armed.code, 0, armed.stderr)
+    assert.deepEqual(fake.seen.at(-1)?.body, { slug: "the-caller", command: "npm view frizz@0.13.12 version", every: "5m", for: "6h" })
+    assert.match(armed.stdout, /^Watching as cmw_abc: Frizz runs it every 5m until it exits 0/)
+    assert.match(armed.stdout, /Its first check exited 1\./)
+    assert.match(armed.stdout, /`commands: \[cmw_abc\]`, `status: watching`/)
+    assert.match(armed.stdout, /cmw_abc {2}every 5m, until 2026-10-11T20:00:00.000Z — 1 check, last check exited 1\n {4}\$ npm view frizz@0\.13\.12 version/)
+
+    mode = "refused"
+    const refused = await run(["watch-command", "add", "true", "--every", "5m", "--for", "1h"], { env: worker(fake) })
+    assert.equal(refused.code, 2)
+    assert.match(refused.stdout, /^NOT registered\. Frizz will not run a command watch for this thread/)
+    assert.match(refused.stdout, /background shell instead/)
+
+    mode = "passed"
+    const passed = await run(["watch-command", "add", "true", "--every", "5m", "--for", "1h"], { env: worker(fake) })
+    assert.equal(passed.code, 0)
+    assert.match(passed.stdout, /^NOTHING WAS ARMED: your command exited 0 on its first check/)
+    assert.match(passed.stdout, /0\.13\.12/)
+
+    const missing = await run(["watch-command", "add", "true", "--for", "1h"], { env: worker(fake) })
+    assert.equal(missing.code, 1)
+    assert.match(missing.stderr, /`every` is required/)
+
+    fake.seen.length = 0
+    const dropped = await run(["unwatch", "cmw_abc"], { env: worker(fake) })
+    assert.equal(dropped.code, 0)
+    assert.ok(fake.seen[0]?.url.endsWith("/rpc/dropOwnCommandWatch"), fake.seen[0]?.url)
+    assert.match(dropped.stdout, /^Command watch cmw_abc dropped\./)
   } finally {
     fake.close()
   }
