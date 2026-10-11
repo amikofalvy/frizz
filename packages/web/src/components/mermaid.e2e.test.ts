@@ -86,6 +86,15 @@ test("a mermaid fence is a diagram on a done card, in a question's context and o
     const reader = await labels(page, "[data-fixture-reader] .md-body > .md-mermaid")
     assert.ok(["Worker", "Frizz", "Human", "ask(question)", "wake"].every((word) => reader.includes(word)), reader.join(" | "))
     assert.equal(await page.$eval("[data-fixture-reader] code.language-typescript", (el) => el.textContent), "await ask({ question })\n")
+    // Its Rendered ⇄ Source toggle takes the rendered document out of the page and puts it back with the
+    // very same markup, unscanned: the source view shows the fence as text, and the way back draws it again.
+    const view = (name: string) => page.evaluate((label) => { [...document.querySelectorAll<HTMLButtonElement>("[data-fixture-reader] button")].find((b) => b.textContent === label)!.click() }, name)
+    await view("Source")
+    await page.waitForFunction(() => !document.querySelector("[data-fixture-reader] [data-mermaid-state]") && !!document.querySelector("[data-fixture-reader] pre.hljs")?.textContent?.includes("sequenceDiagram"))
+    await view("Rendered")
+    await settled(page, CARDS + 1)
+    assert.ok((await labels(page, "[data-fixture-reader] .md-body > .md-mermaid")).includes("ask(question)"))
+    assert.equal(await page.$$eval("[data-fixture-reader] code.language-mermaid", (els) => els.length), 0)
     assert.deepEqual(errors, [])
   } finally {
     await browser.close()
