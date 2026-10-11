@@ -210,3 +210,20 @@ test("the memoised whole-table read is not invalidated by another project's writ
   b.close()
   db.close()
 })
+
+test("another project's storage on the shared connection compiles no statements of its own", () => {
+  // Each project used to compile its own copy of every statement — ~190 of them, ~1.4 MB of SQLite
+  // malloc per project the server serves. They share one copy per SQL text now (sqlite.ts #compiled),
+  // and the isolation above is what proves sharing the text did not share the rows.
+  const db = new Database(join(mkdtempSync(join(tmpdir(), "frizz-storage-share-")), "ui.db"))
+  try {
+    const first = createStorage(db, "project-0")
+    first.allSessions()
+    const compiled = db.compiledStatements
+    assert.ok(compiled > 50, `one storage compiles its statements (${compiled})`)
+    for (let i = 1; i < 12; i++) createStorage(db, `project-${i}`).allSessions()
+    assert.equal(db.compiledStatements, compiled)
+  } finally {
+    db.close()
+  }
+})
