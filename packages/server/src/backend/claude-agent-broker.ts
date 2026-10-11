@@ -39,6 +39,7 @@ import { claudeCompactionWindowOf } from "./types.ts"
 import { socketPathOwnership } from "./socket-ownership.ts"
 import { createClaudeBrokerDiagnosticWriter, createClaudeBrokerExitWriter, type ClaudeBrokerExitReason } from "./claude-broker-diagnostics.ts"
 import { claudeClosureFingerprint, claudePluginSyncEnabled, createClaudePluginSync } from "./claude-plugin-sync.ts"
+import { recordObservedClaudeQuota } from "./claude-quota-observed.ts"
 import { CLAUDE_BROKER_CAPABILITY_CANCEL_INPUT, CLAUDE_BROKER_CAPABILITY_INPUT_ACK, CLAUDE_BROKER_CAPABILITY_LIST_SKILLS, CLAUDE_BROKER_CAPABILITY_RELOAD_PLUGINS, CLAUDE_BROKER_CAPABILITY_RENAME, CLAUDE_BROKER_CAPABILITY_STOP_TASK, CLAUDE_BROKER_CAPABILITY_SUBAGENT_STEER, CLAUDE_INPUT_DROP_DIAGNOSTIC_PREFIX } from "./claude-agent-sdk-protocol.ts"
 import type {
   ClaudeDiagnostic,
@@ -295,6 +296,12 @@ export function runClaudeBroker(config: ClaudeBrokerConfig, options: RunClaudeBr
           }, PERMISSION_SHOW_HOLD_MS)
         }
       })
+    },
+    // The account's plan windows, as every API response reports them to this session. Written by THIS
+    // process because it is the one that sees the stream and it outlives the Frizz server; the server
+    // only reads the file (claude-quota-observed.ts). Fire-and-forget: the recorder never rejects.
+    onRateLimit: (info: unknown) => {
+      void recordObservedClaudeQuota(info, { cacheDir: join(frizzRoots().cache, "quota-cache"), configDir: closure.configDir })
     },
     onDiagnostic: (diagnostic: ClaudeDiagnostic) => {
       // Persist FIRST, then relay. A `crashed` diagnostic is emitted with the process seconds from

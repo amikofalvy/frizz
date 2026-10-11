@@ -5,7 +5,8 @@ import { createHash } from "node:crypto"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { parseCodexQuotaFromRollout, parseCodexQuotaFromRateLimits, readCodexQuota, resetCodexQuotaMemo } from "./codex-quota.ts"
-import { parseClaudeUsage, parseClaudeUsageOutput, tokenFromCredentialsJson, readClaudeQuota, refreshClaudeQuotaInBackground, claudeQuotaRefreshSettled } from "./claude-quota.ts"
+import { parseClaudeUsage, parseClaudeUsageOutput, tokenFromCredentialsJson, readClaudeQuota, refreshClaudeQuotaInBackground, claudeQuotaRefreshSettled, withObservedClaudeQuota } from "./claude-quota.ts"
+import { recordObservedClaudeQuota, resetObservedClaudeQuotaThrottle } from "./claude-quota-observed.ts"
 import { frizzRoots, resetFrizzRoots } from "../frizz-paths.ts"
 import { readQuota } from "../quota.ts"
 
@@ -827,4 +828,134 @@ test("claude quota: a failed refresh retains the last good reading with an hones
   assert.equal(stale.status, "ok")
   assert.equal(stale.windows[0]?.usedPercent, 20)
   assert.equal(stale.detail, "Could not refresh · last updated 4m ago")
+}))
+
+// ---- What Claude Code's own sessions report (claude-quota-observed.ts) ----
+
+// The frame Claude Code 2.1.296 sent on 2026-10-11; see claude-quota-observed.test.ts.
+const REPORTED = {
+  status: "allowed_warning",
+  rateLimitType: "seven_day",
+  utilization: 0.76,
+  resetsAt: 1791792000,
+  unifiedWindows: { five_hour: { utilization: 0.65, resetsAt: 1791757200 }, seven_day: { utilization: 0.76, resetsAt: 1791792000 } },
+}
+
+// The reader keys the report by the config directory, so each of these tests names its own.
+async function withConfigDir(configDir: string, run: () => Promise<void>) {
+  const before = process.env.CLAUDE_CONFIG_DIR
+  process.env.CLAUDE_CONFIG_DIR = configDir
+  resetObservedClaudeQuotaThrottle()
+  try {
+    await run()
+  } finally {
+    if (before === undefined) delete process.env.CLAUDE_CONFIG_DIR
+    else process.env.CLAUDE_CONFIG_DIR = before
+  }
+}
+
+// THE TOKEN-BROKER MACHINE. Claude Code is signed in by a route that leaves no token where Frizz can
+// read one, so the endpoint cannot be asked — and until 2026-10-11 the only other source was starting
+// Claude Code, which is the process storm that route was removed for. The workers there report the
+// plan's windows on every turn; that report is the reading.
+test("claude quota: a machine whose token Frizz cannot read shows what its own sessions report — no request, no process", () => withCache(async (cacheDir) => {
+  const configDir = join(cacheDir, "config")
+  await withConfigDir(configDir, async () => {
+    let requests = 0
+    let starts = 0
+    const at = (now: number) => ({
+      cacheDir,
+      readToken: signedOut,
+      now: () => now,
+      fetchImpl: (async () => { requests++; throw new TypeError("no request may be made without a token") }) as unknown as typeof fetch,
+      execUsage: async () => { starts++; return "" },
+    })
+    const T0 = 1791750000 * SEC
+    // NEGATIVE CONTROL: before any session has reported, there is nothing to show.
+    assert.equal((await readClaudeQuota("claude-test", at(T0))).status, "unavailable")
+
+    await recordObservedClaudeQuota(REPORTED, { cacheDir, configDir, now: T0 + MIN })
+    const expected = {
+      status: "ok",
+      windows: [
+        { key: "5h", label: "5h", usedPercent: 65, resetsAt: 1791757200 },
+        { key: "weekly", label: "Weekly", usedPercent: 76, resetsAt: 1791792000 },
+      ],
+    }
+    assert.deepEqual(await readClaudeQuota("claude-test", at(T0 + 4 * MIN)), { ...expected, detail: "From this machine's Claude sessions · 3m ago" })
+    // The popover's forced recheck has nothing better to ask, and says the same.
+    assert.deepEqual(await readClaudeQuota("claude-test", at(T0 + 4 * MIN + SEC), { force: true }), { ...expected, detail: "From this machine's Claude sessions · 3m ago" })
+    // Another config directory is another account: its report is not this one's.
+    await withConfigDir(join(cacheDir, "other"), async () => {
+      assert.equal((await readClaudeQuota("claude-test", at(T0 + 4 * MIN))).status, "unavailable")
+    })
+    // Past the 5-hour window's own reset only the weekly is still a reading (1h 59m after the report).
+    const later = await readClaudeQuota("claude-test", at(1791757200 * SEC))
+    assert.deepEqual(later.windows.map((w) => w.key), ["weekly"])
+    assert.equal(later.detail, "From this machine's Claude sessions · 1h 59m ago")
+    assert.equal((await readClaudeQuota("claude-test", at(1791792000 * SEC))).status, "unavailable", "and past the weekly's, nothing is")
+    await claudeQuotaRefreshSettled()
+    assert.equal(requests, 0)
+    assert.equal(starts, 0)
+  })
+}))
+
+test("claude quota: a session's report newer than the endpoint's reading takes over the windows it names, and only those", () => {
+  const T = 1791750000 * SEC
+  const served = {
+    status: "ok" as const,
+    planType: "max",
+    windows: [
+      { key: "5h", label: "5h", usedPercent: 20, resetsAt: 1791757200 },
+      { key: "weekly", label: "Weekly", usedPercent: 40, resetsAt: 1791792000 },
+      { key: "weekly-fable", label: "Fable wk", usedPercent: 1, resetsAt: 1791792000 },
+    ],
+  }
+  const report = (at: number) => ({ at, windows: [{ key: "5h", label: "5h", usedPercent: 35, resetsAt: 1791757200, at }] })
+
+  assert.equal(withObservedClaudeQuota(served, T, undefined, T + 9 * MIN), served)
+  assert.equal(withObservedClaudeQuota(served, T, report(T - SEC), T + 9 * MIN), served, "a report older than the endpoint's reading changes nothing")
+  assert.equal(withObservedClaudeQuota(served, undefined, report(T + MIN), T + 9 * MIN), served, "nor does one beside a reading taken just now")
+  assert.equal(
+    withObservedClaudeQuota(served, T, { at: T + MIN, windows: [{ key: "weekly-opus", label: "Opus wk", usedPercent: 9, at: T + MIN }] }, T + 9 * MIN),
+    served,
+    "nor one for a window the endpoint's reading does not carry",
+  )
+
+  // Newer: its window's numbers, the endpoint's for the rest, and no note on a reading that had none.
+  assert.deepEqual(withObservedClaudeQuota(served, T, report(T + 7 * MIN), T + 9 * MIN), {
+    ...served,
+    windows: [{ key: "5h", label: "5h", usedPercent: 35, resetsAt: 1791757200 }, served.windows[1], served.windows[2]],
+  })
+  // A staleness note described the endpoint's reading; it no longer describes what is shown.
+  assert.equal(
+    withObservedClaudeQuota({ ...served, detail: "Could not refresh · last updated 40m ago" }, T, report(T + 38 * MIN), T + 40 * MIN).detail,
+    "Updated from this machine's Claude sessions · 2m ago",
+  )
+  assert.equal(withObservedClaudeQuota({ ...served, detail: "x" }, T, report(T + 40 * MIN - 1), T + 40 * MIN).detail, "Updated from this machine's Claude sessions · just now")
+})
+
+test("claude quota: while the endpoint cannot be reached, the chip follows the sessions' reports instead of freezing", () => withCache(async (cacheDir) => {
+  const configDir = join(cacheDir, "config")
+  await withConfigDir(configDir, async () => {
+    await readClaudeQuota("claude-test", { cacheDir, readToken: signedIn, now: () => 0, fetchImpl: usageResponse(200, fiveHour(20)) })
+    const outage = (now: number) => readClaudeQuota("claude-test", { cacheDir, readToken: signedIn, now: () => now, fetchImpl: unreachable })
+    // CONTROL: with no report, the old reading is served under its staleness note.
+    const frozen = await outage(20 * MIN)
+    assert.equal(frozen.windows[0]?.usedPercent, 20)
+    assert.equal(frozen.detail, "Refreshing · last updated 20m ago")
+    await claudeQuotaRefreshSettled()
+
+    await recordObservedClaudeQuota({ rateLimitType: "five_hour", utilization: 0.35, resetsAt: 1791757200 }, { cacheDir, configDir, now: 21 * MIN })
+    const followed = await outage(22 * MIN)
+    assert.deepEqual(followed.windows, [{ key: "5h", label: "5h", usedPercent: 35, resetsAt: 1791757200 }])
+    assert.equal(followed.planType, "max", "what only the endpoint knows is kept")
+    assert.equal(followed.detail, "Updated from this machine's Claude sessions · 1m ago")
+    await claudeQuotaRefreshSettled()
+
+    // The endpoint comes back with a NEWER reading: it wins again, silently.
+    const back = await readClaudeQuota("claude-test", { cacheDir, readToken: signedIn, now: () => 30 * MIN, fetchImpl: usageResponse(200, fiveHour(50)) }, { force: true })
+    assert.equal(back.windows[0]?.usedPercent, 50)
+    assert.equal(back.detail, undefined)
+  })
 }))

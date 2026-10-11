@@ -190,6 +190,8 @@ export interface StartOptions {
   /** Internal: a supervisor-verified pinned project and its delegated owner token. */
   project?: Project
   launchOwnerToken?: string
+  /** Internal: the machine-wide owner's token under the stable launcher; see AppOptions.machineToken. */
+  machineOwnerToken?: string
   /** Internal token-bound path used by a supervised child to ask its durable owner to stop. */
   requestOwnerStop?: () => void
   /** Internal deterministic fixture seam; never configured by production launchers. */
@@ -689,6 +691,7 @@ export async function startServer(opts: StartOptions = {}): Promise<StartedServe
     port,
     ownerProof: projectLaunchTokenProof(projectLaunchTarget(c.project), effectiveOwnerToken),
     controlToken: effectiveOwnerToken,
+    ...(opts.machineOwnerToken ? { machineToken: opts.machineOwnerToken } : {}),
     requestOwnerStop,
   })
   const appSocketOptionsFor = (c: AppContext) => ({
