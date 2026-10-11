@@ -108,6 +108,22 @@ const EMPTY_BUFFER = Buffer.alloc(0)
 // Ceiling on the adaptive poll (see scheduleTick). A tick this expensive means something is badly
 // wrong, but the tailer is still the only source of turn/liveness telemetry — it must keep running.
 const MAX_POLL_MS = 10_000
+// How often a QUIET board is read in full (see `poll`). A board is quiet when every thread on it is at
+// rest with nothing running, nothing waiting on a person and nothing still being delivered, and the
+// last tick changed nothing. Everything frizz itself does to such a board wakes the tailer at once — a
+// registry write is seen by the next one-second look, and a provider event nudges — so this interval
+// bounds only what frizz cannot be told about: a transcript appended from a terminal, a transcript
+// that moved, a daemon that died. Five seconds is the foreign scan's own cadence (FOREIGN_SCAN_EVERY
+// ticks), so a session started in a terminal still appears as quickly as it always has.
+//
+// Measured 2026-10-11 on a 64-thread server serving 12 projects, 11 of them with nothing running: the
+// tailers were 59% of the process's time, re-reading every thread every second.
+export const QUIET_POLL_MS = 5000
+// How often the threads nothing can happen to are looked at (see `dormant`): stopped, archived, at
+// rest, nothing queued. A board accumulates them without bound — 459 of 464 rows on the board the
+// prime order was written for — and each one cost two filesystem calls a tick for a file that cannot
+// grow unless somebody resumes the session from a terminal. That is the only thing this delays.
+export const DORMANT_SWEEP_MS = 10_000
 // A tracked background sub-agent whose transcript file has gone this long without an append is
 // treated as "stale" — a liveness fallback for a completion record we somehow missed (the child
 // died, or the worker session ended before the <task-notification> landed).
@@ -2726,6 +2742,13 @@ export interface Tailer {
   stop(): void
   tick(): void // exposed for tests + boot; the adaptive poll (scheduleTick) calls it otherwise
   /**
+   * One scheduled look: what the poll timer runs each POLL_MS. "skipped" on a quiet board whose
+   * registry has not moved, inside QUIET_POLL_MS; otherwise a tick, "swept" when that tick also read
+   * the dormant rows. Exposed so a test can drive the scheduler's decisions without waiting on its
+   * timer. Optional for the same reason `nudge` is.
+   */
+  poll?(): "skipped" | "ticked" | "swept"
+  /**
    * "Something changed — re-read now." Coalesced and throttled to the same duty-cycle floor the
    * adaptive poll uses, so it is safe to call on every runtime event. Called by the Claude broker's
    * event ingest (backend/claude-runtime-ingest.ts); a tailer nobody nudges behaves exactly as before.
@@ -4984,10 +5007,71 @@ export function createTailer(deps: TailerDeps): Tailer {
     return true
   }
 
-  function tick(): void {
+  // ---- what a tick does NOT have to look at -------------------------------------------------------
+  // The tick is level-triggered: it re-reads a thread whether or not anything happened to it, once a
+  // second. For a thread in motion that is the point. For one at rest it is a `stat` of a file that is
+  // not growing, and a board is mostly threads at rest — so the two predicates below name the threads a
+  // look can safely be spaced out for, and `poll` does the spacing.
+  //
+  // SETTLED: nothing here advances on its own. Every arm is something a tick would otherwise have to
+  // notice by the clock — a turn still running (and the 5s backstop that ends an unlabelled one), a
+  // permission block, a background op whose running→stale flip is purely time-based, a transcript that
+  // has not appeared yet, a send still being aged toward its timeout. A thread with none of them
+  // changes only when something is DONE to it, and each such thing announces itself: frizz's own
+  // writes move the registry row, a provider event nudges, and a codex exec is asked for by name.
+  function settled(row: SessionRow, state: TailState): boolean {
+    if (!state.primed || state.turn !== "idle" || state.permPrompt) return false
+    if (state.subAgents.size > 0 || (state.pendingShells?.size ?? 0) > 0) return false
+    // Bound, or known to have no transcript at all. Unbound inside its grace window is a worker still
+    // booting, whose first bytes are due at any moment.
+    if (state.offset === 0 && !state.noTranscript) return false
+    if (row.delivery_ledger && parseDeliveryLedger(row.delivery_ledger).some((d) => d.state === "sending" || d.state === "pending" || d.state === "enqueued" || d.state === "unconfirmed")) return false
+    return codexBgShellViews(state).length === 0
+  }
+
+  // DORMANT: settled, and frizz has stopped it and filed it away. Its process is gone and stamped
+  // gone, so the only way its transcript grows is a `claude --resume` from somebody's terminal. The
+  // ledger arms are exact rather than "nothing live": a row whose ledger the tailer has not yet
+  // accounted for still owes one projection, and that is not a row to skip.
+  function dormant(row: SessionRow, state: TailState): boolean {
+    return row.exited === 1 && state.paneDead && rowIsArchived(row) && !row.delivery_ledger && !state.deliveryLedgerSeen && settled(row, state)
+  }
+
+  // Did the registry move since the last tick read it? `allSessions` hands back the SAME array until
+  // this project writes anything, so identity answers almost every call. It is re-read on a write to
+  // ANY of the project's tables, though — a tail-cache flush, a retired op, a watch — and what comes
+  // back then is an equal snapshot in a new array. Hence the comparison, which is a few hundred string
+  // compares against a tick's worth of system calls.
+  function rowsMoved(rows: readonly SessionRow[]): boolean {
+    const before = rowsAtLastTick
+    if (rows === before) return false
+    if (!before || rows.length !== before.length) return true
+    for (let i = 0; i < rows.length; i++) {
+      const a = rows[i] as unknown as { [column: string]: unknown }
+      const b = before[i] as unknown as { [column: string]: unknown }
+      if (a === b) continue
+      for (const key in a) if (a[key] !== b[key]) return true
+    }
+    return false
+  }
+
+  // Set by every tick, read by `poll`. Elapsed time is measured on the monotonic clock: it is spent
+  // against real timers, and `now` is a clock a test may stop.
+  let quiet = false
+  let rowsAtLastTick: readonly SessionRow[] | undefined
+  let lastTickAt = 0
+  let lastSweepAt = 0
+
+  // `sweep: false` leaves the dormant rows alone (see `dormant`) and `scan: true` reads the foreign
+  // set now rather than on its tick count; both are the scheduler's to choose (see `poll`). The
+  // defaults are the whole board, which is what every direct caller means by a tick.
+  function tick(opts: { sweep?: boolean; scan?: boolean } = {}): void {
+    const sweep = opts.sweep ?? true
     // Discover sessions from the registry so dispatch/resume/restart all "just work" — a new row
     // starts being tailed on the next tick; a finished row keeps its final derived state.
     let dirty = false
+    // Any row this tick left with something still in motion — see `settled`, and `quiet` below.
+    let unsettled = false
     // Any session whose provider events have outrun its transcript this tick → ask for another look
     // once the tick finishes (see chaseRuntime). One flag for the whole board: the nudge is coalesced
     // anyway, so per-session bookkeeping would buy nothing.
@@ -4998,6 +5082,7 @@ export function createTailer(deps: TailerDeps): Tailer {
     const nowMs = now()
     adoptionBindings = new Map()
     const rows = deps.storage.allSessions()
+    rowsAtLastTick = rows
     // ARCHIVED ROWS PRIME LAST. Priming is bounded per tick, so on a cold board the registry's order
     // decides who converges first — and a long-lived board is overwhelmingly archive. The maintainer's
     // board on 2026-08-16: 464 rows, 459 of them archived, 5 on the live board. Priming in row order
@@ -5060,6 +5145,8 @@ export function createTailer(deps: TailerDeps): Tailer {
         known.nativeSessionId === nativeId &&
         known.runtimeGeneration === runtimeGeneration
       let state = keepable ? known : undefined
+      // Before anything that touches the disk: between sweeps a dormant row is not read at all.
+      if (!sweep && state && dormant(row, state)) continue
       // THE BOUND IS ASKED BEFORE THE SETUP, NOT ONLY BEFORE THE FOLD (2026-09-04).
       //
       // Everything between here and the prime below is PER-ROW work that a deferred row used to pay in
@@ -5119,7 +5206,10 @@ export function createTailer(deps: TailerDeps): Tailer {
       // would wrongly flag noTranscript (a codex discovery-miss is a separate follow-up). An ACP row's
       // file is deterministic too (frizz writes it), so it takes the same exemption.
       const prevNoTranscript = state.noTranscript
-      if (row.backend !== "codex" && row.backend !== "acp" && !resolveTranscript(state, row, nowMs)) continue
+      if (row.backend !== "codex" && row.backend !== "acp" && !resolveTranscript(state, row, nowMs)) {
+        unsettled = true // a discovered transcript lost its claim; the next tick decides again
+        continue
+      }
 
       // First sighting of a session (fresh dispatch OR restored after a server restart): read the
       // whole transcript to date and adopt its state as the baseline WITHOUT firing turn-done /
@@ -5358,11 +5448,12 @@ export function createTailer(deps: TailerDeps): Tailer {
       // runtime but touches no activity/turn — mark dirty so the board rebuilds without waiting for the
       // periodic reconcile.
       if (state.noTranscript !== prevNoTranscript) dirty = true
+      if (!settled(row, state)) unsettled = true
     }
 
     // FOREIGN threads: refresh the fresh set on a scan tick (a change in membership/order is itself
     // dirty), then tail every fresh one (reusing the cached set between scans).
-    if (foreignScanTick % FOREIGN_SCAN_EVERY === 0) {
+    if (opts.scan || foreignScanTick % FOREIGN_SCAN_EVERY === 0) {
       // BOTH agents' terminals, tagged with the backend that has to FOLD each one — a rollout put
       // through the Claude parser yields a silent empty thread, not an error. Claude first so that if
       // the two ever exceed the cap together it is the codex tail that is dropped: Claude's scan is the
@@ -5388,6 +5479,8 @@ export function createTailer(deps: TailerDeps): Tailer {
       // than only on creation, because codex writes the sidecar entry AFTER the rollout exists.
       if (f.title && state.aiTitle !== f.title) state.aiTitle = f.title
       if (tailForeign(state, nowMs, transcriptDirty, resolveBackend(f.backend))) dirty = true
+      // A terminal session mid-turn is about to write again, and nothing will say so.
+      if (state.turn !== "idle") unsettled = true
     }
 
     // Persist the prime cache. The FIRST tick always flushes (that is the boot the next one inherits);
@@ -5399,6 +5492,12 @@ export function createTailer(deps: TailerDeps): Tailer {
 
     if (dirty) deps.onChange()
     if (transcriptDirty.length) deps.onTranscriptChange?.(transcriptDirty)
+
+    // What this tick found, for the scheduler. Quiet takes a tick that moved NOTHING as well as a
+    // board with nothing in motion, so the tick after any change is still a prompt one.
+    quiet = !unsettled && !dirty && transcriptDirty.length === 0 && !chaseWanted && !primeIncomplete
+    lastTickAt = monotonicNow()
+    if (sweep) lastSweepAt = lastTickAt
 
     // A session's provider events have outrun its transcript — look again shortly. Last, so it can
     // never delay this tick's board push.
@@ -5517,10 +5616,10 @@ export function createTailer(deps: TailerDeps): Tailer {
   // re-arms immediately in that case so a cold board converges in a burst of short ticks rather than
   // one row-block per second.
   let primeIncomplete = false
-  function tickWithBudget(): void {
+  function tickWithBudget(opts?: { sweep?: boolean; scan?: boolean }): void {
     const started = monotonicNow()
     try {
-      tick()
+      tick(opts)
     } finally {
       const elapsed = monotonicNow() - started
       lastTickMs = elapsed
@@ -5557,6 +5656,28 @@ export function createTailer(deps: TailerDeps): Tailer {
     }
   }
 
+  // ONE SCHEDULED LOOK — what the poll timer runs. It decides how much of a tick this second is owed,
+  // and on a quiet board the answer is usually none: the look is a registry probe (two counters the
+  // snapshot is already keyed on) and nothing else until QUIET_POLL_MS has passed.
+  //
+  // The registry probe is what makes that safe to do on a timer rather than on a list of call sites.
+  // Everything frizz does to a thread — a dispatch, a follow-up, a resume, a stop, an archive, a
+  // scheduled wake — writes its row before it does anything else, so the first look after it runs a
+  // full tick exactly as before, and no path has to remember to say so.
+  function poll(): "skipped" | "ticked" | "swept" {
+    const at = monotonicNow()
+    const sweep = at - lastSweepAt >= DORMANT_SWEEP_MS
+    if (quiet && at - lastTickAt < QUIET_POLL_MS) {
+      let moved = true // a registry that cannot be read is not a reason to stop looking
+      try { moved = rowsMoved(deps.storage.allSessions()) } catch { /* the tick reports it */ }
+      if (!moved) return "skipped"
+    }
+    // A board that was left alone is also where a terminal session goes unnoticed longest, so the tick
+    // that ends the wait reads the foreign set whatever its tick count says.
+    tickWithBudget({ sweep, scan: quiet })
+    return sweep ? "swept" : "ticked"
+  }
+
   function scheduleTick(): void {
     // While rows are still cold, come straight back: each pass is bounded, so this is a burst of short
     // ticks, not a stall. setImmediate-scale rather than 0 so I/O and pending RPCs interleave.
@@ -5570,7 +5691,7 @@ export function createTailer(deps: TailerDeps): Tailer {
       // with no process-level handler anywhere in this server, the whole frizz process. The tailer is
       // the only source of turn/liveness telemetry: it must degrade to a logged bad tick, never take
       // the server (or its own loop) down with it.
-      try { tickWithBudget() } catch (error) { reportTickFailure(error) }
+      try { poll() } catch (error) { reportTickFailure(error) }
       if (!stopped) scheduleTick()
     }, delay)
     timer.unref?.()
@@ -5608,7 +5729,11 @@ export function createTailer(deps: TailerDeps): Tailer {
       // so a throwing tick would leave BOTH timers null and the tailer permanently dead — a frozen
       // board with a healthy-looking server. Proven against a real createTailer with an injected
       // storage error: 4 ticks/1.2s before, 0 ticks in the 3s after, revived only by a later nudge.
-      try { tickWithBudget() } catch (error) { reportTickFailure(error) }
+      //
+      // A nudge is about a thread in motion, and a turn sends them in bursts, so it is the tick that
+      // gains most from leaving the dormant rows alone: they are swept on their own clock, here or in
+      // `poll`, whichever tick is running when it comes due.
+      try { tickWithBudget({ sweep: monotonicNow() - lastSweepAt >= DORMANT_SWEEP_MS }) } catch (error) { reportTickFailure(error) }
       if (!stopped) scheduleTick()
     }, delay)
     nudgeTimer.unref?.()
@@ -5724,7 +5849,8 @@ export function createTailer(deps: TailerDeps): Tailer {
       // periodic flush has not reached yet. A hard kill just costs that thread its delta re-read.
       flushCache(now())
     },
-    tick,
+    tick: () => tick(),
+    poll,
     nudge,
   }
 }
