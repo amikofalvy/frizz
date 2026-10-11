@@ -505,15 +505,24 @@ async function runSupervisor(port: number, token: string, onPrepared: () => void
   // advertising. Set together with the boolean: a number we have not observed would be a lie, so
   // until the registry answers the client gets its generic copy.
   let updateVersion: string | undefined;
+  /** The last probe failure written to the log, so a probe that fails every half hour says so once. */
+  let probeFailure: string | undefined;
   const refreshUpdateAvailable = async (): Promise<void> => {
     try {
       const checkedVersion = active.version;
       const plan = await planRegistryUpdate(spec.package, checkedVersion, installer);
+      probeFailure = undefined;
       if (active.version !== checkedVersion) return;
       updateAvailable = plan !== null;
       updateVersion = plan?.latestVersion;
-    } catch {
-      // A registry we cannot reach is not evidence either way. Leave the last known answer.
+    } catch (error) {
+      // A registry we cannot reach is not evidence either way. Leave the last known answer — but
+      // record why. This swallowed every failure, so a probe that could NEVER answer left a board
+      // that simply stopped offering updates with nothing anywhere to say so: on 2026-10-11 one had
+      // failed every half hour for twenty hours, and the first sign of it was a failed Update click.
+      const message = error instanceof Error ? error.message : String(error);
+      if (message !== probeFailure) logger.warn("launcher", `could not check npm for a newer Frizz server: ${message}`);
+      probeFailure = message;
     }
   };
   void refreshUpdateAvailable();
