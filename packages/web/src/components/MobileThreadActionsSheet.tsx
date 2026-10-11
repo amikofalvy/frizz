@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useSnapshot } from "valtio"
-import { AlarmClock, Check, ChevronLeft, ChevronRight, Copy, ExternalLink, FileText, Loader2, Pencil, Plug, RefreshCw, RotateCcw, RotateCw } from "lucide-react"
+import { AlarmClock, Check, ChevronLeft, ChevronRight, Copy, ExternalLink, FileText, Loader2, Pencil, RefreshCw, RotateCcw, RotateCw } from "lucide-react"
 import { SNOOZE_PROMPT_MAX, type ThreadLinkView, type ThreadView } from "@frizz/shared"
 import { rpc } from "../api/rpc.ts"
 import { showToast, store } from "../store.ts"
@@ -24,7 +24,7 @@ import { openLocalPath } from "../lib/local-file-links.ts"
 import { retrySession } from "../lib/retrySession.ts"
 import { restartWorker } from "../lib/restartWorker.ts"
 import { useDevFrizzBuild } from "../lib/devBuild.ts"
-import { offersReloadPlugins, offersRestartWorker, reloadThreadPlugins } from "../lib/threadMaintenance.ts"
+import { offersRestartWorker } from "../lib/threadMaintenance.ts"
 import { profileGridDisplayParts } from "../lib/profileGrid.ts"
 import { contextLine, displayUrl, effortWord, isLoopbackUrl } from "../lib/mobileThread.ts"
 import { useBackDismiss } from "../lib/backDismiss.ts"
@@ -119,7 +119,6 @@ function ActionsList({ thread, title, setView, dismiss, onArchived }: {
   const running = thread.runtime === "running" || thread.runtime === "spawning"
   const retry = owned && offersRetry(thread)
   const restart = offersRestartWorker(thread, devBuild)
-  const reload = offersReloadPlugins(thread)
   const modelEffort = useModelEffortLabel(thread)
   const context = contextLine(thread.context)
   const foot = [context, modelEffort].filter(Boolean).join(" · ")
@@ -179,9 +178,6 @@ function ActionsList({ thread, title, setView, dismiss, onArchived }: {
       )}
       {restart && (
         <ActionRow data="restart-worker" icon={<RefreshCw size={19} />} label="Restart worker" onClick={() => dismiss(() => void restartWorker(queryClient, thread.id))} />
-      )}
-      {reload && (
-        <ActionRow data="reload-plugins" icon={<Plug size={19} />} label="Reload plugins" onClick={() => dismiss(() => void reloadThreadPlugins(thread))} />
       )}
       {foot && <div data-thread-actions-foot className="px-[18px] pt-2.5 text-[12.5px] leading-[17px] text-muted">{foot}</div>}
     </div>

@@ -36,8 +36,8 @@ import { ThreadActionsSheet, useModelEffortLabel } from "./MobileThreadActionsSh
 // runs, otherwise "Rested" — then the age, then the model and effort. See lib/mobileThread.ts.
 //
 // Everything the desktop header and the prompt box's rail hold — Snooze, Goal, the registered files,
-// Rename, Copy link, and Retry / Restart worker / Reload plugins where the header offers them — is in
-// the ⋯ sheet (ThreadActionsSheet).
+// Rename, Copy link, and Retry / Restart worker where the header offers them — is in the ⋯ sheet
+// (ThreadActionsSheet).
 export function MobileThreadHeader({ slug, onClose }: { slug: string; onClose: () => void }) {
   const board = useBoard()
   const thread = threadBySlug(board, slug)

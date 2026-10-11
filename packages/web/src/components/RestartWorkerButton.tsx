@@ -80,15 +80,19 @@ export function RestartWorkerButton({ thread }: { thread: ThreadView }) {
         // strip is uniform 28px squares on a flat `gap-0.5`, where every mark carries the same box, so
         // the trim would now pull this one verb out of a rhythm it is already in.
         //
-        // THE ONE MARK IN THIS STRIP THAT NEEDS A HORIZONTAL CORRECTION, and it goes the opposite way
-        // to the footer's trims: `RefreshCw` paints 12 of its 14 box px where every other icon here
-        // paints 7–10.5, so its 28px square carries only 8px of dead space against the strip's 8.75–
-        // 10.5 — and the eye reads ink, so the two gaps either side of it CLOSED. Measured with
-        // `scripts/ink-gaps.mjs` on `icon-rhythm-fixture.html` (dsf 4), the strip's four ink gaps ran
-        // 21.75 / 19.75 / 18.75 / 21.25 before this margin and 21.75 / 21.75 / 20.75 / 21.25 after it.
-        // A POSITIVE margin, because the correction needed is more layout box, not less: the footer's
-        // `-mx` trims collapse a box onto a mark too small for it, and this is the same law inverted.
-        className={`${HEADER_ICON_CLASS} mx-[2px]`}
+        // A HORIZONTAL CORRECTION ON ITS RIGHT, and it goes the opposite way to the footer's trims:
+        // `RefreshCw` paints 12 of its 14 box px, so its 28px square carries only 8px of dead space a
+        // side — and the eye reads ink, so the gap to the document icon after it (8.75px of its own)
+        // CLOSED to 18.75px where the strip keeps about 20. Measured with `scripts/ink-gaps.mjs` on
+        // `icon-rhythm-fixture.html` (dsf 4, sans, 2026-10-11), the strip reads, collapse to mark as
+        // done: 20 / 20.75 / 18.75 / 20 / 19.5 / 18.25. A POSITIVE margin, because the correction
+        // needed is more layout box, not less: the footer's `-mx` trims collapse a box onto a mark too
+        // small for it, and this is the same law inverted.
+        //
+        // RIGHT ONLY. It was `mx-[2px]` while a Reload plugins icon stood on its left (9.75px of dead
+        // space, 19.75px of ink without the margin). That icon went on 2026-10-11, and the Collapse
+        // chevrons that stand there now carry 10px: 20px of ink with no margin, 22 with the old one.
+        className={`${HEADER_ICON_CLASS} mr-[2px]`}
       >
         {busy ? <Loader2 size={14} strokeWidth={2} className="animate-spin" /> : <RefreshCw size={14} strokeWidth={2} />}
       </button>

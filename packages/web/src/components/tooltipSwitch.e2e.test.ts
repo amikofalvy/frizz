@@ -3,19 +3,21 @@ import test from "node:test"
 
 const baseUrl = process.env.FRIZZ_TOOLTIP_SWITCH_E2E_URL
 
-// The two maintenance verbs sit shoulder to shoulder, and the tooltip has to name the one you are
-// actually pointing at. It did not: hovering Restart and then sliding onto the plug left the RESTART
-// label up while the pointer sat squarely on Reload plugins (maintainer 2026-08-06: "the popover
-// associated with the restart button continued to show up. It didn't switch over"). They were in the
-// lifecycle footer then and are in the thread header's action strip now (2026-08-26); the gesture and
-// the bug are properties of the pair, not of the surface, so this drives them wherever they live.
+// Icon verbs sit shoulder to shoulder, and the tooltip has to name the one you are actually pointing
+// at. It did not: hovering Restart worker and then sliding onto the icon beside it left the RESTART
+// label up while the pointer sat squarely on the neighbour (maintainer 2026-08-06: "the popover
+// associated with the restart button continued to show up. It didn't switch over"). The neighbour was
+// a Reload plugins button then, in the lifecycle footer; Restart worker has been in the thread
+// header's action strip since 2026-08-26, and that button is gone. The gesture and the bug are
+// properties of two adjacent triggers, not of the surface or of which two, so this drives Restart
+// worker and the Collapse icon on its left.
 //
-// The cause was NOT the thing it looks like. In the footer these two marks wore negative ink trims
+// The cause was NOT the thing it looks like. In the footer the two marks wore negative ink trims
 // that overlapped their 24px hover squares by 3px, which was the obvious suspect and the wrong one —
 // the bug was gone with the overlap still there, and it is gone now with no overlap at all (the header
-// strip is untrimmed 28px squares). Instrumenting the triggers
-// showed the DOM doing everything right: `pointerleave` on Restart and `pointerenter` on the plug
-// both fired, at the same x. Radix was declining to switch, because `Tooltip.Provider` defaults to
+// strip is untrimmed 28px squares). Instrumenting the triggers showed the DOM doing everything right:
+// `pointerleave` on Restart and `pointerenter` on its neighbour both fired, at the same x. Radix was
+// declining to switch, because `Tooltip.Provider` defaults to
 // HOVERABLE CONTENT and holds a tooltip open while the pointer is inside the grace polygon between
 // the trigger and its content — and this content is a wide box sitting directly above BOTH icons, so
 // the neighbour is inside the polygon. `disableHoverableContent` on the provider is the fix; nothing
@@ -61,7 +63,7 @@ test("the tooltip names whichever icon verb the pointer is on, including the nei
         const box = el.getBoundingClientRect()
         return { x: box.x + box.width / 2, y: box.y + box.height / 2 }
       }
-      return { plug: centre("[data-reload-plugins]"), restart: centre('[aria-label="Restart worker"]') }
+      return { collapse: centre('[aria-label="Collapse"]'), restart: centre('[aria-label="Restart worker"]') }
     })
 
     // Whichever verb the pointer is over, and what the one open tooltip says — asserted together, so
@@ -87,8 +89,8 @@ test("the tooltip names whichever icon verb the pointer is on, including the nei
     assert.deepEqual(await pointing(), { label: "Restart worker", open: 1 })
 
     // The reported gesture: onto the neighbour without leaving the strip.
-    await moveTo(centres.plug)
-    assert.deepEqual(await pointing(), { label: "Reload plugins", open: 1 })
+    await moveTo(centres.collapse)
+    assert.deepEqual(await pointing(), { label: "Collapse", open: 1 })
 
     // And back the other way, so the fix is not direction-dependent.
     await moveTo(centres.restart)

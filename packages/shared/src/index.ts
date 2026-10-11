@@ -4389,18 +4389,6 @@ export const SetOwnThreadHeartbeatInput = z.object({
 }).strict()
 export type SetOwnThreadHeartbeatInput = z.infer<typeof SetOwnThreadHeartbeatInput>
 
-// What an in-place plugin reload changed, as the board reports it. Counts answer "did my edit land?";
-// `mcpServers` carries NAMES because a reload that changes MCP tools is the one with a real cost — the
-// provider re-reads the whole conversation instead of using its prompt cache.
-export const ThreadPluginReloadResult = z.object({
-  plugins: z.number().int().min(0),
-  commands: z.number().int().min(0),
-  agents: z.number().int().min(0),
-  mcpServers: z.array(z.string()),
-  errorCount: z.number().int().min(0),
-}).strict()
-export type ThreadPluginReloadResult = z.infer<typeof ThreadPluginReloadResult>
-
 // A human-authored display title for a registered session. Trimming happens at the RPC boundary so
 // storage never has to distinguish whitespace-only names from real intent; the web input mirrors the
 // same cap. This is metadata-only and therefore works identically for Claude and Codex sessions.

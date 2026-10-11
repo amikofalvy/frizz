@@ -45,7 +45,6 @@ import {
   OwnThreadTimersResult,
   TIMER_MAX_ARMED,
   type ThreadTimerView,
-  ThreadPluginReloadResult,
   SetThreadPinnedInput,
   SetThreadSnoozeInput,
   GithubStatus,
@@ -2979,32 +2978,6 @@ export function createRouter(ctx: AppContext) {
         if (!thread || thread.kind !== "session" || thread.foreign) throw new Error(`thread ${input.slug} is not editable`)
         ctx.storage.setPinnedAt(input.slug, input.pinned ? new Date().toISOString() : null)
         ctx.board.refresh()
-      },
-    }),
-
-    // Re-read the worker plugin closure INTO the live session: hooks, skills, agent profiles and MCP
-    // servers, without restarting the process. This is `/reload-plugins` driven from the board.
-    //
-    // It exists because Restart is a process-level reset — it discards the running turn and the
-    // session's in-memory sub-agents to apply a file change the session could simply re-read. For the
-    // common case (edit a hook or a skill, want the running worker to pick it up) that is far too
-    // blunt, and it is exactly what an operator iterating on the worker closure does all day.
-    //
-    // Claude-broker threads only. A legacy row has no control channel to ask through, and frizz's codex
-    // app-server client speaks no reload method — both surface as a plain refusal rather than a
-    // silently-ignored click.
-    reloadThreadPlugins: mutation({
-      input: z.object({ slug: ThreadSlug, sessionId: z.string().min(1) }).strict(),
-      output: ThreadPluginReloadResult,
-      handler: async ({ input }) => {
-        const row = currentOwnedSession(input.slug, input.sessionId)
-        if (row.claude_runtime !== "broker") {
-          throw new Error("Only a broker-backed Claude thread can reload its plugins in place")
-        }
-        const bridge = ctx.claudeBroker
-        if (!bridge) throw new Error("Claude session broker is unavailable; cannot reload this thread's plugins")
-        const reloaded = await bridge.reloadPlugins({ threadSlug: input.slug, sessionId: row.session_id })
-        return reloaded
       },
     }),
 

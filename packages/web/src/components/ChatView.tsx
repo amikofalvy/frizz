@@ -218,7 +218,7 @@ export function withoutLiveTranscriptBackgroundTools(messages: readonly ChatMess
 //
 // ON A PHONE (below 700px, in the drawer — the only way a phone opens a thread) the chrome is the phone's
 // own (mockup v2 §2): a 56px MobileThreadHeader in place of the two-row header and its icon strip —
-// Snooze, Goal, the context reading and the maintenance verbs live in the header's ⋯ sheet, and the one
+// Snooze, Goal, the context reading and Restart worker live in the header's ⋯ sheet, and the one
 // lifecycle verb that matters at rest belongs to the bottom bar. The /full page (no `onClose`) keeps the
 // desktop chrome on every width; a phone never links to it. (Desktop had a lifecycle footer under the
 // prompt box until 2026-10-05; its verbs and the context reading moved into ThreadHeader, and the Goal
