@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { createRoot } from "react-dom/client"
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react"
+import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { Check, ChevronDown, Mic, Paperclip } from "lucide-react"
 import { questionAnswerMessage, type BoardSnapshot, type QuestionAnswer, type RegisteredQuestionView, type ThreadView } from "@frizz/shared"
 import type { ChatMessage } from "./hooks.ts"
@@ -56,7 +56,7 @@ import "./styles.css"
 //
 //   nubx vite --port 5478 --strictPort   (from packages/web), then
 //   http://localhost:5478/steer-button-mockup-fixture.html
-//   ?theme=light
+//   ?theme=light · ?spacing=A…H (which of the button's spacing candidates the cards wear)
 const params = new URLSearchParams(location.search)
 document.documentElement.dataset.font = "sans"
 document.documentElement.dataset.theme = params.get("theme") === "light" ? "light" : "dark"
@@ -281,18 +281,62 @@ const ROWS: { mode: Mode; name: string; says: string }[] = [
 ]
 const ROW_NAME = Object.fromEntries(ROWS.map((r) => [r.mode, r.name])) as Record<Mode, string>
 
+/** ONE WAY TO SPACE THE BUTTON. The four gaps the eye reads are ink distances — left edge to the S,
+ *  the d to the divider, the divider to the chevron, the chevron to the right edge — and none of them
+ *  is a padding: the word wears ~0.7px of side bearing and the 13px chevron paints ~7.8px of its box.
+ *  So each candidate is stated as box values and CAPTIONED with what it paints (`ink`: read from
+ *  pixels with the button right-anchored and drawn as a 2x screen draws it — CSS zoom 2, then 6
+ *  device px per zoomed px — in sans; re-measure if the font, the size or the glyph changes).
+ *  The maintainer on the first two passes: "it looks like there's more space to the left of 'send'
+ *  than to the right of it", then, of the correction, "overcompensated. GIVE ME OPTIONS". */
+interface Spacing {
+  id: string
+  name: string
+  says: string
+  /** Box padding left and right of the word. */
+  pl: number
+  pr: number
+  /** The caret's segment: its width, and the padding left of the chevron's 13px box. */
+  caretW: number
+  caretPl: number
+  seam: "short" | "full" | "none"
+  /** What it paints: left edge → word, word → divider (or → chevron), divider → chevron, chevron → right edge. */
+  ink: [number, number, number | null, number]
+}
+
+// Every box value sits on the half-pixel grid, so on a 2x screen the divider and the chevron land on
+// device pixels and the gaps beside them are exact. The button is right-anchored on the rail and the
+// word's width is fractional, so its LEFT edge is the one that snaps: the first number can move by a
+// quarter pixel from one layout to the next.
+const SPACINGS: Spacing[] = [
+  { id: "A", name: "First pass", says: "3.6px more on the left of the word than on its right. The divider sits midway between the word and the chevron.", pl: 10, pr: 6, caretW: 23, caretPl: 4, seam: "short", ink: [10.6, 7.0, 6.6, 8.6] },
+  { id: "B", name: "2.6px more on the left", says: "Half a pixel moved from the left of the word to its right.", pl: 9.5, pr: 6.5, caretW: 23, caretPl: 4.5, seam: "short", ink: [10.1, 7.5, 7.1, 8.1] },
+  { id: "C", name: "1.6px more on the left", says: "Halfway between the first pass and the second.", pl: 9, pr: 7, caretW: 23, caretPl: 4.5, seam: "short", ink: [9.6, 8.0, 7.1, 8.1] },
+  { id: "D", name: "0.6px more on the left", says: "As near even as the half-pixel grid allows while still leaning left. The chevron is centred in its half.", pl: 8.5, pr: 7.5, caretW: 23, caretPl: 5, seam: "short", ink: [9.1, 8.5, 7.6, 7.6] },
+  { id: "E", name: "Second pass", says: "0.4px more on the right. This is the one that read as overcompensated.", pl: 8, pr: 8, caretW: 23, caretPl: 5, seam: "short", ink: [8.6, 9.0, 7.6, 7.6] },
+  { id: "F", name: "Roomier", says: "D's balance with a pixel more on each side of the word and half a pixel more around the chevron. The button is 3px wider.", pl: 9.5, pr: 8.5, caretW: 24, caretPl: 5.5, seam: "short", ink: [10.1, 9.5, 8.1, 8.1] },
+  { id: "G", name: "No divider", says: "The word and the chevron read as one label, centred as a pair. The chevron is still its own click target. The button is 8.5px narrower.", pl: 9.5, pr: 0, caretW: 22, caretPl: 2.5, seam: "none", ink: [10.1, 6.1, null, 9.1] },
+  { id: "H", name: "Full-height divider", says: "D's balance, with the divider running edge to edge so the button reads as two halves.", pl: 8.5, pr: 7.5, caretW: 23, caretPl: 5, seam: "full", ink: [9.1, 8.5, 7.6, 7.6] },
+]
+const DEFAULT_SPACING = "C"
+const SpacingContext = createContext<Spacing>(SPACINGS.find((x) => x.id === DEFAULT_SPACING)!)
+
 interface SendButtonProps {
   /** White: there is something to send — typed text, or an answer staged on any card. */
   armed: boolean
   /** The hover title: the one place the shut button names its way of sending. */
   title?: string
+  /** A fixed candidate, for the spacing sheet. Absent, the button wears the page's chosen one. */
+  spacing?: Spacing
   menu?: ReactNode
   menuOpen?: boolean
   onToggleMenu?: () => void
   onSend?: () => void
 }
 
-function SendButton({ armed, title, menu, menuOpen, onToggleMenu, onSend }: SendButtonProps) {
+function SendButton({ armed, title, spacing, menu, menuOpen, onToggleMenu, onSend }: SendButtonProps) {
+  const chosen = useContext(SpacingContext)
+  const sp = spacing ?? chosen
   const tone = armed ? "bg-fg text-bg" : "bg-panel-2 text-muted"
   return (
     <span data-send-split className="relative flex h-7 shrink-0">
@@ -303,18 +347,17 @@ function SendButton({ armed, title, menu, menuOpen, onToggleMenu, onSend }: Send
         title={title}
         onMouseDown={(e) => e.preventDefault()}
         onClick={onSend}
-        className={`flex items-center rounded-l-lg pl-[7.75px] pr-2 text-[12px] font-medium leading-none outline-none transition-[color,background-color,opacity,scale] ${tone} ${armed ? "hover:opacity-90 active:scale-95" : ""}`}
+        style={{ paddingLeft: sp.pl, paddingRight: sp.pr }}
+        className={`flex items-center rounded-l-lg text-[12px] font-medium leading-none outline-none transition-[color,background-color,opacity,scale] ${tone} ${armed ? "hover:opacity-90 active:scale-95" : ""}`}
       >
-        {/* The word never changes, so nothing beside the button moves when the way of sending does.
-            Its padding is uneven on purpose: 7.75px and 8px of box paint 8.42px of ink-to-edge on the
-            left and 8.75px ink-to-seam on the right (pixels, dsf 12, sans), and the round S reads a
-            little further from its edge than the d's stem does from the seam. The caret's segment
-            paints 7.58px on each side of the chevron. */}
+        {/* The word never changes, so nothing beside the button moves when the way of sending does. */}
         <span data-send-label>Send</span>
       </button>
-      <span aria-hidden className={`flex w-px items-center ${armed ? "bg-fg" : "bg-panel-2"}`}>
-        <span className={`h-3.5 w-px ${armed ? "bg-bg/25" : "bg-fg/15"}`} />
-      </span>
+      {sp.seam !== "none" && (
+        <span aria-hidden className={`flex w-px items-center ${armed ? "bg-fg" : "bg-panel-2"}`}>
+          <span className={`w-px ${sp.seam === "full" ? "h-full" : "h-3.5"} ${armed ? "bg-bg/25" : "bg-fg/15"}`} />
+        </span>
+      )}
       <button
         type="button"
         data-send-menu
@@ -322,7 +365,8 @@ function SendButton({ armed, title, menu, menuOpen, onToggleMenu, onSend }: Send
         aria-expanded={menuOpen}
         onMouseDown={(e) => e.preventDefault()}
         onClick={onToggleMenu}
-        className={`flex w-[23px] items-center pl-[4.75px] rounded-r-lg outline-none transition-[color,background-color,opacity] ${tone} ${armed ? "hover:opacity-90" : "hover:text-fg"}`}
+        style={{ width: sp.caretW, paddingLeft: sp.caretPl }}
+        className={`flex items-center rounded-r-lg outline-none transition-[color,background-color,opacity] ${tone} ${armed ? "hover:opacity-90" : "hover:text-fg"}`}
       >
         <ChevronDown data-send-caret size={13} strokeWidth={2.5} />
       </button>
@@ -676,13 +720,50 @@ function Seg<T extends string>({ label, value, options, onChange }: { label: str
   )
 }
 
-function Specimen({ caption, children }: { caption: string; children: ReactNode }) {
+const px = (n: number) => `${n.toFixed(1)}px`
+
+function SpacingCard({ sp, chosen, onChoose }: { sp: Spacing; chosen: boolean; onChoose: () => void }) {
+  const icon = "flex h-7 w-7 items-center justify-center rounded-lg text-muted"
+  const [left, right, toCaret, edge] = sp.ink
   return (
-    <div className="flex flex-col items-start gap-3">
-      <div className="flex h-[72px] items-center rounded-lg border border-border bg-bg px-5">
-        <div style={{ zoom: 2 }}>{children}</div>
-      </div>
-      <div className="max-w-[190px] text-[12px] leading-[17px] text-muted">{caption}</div>
+    // A div, not a button: the card holds the candidate's own buttons.
+    <div
+      role="button"
+      tabIndex={0}
+      data-spacing-card={sp.id}
+      aria-pressed={chosen}
+      onClick={onChoose}
+      onKeyDown={(e) => {
+        if (e.key !== "Enter" && e.key !== " ") return
+        e.preventDefault()
+        onChoose()
+      }}
+      className={`flex cursor-pointer flex-col items-stretch rounded-xl border p-4 text-left outline-none transition-colors focus-visible:border-accent ${chosen ? "border-accent bg-panel" : "border-border hover:border-border-strong"}`}
+    >
+      <span className="flex h-[22px] items-baseline gap-2">
+        <span className="font-mono text-[12px] text-muted-80">{sp.id}</span>
+        <span className="text-[13px] font-medium text-fg/90">{sp.name}</span>
+        {chosen && <span className="ml-auto rounded border border-accent/40 bg-accent/10 px-1.5 py-px text-[10.5px] font-medium text-accent">On the cards below</span>}
+      </span>
+      <span data-big className="mt-3 flex h-[108px] items-center justify-center rounded-lg border border-border bg-bg">
+        <span style={{ zoom: 3 }}><SendButton armed spacing={sp} /></span>
+      </span>
+      {/* At its real size: dim on the left, and white on the right behind the rail's own icons —
+          right-anchored, as it is in the prompt box. */}
+      <span data-real className="mt-2 flex items-center justify-between rounded-lg border border-border bg-bg px-3 py-2">
+        <SendButton armed={false} spacing={sp} />
+        <span className="flex items-center">
+          <span className={`${icon} -mr-0.5`}><Paperclip size={15} strokeWidth={2} /></span>
+          <span className={`${icon} mr-1.5`}><Mic size={15} strokeWidth={2} /></span>
+          <SendButton armed spacing={sp} />
+        </span>
+      </span>
+      <span className="mt-3 text-[12px] leading-[17px] text-muted">{sp.says}</span>
+      <span className="mt-2 font-mono text-[11px] leading-[16px] text-muted-80">
+        {toCaret === null
+          ? <>edge {px(left)} Send {px(right)} ⌄ {px(edge)} edge</>
+          : <>edge {px(left)} Send {px(right)} | {px(toCaret)} ⌄ {px(edge)} edge</>}
+      </span>
     </div>
   )
 }
@@ -722,8 +803,11 @@ const OPEN_POINTS: string[] = [
 
 function Page() {
   const [theme, setTheme] = useState(document.documentElement.dataset.theme ?? "dark")
+  const [spacingId, setSpacingId] = useState(() => SPACINGS.find((x) => x.id === params.get("spacing")?.toUpperCase())?.id ?? DEFAULT_SPACING)
   useEffect(() => { document.documentElement.dataset.theme = theme }, [theme])
+  const spacing = SPACINGS.find((x) => x.id === spacingId)!
   return (
+    <SpacingContext.Provider value={spacing}>
     <main className="min-h-screen bg-bg pb-24 text-fg">
       <header className="mx-auto max-w-[1480px] px-8 pb-6 pt-9">
         <h1 className="text-[22px] font-semibold tracking-tight">One send for answers and a steer</h1>
@@ -739,12 +823,11 @@ function Page() {
         </div>
       </nav>
       <div className="mx-auto max-w-[1480px] px-8 pt-10">
-        <section data-specimens>
-          <h2 className="mb-4 text-[16px] font-semibold tracking-tight">The button, at twice its size</h2>
-          <div className="flex flex-wrap gap-x-8 gap-y-6">
-            <Specimen caption="Nothing typed and nothing answered. The caret still opens the menu."><SendButton armed={false} /></Specimen>
-            <Specimen caption="Text in the box, or an answer on any card. The same word under all three ways of sending."><SendButton armed /></Specimen>
-            <Specimen caption="Today's button, for scale."><span className="flex h-7 w-7 items-center justify-center rounded-lg bg-fg text-bg"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m5 12 7-7 7 7" /><path d="M12 19V5" /></svg></span></Specimen>
+        <section data-spacings>
+          <h2 className="text-[16px] font-semibold tracking-tight">The button's spacing, eight ways</h2>
+          <p className="mb-4 mt-1 max-w-[860px] text-[12.5px] leading-[18px] text-muted">Each is drawn at three times its size, then at its real size on the rail, white and dim. The last line is what it paints, measured from pixels: the gap from the button's left edge to the word, from the word to the divider, from the divider to the chevron, and from the chevron to the right edge. Click one to put it on every card below.</p>
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-4">
+            {SPACINGS.map((sp) => <SpacingCard key={sp.id} sp={sp} chosen={sp.id === spacingId} onChoose={() => setSpacingId(sp.id)} />)}
           </div>
         </section>
 
@@ -798,6 +881,7 @@ function Page() {
         </section>
       </div>
     </main>
+    </SpacingContext.Provider>
   )
 }
 
