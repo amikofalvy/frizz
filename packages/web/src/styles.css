@@ -1580,8 +1580,17 @@ a[href] {
   flex: 1 1 auto;
   min-width: 0;
 }
-/* A hunk header divides the diff; the lines git writes about a file sit back from the code. */
+/* A hunk header divides the diff; the lines git writes about a file sit back from the code.
+   The header ends in whatever line of code git found above the hunk, which is routinely longer than
+   anything in it, and a block must not scroll sideways for its own metadata. `width: 0` takes the row
+   out of the `code`'s width (a percentage min-width counts for nothing there) and `min-width` then
+   stretches it to whatever the code came to; the text is cut with an ellipsis. Copy still takes it all. */
 .md-body .md-diff-hunk {
+  width: 0;
+  min-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--color-muted);
   background: color-mix(in srgb, var(--color-fg) 4%, transparent);
 }
