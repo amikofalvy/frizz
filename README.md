@@ -84,15 +84,15 @@ The queue is strict about what earns a card, which is what keeps it a real todo 
 **Threads are built to run without you.** A worker keeps going until it reaches something only you can settle — a product call, a fork where guessing wrong is expensive to undo, an irreversible action — and then it hands back an answerable *question* rather than a wall of text for you to re-read and interpret.
 
 <p align="center">
-  <img src="assets/question.png" alt="A question card titled Question: 'Should the settings store use SQLite or a JSON file?' with two options numbered 1 and 2 on keycaps, the first tagged RECOMMENDED, a third row numbered 3 for typing something else, and a Send answers button." width="100%">
+  <img src="assets/question.png" alt="A question card titled Question: 'Should the settings store use SQLite or a JSON file?' with two options numbered 1 and 2 on keycaps, the first tagged RECOMMENDED, and a third row numbered 3 for typing something else, above the prompt box and its Send button." width="100%">
 </p>
 
-Options are numbered: press an option's number or click it to pick it, then Enter to send. A worker marks its own recommendation when it has one. There is always a row for writing something else instead.
+Options are numbered: press an option's number or click it to pick it, then Enter to send it, along with anything typed in the prompt box below. A worker marks its own recommendation when it has one. There is always a row for writing something else instead.
 
 When the answer isn't one thing, the same card takes several: check any combination and add a note.
 
 <p align="center">
-  <img src="assets/question-multi.png" alt="A question card titled Select multiple: 'Which of these findings should I fix in this pass?' with three numbered checkbox options, the first two ticked, a fourth numbered row for adding a note, and a Send answers button." width="100%">
+  <img src="assets/question-multi.png" alt="A question card titled Select multiple: 'Which of these findings should I fix in this pass?' with three numbered checkbox options, the first two ticked, and a fourth numbered row for adding a note, above the prompt box, whose Send button is lit." width="100%">
 </p>
 
 ### GitHub

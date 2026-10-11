@@ -173,15 +173,20 @@ export async function checkSurfaceStates({ page, url, font, palette, out, check,
 
   await page.goto(`${url}/thread/theme-question/full`, { waitUntil: "networkidle2" })
   await page.click("[data-question-option] > button")
-  await page.waitForFunction(() => [...document.querySelectorAll("button")].some(el => el.textContent.trim() === "Send answers" && !el.disabled && getComputedStyle(el).opacity === "1"))
+  // A staged answer arms the prompt box's Send, which is what sends it: the cards draw no "Send answers"
+  // of their own beside a prompt box (2026-10-11).
+  await page.waitForFunction(() => {
+    const send = document.querySelector("[data-send-split] [data-send]")
+    return send && !send.disabled && !document.querySelector("[data-send-answers]")
+  })
   await contrast("selected-question")
   const outlineContract = await page.evaluate(() => {
     const question = getComputedStyle(document.querySelector('.bg-question'))
-    const button = getComputedStyle(document.querySelector('[data-send-answers]'))
-    return { question: [question.backgroundColor, question.borderTopColor, question.borderTopWidth], buttonShadow: button.boxShadow }
+    const send = getComputedStyle(document.querySelector('[data-send-split] [data-send]'))
+    return { question: [question.backgroundColor, question.borderTopColor, question.borderTopWidth], send: [send.backgroundColor, send.color] }
   })
   if (palette === 'light') assert.deepEqual(outlineContract.question, ['rgb(255, 255, 255)', 'rgb(220, 220, 220)', '1px'])
-  assert.match(outlineContract.buttonShadow, /inset/, 'Answer buttons retain subtle inset outlines')
+  assert.notEqual(outlineContract.send[0], outlineContract.send[1], 'The armed Send keeps its word legible on its fill')
   result[`${name}-question-outlines`] = outlineContract
   await shot("selected-question")
   await page.evaluate(() => {
