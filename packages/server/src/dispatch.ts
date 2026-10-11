@@ -629,8 +629,15 @@ export function claudeMcpConfig(mcp?: FrizzMcp, project?: WorkerMcpServers): Cla
  * `Bash(frizzctl:*)` is the same promise `mcp__frizz` made at server level: a worker's own sign-off is
  * never something a human has to approve. It is what keeps `frizzctl ask` and `frizzctl done` from
  * becoming approval cards on a thread the human moved to `default`, where perm-policy.mjs defers every
- * prompt (`restrictive-mode`). Claude Code matches the rule against the parsed command, so it covers
- * a bare `frizzctl …` and does NOT cover `frizzctl … && something-else`, which is judged as before.
+ * prompt (`restrictive-mode`). Claude Code matches the rule against each command of the parsed line, so
+ * `frizzctl … && frizzctl …` is covered and `frizzctl … && something-else` is judged on its second half.
+ *
+ * WHAT THE RULE CARRIES, MEASURED (2.1.296, a real worker on a `default` thread,
+ * `backend/_live_broker_frizzctl.mts`): a bare call, an inline JSON argument, `--input <file>`,
+ * `< file`, a `;` or `&&` chain of frizzctl calls and a quoted heredoc of prose all ran unasked. ONE
+ * form did not: a quoted heredoc whose body holds a JSON object, which Claude Code's own command checks
+ * bounce to a prompt whatever the allow list says. That is the form `ask` needs most, so the worker's
+ * permission hook approves exactly that shape itself (`own-frizzctl` in cc-worker/hooks/perm-policy.mjs).
  */
 export function claudeCliConfig(cli?: FrizzCli, project?: WorkerMcpServers): ClaudeMcpConfig {
   return { mcpServers: workerMcpServers(project, {}), allowedTools: cli ? [`Bash(${FRIZZ_CLI.name}:*)`] : [] }
