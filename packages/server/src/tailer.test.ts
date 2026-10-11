@@ -11,7 +11,7 @@ import type { CodexModel, ServerEvent } from "@frizz/shared"
 import { AwaitingHint, QUESTION_FENCE_RETIRED_AT } from "@frizz/shared"
 import { permMarkerPath, type Project } from "./project.ts"
 import { degradeIfAwaitingAnswer, deriveNeedsYou } from "./board.ts"
-import { parseLine, applyRecord, applyEvent, computeTurn, newTailState, createTailer, shellProbeTtlMs, defaultBrokerDaemonAlive, hasQuestionBlock, isClaudeAuthErrorText, isRealUserMessage, parseSignalFence, markerDecision, pendingCallDeadline, unwrapShellCommand, FOREIGN_FRESH_MS, parseWindowsShellHolderReport, probeShellsAlive, findShellProcesses, windowsShellHolderCommand, type ShellLaunch } from "./tailer.ts"
+import { parseLine, applyRecord, applyEvent, computeTurn, newTailState, createTailer, shellProbeTtlMs, defaultBrokerDaemonAlive, hasQuestionBlock, isClaudeAuthErrorText, isRealUserMessage, parseSignalFence, markerDecision, pendingCallDeadline, unwrapShellCommand, FOREIGN_FRESH_MS, parseWindowsShellHolderReport, probeShellsAlive, probeShellVerdicts, findShellProcesses, windowsShellHolderCommand, type ShellLaunch, type ShellVerdict } from "./tailer.ts"
 import { claudeBrokerRecordPath } from "./backend/claude-broker-host.ts"
 import { buildClaudePermissionInteraction } from "./backend/claude-permission-interactions.ts"
 import type { AgentBackend, NormalizedEvent } from "./backend/types.ts"
@@ -4783,6 +4783,139 @@ test("tailer: a long-running shell is asked about on its age, not every 30s", as
   assert.equal(asked.length, 2, "past a tenth of its age it is asked about again")
 })
 
+// A LIVE VERDICT IS PINNED TO THE PIDS THAT GAVE IT (2026-10-11). The age TTL above cut lsof about 20x
+// for long-lived watchers, and cost the other thing the probe is for: a day-long watcher that died
+// silently read "running" for up to ten minutes. lsof names the holder of each file (`-F pn`), so a live
+// verdict now records those pids, and between full probes they are asked every 30s whether they still
+// exist — `kill(pid, 0)`, no process walk. All gone sends the shell to the REAL probe at once; it is never
+// a verdict by itself. These drive the queue and the flush with a scripted probe and scripted pids; the
+// real-process case is with the other real ones further down.
+function watcherOnPids(name: string) {
+  const output = join(tmp(`frizz-shell-pids-${name}-`), "bWatch.output")
+  writeFileSync(output, "")
+  const h = harness()
+  h.storage.upsertSession(row())
+  fixture(h.logDir, "sid", [
+    IN_FLIGHT,
+    JSON.stringify(bashBg("toolu_sh", "Watching npm for a release", "until npm view pkg@beta; do sleep 300; done")),
+    JSON.stringify(resultText("toolu_sh", `Command running in background with ID: bWatch. Output is being written to: ${output}.`)),
+  ])
+  const ctl = {
+    h,
+    /** What the scripted probe answers next. */
+    next: { alive: true, pids: [4242, 4243] } as ShellVerdict,
+    /** The pids that exist. */
+    live: new Set([4242, 4243]),
+    /** Clock readings at which the full probe (lsof) ran. */
+    probed: [] as number[],
+    /** Every pid asked about with kill(0). */
+    pidAsks: [] as number[],
+    async pass() {
+      const state = t.get("t")?.bgShells[0]?.state
+      await new Promise((r) => setTimeout(r, 20))
+      return state
+    },
+  }
+  const t = makeTailer(h, {
+    probeShells: async (batch) => {
+      ctl.probed.push(h.clock.ms)
+      return new Map(batch.map((s) => [s.outputFile, ctl.next]))
+    },
+    pidAlive: (pid) => {
+      ctl.pidAsks.push(pid)
+      return ctl.live.has(pid)
+    },
+  })
+  // An hour in: the age TTL alone would let a live verdict stand for six minutes.
+  h.clock.ms = Date.parse("2026-07-01T00:00:01.000Z") + 60 * 60_000
+  t.tick()
+  h.changes.n = 0 // the fold's own nudge
+  return ctl
+}
+
+test("tailer: a live verdict carrying pids is not re-probed while those pids live — they are asked instead, every 30s", async () => {
+  const w = watcherOnPids("live")
+  assert.equal(await w.pass(), "running")
+  assert.equal(w.probed.length, 1)
+  assert.deepEqual(w.pidAsks, [], "the verdict was just given; nothing to ask yet")
+
+  w.h.clock.ms += 29_999
+  assert.equal(await w.pass(), "running")
+  assert.deepEqual(w.pidAsks, [], "the pids are asked on the 30s cadence, not on every pass")
+  w.h.clock.ms += 1
+  assert.equal(await w.pass(), "running")
+  assert.deepEqual(w.pidAsks, [4242], "at 30s the pins are checked — one live pid is enough")
+
+  // Every 30s up to just short of the six-minute TTL: checked each time, and lsof never runs.
+  for (let i = 0; i < 10; i++) {
+    w.h.clock.ms += 30_000
+    assert.equal(await w.pass(), "running")
+  }
+  assert.equal(w.pidAsks.length, 11, "one pid check per 30s")
+  assert.equal(w.probed.length, 1, "five and a half minutes, and the full probe was not asked again")
+  assert.equal(w.h.changes.n, 0)
+})
+
+test("tailer: when a live verdict's pids are all gone, the next pass at or after 30s puts the shell to the real probe — which alone can demote it", async () => {
+  const w = watcherOnPids("die")
+  assert.equal(await w.pass(), "running")
+  const first = w.probed[0]!
+
+  // The shell dies silently ten seconds after its verdict. The next pass is inside the 30s cadence.
+  w.live.clear()
+  w.h.clock.ms += 10_000
+  assert.equal(await w.pass(), "running")
+  assert.equal(w.probed.length, 1, "inside the 30s cadence nothing is asked")
+
+  // The REAL PROBE DECIDES. Here it finds the file still held — by a child that outlived its shell — so
+  // the shell is alive on a new pin, and pids gone was never read as death.
+  w.next = { alive: true, pids: [5150] }
+  w.live.add(5150)
+  w.h.clock.ms += 20_000
+  assert.equal(await w.pass(), "running")
+  assert.deepEqual(w.probed, [first, first + 30_000], "every pid gone at the 30s check ⇒ the full probe runs at once, not at the 6-minute TTL")
+  assert.equal(await w.pass(), "running", "a pid check that found nobody is not a verdict")
+  assert.equal(w.h.changes.n, 0, "and a live answer from the probe nudges nothing")
+
+  // Now the holder goes too, and the probe confirms it.
+  w.next = false
+  w.live.delete(5150)
+  w.h.clock.ms += 30_000
+  assert.equal(await w.pass(), "running", "the dead verdict lands after this pass, never inside it")
+  assert.deepEqual(w.probed, [first, first + 30_000, first + 60_000])
+  assert.equal(w.h.changes.n, 1, "the probe's dead verdict nudges the board, once")
+  assert.equal(await w.pass(), "stale")
+  w.h.clock.ms += 20 * 60_000
+  assert.equal(await w.pass(), "stale")
+  assert.equal(w.probed.length, 3, "and dead stays terminal")
+})
+
+test("tailer: with its pids alive, a pinned shell is still fully re-probed at its age TTL — the pid-reuse backstop", async () => {
+  const w = watcherOnPids("reuse")
+  assert.equal(await w.pass(), "running")
+  // A recycled pid reads alive forever; only the full probe can tell. Its TTL is unchanged by the pins.
+  for (let i = 0; i < 11; i++) {
+    w.h.clock.ms += 30_000
+    assert.equal(await w.pass(), "running")
+  }
+  assert.equal(w.probed.length, 1)
+  w.h.clock.ms += 30_000 // six minutes: a tenth of the hour the shell had run when its verdict was given
+  assert.equal(await w.pass(), "running")
+  assert.equal(w.probed.length, 2, "past the age TTL the probe runs, whatever the pids say")
+
+  // A verdict that names no usable pid has nothing to pin and is exactly a plain live verdict: `0` and a
+  // negative pid would ask about whole process GROUPS, so they are never asked about at all.
+  const bare = watcherOnPids("bare")
+  bare.next = { alive: true, pids: [0, -7, 1.5] }
+  assert.equal(await bare.pass(), "running")
+  for (let i = 0; i < 11; i++) {
+    bare.h.clock.ms += 30_000
+    assert.equal(await bare.pass(), "running")
+  }
+  assert.deepEqual(bare.pidAsks, [], "no pins ⇒ no pid checks")
+  assert.equal(bare.probed.length, 1, "and the verdict stands for its whole TTL, as before")
+})
+
 // The real probe is SLOW (lsof: ~300 ms, 8 s when it times out), so assemblies happen while one is in
 // flight, and the flush refuses to start a second. Two things follow, and the unconditional nudge above
 // used to paper over the first while causing the second: a shell first asked about mid-flight must be
@@ -5080,6 +5213,64 @@ test("tailer: an exec'd background shell with redirected output reads running wh
     assert.equal(await settle(), "stale", "negative control: the same shell, dead, is demoted")
   } finally {
     cli.close()
+  }
+})
+
+// THE PIN, AGAINST A REAL PROCESS. A real holder of a real output file: the real probe must name its pid,
+// and once it is killed the tailer must notice through the pid check plus a real re-probe — with the
+// shell an hour old, so the six-minute age TTL cannot be what notices it.
+test("tailer: the real probe names a shell's holder pid, and its death is noticed on the next 30s pid check", { skip: process.platform === "win32" ? "lsof is POSIX" : false }, async () => {
+  const dir = tmp("frizz-shell-pid-real-")
+  const outputFile = join(dir, "bPid.output")
+  const fd = openSync(outputFile, "w")
+  // `exec` so the holder IS the pid spawn reports, as with a Claude Code shell; our own fd is closed at
+  // once, or this process would hold the file too and keep it "held" after the shell dies.
+  const holder = spawn("/bin/sh", ["-c", "exec sleep 60"], { stdio: ["ignore", fd, fd] })
+  closeSync(fd)
+  const pid = holder.pid!
+  try {
+    assert.deepEqual((await probeShellVerdicts([outputFile])).get(outputFile), { alive: true, pids: [pid] }, "lsof names the holder")
+    assert.equal((await probeShellsAlive([outputFile])).get(outputFile), true, "and the plain map still reads a bare true")
+
+    const h = harness()
+    h.storage.upsertSession(row())
+    fixture(h.logDir, "sid", [
+      IN_FLIGHT,
+      JSON.stringify(bashBg("toolu_sh", "Watching npm for a release", "until npm view pkg@beta; do sleep 300; done")),
+      JSON.stringify(resultText("toolu_sh", `Command running in background with ID: bPid. Output is being written to: ${outputFile}.`)),
+    ])
+    let runs = 0
+    let landed = 0
+    // The real probe, counted. No pidAlive: the real `kill(pid, 0)`.
+    const t = makeTailer(h, { probeShells: async (batch) => { runs++; const v = await probeShellVerdicts(batch); landed++; return v } })
+    const read = () => t.get("t")?.bgShells[0]?.state
+    const land = async (n: number) => {
+      await until(() => landed >= n, 15_000)
+      await new Promise((r) => setTimeout(r, 50))
+    }
+    h.clock.ms = Date.parse("2026-07-01T00:00:01.000Z") + 60 * 60_000
+    t.tick()
+    h.changes.n = 0
+    assert.equal(read(), "running")
+    await land(1)
+    assert.equal(read(), "running", "held by a live process")
+
+    // Control: thirty seconds on, the pid is asked and answers, and lsof does not run.
+    h.clock.ms += 30_000
+    assert.equal(read(), "running")
+    await new Promise((r) => setTimeout(r, 200))
+    assert.equal(runs, 1, "a live pin is checked with kill(0), not lsof")
+
+    holder.kill("SIGKILL")
+    await until(() => isGone(pid)) // reaped, not a zombie: a zombie answers kill(0)
+    h.clock.ms += 30_000 // one minute into a six-minute TTL
+    assert.equal(read(), "running", "the pid check only sends it to the probe")
+    await land(2)
+    assert.equal(runs, 2, "the dead pin put the shell to the real probe at once")
+    assert.equal(h.changes.n, 1, "whose dead verdict nudged the board")
+    assert.equal(read(), "stale")
+  } finally {
+    try { process.kill(pid, "SIGKILL") } catch { /* already gone */ }
   }
 })
 
