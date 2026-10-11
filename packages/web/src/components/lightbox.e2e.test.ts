@@ -108,7 +108,12 @@ const viewer = (page: Page) => page.evaluate(() => {
 const pageKeys = (page: Page) => page.evaluate(() => window.__pageKeys!.splice(0))
 
 // The viewer's picture once its zoom has SETTLED. The inline transform is the target a change sets and
-// the computed one trails it through the 180ms ease, so this waits for the two to agree before reading.
+// the computed one trails it through the 180ms ease, so this waits for the ease to END before reading.
+// Ended, and not merely close: the ease spends its last frames within a thousandth of the target, and a
+// rect read there is not the settled one. Measured 2026-10-11 with the animation slowed 50×: the first
+// frame the two agreed to a thousandth drew the 872px picture 872.85px wide at left 63.57 instead of 64,
+// with the transition still running — enough to round a point 30% across to 325 instead of 326, which is
+// the "pixel under the cursor moved" the pinch test reported twice at a load average over 260.
 // `rect` is where the picture is drawn; `fitted` is its layout box, which a transform does not move.
 async function zoomOf(page: Page) {
   const read = () => {
@@ -117,7 +122,7 @@ async function zoomOf(page: Page) {
     if (!img || !m) return null
     const [x, y, scale] = m.slice(1).map(Number)
     const c = new DOMMatrix(getComputedStyle(img).transform)
-    const settled = Math.abs(c.a - scale) < 1e-3 && Math.abs(c.e - x) < 0.05 && Math.abs(c.f - y) < 0.05
+    const settled = img.getAnimations().length === 0 && Math.abs(c.a - scale) < 1e-3 && Math.abs(c.e - x) < 0.05 && Math.abs(c.f - y) < 0.05
     const r = img.getBoundingClientRect()
     return { settled, scale, x, y, rect: { left: r.left, top: r.top, width: r.width, height: r.height } }
   }
@@ -125,13 +130,20 @@ async function zoomOf(page: Page) {
   return (await page.evaluate(read))!
 }
 
-// The viewer's picture, LOADED. A gesture zooms only once the picture knows its natural size (`geometry()` in
-// Lightbox.tsx is null until then), and `waitForSelector` returns as soon as the <img> exists — so a click
-// or a pinch right behind it is a race the picture loses on a loaded machine. Measured 2026-10-11: the
-// click test's second picture stayed at scale 1 in two full-suite runs at load average 160, and the pinch
-// test read a moved pixel in one at 260; neither ever failed on its own (0 of 15).
-const pictureLoaded = (page: Page) =>
-  page.waitForFunction(() => (document.querySelector<HTMLImageElement>("[data-lightbox] img")?.naturalWidth ?? 0) > 0)
+// The viewer's picture, READY for a gesture — which `waitForSelector`, returning as soon as the <img>
+// exists, does not mean. Two things trail it. The picture must have LOADED: a gesture zooms only once it
+// knows its natural size (`geometry()` in Lightbox.tsx is null until then). And the dialog must be TAKING
+// THE POINTER: Radix turns `pointer-events` off on <body> as a modal mounts and back on for the dialog's
+// content one render later, and in between a click at the picture lands on the scrim behind it and zooms
+// nothing. Nobody clicks inside that window by hand; a driver does. Measured 2026-10-11 on the click
+// test's second picture, which is cached and so loaded at once: its click arrived 16ms after the tile's
+// and its target was the scrim, in 2 of 5 runs under the headless shell, which dispatches input without
+// waiting for a frame the way the full browser did (0 of 6 there).
+const pictureReady = (page: Page) =>
+  page.waitForFunction(() => {
+    const img = document.querySelector<HTMLImageElement>("[data-lightbox] img")
+    return !!img && img.naturalWidth > 0 && getComputedStyle(img).pointerEvents !== "none"
+  })
 
 const close = (a: number, b: number, tolerance = 0.5) => Math.abs(a - b) <= tolerance
 // A browser serializes a transform's numbers to six significant digits, so a scale read back from one is
@@ -217,7 +229,7 @@ test("a click zooms into the point under the cursor, a drag moves the magnified 
   const { browser, page, errors } = await launch()
   try {
     await (await page.$("[data-fixture-message='0'] [data-lightbox-tile]"))!.click()
-    await pictureLoaded(page)
+    await pictureReady(page)
     const fit = await zoomOf(page)
     assert.deepEqual([fit.scale, fit.x, fit.y], [1, 0, 0])
     assert.equal(await page.$eval("[data-lightbox] img", (img) => getComputedStyle(img).cursor), "zoom-in")
@@ -259,12 +271,10 @@ test("a click zooms into the point under the cursor, a drag moves the magnified 
     await page.keyboard.press("Escape")
     await page.waitForFunction(() => !document.querySelector("[data-lightbox]"))
     await (await page.$("[data-fixture-message='1'] [data-lightbox-tile]"))!.click() // phone-375x812
-    await pictureLoaded(page)
+    await pictureReady(page)
     const tall = await zoomOf(page)
-    const DIAG = await page.evaluate((x, y) => { const img = document.querySelector<HTMLImageElement>("[data-lightbox] img")!; const d = (el: Element) => `${el.tagName}[${[...el.attributes].map((a) => a.name === "class" || a.name === "style" ? `${a.name}=${a.value.slice(0, 70)}` : a.name).join(" ")}] pe=${getComputedStyle(el).pointerEvents}`; (window as any).__clicks = []; document.addEventListener("click", (e) => (window as any).__clicks.push(d(e.target as Element)), true); return { stack: document.elementsFromPoint(x, y).map(d), imgPe: getComputedStyle(img).pointerEvents, imgVis: getComputedStyle(img).visibility, imgDisplay: getComputedStyle(img).display, bodyPe: document.body.style.pointerEvents, dialogs: document.querySelectorAll("[role=dialog]").length, lightboxes: document.querySelectorAll("[data-lightbox]").length, imgs: document.querySelectorAll("[data-lightbox] img").length, imgConnected: img.isConnected, imgParent: d(img.parentElement!) } }, tall.rect.left + tall.rect.width / 2, tall.rect.top + tall.rect.height / 2)
     await page.mouse.click(tall.rect.left + tall.rect.width / 2, tall.rect.top + tall.rect.height / 2)
     const tallZoomed = await zoomOf(page)
-    if (tallZoomed.scale !== 2) { await new Promise((r) => setTimeout(r, 600)); console.log("DIAGFAIL", JSON.stringify({ before: DIAG, tall, tallZoomed, later: await zoomOf(page), clicks: await page.evaluate(() => (window as any).__clicks), rectLater: await page.$eval("[data-lightbox] img", (i) => JSON.parse(JSON.stringify(i.getBoundingClientRect()))) })) }
     assert.equal(tallZoomed.scale, 2)
     const stage = (await (await page.$("[data-lightbox-stage]"))!.boundingBox())!
     await page.mouse.click(stage.x + 8, stage.y + stage.height / 2)
@@ -282,7 +292,7 @@ test("the zoom buttons, the + − 0 keys and a ctrl-wheel or trackpad pinch zoom
   const { browser, page, errors } = await launch()
   try {
     await (await page.$("[data-fixture-message='0'] [data-lightbox-tile]"))!.click()
-    await pictureLoaded(page)
+    await pictureReady(page)
     const disabled = (label: string) => page.$eval(`[data-lightbox] button[aria-label="${label}"]`, (b) => b.getAttribute("aria-disabled") === "true")
     assert.deepEqual([await disabled("Zoom out"), await disabled("Zoom in")], [true, false], "nothing to zoom out of at fit")
 
@@ -357,7 +367,7 @@ test("on a phone, a pinch zooms the picture, one finger pans it, a double tap to
   const { browser, page, errors } = await launch(PHONE)
   try {
     await (await page.$("[data-fixture-message='0'] [data-lightbox-tile]"))!.tap()
-    await pictureLoaded(page)
+    await pictureReady(page)
     // A touch screen gets 44px header buttons and no zoom buttons — it pinches.
     const chrome = await page.evaluate(() => ({
       coarse: matchMedia("(pointer: coarse)").matches,
