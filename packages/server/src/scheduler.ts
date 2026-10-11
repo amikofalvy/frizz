@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 import { createHash, randomUUID } from "node:crypto"
-import { awaitingNeedsInput, needsInputRequired, PARK_CORRECTION_NAMES_LEAD, PARK_CORRECTION_NEEDS_INPUT_LEAD, PARK_CORRECTION_QUESTION_LEAD, PARK_CORRECTION_RETIRED_LEAD, interruptEndedSubAgentsMessage, type InterruptEndedSubAgent, parkExpiredWakeMessage, parkFinishedWakeMessage, prWatchExpiredWakeMessage, ownWatchExpiredWakeMessage, questionAnswerMessage, questionsCancelledWakeMessage, type QuestionAnswer, type QuestionDismissal, RETIRED_AWAITING_REPLACEMENT, retiredAwaitingKindsIn, compactionPromptMessage, limitResumeSteer, limitModelSwitchSteer, formatGithubWakeSteer, GithubWakeItem, type GithubWatchStatus, type GithubIssueStatus, prWatchWakeMessage, issueWatchWakeMessage, shellDoneMessage, restPromptMessage, schedulePromptMessage, timerPromptMessage, signoffNudgeMessage, carriedQuestionsNudgeMessage, type SignoffLiveOps, liveOpsLines, wakeDeliveryToken, wakeTimeHeader, stripWakeTimeHeader, type QuotaSnapshot } from "@frizz/shared"
+import { awaitingNeedsInput, needsInputRequired, PARK_CORRECTION_NAMES_LEAD, PARK_CORRECTION_NEEDS_INPUT_LEAD, PARK_CORRECTION_QUESTION_LEAD, PARK_CORRECTION_RETIRED_LEAD, interruptEndedSubAgentsMessage, type InterruptEndedSubAgent, parkExpiredWakeMessage, parkFinishedWakeMessage, prWatchExpiredWakeMessage, ownWatchExpiredWakeMessage, questionAnswerMessage, questionsCancelledWakeMessage, type QuestionAnswer, type QuestionDismissal, RETIRED_AWAITING_REPLACEMENT, retiredAwaitingKindsIn, compactionPromptMessage, limitResumeSteer, limitModelSwitchSteer, formatGithubWakeSteer, GithubWakeItem, type GithubWatchStatus, type GithubIssueStatus, prWatchWakeMessage, issueWatchWakeMessage, shellDoneMessage, restPromptMessage, schedulePromptMessage, timerPromptMessage, signoffNudgeMessage, carriedQuestionsNudgeMessage, type SignoffLiveOps, liveOpsLines, mergedWakeMessage, wakeDeliveryToken, wakeTimeHeader, stripWakeTimeHeader, type QuotaSnapshot } from "@frizz/shared"
 import { GITHUB_ISSUE_STATUS_SETTING, GITHUB_STATUS_SETTING, liveActivityOf, parkExpiresAt, parkIsHonoured, parkOnHuman, readAwaitingPark, unaccountedItems } from "./awaiting.ts"
 import type { PrWatchRow, SessionRow, Storage, ThreadQuestionRow } from "./storage.ts"
 import type { Tailer } from "./tailer.ts"
@@ -3853,24 +3853,10 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     return adopted
   }
 
-  // The merged body: each wake's own message under its own reason line, oldest first, and ONE clock at
-  // the foot in place of the one each frizz-authored part carried (a stamp per section would put five
-  // clocks in one message; the display stripper is anchored to a single trailing one). Parts whose
-  // reason AND body are identical — the same review event reported by two polls, the same "CI passing"
-  // twice — fold into one section that says how many there were, rather than saying the same thing
-  // three times to a reader who pays per token to read it.
-  function mergedWakeMessage(frame: readonly WakeDelivery[], spokeAt: string | null | undefined): string {
-    const sections: { reason: string; body: string; count: number }[] = []
-    for (const part of frame) {
-      const body = stripWakeTimeHeader(part.message).trim()
-      const same = sections.find((s) => s.reason === part.reason && s.body === body)
-      if (same) same.count++
-      else sections.push({ reason: part.reason, body, count: 1 })
-    }
-    const lead = `Frizz held ${frame.length} wakes for this thread and is delivering them together, oldest first. Each is under its own heading; read all of them before acting on any.`
-    const body = sections.map((s, i) => `### ${i + 1}. ${s.reason}${s.count > 1 ? ` — ${s.count} identical events` : ""}\n\n${s.body}`)
-    return `${lead}\n\n${body.join("\n\n")}\n\n${wakeTimeHeader(now(), spokeAt)}`
-  }
+  // The merged body is composed by `mergedWakeMessage` in @frizz/shared, beside the splitter the chat
+  // reads it back with. Same rule as `limitResumeSteer` and the park wakes: a formatter the chat cannot
+  // parse falls through FrizzWake's fallback and prints its agent-facing body verbatim as a bordered
+  // card, and this one did for five weeks.
 
   // A LONE wake's clock is re-read at SEND, for the same reason the merged one is: the stamp was taken at
   // enqueue, and the quiet window can hold a row for five minutes, across a turn the worker finished in
@@ -3938,7 +3924,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       const frame = [...companions, item].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
       const message = companions.length === 0
         ? restampedWakeMessage(item.message, deps.tailer.get(item.slug)?.lastAssistantAt)
-        : mergedWakeMessage(frame, deps.tailer.get(item.slug)?.lastAssistantAt)
+        : mergedWakeMessage(frame, now(), deps.tailer.get(item.slug)?.lastAssistantAt)
       if (companions.length > 0) {
         log(`waker: merged ${frame.length} wakes for ${item.slug} into one delivery — ${frame.map((d) => d.reason).join("; ")}`)
       }

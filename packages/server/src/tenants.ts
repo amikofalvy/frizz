@@ -2,7 +2,6 @@ import type { AppContext, ContextOptions } from "./context.ts"
 import { projectContextCleanups } from "./context.ts"
 import type { Project } from "./project.ts"
 import { log as frizzLog } from "./logging.ts"
-import { refuseWorldWritableProject } from "./project-root.ts"
 
 // ONE PROCESS, N PROJECTS.
 //
@@ -109,10 +108,6 @@ export function createTenantMap<App = unknown>(options: TenantMapOptions<App>): 
           // racing a second context onto the same database.
           await deactivate(project.id)
         }
-        // A project registered before world-writable folders were refused (or chmod'ed since) does not
-        // open: every worker started there would run whatever another account planted in it. Reported
-        // like any other failure to open, so it is one dead card and a logged reason.
-        refuseWorldWritableProject(project.dir)
         const ctx = await options.createContext({ ...options.contextOptions, project })
         open.set(project.id, { project, ctx, app: options.createApp?.(ctx) })
         // Inside the try on purpose: a producer that fails to start is reported through the same seam
@@ -128,9 +123,9 @@ export function createTenantMap<App = unknown>(options: TenantMapOptions<App>): 
     })()
     opening.set(project.id, attempt)
     // Cleared once the attempt SETTLES, never from inside it: an attempt that fails before its first
-    // await (the world-writable refusal above, a createContext that throws synchronously) has already
-    // settled by the time the line above runs, and a `finally` in there would clear the entry before it
-    // was set — leaving a settled failure that every later activate of this project would be handed.
+    // await (a createContext that throws synchronously) has already settled by the time the line above
+    // runs, and a `finally` in there would clear the entry before it was set — leaving a settled
+    // failure that every later activate of this project would be handed.
     void attempt.then(() => {
       if (opening.get(project.id) === attempt) opening.delete(project.id)
     })

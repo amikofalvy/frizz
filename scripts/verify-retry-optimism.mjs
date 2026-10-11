@@ -11,7 +11,7 @@
 // ~1.3s, the same order as the bug itself, so it reports "instant" and "two seconds" identically.
 //
 //   node scripts/verify-retry-optimism.mjs <url> <unused> [slug]
-import puppeteer from "puppeteer"
+import { launchHeadless } from "./lib/headless-browser.mjs"
 
 const [url, _socket, slug = "worker-6"] = process.argv.slice(2)
 if (!url) {
@@ -39,7 +39,7 @@ const READ_ROW = (s) => `(() => {
   return null
 })()`
 
-const browser = await puppeteer.launch({ headless: "new", args: ["--no-sandbox", "--force-color-profile=srgb"] })
+const browser = await launchHeadless()
 const errs = []
 try {
   const p = await browser.newPage()

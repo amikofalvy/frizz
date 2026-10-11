@@ -3,8 +3,9 @@
 // Named for the whole family since 2026-08-19, when the last two members joined it: it was
 // `GithubWakeCard` back when a review steer was the only thing it drew, and the name outlived the job by
 // two features. What arrives here is any user turn the server flagged `wake` — a PR watcher's review
-// activity, its status lines, a background shell that finished while nobody was awake, and whatever the
-// parsers below do not recognize.
+// activity, its status lines, a background shell that finished while nobody was awake, the Goal's
+// repeating prompt, several of those held and sent as one delivery, and whatever the parsers below do
+// not recognize.
 //
 // THE RULE THE WHOLE FILE FOLLOWS: a wake frizz composed ITSELF is a hairline, because it is one line of
 // news about something outside the turn. A wake carrying prose someone else WROTE — a worker's own timer
@@ -28,10 +29,11 @@
 // and a right-pinned ref; a p-4 inset wrapped around a SINGLE 20px line, when every other card in that
 // shell has a body; and three marks on one row that all looked clickable (an underlined title, an
 // accent ref, the corner glyph) with no hierarchy between them.
-import { useId, useState } from "react"
-import { AlarmClock, Bell, Github, Hourglass, MessageCircleOff, TerminalSquare } from "lucide-react"
-import { isGithubWakeBacklog, parseGithubWakeSteer, parseLimitModelSwitchWake, parseLimitResumeWake, parseParkWake, parsePrWatchExpiredWake, parsePrWatchStateWake, parsePrWatchWake, parseQuestionsCancelledWake, parseShellDoneWake, parseTimerWake, stripWakeTrailer, type GithubWakeSteer, type LimitWindow, type ParkWake, type PrWatchStateWake, type PrWatchWake, type ShellDoneWake, type TimerWake } from "@frizz/shared"
+import { Fragment, useId, useState } from "react"
+import { AlarmClock, Bell, Bot, Github, Hourglass, MessageCircleOff, TerminalSquare } from "lucide-react"
+import { isGithubWakeBacklog, isInjectedNoise, isParkCorrection, parseGithubWakeSteer, parseLimitModelSwitchWake, parseLimitResumeWake, parseMergedWake, parseOwnWatchExpiredWake, parseParkWake, parsePrWatchExpiredWake, parsePrWatchStateWake, parsePrWatchWake, parseQuestionsCancelledWake, parseRecurringPrompt, parseShellDoneWake, parseTimerWake, stripWakeTrailer, type GithubWakeSteer, type LimitWindow, type MergedWakePart, type ParkWake, type PrWatchStateWake, type PrWatchWake, type ShellDoneWake, type TimerWake } from "@frizz/shared"
 import { QUEUE_WRAP, TranscriptCard } from "./TranscriptCard.tsx"
+import { RecurringPromptLine } from "./RecurringPromptLine.tsx"
 import { VSpace } from "./rhythm.tsx"
 import { WakeDivider } from "./WakeDivider.tsx"
 import { githubRefUrl } from "../lib/githubRef.ts"
@@ -65,6 +67,21 @@ export const DIVIDER_LINK = "rounded-sm underline decoration-muted/30 underline-
 // review item dates by GitHub's clock (when the comment was filed, which is the news), and a timer by
 // the instant it was set to fire.
 export function FrizzWake({ steer: served, text, sourceId, at, wrap }: { steer?: GithubWakeSteer; text: string; sourceId?: string; at?: string; wrap?: boolean }) {
+  // SEVERAL WAKES IN ONE DELIVERY, before anything else: every parser below reads a wake from its own
+  // first line, and a merged delivery's first line is the envelope's.
+  const merged = parseMergedWake(text)
+  if (merged) return <MergedWake parts={merged} sourceId={sourceId} at={at} wrap={wrap} />
+  // A recurring prompt (either trigger) REPEATS by design — the same paragraph every few minutes on a
+  // thread being driven by one — so it collapses to a single line rather than restating itself in full
+  // down the transcript. Parsed from frizz's own trailer, defined beside the composer that writes it; a
+  // non-match falls through to everything below, so no wake can lose its text to this.
+  //
+  // AFTER the merged split, and that order is load-bearing: the trailer is matched at the END of the
+  // text, so a merged delivery whose LAST wake is the Goal's prompt ends in it too. Routed first (as
+  // ChatView did until 2026-10-11), the whole delivery read as one Goal line and every wake held beside
+  // it vanished from the transcript.
+  const recurring = parseRecurringPrompt(text)
+  if (recurring) return <RecurringPromptLine bump={recurring} sourceId={sourceId} at={at} />
   // THE WHOLE-DELIVERY WAKES, settled first and each on its own: none is ever a PART of a message, and
   // none shares anything with the GitHub grammar below.
   const shell = parseShellDoneWake(text)
@@ -79,6 +96,8 @@ export function FrizzWake({ steer: served, text, sourceId, at, wrap }: { steer?:
   if (park) return <ParkDivider wake={park} sourceId={sourceId} at={at} />
   const lapsed = parsePrWatchExpiredWake(text)
   if (lapsed) return <PrWatchExpiredDivider watchRef={lapsed.ref} sourceId={sourceId} at={at} />
+  const ownLapsed = parseOwnWatchExpiredWake(text)
+  if (ownLapsed) return <OwnWatchExpiredDivider kind={ownLapsed.kind} sourceId={sourceId} at={at} />
   // The ONE wake on the registered-question path frizz writes in its own voice. Its sibling — the human's
   // ANSWER — never reaches this component at all: it is written in the answers wire form, which Message
   // recognizes and draws as the human's own card before it ever asks whether frizz delivered the turn.
@@ -161,7 +180,46 @@ export function FrizzWake({ steer: served, text, sourceId, at, wrap }: { steer?:
   return <GithubSteerDivider steer={steer!} text={text} sourceId={sourceId} at={at} />
 }
 
-// Batched wakes carry Markdown headings and lists even when no structured wake parser matches.
+// ---- SEVERAL WAKES IN ONE DELIVERY ------------------------------------------------------------------
+// The scheduler holds a thread's wakes and sends everything waiting for it as ONE message, each under a
+// numbered heading (`mergedWakeMessage`). Each of those is still its own event, so each is drawn by
+// whatever draws it arriving alone — a merged delivery must read exactly like the same wakes landing a
+// second apart, which is the rule the server's `splitWakeDeliveries` already holds a coalesced record to.
+//
+// It did not, until 2026-10-11. The envelope had no parser, so the whole delivery fell to the fallback
+// card below: both wakes' agent-facing bodies in a bordered box ("READ ITS OUTPUT AND CARRY ON", which
+// fence to end in, which tool to call), under headings carrying the scheduler's internal reason strings
+// ("awaiting park named 1 dead item(s)"). The lead and those headings are the envelope — written for a
+// worker reading several things at once — and none of it is drawn.
+//
+// THE SPLIT IS HERE AND NOT IN THE SERVER'S FOLD, unlike the coalesced record's. A merged delivery to a
+// worker that is mid-turn arrives as a QUEUED record, which the fold tracks as one object through its
+// enqueue, its dequeue and its delivery attachment; cutting that into several messages would mean every
+// one of those steps resolving a group. Drawing is the one place all three carriers meet.
+function MergedWake({ parts, sourceId, at, wrap }: { parts: MergedWakePart[]; sourceId?: string; at?: string; wrap?: boolean }) {
+  // The trailer comes off each part, because the server's display projection is anchored to the END of
+  // the delivery and so only ever reached the last one. And what the server drops when it arrives alone
+  // is left out here: a fence correction is not a message (it marks the fence it refused instead), and
+  // relay plumbing never was one.
+  const shown = parts.map((part) => stripWakeTrailer(part.body)).filter((body) => !isParkCorrection(body) && !isInjectedNoise(body))
+  if (!shown.length) return null
+  return (
+    // ONE element with a real STEP between its hairlines, for the reason the PR-watch branch below
+    // spells out: every surface that stacks messages charges the gap between them itself, so a fragment
+    // would hand these to it as separate messages in some containers and collapse them in others.
+    <div data-frizz-wake="merged" className="flex flex-col">
+      {shown.map((body, i) => (
+        <Fragment key={i}>
+          {i > 0 && <VSpace />}
+          {/* Only the FIRST part takes the sourceId — two rendered nodes must never claim one id. */}
+          <FrizzWake text={body} sourceId={i === 0 ? sourceId : undefined} at={at} wrap={wrap} />
+        </Fragment>
+      ))}
+    </div>
+  )
+}
+
+// A wake no structured parser matches can still carry Markdown — a list, a link, a fenced block.
 function WakeProse({ text, wrap }: { text: string; wrap?: boolean }) {
   const html = useMarkdownHtml(text)
   const inner = useInnerHtml(html)
@@ -297,6 +355,20 @@ function PrWatchExpiredDivider({ watchRef, sourceId, at }: { watchRef: string; s
           : watchRef}
         {" "}expired
       </span>
+    </WakeDivider>
+  )
+}
+
+// The same lapse on one of the worker's OWN waits — a `mcp__frizz__watch` on a background shell or a
+// sub-agent whose `for:` ran out. It names the KIND and not the target: the target is a runtime id
+// (`bzvtnt3ig`), the handle a worker writes on a fence and nothing a reader correlates by eye, which is
+// the reason the shell-finished line below never draws one either. The glyph is the subject's own, as
+// it is on the PR line above — the terminal every shell divider wears, the bot every sub-agent one does.
+function OwnWatchExpiredDivider({ kind, sourceId, at }: { kind: "shell" | "agent"; sourceId?: string; at?: string }) {
+  const label = `Watch on a ${kind === "agent" ? "sub-agent" : "background shell"} expired`
+  return (
+    <WakeDivider icon={kind === "agent" ? Bot : TerminalSquare} sourceId={sourceId} marker="event" ariaLabel={label} at={at}>
+      <span className="min-w-0 truncate">{label}</span>
     </WakeDivider>
   )
 }

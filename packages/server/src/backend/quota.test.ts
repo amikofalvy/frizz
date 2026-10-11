@@ -135,6 +135,8 @@ test("codex: a failed live read degrades to the rollout tail, labeled as unconfi
         payload: { type: "token_count", rate_limits: { plan_type: "pro", primary: { used_percent: 99, window_minutes: 10080, resets_at: 7 } } },
       }) + "\n",
     )
+    // Signed in, so the live read is attempted — a signed-out Codex is never asked at all.
+    await writeFile(join(dir, "auth.json"), JSON.stringify({ tokens: { access_token: "tok" } }))
     resetCodexQuotaMemo()
     const q = await readCodexQuota(dir, join(dir, "definitely-not-a-real-codex-binary"))
     assert.equal(q.status, "ok")
@@ -149,6 +151,7 @@ test("codex: a failed live read degrades to the rollout tail, labeled as unconfi
 test("codex: a failed live read with no rollouts stays a clean unavailable", async () => {
   const dir = await mkdtemp(join(tmpdir(), "frizz-codex-quota-"))
   try {
+    await writeFile(join(dir, "auth.json"), JSON.stringify({ tokens: { access_token: "tok" } }))
     resetCodexQuotaMemo()
     const q = await readCodexQuota(dir, join(dir, "definitely-not-a-real-codex-binary"))
     assert.equal(q.status, "unavailable")
@@ -197,6 +200,8 @@ done
       quota: { status: "ok", windows: [{ key: "5h", label: "5h", usedPercent: 1 }] },
     }))
 
+    // The stand-in is only ever started for an account there is to ask about.
+    await writeFile(join(dir, "auth.json"), JSON.stringify({ tokens: { access_token: "tok" } }))
     resetCodexQuotaMemo()
     const q = await readQuota({ codexBin: bin })
     assert.equal(await readFile(marker, "utf8"), "app-server")
@@ -213,6 +218,116 @@ done
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+// ---- How often a `codex app-server` is started for the reading ----
+//
+// Each test runs the REAL reader against a stand-in `codex` that logs one line per start, so a count
+// here is a count of processes. `answers` decides whether it speaks the two replies the read needs or
+// exits at once, which is how a broken install, a signed-in API key and an unreachable backend all look
+// from here: a live read that produced nothing.
+const CODEX_KEYS = ["OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"] as const
+async function withCodexStandIn(
+  answers: boolean,
+  run: (home: string, bin: string, starts: () => Promise<number>, signIn: (accountId: string) => Promise<void>) => Promise<void>,
+) {
+  const home = await mkdtemp(join(tmpdir(), "frizz-codex-quota-"))
+  const log = join(home, "starts.log")
+  const bin = join(home, "codex-stand-in")
+  // A key in the environment is a Codex credential, so a machine that has one is never signed out.
+  const saved = Object.fromEntries(CODEX_KEYS.map((name) => [name, process.env[name]]))
+  for (const name of CODEX_KEYS) delete process.env[name]
+  try {
+    await writeFile(bin, answers
+      ? `#!/bin/sh
+echo "$*" >> '${log}'
+while IFS= read -r line; do
+  case "$line" in
+    *'"id":1'*) printf '%s\\n' '{"id":1,"result":{}}' ;;
+    *'"id":2'*) printf '%s\\n' '{"id":2,"result":{"rateLimits":{"planType":"pro","primary":{"usedPercent":17,"windowDurationMins":300,"resetsAt":7},"secondary":null}}}' ;;
+  esac
+done
+`
+      : `#!/bin/sh\necho "$*" >> '${log}'\nexit 1\n`)
+    await chmod(bin, 0o755)
+    resetCodexQuotaMemo()
+    await run(
+      home,
+      bin,
+      async () => (await readFile(log, "utf8").catch(() => "")).split("\n").filter(Boolean).length,
+      (accountId) => writeFile(join(home, "auth.json"), JSON.stringify({ tokens: { access_token: "tok", account_id: accountId } })),
+    )
+  } finally {
+    resetCodexQuotaMemo()
+    for (const name of CODEX_KEYS) {
+      if (saved[name] === undefined) delete process.env[name]
+      else process.env[name] = saved[name]
+    }
+    await rm(home, { recursive: true, force: true })
+  }
+}
+
+const SEC = 1000
+const MIN = 60 * SEC
+
+test("codex quota: a machine that is not signed in to Codex never starts an app-server, and signing in is read at once", { skip: process.platform === "win32" }, () => withCodexStandIn(true, async (home, bin, starts, signIn) => {
+  // Every caller there is — the poll past its window, and the popover's forced recheck.
+  for (const at of [0, 61 * SEC, 10 * MIN, 3 * 60 * MIN]) {
+    assert.equal((await readCodexQuota(home, bin, { now: () => at })).status, "unavailable")
+    assert.equal((await readCodexQuota(home, bin, { now: () => at + 1, force: true })).status, "unavailable")
+  }
+  assert.equal(await starts(), 0)
+
+  // The control, and the half that matters to someone who just ran `codex login`: the same stand-in is
+  // started on the very next read, with no deadline left over from the signed-out hours before it.
+  await signIn("acct-1")
+  const q = await readCodexQuota(home, bin, { now: () => 3 * 60 * MIN + 2, force: true })
+  assert.equal(q.windows[0]?.usedPercent, 17)
+  assert.equal(await starts(), 1)
+}))
+
+test("codex quota: a healthy reading is shared for a minute, and callers that arrive together join one read", { skip: process.platform === "win32" }, () => withCodexStandIn(true, async (home, bin, starts, signIn) => {
+  await signIn("acct-1")
+  const together = await Promise.all([0, 0, 0].map((at) => readCodexQuota(home, bin, { now: () => at })))
+  assert.ok(together.every((q) => q.windows[0]?.usedPercent === 17))
+  assert.equal(await starts(), 1)
+  // The chip polls every 30s: the second poll reads the first one's answer, the third pays for its own.
+  await readCodexQuota(home, bin, { now: () => 30 * SEC })
+  assert.equal(await starts(), 1)
+  await readCodexQuota(home, bin, { now: () => 60 * SEC })
+  assert.equal(await starts(), 2)
+  // Opening the chip is a real recheck, inside the window or not.
+  await readCodexQuota(home, bin, { now: () => 61 * SEC, force: true })
+  assert.equal(await starts(), 3)
+}))
+
+test("codex quota: a live read that cannot succeed backs off, doubling — until a recheck or a new credential asks again", { skip: process.platform === "win32" }, () => withCodexStandIn(false, async (home, bin, starts, signIn) => {
+  await signIn("acct-1")
+  const poll = async (at: number) => { await readCodexQuota(home, bin, { now: () => at }) }
+  await poll(0)
+  assert.equal(await starts(), 1)
+  // 15s polls for the first minute: nothing is asked again.
+  for (const at of [15, 30, 45, 59]) await poll(at * SEC)
+  assert.equal(await starts(), 1)
+  await poll(1 * MIN) // the first deadline: one more, and the next is 2m out
+  assert.equal(await starts(), 2)
+  for (const at of [75, 120, 179]) await poll(at * SEC)
+  assert.equal(await starts(), 2)
+  await poll(3 * MIN) // … then 4m
+  assert.equal(await starts(), 3)
+  await poll(5 * MIN)
+  assert.equal(await starts(), 3)
+
+  // The popover is a person asking, so it is answered now; it does not shorten what follows.
+  await readCodexQuota(home, bin, { now: () => 5 * MIN + 1, force: true })
+  assert.equal(await starts(), 4)
+  await poll(12 * MIN)
+  assert.equal(await starts(), 4)
+
+  // A different account is a different question, and it is asked on the next read.
+  await signIn("acct-2")
+  await poll(13 * MIN)
+  assert.equal(await starts(), 5)
+}))
 
 // ---- Claude usage endpoint parsing ----
 
@@ -433,16 +548,74 @@ test("claude quota: a credential Claude Code cannot refresh costs one start per 
 
   await recheck(15 * MIN)
   assert.equal(cliCalls, 2)
-  await recheck(45 * MIN - 1)
+  await recheck(44 * MIN)
   assert.equal(cliCalls, 2)
   // The heartbeat's start is recorded like any other: 45m + the third window, 1h.
   await heartbeat(45 * MIN)
   assert.equal(cliCalls, 3)
-  await recheck(105 * MIN - 1)
+  await recheck(104 * MIN)
   await heartbeat(105 * MIN - 1)
   assert.equal(cliCalls, 3)
   await recheck(105 * MIN)
   assert.equal(cliCalls, 4)
+}))
+
+// The heartbeat is armed once per PROJECT and the credential is the machine's, so what bounds a failing
+// refresh has to be shared by every one of them — and by the chip's poll, which arrives between ticks.
+test("claude quota: a failed refresh is not repeated for 30s by anyone — every project's heartbeat and the chip's poll share one attempt", () => withCache(async (cacheDir) => {
+  for (const [state, deps] of [
+    ["signed out", { readToken: signedOut, fetchImpl: unreachable }],
+    ["offline", { readToken: signedIn, fetchImpl: unreachable }],
+  ] as const) {
+    let lookups = 0
+    const at = (now: number) => ({
+      cacheDir: join(cacheDir, state),
+      now: () => now,
+      fetchImpl: deps.fetchImpl,
+      readToken: async () => { lookups++; return deps.readToken() },
+    })
+    // Twenty-two open projects tick inside the same second, and a tab polls 15s later.
+    for (let project = 0; project < 22; project++) {
+      await refreshClaudeQuotaInBackground("claude-test", at(project * 40))
+      await claudeQuotaRefreshSettled()
+    }
+    assert.equal((await readClaudeQuota("claude-test", at(15_000))).status, "unavailable")
+    assert.equal(lookups, 1, `${state}: one attempt for the whole window`)
+
+    // The window passes: one more, again shared. A forced recheck never waits for it.
+    await refreshClaudeQuotaInBackground("claude-test", at(30_000))
+    await claudeQuotaRefreshSettled()
+    await refreshClaudeQuotaInBackground("claude-test", at(30_500))
+    await claudeQuotaRefreshSettled()
+    await readClaudeQuota("claude-test", at(45_000))
+    assert.equal(lookups, 2, `${state}: one attempt for the next window`)
+    await readClaudeQuota("claude-test", at(46_000), { force: true })
+    assert.equal(lookups, 3, `${state}: a recheck asks at once`)
+  }
+}))
+
+test("claude quota: a stale good reading rides through an outage on one attempt per window, and recovers on the first one that lands", () => withCache(async (cacheDir) => {
+  let fetches = 0
+  let online = true
+  const fetchImpl = (async () => {
+    fetches++
+    if (!online) throw new TypeError("fetch failed")
+    return new Response(JSON.stringify(fiveHour(online && fetches > 1 ? 55 : 20)), { status: 200 })
+  }) as unknown as typeof fetch
+  const at = (now: number) => ({ cacheDir, readToken: signedIn, fetchImpl, now: () => now })
+  await readClaudeQuota("claude-test", at(0))
+  online = false
+  // Past the 2m TTL every poll kicks a background refresh; inside one failure window they share it.
+  for (const now of [3 * 60_000, 3 * 60_000 + 15_000, 3 * 60_000 + 29_000]) {
+    assert.equal((await readClaudeQuota("claude-test", at(now))).windows[0]?.usedPercent, 20)
+    await claudeQuotaRefreshSettled()
+  }
+  assert.equal(fetches, 2)
+  online = true
+  await readClaudeQuota("claude-test", at(3 * 60_000 + 30_000))
+  await claudeQuotaRefreshSettled()
+  assert.equal(fetches, 3)
+  assert.equal((await readClaudeQuota("claude-test", at(3 * 60_000 + 31_000))).windows[0]?.usedPercent, 55)
 }))
 
 test("claude quota: a failed Claude Code refresh keeps the last good reading and still records its start", () => withCache(async (cacheDir) => {

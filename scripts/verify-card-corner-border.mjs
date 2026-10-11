@@ -51,8 +51,8 @@ const CORNERS = [
   { name: "bottom-left", cx: (r, R) => r.left + R, cy: (r, R) => r.bottom - R, from: 90, to: 180 },
 ]
 
-const { default: puppeteer } = await import("puppeteer")
-const browser = await puppeteer.launch({ headless: "new", args: ["--no-sandbox", "--force-color-profile=srgb"] })
+const { launchHeadless } = await import("./lib/headless-browser.mjs")
+const browser = await launchHeadless()
 const failures = []
 try {
   const page = await browser.newPage()

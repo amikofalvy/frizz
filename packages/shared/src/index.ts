@@ -2110,6 +2110,17 @@ export function parsePrWatchExpiredWake(text: string): { ref: string } | null {
   return m ? { ref: m[1] } : null
 }
 
+const OWN_WATCH_EXPIRED_HEAD = /^⏰ Your watch on the (sub-agent|background shell) `([^`]+)` has expired and is no longer armed\b/
+
+/** A lapsed `mcp__frizz__watch` on one of the worker's own shells or sub-agents, or null. The twin of
+ *  the PR one above, and it had no parser from the day `ownWatchExpiredWakeMessage` shipped — so the one
+ *  frizz-composed wake left printing its "register it again with `mcp__frizz__watch`" body at the human
+ *  was this (measured 2026-10-11: 1 of the 4 deliveries on this machine still drawing the verbatim card). */
+export function parseOwnWatchExpiredWake(text: string): { kind: "shell" | "agent"; target: string } | null {
+  const m = OWN_WATCH_EXPIRED_HEAD.exec(text.trim())
+  return m ? { kind: m[1] === "sub-agent" ? "agent" : "shell", target: m[2] } : null
+}
+
 /** What is being waited ON: one of the worker's own background shells, or a pull request. */
 // NEITHER KIND HAS A REGISTRY ROW BEHIND IT any more (2026-08-14). Both are derived from the worker's
 // own ```awaiting fence — `shell` from its `shells:` list, `github` from its `prs:` list — so this strip
@@ -4746,6 +4757,80 @@ export function splitWakeDeliveries(text: string): string[] {
   return out
 }
 
+// ---- A MERGED delivery: several of frizz's OWN wakes, sent as one message --------------------------
+// The other way one record comes to hold several wakes, and the one frizz composes itself. The scheduler
+// holds a thread's wakes through a quiet window and sends everything waiting for it as ONE message
+// (scheduler `adoptCompanions`): a lead sentence, then each wake's own text under a numbered heading,
+// then one clock. One delivery, one token — so `splitWakeDeliveries` above sees a single wake, and every
+// parser that reads a wake from its first line reads the lead instead.
+//
+// THE COMPOSER AND THE SPLITTER SIT TOGETHER HERE because they did not, from the day the merge shipped
+// (2026-09-03) until 2026-10-11: the composer lived in the scheduler, where the chat cannot reach it, so
+// the envelope had no parser and fell through `FrizzWake` to the verbatim card — both wakes' agent-facing
+// bodies, in a bordered box, in the human's transcript. It is not a rare shape: a park ending and the
+// shell whose exit ended it are caused by one event, so they are queued together and merged every time
+// (maintainer 2026-10-11, on exactly that pair: "I'm so tired of these unformatted shitty Frizz blocks
+// showing up"). Same rule as every formatter above — the parser has to sit beside it, and only this
+// package is reachable from both sides.
+const MERGED_WAKE_LEAD = /^Frizz held (\d+) wakes for this thread and is delivering them together, oldest first\. Each is under its own heading; read all of them before acting on any\.(?=\n|$)/
+// A section heading, with the blank line the composer always puts on both sides of it.
+const MERGED_WAKE_HEADING = /\n\n### (\d+)\. [^\n]*?(?: — (\d+) identical events)?\n\n/g
+
+/** Several wakes as ONE message: each under its own reason line, oldest first, and ONE clock at the foot
+ *  in place of the one each frizz-authored part carried (a stamp per section would put five clocks in
+ *  one message; the display stripper is anchored to a single trailing one). Parts whose reason AND body
+ *  are identical — the same review event reported by two polls, the same "CI passing" twice — fold into
+ *  one section that says how many there were, rather than saying the same thing three times to a reader
+ *  who pays per token to read it. */
+export function mergedWakeMessage(frame: readonly { reason: string; message: string }[], nowMs: number, lastAssistantAt?: string | null): string {
+  const sections: { reason: string; body: string; count: number }[] = []
+  for (const part of frame) {
+    const body = stripWakeTimeHeader(part.message).trim()
+    const same = sections.find((s) => s.reason === part.reason && s.body === body)
+    if (same) same.count++
+    else sections.push({ reason: part.reason, body, count: 1 })
+  }
+  const lead = `Frizz held ${frame.length} wakes for this thread and is delivering them together, oldest first. Each is under its own heading; read all of them before acting on any.`
+  const body = sections.map((s, i) => `### ${i + 1}. ${s.reason}${s.count > 1 ? ` — ${s.count} identical events` : ""}\n\n${s.body}`)
+  return `${lead}\n\n${body.join("\n\n")}\n\n${wakeTimeHeader(nowMs, lastAssistantAt)}`
+}
+
+/** One wake out of a merged delivery: its own message, exactly as it would have read arriving alone
+ *  (minus its clock, which the composer took off), and how many identical events it stands for. */
+export interface MergedWakePart {
+  body: string
+  count: number
+}
+
+/** A merged delivery cut back into the wakes it carries, or `null` for anything else.
+ *
+ *  The lead and the reason lines are NOT returned: they are the envelope, written for a worker reading
+ *  five things at once, and each part is drawn by whatever draws that wake alone. The delivery token and
+ *  the clock may still be on the text or already stripped — both come off here, so the raw record and
+ *  its display projection parse alike.
+ *
+ *  IT REFUSES RATHER THAN GUESSES. Most parts are frizz's own sentences, but a Goal prompt or a timer's
+ *  text is arbitrary prose and may carry numbered headings of its own — and nothing in the envelope says
+ *  which `### 2.` is the scheduler's. So every such heading must be a boundary, numbered 1, 2, 3 in
+ *  order, and the parts must add up to the count the lead declares; anything else is no split, and the
+ *  text reaches the fallback card whole. A cut inside someone's prose would hand the chat one wake that
+ *  ends mid-thought and another that starts there, and drop the heading line between them. */
+export function parseMergedWake(text: string): MergedWakePart[] | null {
+  const whole = stripWakeTimeHeader(stripWakeDeliveryToken(text).trimEnd()).trim()
+  const lead = MERGED_WAKE_LEAD.exec(whole)
+  if (!lead) return null
+  const heads: { at: number; end: number; count: number }[] = []
+  for (const m of whole.matchAll(MERGED_WAKE_HEADING)) {
+    if (Number(m[1]) !== heads.length + 1) return null
+    heads.push({ at: m.index, end: m.index + m[0].length, count: m[2] ? Number(m[2]) : 1 })
+  }
+  // The first heading follows the lead directly; anything between them is not this envelope.
+  if (heads.length === 0 || heads[0].at !== lead[0].length) return null
+  const parts = heads.map((head, i) => ({ body: whole.slice(head.end, heads[i + 1]?.at ?? whole.length).trim(), count: head.count }))
+  if (parts.some((part) => !part.body)) return null
+  return parts.reduce((sum, part) => sum + part.count, 0) === Number(lead[1]) ? parts : null
+}
+
 // ---- harness plumbing that arrives dressed as a user turn -----------------------------------------
 // A user record that is not the human speaking: a task-notification from a background child, a bare
 // system-reminder wrapper, a frizz orchestrator pulse. Matched on the LEADING tag so a human message
@@ -5372,6 +5457,14 @@ export const ServerEvent = z.discriminatedUnion("type", [
     interactionId: InteractionOpaqueId,
     lifecycle: InteractionLifecycle,
     recordRevision: InteractionRevision,
+  }).strict(),
+  z.object({
+    // The machine's PROJECT LIST changed: a reorder, a rename, an icon, a project added or forgotten.
+    // Payload-free for the same reason as above — the list is one cheap read, and a client that
+    // re-reads it cannot apply a stale copy out of order. It is the one event that is not about this
+    // stream's own project: the server publishes it on EVERY open project's stream, because the rail
+    // and the grid draw the same list in every tab whichever board that tab is on.
+    type: z.literal("projects-changed"),
   }).strict(),
 ])
 export type ServerEvent = z.infer<typeof ServerEvent>

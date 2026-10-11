@@ -296,12 +296,12 @@ export interface Api {
   // The models one ACP agent advertises (a throwaway session, cached server-side). Asked only when a
   // model picker for that agent is open.
   acpAgentModels(input: AcpAgentModelsInput): Promise<AcpAgentModels>
-  // Provider subscription quota (5h + weekly windows) for the sidebar status bar. `force` bypasses
-  // the shared freshness window for an explicit user recheck.
-  quota(input?: { force?: boolean }, opts?: RpcCallOpts): Promise<QuotaSnapshot>
+  // Provider subscription quota (5h + weekly windows) for the sidebar status bar. `force` names the
+  // provider whose freshness window an explicit user recheck bypasses (a bare `true` is Claude's).
+  quota(input?: { force?: boolean | "claude" | "codex" }, opts?: RpcCallOpts): Promise<QuotaSnapshot>
   // Per-provider LOCAL credential presence for the new-thread dispatch gate. Distinct from quota's
   // overloaded "unavailable" — reports only whether a credential exists. Never rejects.
-  authStatus(input?: undefined, opts?: RpcCallOpts): Promise<AuthSnapshot>
+  authStatus(input?: { fresh?: boolean }, opts?: RpcCallOpts): Promise<AuthSnapshot>
   accountLogout(input: AccountLogoutInput): Promise<AccountLogoutResult>
   // Machine-scoped: the registry is one file, so the grid reads the same from every project.
   // Which project owns a thread slug. Every URL from the per-project era is unprefixed, so a

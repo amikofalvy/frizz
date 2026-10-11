@@ -42,8 +42,6 @@ import {
   isExistingProjectRoot,
   isHomeDirectory,
   isNotAGitWorktree,
-  isWorldWritable,
-  refuseWorldWritableProject,
   writeProjectIdFile,
 } from "@frizz/server/project-root";
 import { defaultLogRoot, latestLogPath } from "@frizz/server/logging";
@@ -479,8 +477,8 @@ An immutable artifact is the default. --dev is the only explicit unsafe source w
  *  - `offer` — a repository or a manifest root Frizz has not seen: the dashboard, asking whether to
  *               add it. Nothing is written until the operator says yes there.
  *  - `grid`  — every other directory: the dashboard, and nothing else. `~/Downloads` is a command
- *               in the wrong terminal. $HOME and a world-writable folder (`/tmp`) are never offered
- *               because the dashboard's own add refuses them (isHomeDirectory, isWorldWritable).
+ *               in the wrong terminal. $HOME is never offered because the dashboard's own add
+ *               refuses it (isHomeDirectory).
  *
  * The last two still need a project to LAUNCH with, because a server is a process that serves a
  * board. That host is a folder of Frizz's own (hostWorkspace), never one of the operator's projects.
@@ -503,7 +501,7 @@ export function resolveLaunchIntent(
 ): LaunchIntent {
   const candidate = realpathSync(discoverProjectRoot(cwd, home))
   const known = isExistingProjectRoot(candidate) || findByPath(candidate, home) !== undefined
-  const refused = isHomeDirectory(candidate, home) || isWorldWritable(candidate)
+  const refused = isHomeDirectory(candidate, home)
   // A directory Frizz already knows opens as itself — including one it knows only from the registry,
   // so forgetting to commit `.frizz/.id` never costs someone their board.
   if (known && !refused) return { kind: "open", workspace: resolveWorkspace(cwd, home, env) }
@@ -566,9 +564,6 @@ export function resolveWorkspace(
     gitRoot = undefined;
   }
   const root0 = realpathSync(gitRoot ?? discoverProjectRoot(cwd, home));
-  // Before ensureProjectIdFile below writes `.frizz/.id` into it. resolveLaunchIntent already routes
-  // a world-writable cwd to the grid; this is the floor for every other caller.
-  refuseWorldWritableProject(root0);
   const identity = gitRoot ? resolveGitProjectIdentity(root0, home) : undefined;
   const root = identity?.root ?? root0;
   // The id lives at `.frizz/.id`; a repository's existing `git config frizz.id` seeds it, so an

@@ -45,9 +45,18 @@ const ENDPOINT_TIMEOUT_MS = 5000
 // A healthy reading is trusted for two minutes. The endpoint is one cheap ~200ms GET, and a proactive
 // server-side heartbeat (refreshClaudeQuotaInBackground, wired in context.ts) already keeps this cache
 // warm, so a lazy read reflects a value about as recent as the endpoint's rate limit allows (see
-// RATE_LIMIT_DEFAULT_BACKOFF_MS — in practice ~5 minutes, not these 2). FAIL keeps its tight 10s retry.
+// RATE_LIMIT_DEFAULT_BACKOFF_MS — in practice ~5 minutes, not these 2).
+//
+// A FAILED refresh is not retried for FAIL_TTL_MS — BY ANYONE. The failure is stamped beside the reading
+// (`failedAt`), and the heartbeat, a stale read's background kick and a lazy read all stand behind it.
+// It used to bind the lazy read alone, and only through a reading it had itself written: the heartbeat
+// never looked, and it is armed once per PROJECT (context.ts) for a credential that is the machine's. So
+// a signed-out or offline machine paid one attempt — a Keychain lookup, or a request that times out —
+// per open project every 30s, with the browser's poll on top. One window, one attempt, however many
+// projects tick. 30s is the heartbeat's own cadence; signing in is noticed within it, and the popover's
+// forced recheck does not wait for it at all.
 const OK_TTL_MS = 2 * 60_000
-const FAIL_TTL_MS = 10_000
+const FAIL_TTL_MS = 30_000
 const STALE_MAX_AGE_MS = 24 * 60 * 60_000
 // The CLI fallback boots a full Claude Code process; under load-80 a cold boot alone can blow well
 // past 12s, and a too-tight bound here is indistinguishable from a broken credential.
@@ -254,6 +263,9 @@ interface SharedQuota {
   retryAt?: number
   /** Set by every start of Claude Code. Carried through every failure; an endpoint success clears it. */
   cli?: CliRuns
+  /** Set by a refresh that failed for any other reason (ms). No unforced caller retries inside
+   *  FAIL_TTL_MS of it; a success clears it. */
+  failedAt?: number
 }
 
 function cachePaths(cacheDir: string, configDir: string) {
@@ -513,26 +525,43 @@ function serveRateLimited(shared: SharedQuota & { retryAt: number }, now: number
   }
 }
 
+function recentlyFailed(shared: SharedQuota | undefined, now: number): boolean {
+  return shared?.failedAt !== undefined && now >= shared.failedAt && now - shared.failedAt < FAIL_TTL_MS
+}
+
+// What a failed refresh leaves beside the reading, so that whoever comes next does not repeat it: the
+// endpoint's own deadline for a 429, and otherwise the failure's instant — with the record of Claude
+// Code's start when this failure made one, or the one already standing, because only an endpoint
+// success may clear that.
+function failureStamp(err: unknown, standing: SharedQuota | undefined, now: number): Partial<SharedQuota> {
+  if (err instanceof UsageRateLimited) return { retryAt: err.retryAt }
+  const cli = err instanceof ClaudeCodeRefreshFailed ? err.cli : standing?.cli
+  return { failedAt: now, ...(cli ? { cli } : {}) }
+}
+
 // In-process guard so overlapping polls from one server start at most one background refresh.
 const backgroundRefreshes = new Map<string, Promise<void>>()
 
 function refreshSharedInBackground(paths: { data: string; lock: string }, claudeBin: string, deps: ClaudeQuotaDeps, now: number): void {
   if (backgroundRefreshes.has(paths.data)) return
   const task = (async () => {
-    if (rateLimited(await readShared(paths.data), now)) return
+    const before = await readShared(paths.data)
+    if (rateLimited(before, now) || recentlyFailed(before, now)) return
     const release = await tryAcquireLock(paths.lock)
     if (!release) return
     try {
-      const refreshed = await refreshQuota(claudeBin, deps, now, (await readShared(paths.data))?.cli)
-      await writeShared(paths.data, { at: now, ...refreshed })
-    } catch (err) {
-      // Keep the reading and its age; record only the deadline the failure set, so the next tick does
-      // not ask the endpoint (or start Claude Code) again before it.
-      const deadline =
-        err instanceof UsageRateLimited ? { retryAt: err.retryAt } : err instanceof ClaudeCodeRefreshFailed ? { cli: err.cli } : undefined
-      if (!deadline) throw err
-      const current = await readShared(paths.data)
-      await writeShared(paths.data, { ...(current ?? { at: now, quota: UNAVAILABLE }), ...deadline })
+      // Read again under the lock: another Frizz process may have failed this same refresh a moment ago.
+      const held = await readShared(paths.data)
+      if (recentlyFailed(held, now)) return
+      try {
+        const refreshed = await refreshQuota(claudeBin, deps, now, held?.cli)
+        await writeShared(paths.data, { at: now, ...refreshed })
+      } catch (err) {
+        // Keep the reading and its age; record only what the failure set, so the next tick does not ask
+        // the endpoint (or look the credential up, or start Claude Code) again before it.
+        const current = await readShared(paths.data)
+        await writeShared(paths.data, { ...(current ?? { at: now, quota: UNAVAILABLE }), ...failureStamp(err, current, now) })
+      }
     } finally {
       await release().catch(() => {})
     }
@@ -557,8 +586,9 @@ export async function claudeQuotaRefreshSettled(): Promise<void> {
 // It uses the SAME non-blocking background path a stale read kicks — one in-flight refresh per process,
 // a cross-process lock so N Frizz processes make one request per window per account, and Claude Code
 // started only for a rejected credential, inside its own backoff. It NEVER blocks the caller and
-// swallows every failure (the last known-good reading rides until the next success). On a machine that
-// is not signed in to Claude a tick is one credential lookup and nothing else.
+// swallows every failure (the last known-good reading rides until the next success). It is armed once
+// per project, so on a machine that is not signed in to Claude — or is offline — the ticks of every open
+// project share ONE attempt per FAIL_TTL_MS: a credential lookup, or a request, and nothing else.
 export async function refreshClaudeQuotaInBackground(claudeBin = "claude", deps: ClaudeQuotaDeps = {}): Promise<void> {
   const now = (deps.now ?? Date.now)()
   const configDir = claudeConfigDir()
@@ -618,6 +648,9 @@ export async function readClaudeQuota(
 
   // A forced recheck inside the refusal window cannot succeed; asking anyway only buys another 429.
   if (rateLimited(initial, now)) return serveRateLimited(initial, now)
+  // Somebody else's refresh failed moments ago and there is no reading left to serve. Only a forced
+  // recheck asks again inside the window.
+  if (!options.force && recentlyFailed(initial, now)) return UNAVAILABLE
 
   let release: (() => Promise<void>) | undefined
   try {
@@ -639,15 +672,15 @@ export async function readClaudeQuota(
     }
     // Claude Code's backoff outlives every failure, this one's write included: only an endpoint
     // success clears it, or the next rejected read would start the CLI all over again.
-    const cli = err instanceof ClaudeCodeRefreshFailed ? err.cli : fallback?.cli
+    const failed = failureStamp(err, fallback, now)
     if (fallback?.quota.status === "ok" && now - fallback.at < STALE_MAX_AGE_MS) {
-      if (err instanceof ClaudeCodeRefreshFailed) await writeShared(paths.data, { ...fallback, cli }).catch(() => {})
+      await writeShared(paths.data, { ...fallback, ...failed }).catch(() => {})
       return {
         ...fallback.quota,
         detail: `Could not refresh · last updated ${Math.max(1, Math.round((now - fallback.at) / 60_000))}m ago`,
       }
     }
-    await writeShared(paths.data, { at: now, quota: UNAVAILABLE, ...(cli ? { cli } : {}) }).catch(() => {})
+    await writeShared(paths.data, { at: now, quota: UNAVAILABLE, ...failed }).catch(() => {})
     return UNAVAILABLE
   } finally {
     await release?.().catch(() => {})

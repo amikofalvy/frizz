@@ -13,7 +13,7 @@
 //
 // Usage: node scripts/verify-awaiting-park.mjs --url=http://127.0.0.1:4931 --slug=… --db=/abs/ui.db
 import { execFileSync } from "node:child_process"
-import puppeteer from "puppeteer"
+import { launchHeadless } from "./lib/headless-browser.mjs"
 
 const flags = Object.fromEntries(
   process.argv.slice(2).filter((a) => a.startsWith("--")).map((a) => a.replace(/^--/, "").split("=")),
@@ -45,7 +45,7 @@ check("its rejection is a readable string, not an unrenderable object", typeof r
 check("that string names the offending field", /^until: /.test(String(rawBody.error)), String(rawBody.error))
 check("nothing was persisted by the rejected call", snoozedUntil() === "", snoozedUntil())
 
-const browser = await puppeteer.launch({ headless: "new", args: ["--no-sandbox", "--force-color-profile=srgb"] })
+const browser = await launchHeadless()
 try {
   const page = await browser.newPage()
   await page.setViewport({ width: 1280, height: 900, deviceScaleFactor: 2 })

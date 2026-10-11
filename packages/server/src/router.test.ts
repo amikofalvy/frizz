@@ -1903,38 +1903,21 @@ test("projectAdd: the home directory itself is refused, and nothing is written",
   }
 })
 
-// A stolen board session typed `/private/tmp` into "Add a project" and dispatched workers into it
-// (2026-10-08). Any account can write there, so any account could plant what those workers ran.
-test("projectAdd: a folder every account can write to is refused, and nothing is written", () => {
+// A folder's mode says nothing about whether it may be a project. Such folders were refused from
+// 2026-10-09 to 2026-10-11, after a stolen board session added `/private/tmp`; the refusal did not
+// stop that session, which could add any other folder or dispatch into an existing project. It did
+// refuse every repo on a Windows drive under WSL, where a folder shows one set of bits for user,
+// group and other (Microsoft, "File Permissions for WSL").
+test("projectAdd: a folder every account can write to is an ordinary project", () => {
   const home = mkdtempSync(join(tmpdir(), "frizz-add-shared-"))
   try {
     const shared = join(home, "shared")
     mkdirSync(shared)
     chmodSync(shared, 0o777)
-    assert.throws(
-      () => addProjectAtPath(shared, home),
-      { message: `A folder every account can write to cannot be a project: ${shared}` },
-    )
-    assert.equal(existsSync(join(shared, ".frizz")), false)
-    assert.equal(listProjects(home).length, 0)
-    // The sticky bit of /tmp changes nothing: it guards deletion, not planting.
-    chmodSync(shared, 0o1777)
-    assert.throws(() => addProjectAtPath(shared, home), /every account can write to/u)
-    // The same folder, writable only by its owner, is an ordinary project.
-    chmodSync(shared, 0o755)
     const card = addProjectAtPath(shared, home)
     assert.equal(card.path, realpathSync(shared))
     assert.ok(readProjectIdFile(shared))
-  } finally {
-    rmSync(home, { recursive: true, force: true })
-  }
-})
-
-test("projectAdd: the machine's own /tmp is refused", { skip: process.platform === "win32" }, () => {
-  const home = mkdtempSync(join(tmpdir(), "frizz-add-tmp-"))
-  try {
-    assert.throws(() => addProjectAtPath("/tmp", home), /A folder every account can write to cannot be a project: /u)
-    assert.equal(listProjects(home).length, 0)
+    assert.equal(listProjects(home).length, 1)
   } finally {
     rmSync(home, { recursive: true, force: true })
   }

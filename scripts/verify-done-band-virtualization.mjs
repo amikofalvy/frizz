@@ -15,7 +15,7 @@
 // Boot a stack on a HOME with a big archive first (see the frizz-stack skill), then:
 //   nub scripts/verify-done-band-virtualization.mjs --url=http://127.0.0.1:4941/project/frizz --label=before
 import { mkdirSync } from "node:fs"
-import puppeteer from "puppeteer"
+import { launchHeadless } from "./lib/headless-browser.mjs"
 
 const args = process.argv.slice(2)
 const opt = (k, d) => { const hit = args.find((a) => a.startsWith(`--${k}=`)); return hit ? hit.slice(k.length + 3) : d }
@@ -119,8 +119,7 @@ window.__probe = {
 }
 `
 
-const browser = await puppeteer.launch({
-  headless: "new",
+const browser = await launchHeadless({
   // --disable-gpu IS LOad-BEARING on this machine, and it took an hour to find. With the GPU process
   // in play under a heavy load (a dozen agents compiling at once, load average 30-50), the renderer
   // produced ONE frame in five seconds and Page.captureScreenshot never returned — so every rAF-based
@@ -128,8 +127,6 @@ const browser = await puppeteer.launch({
   // rasterization: 3 frames in 29.5ms and a 35ms screenshot. The three backgrounding flags keep a page
   // Chrome believes is occluded from having its timers frozen as well.
   args: [
-    "--no-sandbox",
-    "--force-color-profile=srgb",
     "--disable-gpu",
     "--disable-background-timer-throttling",
     "--disable-backgrounding-occluded-windows",

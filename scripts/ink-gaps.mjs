@@ -31,6 +31,7 @@
 // expression can reveal.
 import { readFileSync } from "node:fs"
 import puppeteer from "puppeteer"
+import { launchHeadless } from "./lib/headless-browser.mjs"
 
 const args = process.argv.slice(2)
 const pos = args.filter((a) => !a.startsWith("--"))
@@ -55,11 +56,7 @@ const selectors = selectorList.split(",").map((s) => s.trim()).filter(Boolean)
 // on a busy machine — this repo regularly has a dozen agents compiling at once (measured at load
 // average 159, where a single 390×844 dsf-2 shot of a page with backdrop-blur could not rasterize in
 // three minutes). The failure arrives as a bare ProtocolError that reads like a bug in the page.
-const browser = flags.browser ? await puppeteer.connect({ browserWSEndpoint: flags.browser }) : await puppeteer.launch({
-  headless: "new",
-  args: ["--no-sandbox", "--force-color-profile=srgb", ...(flags.software ? ["--disable-gpu"] : [])],
-  protocolTimeout: 600_000,
-})
+const browser = flags.browser ? await puppeteer.connect({ browserWSEndpoint: flags.browser }) : await launchHeadless({ args: [...(flags.software ? ["--disable-gpu"] : [])], protocolTimeout: 600_000 })
 let page
 try {
   page = await browser.newPage()

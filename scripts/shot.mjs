@@ -1,6 +1,7 @@
 // Headless screenshot + in-page evaluate loop for iterating on the frizz UI.
-// No chrome-devtools MCP this session, so we drive puppeteer directly (it resolves the cached Chrome
-// under ~/.cache/puppeteer). This is the visual-review loop: screenshot + evaluate_script routines
+// It drives puppeteer's own headless shell through `launchHeadless()` (lib/headless-browser.mjs): no
+// window, no Dock tile, a temp profile, never the installed Chrome, and a page that sees a dark system.
+// This is the visual-review loop: screenshot + evaluate_script routines
 // (occlusion/clip/alignment/optical-center) against the live app.
 //
 // Usage:
@@ -16,7 +17,7 @@
 //             the page (a `zoom`/`transform` hack reflows this app's centered layout and moves the very
 //             thing you were trying to photograph off-screen).
 import { readFileSync } from "node:fs"
-import puppeteer from "puppeteer"
+import { launchHeadless } from "./lib/headless-browser.mjs"
 
 const args = process.argv.slice(2)
 const pos = args.filter((a) => !a.startsWith("--"))
@@ -38,11 +39,7 @@ if (!url) {
 // on a busy machine — this repo regularly has a dozen agents compiling at once (measured at load
 // average 159, where a single 390×844 dsf-2 shot of a page with backdrop-blur could not rasterize in
 // three minutes). The failure arrives as a bare ProtocolError that reads like a bug in the page.
-const browser = await puppeteer.launch({
-  headless: "new",
-  args: ["--no-sandbox", "--force-color-profile=srgb"],
-  protocolTimeout: 600_000,
-})
+const browser = await launchHeadless({ protocolTimeout: 600_000 })
 try {
   const page = await browser.newPage()
   await page.setViewport({ width: W, height: H, deviceScaleFactor: Number(flags.dsf) || 2 })

@@ -23,8 +23,8 @@ type Kind = keyof typeof ROWS
 const KINDS = Object.keys(ROWS) as Kind[]
 
 test("each op count opens a panel of its own rows, one panel at a time", { skip: !baseUrl, timeout: 120_000 }, async () => {
-  const { default: puppeteer } = await import("puppeteer")
-  const browser = await puppeteer.launch({ headless: "new", args: ["--no-sandbox", "--force-color-profile=srgb"], protocolTimeout: 30_000 })
+  const { launchHeadless } = await import("../../../../scripts/lib/headless-browser.mjs")
+  const browser = await launchHeadless({ protocolTimeout: 30_000 })
   try {
     const page = await browser.newPage()
     const errors: string[] = []
@@ -113,8 +113,8 @@ test("each op count opens a panel of its own rows, one panel at a time", { skip:
 // chips than below"). Measured on the cap band — baseline to cap height, which is what the eye reads as
 // the line of text and what the digits fill — because the counts' boxes carry leading the eye never sees.
 test("the op counts stand midway between the dock's rule and the prompt box", { skip: !baseUrl, timeout: 60_000 }, async () => {
-  const { default: puppeteer } = await import("puppeteer")
-  const browser = await puppeteer.launch({ headless: "new", args: ["--no-sandbox", "--force-color-profile=srgb"], protocolTimeout: 30_000 })
+  const { launchHeadless } = await import("../../../../scripts/lib/headless-browser.mjs")
+  const browser = await launchHeadless({ protocolTimeout: 30_000 })
   try {
     const page = await browser.newPage()
     await page.setViewport({ width: 1100, height: 800, deviceScaleFactor: 1 })

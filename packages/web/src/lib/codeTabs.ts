@@ -20,20 +20,13 @@
 // and every one of these is unambiguous: Mintlify's bare tail (```` ```bash npm ````), Docusaurus's and
 // Starlight's `title="…"`, Nextra's `filename="…"`, Fumadocs' `tab="…"`, VitePress's `[label]`.
 //
-// Pure string and token logic, no DOM: marked runs it during render and the tests run it under
-// `node --test`. The click that switches a tab is one delegated listener (lib/switch-code-tab.ts), for
-// the reason lib/copy-code.ts gives — this markup is injected as an HTML string.
+// This file is the GRAMMAR and the grouping; lib/codeBlock.ts draws the result, as it draws every other
+// fenced block. Pure string and token logic, no DOM: marked runs it during render and the tests run it
+// under `node --test`. The click that switches a tab is one delegated listener
+// (lib/switch-code-tab.ts), for the reason lib/copy-code.ts gives — the markup is injected as an HTML
+// string.
 
-import type { Token, Tokens, TokenizerAndRendererExtension } from "marked"
-import {
-  CODE_BLOCK_CLASS,
-  CODE_COPY_BUTTON,
-  escapeHtml,
-  renderCodeElement,
-  resolveFenceLanguage,
-  resolveFileLanguage,
-  type FenceLanguage,
-} from "./syntaxHighlight.ts"
+import type { Token, Tokens } from "marked"
 
 export const CODE_TABS_CLASS = "md-code-tabs"
 export const CODE_TABLIST_CLASS = "md-code-tablist"
@@ -112,9 +105,29 @@ export interface CodeTab {
   /** The fence's info string as written — the language is still resolved from it. */
   info: string
   text: string
+  /** False for a fence still being written (`isClosedFence`). */
+  closed: boolean
 }
 
 export type CodeTabsToken = { type: "codeTabs"; raw: string; tabs: CodeTab[] }
+
+/**
+ * Whether a code token's fence has its closing line yet.
+ *
+ * A message arrives a delta at a time, and until the closing fence lands marked reports the block as
+ * running to the end of the input. Nothing that hides part of a block may act on one in that state —
+ * the reader is watching it be written. An indented block has no closing line to wait for, so it never
+ * counts as closed.
+ */
+export function isClosedFence(code: Tokens.Code): boolean {
+  if (code.codeBlockStyle === "indented") return false
+  const lines = code.raw.replace(/\s+$/, "").split("\n")
+  const open = /^\s*(`{3,}|~{3,})/.exec(lines[0])
+  if (!open || lines.length < 2) return false
+  const last = lines[lines.length - 1].trim()
+  // The same character as the opening fence, at least as many of them, and nothing else on the line.
+  return last.length >= open[1].length && last.split(open[1][0]).join("") === ""
+}
 
 function labelledFence(token: Token): (CodeTab & { explicit: boolean }) | null {
   if (token.type !== "code") return null
@@ -122,7 +135,8 @@ function labelledFence(token: Token): (CodeTab & { explicit: boolean }) | null {
   // An indented block has no info string to label it with.
   if (code.codeBlockStyle === "indented") return null
   const parsed = parseFenceLabel(code.lang)
-  return parsed ? { label: parsed.label, explicit: parsed.explicit, info: code.lang ?? "", text: code.text } : null
+  if (!parsed) return null
+  return { label: parsed.label, explicit: parsed.explicit, info: code.lang ?? "", text: code.text, closed: isClosedFence(code) }
 }
 
 /**
@@ -166,7 +180,7 @@ export function groupCodeTabs(tokens: Token[]): void {
     const group: CodeTabsToken = {
       type: "codeTabs",
       raw,
-      tabs: tabs.map(({ label, info, text }) => ({ label, info, text })),
+      tabs: tabs.map(({ label, info, text, closed }) => ({ label, info, text, closed })),
     }
     tokens.splice(i, end - i + 1, group as Token)
   }
@@ -191,65 +205,9 @@ export function forgetCodeTabs(): void {
   chosenTab.clear()
 }
 
-function openIndex(labels: readonly string[]): number {
+/** The index of the tab a group with these labels opens on. */
+export function openTabIndex(labels: readonly string[]): number {
   const chosen = chosenTab.get(signatureOf(labels))
   const index = chosen === undefined ? -1 : labels.indexOf(chosen)
   return index < 0 ? 0 : index
-}
-
-// A label names its block's language when the author declared none: ```` ```title="server.ts" ````.
-// A DECLARED language always wins, plaintext included — `text title="out.json"` asked for no colour.
-function tabLanguage(tab: CodeTab): FenceLanguage {
-  const declared = parseFenceLabel(tab.info)?.language
-  return declared ? resolveFenceLanguage(declared) : resolveFileLanguage(tab.label)
-}
-
-// A tab truncates past its max width (styles.css); only then does the full label need a tooltip, and a
-// short one repeating itself on hover is noise.
-const TOOLTIP_FROM = 28
-const tooltip = (label: string) => (label.length >= TOOLTIP_FROM ? ` title="${escapeHtml(label)}"` : "")
-
-/**
- * The group as markup: the block wrapper every fence already has (so the copy button, its listener and
- * the block rhythm are the ones in syntaxHighlight.ts), a header row, then one `<pre>` per tab with
- * only the open one displayed.
- *
- * SPANS and buttons only, for the reason `renderHighlightedCode` gives: this HTML is re-parsed where a
- * surface injects it, and a non-phrasing wrapper would be restructured by the parser. No whitespace
- * between the children either — the `<pre>`s preserve it.
- *
- * One fence is a title, not a tab: a `<span>`, with no tab roles to promise a choice that is not there.
- */
-export function renderCodeTabs(tabs: readonly CodeTab[]): string {
-  const single = tabs.length === 1
-  const open = openIndex(tabs.map((tab) => tab.label))
-  const header = single
-    ? `<span class="${CODE_TITLE_CLASS}"${tooltip(tabs[0].label)}>${escapeHtml(tabs[0].label)}</span>`
-    : tabs.map((tab, i) => {
-      const active = i === open
-      return `<button type="button" class="${CODE_TAB_CLASS}${active ? ` ${CODE_TAB_ACTIVE_CLASS}` : ""}" role="tab"`
-        + ` aria-selected="${active}"${tooltip(tab.label)}>${escapeHtml(tab.label)}</button>`
-    }).join("")
-  const panels = tabs.map((tab, i) => {
-    const active = single || i === open
-    return `<pre class="${CODE_PANEL_CLASS}${active ? ` ${CODE_TAB_ACTIVE_CLASS}` : ""}"${single ? "" : ` role="tabpanel"`}>`
-      + `${renderCodeElement(tab.text, tabLanguage(tab))}</pre>`
-  }).join("")
-  return `<span class="${CODE_BLOCK_CLASS} ${CODE_TABS_CLASS}">`
-    + `<span class="${CODE_TABLIST_CLASS}"${single ? "" : ` role="tablist"`}>${header}</span>`
-    + `${panels}${CODE_COPY_BUTTON}</span>\n`
-}
-
-// The token is only ever minted by `groupCodeTabs`, which needs a fence's SIBLINGS — something a
-// tokenizer reading forward from one position cannot see. So this tokenizer claims nothing, exactly as
-// the task-status extension in markdown.ts does, and the extension exists for its renderer.
-export const codeTabsExtension: TokenizerAndRendererExtension = {
-  name: "codeTabs",
-  level: "block",
-  tokenizer() {
-    return undefined
-  },
-  renderer(token) {
-    return renderCodeTabs((token as CodeTabsToken).tabs)
-  },
 }

@@ -4,7 +4,7 @@ import { useSnapshot } from "valtio"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useVirtualizer } from "@tanstack/react-virtual"
 import { AlertTriangle, ArrowDown, ArrowUp, Bot, Check, ChevronRight, FileText, HelpCircle, Hourglass, KeyRound, ListChecks, Loader2, Radar, TerminalSquare, type LucideIcon } from "lucide-react"
-import { awaitingFenceTitle, awaitingSteps, parseRecurringPrompt, questionFencesLive } from "@frizz/shared"
+import { awaitingFenceTitle, awaitingSteps, questionFencesLive } from "@frizz/shared"
 import type { AskQuestion, AwaitingHint, BgShellView, PendingAsk, RegisteredQuestionView, SubAgentView, ThreadView as ThreadViewData, TranscriptEdit, TranscriptMessage, TranscriptPart, TranscriptTodo, TranscriptToolCall } from "@frizz/shared"
 import { store, threadBySlug, pushDrawer, pushSubAgentDrawer, pushBackgroundShellDrawer, showToast } from "../store.ts"
 import { useBackgroundShellLines, useBoard, useProjectDir, useTranscript, type ChatMessage, type TranscriptData } from "../hooks.ts"
@@ -30,7 +30,6 @@ import { questionsByAnchor } from "../lib/questionAnchor.ts"
 import { fenceStandsFor, placedRestEnds, placeQuestions, questionsAtCurrentRest, registeredStandingAt, type QuestionPlacement } from "../lib/questionShadow.ts"
 import { settledQuestionPositions, type SettledPlacement } from "../lib/settledQuestions.ts"
 import { FrizzWake } from "./FrizzWake.tsx"
-import { RecurringPromptLine } from "./RecurringPromptLine.tsx"
 import { LinkifiedText } from "./LinkifiedText.tsx"
 import { parseSentContext, splitProseByTokens, tokenLabel, type SentContextItem } from "../lib/composerContext.ts"
 import { AnswersCard } from "./AnswersCard.tsx"
@@ -3556,13 +3555,9 @@ export const Message = memo(function Message({ m, answering, dense, paired, text
     // A scheduler wake is recorded as a user turn because it is pasted into the worker's composer —
     // but FRIZZ wrote it, not the human, so it must not wear the human's off-white right-justified
     // bubble. `m.wake` is the server's own tell (the delivery token it stripped), never a text guess.
-    // A recurring prompt (either trigger) is a wake too, but it REPEATS by design — the same
-    // paragraph every few minutes on a thread being driven by one — so it collapses to a single line
-    // rather than restating itself in full down the transcript. Parsed from frizz's own trailer, defined
-    // beside the composer that writes it; a non-match falls through to the divider below, so no wake
-    // can lose its text to this.
-    const recurring = m.wake ? parseRecurringPrompt(text) : undefined
-    if (recurring) return <RecurringPromptLine bump={recurring} sourceId={m.sourceId} at={m.at} />
+    // FrizzWake routes every one of them, the Goal's repeating prompt included: that used to be picked
+    // off here, ahead of it, and a delivery carrying SEVERAL wakes has to be cut apart before any single
+    // wake's parser is allowed to read it.
     if (m.wake) return <FrizzWake steer={m.wakeSteer} text={text} sourceId={m.sourceId} at={m.at} wrap={dense} />
     // A SIDEWAYS writer of a user turn the human didn't type: another top-level thread messaging this
     // one. An expandable hairline naming and linking the sender — see SessionMessageLine.
