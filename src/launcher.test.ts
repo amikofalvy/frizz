@@ -2397,7 +2397,7 @@ test("launch intent: a repository Frizz has not seen lands on the dashboard, off
     const intent = resolveLaunchIntent(join(fresh), home, {});
     assert.ok(intent.kind === "offer");
     assert.equal(intent.directory, realpathSync(fresh));
-    assert.equal(intent.workspace.root, hosted.root);
+    assert.equal(isHostWorkspace(intent.workspace, home), true, "never hosted on another project");
     assert.equal(existsSync(join(fresh, ".frizz")), false);
     assert.equal(listProjects(home).length, 1);
   } finally {
@@ -2422,7 +2422,9 @@ test("launch intent: an unmarked directory and $HOME land on the dashboard and a
     for (const cwd of [bare, home]) {
       const intent = resolveLaunchIntent(cwd, home, {});
       assert.ok(intent.kind === "grid", cwd);
-      assert.equal(intent.workspace.root, hosted.root, cwd);
+      // Not the registered project: a board borrowed from it stopped restarting once that folder
+      // was deleted, which nobody who typed `frizz` in $HOME had any reason to expect (2026-10-11).
+      assert.equal(isHostWorkspace(intent.workspace, home), true, cwd);
       assert.equal(existsSync(join(cwd, ".frizz")), false, cwd);
     }
   } finally {
@@ -2460,13 +2462,15 @@ test("launch intent: with no project at all, every directory still reaches the d
     assert.equal(registerProject({ dir: host.root, id: host.id }, home).entry, undefined);
     assert.equal(listProjects(home).length, 0);
 
-    // The first real project replaces it as the host from the next launch on.
+    // A real project never replaces it: only a launch typed inside that project is hosted there.
     const first = resolveWorkspace(repo, home);
     registerProject({ dir: first.root, id: first.id }, home);
     const later = resolveLaunchIntent(documents, home, {});
     assert.ok(later.kind === "grid");
-    assert.equal(later.workspace.id, first.id);
-    assert.equal(isHostWorkspace(later.workspace, home), false);
+    assert.deepEqual(later.workspace, host);
+    const inside = resolveLaunchIntent(repo, home, {});
+    assert.ok(inside.kind === "open");
+    assert.equal(inside.workspace.id, first.id);
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
@@ -2485,8 +2489,8 @@ test("launch intent: a folder every account can write to is never a project, rep
     execFileSync("git", ["init", "-q", shared]);
     chmodSync(shared, 0o1777);
 
-    // The dashboard, not an offer: the add it would offer is refused too. With no project to host it,
-    // that is Frizz's own folder rather than the shared one.
+    // The dashboard, not an offer: the add it would offer is refused too. It is hosted on Frizz's
+    // own folder rather than the shared one.
     const orphan = resolveLaunchIntent(shared, home, {});
     assert.ok(orphan.kind === "grid");
     assert.equal(isHostWorkspace(orphan.workspace, home), true);
@@ -2496,13 +2500,8 @@ test("launch intent: a folder every account can write to is never a project, rep
     registerProject({ dir: hosted.root, id: hosted.id }, home);
     const intent = resolveLaunchIntent(shared, home, {});
     assert.ok(intent.kind === "grid");
-    assert.equal(intent.workspace.root, hosted.root);
+    assert.equal(isHostWorkspace(intent.workspace, home), true, "a registered project changes nothing");
     assert.equal(existsSync(join(shared, ".frizz", ".id")), false);
-
-    // A registered project that has since become world-writable is not chosen to host the server.
-    chmodSync(hosted.root, 0o777);
-    assert.equal(isHostWorkspace(resolveLaunchIntent(shared, home, {}).workspace, home), true);
-    chmodSync(hosted.root, 0o755);
   } finally {
     rmSync(base, { recursive: true, force: true });
   }

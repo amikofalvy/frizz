@@ -224,8 +224,8 @@ export interface AppContext {
   ) => Promise<{ closed: boolean; stoppedWorkers: number }>
   /**
    * The project this server is HOSTED on — the one whose state dir and tenant it cannot let go of.
-   * Not necessarily one the operator chose: a launch from `$HOME` or an unadopted folder is hosted on
-   * the most recently opened project.
+   * The project the command was typed in, or Frizz's own stand-in folder for a launch from `$HOME`
+   * or an unadopted folder (it borrowed the most recently opened project until 2026-10-11).
    *
    * Its `<stateDir>/server.lock` is the only status file this process publishes, and every worker on
    * the machine resolves the port out of it (`serverLockPathFor`, index.ts) — so removing that state

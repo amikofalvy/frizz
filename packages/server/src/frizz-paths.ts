@@ -220,11 +220,10 @@ export function projectStateDir(projectId: string, home?: string): string {
 }
 
 /**
- * `<data>/host` — the folder the server is launched on when the machine has no project yet.
+ * `<data>/host` — the folder the server is launched on when the command is typed outside a project.
  *
- * A server serves a board, so it needs a project to start with; a launch from a folder that is not
- * one rides on the most recently opened project, and a new machine has none. The launcher stands
- * this folder in (launcher.ts hostWorkspace). It is a project in every way but one: it is never in
+ * A server serves a board, so it needs a project to start with, and a launch from a folder that is
+ * not one has none. The launcher stands this folder in (launcher.ts hostWorkspace). It is a project in every way but one: it is never in
  * the registry, so the dashboard does not list it.
  */
 export function launchHostDir(home?: string): string {

@@ -205,8 +205,8 @@ try {
     else assertRequiredExecutables();
   }
   // Running the command never ADOPTS the directory it was run in — see resolveLaunchIntent. A
-  // directory that is not already a project hosts the server on the most recent real one (or on
-  // Frizz's own stand-in when there is none) and lands on the dashboard.
+  // directory that is not already a project hosts the server on Frizz's own stand-in folder and
+  // lands on the dashboard.
   let hosted: Workspace | undefined;
   if (!internal) {
     const intent = resolveLaunchIntent();
@@ -232,7 +232,7 @@ try {
   }
   fail(error);
 }
-process.chdir(workspace.root);
+// No `process.chdir(workspace.root)` — see the same line in production.ts.
 // The project is known now, so this run's log belongs in its state directory, beside every other
 // per-project artifact a reader debugging this board already looks at. A forked child inherits the
 // parent's path through the environment instead of opening its own.
@@ -1079,8 +1079,8 @@ if (options.link) {
     const joined = await joinRunningFrizz();
     if (joined) {
       // slugPath(), not the joined slug: the slug names the project this launch is HOSTED on, which
-      // is only the project to open when the intent is `open`. A `grid`/`offer` launch is hosted on
-      // the most recent project and must still land on the grid — hard-coding the host's board here
+      // is only the project to open when the intent is `open`. A `grid`/`offer` launch joins a server
+      // hosted on some other project and must still land on the grid — hard-coding the host's board here
       // is what made `frizz-dev` in an unadopted directory open somebody else's board outright.
       await openOrPrint(joined.port, true, slugPath());
       process.exit(0);

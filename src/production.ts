@@ -213,7 +213,9 @@ const workspace: Workspace = (() => {
   return intent.workspace;
   } catch (error) { return fail(error); }
 })();
-process.chdir(workspace.root);
+// No `process.chdir(workspace.root)`: the launcher stays in the folder the command was typed in.
+// It moved into the hosting project until 2026-10-11, a habit from one server per repository, and a
+// host folder deleted later left every child the launcher started without a working directory.
 if (options.stop) {
   // The farewell after a detached update has said "stop it with frizz --stop" since 0.12.10, and
   // `--help` never listed it, because nothing here handled it: the flag fell through to the join

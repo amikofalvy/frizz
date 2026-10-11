@@ -156,9 +156,9 @@ test("deleting the data of the project Frizz is hosted on is refused, and nothin
   assert.equal(existsSync(state), true)
 })
 
-// A `frizz` run from $HOME is hosted on the most recently opened project, so the host is routinely a
-// project nobody launched from — and refusing to forget it left a card the operator could not remove
-// by any restart that did not start inside a DIFFERENT project (2026-10-10).
+// A `frizz` run from $HOME was hosted on the most recently opened project until 2026-10-11, so the
+// host was routinely a project nobody launched from — and refusing to forget it left a card the
+// operator could not remove by any restart that did not start inside a DIFFERENT project (2026-10-10).
 test("the project Frizz is hosted on can still be forgotten, without a teardown", async (t) => {
   const home = homeSandbox(t)
   const dir = join(home, "code", "alpha")

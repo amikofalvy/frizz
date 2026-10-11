@@ -48,7 +48,7 @@ import {
 } from "@frizz/server/project-root";
 import { defaultLogRoot, latestLogPath } from "@frizz/server/logging";
 import { DEFAULT_PORT, fallbackPort, FRIZZ_ROUTE_PREFIX } from "@frizz/shared";
-import { findByPath, listProjects } from "@frizz/server/project-registry";
+import { findByPath } from "@frizz/server/project-registry";
 
 export { acquireGlobalLaunchLock, pidIsAlive };
 
@@ -483,8 +483,13 @@ An immutable artifact is the default. --dev is the only explicit unsafe source w
  *               because the dashboard's own add refuses them (isHomeDirectory, isWorldWritable).
  *
  * The last two still need a project to LAUNCH with, because a server is a process that serves a
- * board; the most recently opened registered project is that host. A machine with no project yet is
- * hosted on a folder of Frizz's own instead (hostWorkspace), so the dashboard is always reachable.
+ * board. That host is a folder of Frizz's own (hostWorkspace), never one of the operator's projects.
+ *
+ * It was the most recently opened project until 2026-10-11, and that tied a running board to a
+ * folder nobody had launched it from: `npx frizz` typed in $HOME was hosted on `~/Documents/scratch`,
+ * the folder was deleted a day later, and the board could no longer update or restart — the server
+ * refuses to boot without its host folder (maintainer: "Why can't we just start it from wherever
+ * they run the fucking command?").
  */
 export type LaunchIntent =
   | { kind: "open"; workspace: Workspace }
@@ -503,20 +508,20 @@ export function resolveLaunchIntent(
   // so forgetting to commit `.frizz/.id` never costs someone their board.
   if (known && !refused) return { kind: "open", workspace: resolveWorkspace(cwd, home, env) }
 
-  const host = mostRecentProject(home, env) ?? hostWorkspace(home)
+  const host = hostWorkspace(home)
   return !refused && hasProjectMarker(candidate)
     ? { kind: "offer", workspace: host, directory: candidate }
     : { kind: "grid", workspace: host }
 }
 
 /**
- * The server's host on a machine with no project to be one: a folder of Frizz's own, never registered.
+ * The server's host for a launch outside a project: a folder of Frizz's own, never registered.
  *
  * The server builds a whole board around the project it is launched with — its state dir holds the
  * launch record and the `server.lock` every worker reads the port from — so "no project" is not a
  * state it has. This is the smallest thing that stands in: a real, empty project the registry never
- * hears about, so the dashboard lists nothing and says "Welcome to Frizz". The first project the
- * operator adds there is an ordinary tenant, and from the next start it is the host.
+ * hears about, so the dashboard lists only the operator's own projects, and on a new machine says
+ * "Welcome to Frizz". Every project there is an ordinary tenant.
  */
 export function hostWorkspace(home = homedir()): Workspace {
   const dir = launchHostDir(home)
@@ -535,19 +540,6 @@ export function isHostWorkspace(workspace: Pick<Workspace, "root">, home = homed
   } catch {
     return false
   }
-}
-
-/** The most recently opened project that still exists — the server's host when the cwd is not one. */
-function mostRecentProject(home: string, env: NodeJS.ProcessEnv): Workspace | undefined {
-  for (const entry of listProjects(home)) {
-    if (entry.stale || isHomeDirectory(entry.path, home) || isWorldWritable(entry.path)) continue
-    try {
-      return resolveWorkspace(entry.path, home, env)
-    } catch {
-      // A project that will not resolve any more must not block the ones after it.
-    }
-  }
-  return undefined
 }
 
 export function resolveWorkspace(

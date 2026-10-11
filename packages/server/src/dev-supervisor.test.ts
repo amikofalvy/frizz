@@ -821,7 +821,7 @@ test("Restart and Update & Restart refuse, and leave the child serving, once the
     })
     const first = await supervisor.firstBoot
     rmSync(workspace, { recursive: true })
-    const refusal = /was started from .*project, which no longer exists/
+    const refusal = /is running on .*project, which no longer exists/
     // Restart answers with its own result; an update acknowledges and reports through /status.
     const restart = await control("restart", "POST")
     assert.equal(restart.status, 503)

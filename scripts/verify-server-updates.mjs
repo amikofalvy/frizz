@@ -198,9 +198,15 @@ async function stopShell(signal = "SIGTERM") {
   if (shellPid && alive(shellPid)) process.kill(shellPid, signal)
   if (shellPid) await until(`shell ${shellPid} stopped`, () => !alive(shellPid), 30_000)
 }
-async function launch(version = "0.13.0") {
+/** The folder a live process is standing in, where this platform lets another process read it. */
+function cwdOf(pid) {
+  if (process.platform === "linux") return realpathSync(`/proc/${pid}/cwd`)
+  if (process.platform !== "darwin") return undefined
+  return execFileSync("lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"], { encoding: "utf8" }).split("\n").find((line) => line.startsWith("n"))?.slice(1)
+}
+async function launch(version = "0.13.0", cwd = repo) {
   const before = children().length
-  const child = start(`launcher-${processes.length}`, [npmCli, "exec", "--yes", `--package=frizz@${version}`, "--", "frizz", "--no-app", "--port", new URL(base).port])
+  const child = start(`launcher-${processes.length}`, [npmCli, "exec", "--yes", `--package=frizz@${version}`, "--", "frizz", "--no-app", "--port", new URL(base).port], cwd)
   const entry = await until("server process", () => {
     if (child.exitCode !== null) throw new Error(`npm launcher exited ${child.exitCode}`)
     return children().slice(before).find((event) => event.event === "start")
@@ -519,6 +525,37 @@ try {
   const restart = await fetch(`${base}/_frizz/control/restart`, { method: "POST", headers: { origin: base }, signal: AbortSignal.timeout(90_000) })
   assert.equal(restart.status, 503)
   await refusedAndServing("restart", await restart.json())
+  // A launch typed OUTSIDE a project depends on no project at all. Until 2026-10-11 it borrowed the
+  // most recently opened one as its host and moved into it — `npx frizz` in $HOME ran from
+  // `~/Documents/scratch` — so deleting a folder nobody had launched from left exactly the refusal
+  // above. Now the launcher stays where the command was typed, the server is hosted on Frizz's own
+  // folder, and the board restarts and updates with that project gone.
+  await stopShell()
+  const known = join(root, "known-project"), outside = join(root, "outside")
+  mkdirSync(known); mkdirSync(outside)
+  execFileSync("git", ["init", "-q"], { cwd: known }); ensureProjectIdFile(known, home)
+  await launch("0.13.0", known); await healthy("0.13.7")
+  const registered = () => JSON.parse(readFileSync(join(home, "data/frizz/registry.json"), "utf8")).projects.map((project) => project.path)
+  assert.ok(registered().includes(realpathSync(known)), "the project a launch opened is the most recently opened one")
+  await stopShell()
+  await launch("0.13.0", outside); await healthy("0.13.7")
+  const hosted = children().filter((event) => event.event === "ready").at(-1).pid
+  if (cwdOf(shellPid) !== undefined) {
+    assert.equal(cwdOf(shellPid), realpathSync(outside), "the launcher stays in the folder the command was typed in")
+    assert.equal(cwdOf(hosted), realpathSync(join(home, "data/frizz/host")), "the server is hosted on Frizz's own folder")
+  }
+  rmSync(known, { recursive: true, force: true })
+  await action("restart")
+  const restarted = await until("a restart after the project is gone", async () => {
+    const pid = children().filter((event) => event.event === "ready").at(-1).pid
+    return pid !== hosted && (await status()).state === "ready" && pid
+  })
+  assert.equal(alive(hosted), false)
+  await action(); await healthy("0.13.12")
+  assert.equal(selected().version, "0.13.12")
+  assert.equal(alive(restarted), false)
+  await api.query("board")
+  record("outside-launch-survives-a-deleted-project", { launcher: cwdOf(shellPid), host: cwdOf(children().filter((event) => event.event === "ready").at(-1).pid) })
   assert.equal(children().some((event) => event.event === "overlapping-server"), false, "no server process may overlap its predecessor")
   assert.ok(children().every((event) => event.node === runtimeVersion), "npm bin shebang and all server forks must use the requested Node version")
   assert.equal(existsSync(`${eventFile}.postinstall`), false, "dependency postinstall must never run")
