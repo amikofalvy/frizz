@@ -1,6 +1,6 @@
 # Launch routing belongs to the server: one request, one fixed host, one more shell release
 
-Design plan, 2026-10-11. Prompted by two `frizz` shell releases in one day that changed nothing but where a launch lands (0.13.10 and 0.13.11, which npm then served out of order), and by the maintainer's question that day: *"why did we need to bump Frizz in the first place. The whole point is that we don't need to bump Frizz very often, and we can just bump Frizz server."* Status: **BUILT on `main`, except the two-servers decision in §6 (item 4).** §8 says what landed; none of it is released until a server release and then a shell release are cut.
+Design plan, 2026-10-11. Prompted by two `frizz` shell releases in one day that changed nothing but where a launch lands (0.13.10 and 0.13.11, which npm then served out of order), and by the maintainer's question that day: *"why did we need to bump Frizz in the first place. The whole point is that we don't need to bump Frizz very often, and we can just bump Frizz server."* Status: **BUILT on `main`.** §8 says what landed and what each release carries: `frizz-server` 0.15.23 and `frizz` 0.13.13 carry items 1–3, 5 and 6; item 4 waits for the next `frizz-server` release.
 
 **Verdict: stop deciding anything about projects in the shell.** The shell keeps the machinery that has to work while the server is down: the supervisor, the public listener, the sign-in gate, the terminal readout, the installer. Everything that is a rule about folders moves to the server: which folder a launch is about, whether it is a project, whether to register it, and where the browser lands. Two changes do that, and they only work together:
 
@@ -94,15 +94,22 @@ What it fixes beyond release cadence:
 | Session key, device list, session epoch | The stand-in's. **Carried over once**, from the project state folder a device most recently signed in to, so no remote device is signed out by the move (`adoptSessionState`). Only into a stand-in that has no key of its own. |
 | Preferred port, launcher logs, `--app` browser profile | The stand-in's. Not carried over: the default port is the usual answer, and the window profile resets once. |
 | The server child's working directory (the supervisor requires it to equal the hosting folder) | A folder Frizz owns and nobody deletes. |
-| "Another process is already serving this project" ([`servedByAnotherProcess`](../packages/server/src/project-launch.ts)) | See below. |
-| Registry recovery after a lost `registry.json` (`backfillRegistry` reads the folder from three files a launch writes) | Nothing writes those files for a project any more, so a project first opened after this change cannot be recovered that way. It only ever covered folders Frizz was started on; the serving record below would be its source for every project. |
+| "Another process is already serving this project" ([`servedByAnotherProcess`](../packages/server/src/project-launch.ts)) | The serving record, below, for every project a server opens. |
+| Registry recovery after a lost `registry.json` (`backfillRegistry` reads the folder from three files a launch writes) | The serving record names the folder of every project a server opened, and keeps it after the server closes it, so recovery reads it first. The three launch files only ever covered folders Frizz was started on. |
 | The unprefixed API (`/_frizz/rpc/…` with no project name) | Answers for the stand-in, an empty board, as it already does for every launch outside a project. |
 
 **`frizz-dev` is not changed.** It runs from a checkout and has no release to wait for, so it keeps running its server on the project it is typed in. Under one home it and an installed Frizz share `<data>/host` for a launch outside a project (since `a2a498dd`): whichever starts second joins the first.
 
-**The open decision: two servers on one project.** The double-serve check ([`servedByAnotherProcess`](../packages/server/src/project-launch.ts)) reads a project's launch owner record, and only the folder a server runs on has one. So today it protects exactly one folder per server. A project the installed Frizz opened as one of many takes nothing, and `frizz-dev` typed in it starts a second server that schedules the same timers and recurring prompts. With a fixed host that is true of every project, where it used to be every project but one: `frizz-dev` typed in the folder the installed Frizz was started in used to open the installed board, and now starts beside it.
+**Two servers on one project: refused, naming the other server** (the maintainer's decision, 2026-10-11). The double-serve check ([`servedByAnotherProcess`](../packages/server/src/project-launch.ts)) reads a project's launch owner record, and only the folder a server runs on has one. So it protected exactly one folder per server. A project the installed Frizz opened as one of many took nothing, and `frizz-dev` typed in it started a second server that scheduled the same timers and recurring prompts. With a fixed host that would be true of every project, where it used to be every project but one.
 
-Closing it means a server writes a small **serving record** in a project's state folder when it opens it (pid, boot id, folder), removes it on close, and refuses a project whose record names another live process. That turns a silent double-schedule into a refusal that names the other server, which is what the existing check says it is for. It also stops `frizz-dev` beside an installed Frizz on the same project, so it is the maintainer's call and is not built (item 4).
+So a server writes a **serving record** ([`project-serving.ts`](../packages/server/src/project-serving.ts), `serving.json` in the project's state folder) when it opens a project: its process identity and the folder. It refuses a project whose record names another live process, with the existing message, *"kirby is already being served by another Frizz (pid 66482). Stop that one first"*. On close it drops itself from the record and keeps the folder, which is what registry recovery reads. Where the refusal lands:
+
+- **A server opening a project as one of many** (a board request, the background priming pass): the project does not open, and the request answers 404 as for any project that will not open.
+- **A launch that asks for it** (`POST /_frizz/control/launch`): it lands on the dashboard with the refusal as its notice.
+- **A server booting on it**: the boot fails in its "launch ownership" phase, before it opens the database. The record alone counts there: under a supervisor the project's launch lease is the supervisor's own.
+- **`frizz-dev` typed in it**: refused once it holds the project's launch lease, before any build or boot. So a `frizz-dev` of the same project that is still starting is joined, not refused.
+
+A record whose process has exited, or whose pid now belongs to another process, never blocks. The supervisor never runs two server processes at once, so a restart or an update never meets its own predecessor's claim. Running `frizz-dev` on a project the installed Frizz has open now needs that Frizz stopped, or a separate home folder.
 
 ## 7. A shell newer than the installed server
 
@@ -128,7 +135,7 @@ Server work first, because it ships in minutes and is inert until a shell asks f
 | 1 | The floor: `frizzServer.minimum`, raised at cold start | shell | **done**, on `main`; first floor is 0.15.21 |
 | 2 | Keep the stand-in off the project list even when an older server registered it, and drop the entry | server | **done**, on `main` |
 | 3 | The launch-routing module (classification, registration, landing) in the server package; `POST /_frizz/control/launch` | server | **done**, on `main` |
-| 4 | The serving record: written on open, checked before opening, read by registry recovery | server | **not built**; waits on the decision in §6 |
+| 4 | The serving record: written on open, checked before opening, read by registry recovery | server, and `frizz-dev` from the checkout | **done**, on `main`; not in `frizz-server` 0.15.23 |
 | 5 | Always host on the stand-in; carry the session state over; `--stop`, `--status`, `--link` and `--sessions` find the machine's board from any folder | shell | **done**, on `main` |
 | 6 | Ask the server where to land; freeze today's rules as the fallback; stop registering from the shell | shell | **done**, on `main` |
 
@@ -153,6 +160,6 @@ On real built artifacts, in [`scripts/verify-server-updates.mjs`](../scripts/ver
 | 5 | Against a server that predates the route, a launch in a project lands where it does today. | harness, against the published 0.15.20 |
 | 6 | Deleting the folder the command was typed in leaves Restart and Update working. | harness |
 | 7 | A device signed in before the move is still signed in after it. | harness: the first launch leaves the stand-in holding the same key bytes an earlier host held; unit for which folder is chosen (`adoptSessionState`). No signed-in browser is driven through the move |
-| 8 | Two servers under one home never both open one project. | not built (item 4) |
+| 8 | Two servers under one home never both open one project. | a disposable Frizz: a project another live process holds is refused as a board and as a launch, and opens once that process is gone; `frizz-dev` typed in a project the Frizz has open refuses, naming its pid, and leaves no lease. Unit, plus a real second process against a real boot, in `project-serving.test.ts` |
 
 Plus unit coverage where each rule lives: the route's token and origin handling in `app.test.ts`, the classification table in `launch-routing.test.ts`, the floor in [`src/server-release.test.ts`](../src/server-release.test.ts), asking and falling back in [`src/launcher.test.ts`](../src/launcher.test.ts).

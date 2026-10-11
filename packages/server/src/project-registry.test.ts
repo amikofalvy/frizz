@@ -451,6 +451,23 @@ test("backfill recovers a project whose server is STOPPED, not just a running on
   }
 })
 
+// A server on Frizz's own folder opens every project as one of many, and leaves no `launcher.json` in
+// any of them: the serving record it keeps is what names the folder.
+test("backfill recovers a project a server opened as one of many, from its serving record", () => {
+  const home = mkdtempSync(join(tmpdir(), "frizz-backfill-serving-"))
+  try {
+    const dir = join(home, "opened-project")
+    const stateDir = join(home, ".frizz", "projects", A)
+    mkdirSync(dir, { recursive: true })
+    mkdirSync(stateDir, { recursive: true })
+    writeFileSync(join(stateDir, "serving.json"), JSON.stringify({ version: 1, projectId: A, projectDir: dir, updatedAt: "2026-10-11T20:00:00.000Z" }))
+    assert.equal(backfillRegistry(home, (root) => ({ [canonical(dir)]: A })[root]), 1)
+    assert.deepEqual(listProjects(home).map((p) => p.slug), ["opened-project"])
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
 // Forgetting keeps the state dir, and the folder still claims the id — exactly what backfill adopts.
 // So a project deleted from the grid came back at the next boot, and the project the server is hosted
 // on came back at every restart of the server under its launcher, whose owner record names it.

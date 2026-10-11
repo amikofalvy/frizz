@@ -258,6 +258,8 @@ Two things follow, and both are why it is built this way ([`plans/server-side-la
 
 The launcher keeps the rules it used to apply as a **frozen fallback** (`legacyLanding` in [`src/production.ts`](src/production.ts)), for a server that predates the route or is not answering. Change the rule in `launch-routing.ts`; an edit to the fallback reaches nobody until the next shell release. `frizz-dev` is unchanged: it has no release to wait for, and still runs its server on the project it is typed in.
 
+**One project, one server.** Because the installed Frizz opens every project as one of many, the launch lease on the folder a server runs on no longer says who has a project open. Each server writes a serving record into the state folder of every project it opens ([`project-serving.ts`](packages/server/src/project-serving.ts)). A second server refuses a project whose record names another live process, and names that process. This covers a board request, a launch, a server booting on the project, and `frizz-dev` typed in it. The alternative is two schedulers firing the same timers and recurring prompts. The record keeps the project's folder after the server closes it, and registry recovery reads it first.
+
 State is keyed by a stable checkout UUID: an ordinary worktree keeps it in `git config --local frizz.id`,
 each linked worktree in its private Git admin dir, so siblings stay isolated. Canonical real paths make
 a checkout opened through a symlink reuse the same instance. The project id and its state dir are the
