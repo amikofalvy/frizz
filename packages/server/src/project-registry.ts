@@ -369,16 +369,21 @@ export function backfillRegistry(
 }
 
 /**
- * The directory a state dir was last opened from, per the small JSON files the launcher leaves.
+ * The directory a state dir was last opened from, per the small JSON files a server and the launcher
+ * leave.
  *
- * `launcher.json` FIRST, and that ordering is the whole point: it is the only one of the three that
- * SURVIVES A CLEAN SHUTDOWN. `server.lock` and `project-launch.owner` are liveness records and are
- * removed when the server stops, so a backfill that consulted only those could recover a project that
- * happened to be running and nothing else — which on this machine meant boron and pullfrog/app, both
- * stopped, stayed invisible even after the identity fix that was supposed to find them (2026-08-06).
+ * The SURVIVORS FIRST, and that ordering is the whole point. `server.lock` and `project-launch.owner`
+ * are liveness records and are removed when the server stops, so a backfill that consulted only those
+ * could recover a project that happened to be running and nothing else — which on this machine meant
+ * boron and pullfrog/app, both stopped, stayed invisible even after the identity fix that was supposed
+ * to find them (2026-08-06). `serving.json` leads: every server that opens the project writes it and
+ * keeps the folder when it closes (project-serving.ts), where `launcher.json` is written only for the
+ * folder a launcher ran the server on, which since the server moved onto Frizz's own folder is none.
  */
 function recordedProjectDir(stateDir: string): string | undefined {
-  for (const name of ["launcher.json", "server.lock", "project-launch.owner"]) {
+  // `serving.json` is PROJECT_SERVING_FILE, spelled out rather than imported so the registry does not
+  // take on the launch-ownership module behind it.
+  for (const name of ["serving.json", "launcher.json", "server.lock", "project-launch.owner"]) {
     try {
       const value = (JSON.parse(readFileSync(join(stateDir, name), "utf8")) as { projectDir?: unknown }).projectDir
       if (typeof value === "string" && value.length > 0 && existsSync(value)) return value
