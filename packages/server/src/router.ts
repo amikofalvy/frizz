@@ -183,7 +183,7 @@ import { isBrokerClaudeRow, type SessionRow, type Storage, type SubAgentSteerRow
 import type { SessionTelemetry } from "./tailer.ts"
 import { backgroundShellLineCount, readBackgroundShellOutput } from "./background-shell-output.ts"
 import { projectRetiredBackgroundOps, retiredOpsFor } from "./transcript.ts"
-import { clearProjectIcon, customIconPath, findById, forgetProject, ICON_SCAN_VERSION, listProjects, moveProjectDirectory, renameProject, reorderProjects, setProjectIcon, type RegistryEntry } from "./project-registry.ts"
+import { clearProjectIcon, customIconPath, findById, forgetProject, listProjects, moveProjectDirectory, projectIconStatus, renameProject, reorderProjects, resolveProjectIcon, setProjectIcon, type RegistryEntry } from "./project-registry.ts"
 import { basename, dirname } from "node:path"
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { activeBandThread, boardAskThread, ProjectCard, ProjectRailCounts, PROJECT_ICON_EXTENSIONS, PROJECT_ICON_MAX_BASE64_CHARS, queuedThread } from "@frizz/shared"
@@ -192,6 +192,7 @@ import { homedir } from "node:os"
 import { chosenProjectRoot, ensureProjectIdFile, existingProjectId, isHomeDirectory, writeProjectIdFile } from "./project-root.ts"
 import { resolveProjectLabel } from "./project-identity.ts"
 import { registerProject } from "./project-registry.ts"
+import { detectProjectIcon } from "./project-icon.ts"
 import { pickDirectory, pickImageFile, warmDirectoryPicker, warmImagePicker } from "./directory-picker.ts"
 import Database from "./sqlite.ts"
 import { projectStateDir } from "./frizz-paths.ts"
@@ -656,17 +657,13 @@ function projectCard(entry: RegistryEntry, stale: boolean): ProjectCard {
     // `iconScannedAt` alone cannot answer this: it is stamped whenever a scan RAN, found or not. See
     // ProjectCard.iconStatus for why the never-scanned case has to stay distinguishable.
     //
-    // AND a miss is only `none` while the scanner that recorded it is the CURRENT one. This pairs with
-    // ICON_SCAN_VERSION and without it the two halves of that mechanism cancel out: the client
-    // suppresses the icon request for a `none`, and the server's rescan-on-version-bump can only run
-    // when a request arrives — so a widened scan would never be asked about the very projects it was
-    // widened for. Measured on the real registry (2026-08-08): nub's `site/public/icon.svg` resolves
-    // correctly on demand, but the grid never demanded it because a pre-versioning miss read as `none`.
-    iconStatus: entry.icon
-      ? "icon"
-      : entry.iconScannedAt && (entry.iconScanVersion ?? 0) === ICON_SCAN_VERSION
-        ? "none"
-        : "unknown",
+    // AND a miss is only `none` while the server would itself still trust it — from the CURRENT
+    // scanner, and recent. The client suppresses the icon request for a `none`, and the server can only
+    // rescan when a request arrives, so a `none` the server no longer trusts is a miss that is never
+    // re-asked. Twice measured on the real registry: nub's `site/public/icon.svg` behind a
+    // pre-versioning miss (2026-08-08), and three projects' new `logo.svg` behind a miss from that
+    // morning (2026-10-11). `projectIconStatus` shares its predicate with the route's for that reason.
+    iconStatus: projectIconStatus(entry),
     iconIsCustom: entry.iconSource === "custom" ? true : undefined,
   }
 }
@@ -4145,6 +4142,11 @@ export function createRouter(ctx: AppContext) {
      *
      * One action, not two: "remove this picture" and "go and look for one" are the same wish, because
      * a project with no icon at all falls back to its monogram either way.
+     *
+     * The scan runs HERE, and the card carries its answer. Clearing alone left the looking to the
+     * square's image request, and the square makes none once its last request failed — so "Look for an
+     * icon again" did nothing at all after a miss earlier in the same page (2026-10-11). A fresh
+     * `iconVersion` is also a fresh URL, which no earlier failure or browser cache entry answers for.
      */
     projectIconClear: mutation({
       input: z.object({ id: z.string().min(1) }),
@@ -4153,7 +4155,9 @@ export function createRouter(ctx: AppContext) {
         for (const extension of PROJECT_ICON_EXTENSIONS) {
           rmSync(customIconPath(input.id, `.${extension}`), { force: true })
         }
-        const updated = clearProjectIcon(input.id)
+        if (!clearProjectIcon(input.id)) throw new Error("No such project.")
+        resolveProjectIcon(input.id, (root) => detectProjectIcon(root)?.path)
+        const updated = findById(input.id)
         if (!updated) throw new Error("No such project.")
         return projectCard(updated, !existsSync(updated.path))
       },
