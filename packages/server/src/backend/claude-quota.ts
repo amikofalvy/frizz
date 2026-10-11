@@ -7,6 +7,7 @@ import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 import type { ProviderQuota, QuotaWindow } from "@frizz/shared"
 import { resolveClaudeExecutableAbsolute } from "./claude-broker-host.ts"
+import { readObservedClaudeQuota, type ObservedClaudeQuota, type ObservedWindow } from "./claude-quota-observed.ts"
 import { log as frizzLog } from "../logging.ts"
 
 const execFileAsync = promisify(execFile)
@@ -15,6 +16,11 @@ const execFileAsync = promisify(execFile)
 // command makes — authorized by the credential already on this machine (the on-disk
 // ~/.claude/.credentials.json, or the macOS login Keychain). That is one ~200ms HTTPS GET, immune to
 // local CPU load.
+//
+// It is not the only source. Claude Code can be signed in by routes that leave no token in either
+// place (an environment token, a key helper, a token broker), and the endpoint refuses and rate-limits
+// like any other. So what the account's own sessions report on every turn is laid over this reading —
+// see readClaudeQuota at the bottom, and claude-quota-observed.ts for where those reports come from.
 //
 // `claude -p /usage` IS A WHOLE CLAUDE CODE PROCESS, AND IT STARTS FOR EXACTLY ONE REASON: a
 // credential exists and the endpoint rejected it (401/403). Claude Code owns OAuth refresh and
@@ -356,7 +362,11 @@ async function refreshQuota(
   } catch {
     token = undefined
   }
-  // Signed out. Claude Code reads these same two sources, so it has no quota to report either.
+  // No credential THIS reader can find. That is not the same as signed out: Claude Code has ways to
+  // be signed in that leave no token in either place (an environment token, a key helper, a token
+  // broker), and a worker there runs fine. Starting Claude Code to ask is still not the answer — it was
+  // the 5-a-minute process storm — and it does not need to be: such a machine's sessions report the
+  // plan's windows themselves, and readClaudeQuota lays those over this failure.
   if (!token) throw new Error("Not signed in to Claude")
   let res: Response
   try {
@@ -615,7 +625,7 @@ export async function refreshClaudeQuotaInBackground(claudeBin = "claude", deps:
 // CLI + cross-process lock (~27s worst case) — responses that slow straddle dev-server restarts and
 // leave the browser's fetch hung, which is exactly how the chip froze into an em dash. Only `force`
 // (the popover's explicit recheck) waits for a live refresh.
-export async function readClaudeQuota(
+async function readEndpointQuota(
   claudeBin = "claude",
   deps: ClaudeQuotaDeps = {},
   options: { force?: boolean } = {},
@@ -684,5 +694,75 @@ export async function readClaudeQuota(
     return UNAVAILABLE
   } finally {
     await release?.().catch(() => {})
+  }
+}
+
+// House duration grammar (`40m`, `2h 35m`), as an age.
+function agoLabel(ms: number): string {
+  const minutes = Math.floor(ms / 60_000)
+  if (minutes < 1) return "just now"
+  if (minutes < 60) return `${minutes}m ago`
+  const rest = minutes % 60
+  return rest ? `${Math.floor(minutes / 60)}h ${rest}m ago` : `${Math.floor(minutes / 60)}h ago`
+}
+
+/**
+ * The endpoint's reading with what Claude Code's own sessions have reported laid over it
+ * (claude-quota-observed.ts). `servedAt` is the instant (ms) the endpoint's reading was taken.
+ *
+ *  • NO ENDPOINT READING — the machine a token broker signs in, where Frizz finds no credential to ask
+ *    with, and equally a rejected or unreachable one with nothing cached: the sessions' report IS the
+ *    reading, and its note says where it came from.
+ *  • AN ENDPOINT READING OLDER THAN A REPORT: the windows that report names take its numbers — both are
+ *    the provider's own, so the newer one is simply the truth — and the windows it does not name (the
+ *    per-model weeklies, which no session reports) keep the endpoint's. A staleness note the endpoint's
+ *    reading carried no longer describes what is shown, so it is replaced; a reading that carried none
+ *    stays silent.
+ */
+export function withObservedClaudeQuota(
+  served: ProviderQuota,
+  servedAt: number | undefined,
+  observed: ObservedClaudeQuota | undefined,
+  now: number,
+): ProviderQuota {
+  if (!observed) return served
+  const plain = ({ at: _at, ...window }: ObservedWindow): QuotaWindow => window
+  if (served.status !== "ok") {
+    return { status: "ok", windows: observed.windows.map(plain), detail: `From this machine's Claude sessions · ${agoLabel(now - observed.at)}` }
+  }
+  if (servedAt === undefined) return served
+  const newer = new Map(observed.windows.filter((w) => w.at > servedAt).map((w) => [w.key, w]))
+  if (!served.windows.some((w) => newer.has(w.key))) return served
+  const windows = served.windows.map((w) => {
+    const report = newer.get(w.key)
+    return report ? plain(report) : w
+  })
+  const latest = Math.max(...[...newer.values()].map((w) => w.at))
+  return {
+    ...served,
+    windows,
+    ...(served.detail ? { detail: `Updated from this machine's Claude sessions · ${agoLabel(now - latest)}` } : {}),
+  }
+}
+
+// THE READING EVERY CALLER GETS: the endpoint's (readEndpointQuota, above — every bound on what a read
+// may cost lives there, untouched), then the sessions' own reports over it. The overlay costs one small
+// local file read and can only ever add a reading or freshen one.
+export async function readClaudeQuota(
+  claudeBin = "claude",
+  deps: ClaudeQuotaDeps = {},
+  options: { force?: boolean } = {},
+): Promise<ProviderQuota> {
+  const served = await readEndpointQuota(claudeBin, deps, options)
+  try {
+    const now = (deps.now ?? Date.now)()
+    const configDir = claudeConfigDir()
+    const cacheDir = deps.cacheDir ?? join(frizzRoots().cache, "quota-cache")
+    const observed = await readObservedClaudeQuota(cacheDir, configDir, now)
+    if (!observed) return served
+    const shared = served.status === "ok" ? await readShared(cachePaths(cacheDir, configDir).data) : undefined
+    return withObservedClaudeQuota(served, shared?.quota.status === "ok" ? shared.at : undefined, observed, now)
+  } catch {
+    return served
   }
 }
