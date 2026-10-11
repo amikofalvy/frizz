@@ -97,6 +97,12 @@ import type {
   ThreadLocation,
   DirectoryPickResult,
   AddOwnPrWatchInput,
+  AddOwnCommandWatchInput,
+  AddOwnCommandWatchResult,
+  DropOwnCommandWatchInput,
+  DropOwnCommandWatchResult,
+  ListOwnCommandWatchesInput,
+  OwnCommandWatchesResult,
   AddOwnWatchInput,
   AddOwnWatchResult,
   DropOwnWatchInput,
@@ -221,6 +227,11 @@ export interface Api {
   addOwnPrWatch(input: AddOwnPrWatchInput): Promise<AddOwnPrWatchResult>
   dropOwnPrWatch(input: DropOwnPrWatchInput): Promise<DropOwnPrWatchResult>
   listOwnPrWatches(input: ListOwnPrWatchesInput): Promise<OwnPrWatchesResult>
+  // THE COMMAND WATCHES, called by `frizzctl watch-command`. Declared for the drift gate, like the PR
+  // watchers above; no browser call site uses them.
+  addOwnCommandWatch(input: AddOwnCommandWatchInput): Promise<AddOwnCommandWatchResult>
+  dropOwnCommandWatch(input: DropOwnCommandWatchInput): Promise<DropOwnCommandWatchResult>
+  listOwnCommandWatches(input: ListOwnCommandWatchesInput): Promise<OwnCommandWatchesResult>
   // THE WORKER'S OWN WATCHES on its own running work, called by `frizzctl watch` / `unwatch`. Same
   // story as the PR watchers above: declared for the drift gate, never called from the browser.
   addOwnWatch(input: AddOwnWatchInput): Promise<AddOwnWatchResult>
@@ -413,6 +424,9 @@ export const PROCEDURES = {
   addOwnPrWatch: "mutation",
   dropOwnPrWatch: "mutation",
   listOwnPrWatches: "mutation",
+  addOwnCommandWatch: "mutation",
+  dropOwnCommandWatch: "mutation",
+  listOwnCommandWatches: "mutation",
   addOwnWatch: "mutation",
   upsertOwnLink: "mutation",
   dropOwnLink: "mutation",

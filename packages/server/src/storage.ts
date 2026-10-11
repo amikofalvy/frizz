@@ -435,6 +435,40 @@ export interface PrWatchRow {
   cursor: string | null
 }
 
+/** One row of `command_watch` — a shell command the SERVER re-runs on this thread's behalf until it
+ *  exits 0 (2026-10-11, `frizzctl watch-command`).
+ *
+ *  ONE-SHOT like a timer, unlike a PR watcher: the first passing run settles it (`passed`) and wakes the
+ *  thread once. `expired` is its own `for:` running out, `cancelled` is Frizz stopping it because the
+ *  thread's permission mode or sandbox changed under it, `dropped` is the worker withdrawing it. The
+ *  `last_*` columns are the most recent check, kept so the worker's read-back and the expiry wake can say
+ *  WHY it has not passed — a command failing on a missing binary looks exactly like one still waiting. */
+export interface CommandWatchRow {
+  id: string
+  thread_slug: string
+  command: string
+  every_ms: number
+  state: "armed" | "dropped" | "passed" | "expired" | "cancelled"
+  created_at: number
+  expires_at: number
+  settled_at: number | null
+  /** Checks run so far, the registration's own first check included. */
+  runs: number
+  /** Epoch ms the last check FINISHED — the next one is due `every_ms` after it. */
+  last_run_at: number | null
+  last_outcome: "exit" | "timeout" | "signal" | "error" | null
+  last_exit: number | null
+  last_output: string | null
+}
+
+/** What one finished check writes back onto its row. */
+export interface CommandWatchRunRecord {
+  atMs: number
+  outcome: "exit" | "timeout" | "signal" | "error"
+  exitCode: number | null
+  output: string
+}
+
 /** A saved destination, independent of running work and completion. */
 export interface ThreadLinkRow {
   id: string
@@ -722,6 +756,26 @@ export interface Storage {
   // Persist what has already been reported. Guarded on `armed` so a cursor written after the worker
   // dropped the row cannot resurrect it.
   setPrWatchCursor(id: string, cursor: string): boolean
+  // ---- REGISTERED COMMAND WATCHES (scheduler SOURCE 13) ------------------------------------------
+  // Slug-keyed for the timers' reason. `id` is minted by the caller so the row and the scheduler's
+  // delivery ids agree without a read-back. `firstRun` is the registration's own check, recorded on the
+  // row it armed so the read-back and the cadence both start from it.
+  armCommandWatch(watch: { id: string; slug: string; command: string; everyMs: number; createdAtMs: number; expiresAtMs: number; firstRun?: CommandWatchRunRecord }): CommandWatchRow
+  /** A thread's command watches, oldest first; `armedOnly` is what the worker reads back. */
+  listCommandWatches(slug: string, opts?: { armedOnly?: boolean }): CommandWatchRow[]
+  /** Every thread's ARMED command watches at once, keyed by slug — the board's read (see groupBySlug). */
+  armedCommandWatchesBySlug(): Map<string, CommandWatchRow[]>
+  getCommandWatch(id: string): CommandWatchRow | undefined
+  /** Every armed command watch across all threads — the scheduler's one read per tick. */
+  armedCommandWatches(): CommandWatchRow[]
+  /** Every armed watch whose `for` has run out. */
+  expiredCommandWatches(nowMs: number): CommandWatchRow[]
+  /** Record a finished check. Guarded on `armed`, so a run that lands after a drop cannot rewrite it. */
+  recordCommandWatchRun(id: string, run: CommandWatchRunRecord): boolean
+  /** The worker's own withdrawal. Scoped to the slug, so one thread can never drop another's. */
+  dropCommandWatch(slug: string, id: string, settledAtMs: number): boolean
+  /** Terminal: the command passed, ran out of time, or Frizz may no longer run it. Guarded on `armed`. */
+  settleCommandWatch(id: string, state: "passed" | "expired" | "cancelled", settledAtMs: number): boolean
   // A label is a stable slot: re-registering it updates the destination without moving the row.
   upsertThreadLink(link: { id: string; slug: string; kind: "link" | "file"; label: string; target: string; createdAtMs: number }): ThreadLinkRow
   listThreadLinks(slug: string): ThreadLinkRow[]
@@ -1174,6 +1228,32 @@ export const STORAGE_SCHEMA = `
       ON pr_watch(project_id, state);
     CREATE INDEX IF NOT EXISTS pr_watch_slug
       ON pr_watch(project_id, thread_slug, state, created_at);
+    -- A worker's registered COMMAND WATCHES (2026-10-11, \`frizzctl watch-command\`): a shell command the
+    -- SERVER re-runs every every_ms until it exits 0, so a wait on an outside condition holds nothing in
+    -- the thread's own process tree and the thread can hibernate under it. One-shot like a timer: the
+    -- first pass settles the row ('passed') and wakes the thread once. expires_at is REQUIRED, chosen by
+    -- the worker and capped at a week. The last_* columns are the most recent check, so the read-back and
+    -- the expiry wake can say why it has not passed.
+    CREATE TABLE IF NOT EXISTS command_watch (
+      id           TEXT PRIMARY KEY,
+      project_id   TEXT NOT NULL,
+      thread_slug  TEXT NOT NULL,
+      command      TEXT NOT NULL,
+      every_ms     INTEGER NOT NULL,
+      state        TEXT NOT NULL CHECK (state IN ('armed', 'dropped', 'passed', 'expired', 'cancelled')),
+      created_at   INTEGER NOT NULL,
+      expires_at   INTEGER NOT NULL,
+      settled_at   INTEGER,
+      runs         INTEGER NOT NULL DEFAULT 0,
+      last_run_at  INTEGER,
+      last_outcome TEXT,
+      last_exit    INTEGER,
+      last_output  TEXT
+    );
+    CREATE INDEX IF NOT EXISTS command_watch_armed
+      ON command_watch(project_id, state, expires_at);
+    CREATE INDEX IF NOT EXISTS command_watch_slug
+      ON command_watch(project_id, thread_slug, state, created_at);
     -- Saved destinations have no liveness or expiry. The label is a stable slot within one thread.
     CREATE TABLE IF NOT EXISTS thread_link (
       id          TEXT PRIMARY KEY,
@@ -1294,6 +1374,7 @@ export const STORAGE_SCHEMA = `
 export const STORAGE_TABLES = [
   "session", "settings", "tombstone", "adoption_claim", "adoption_retired_attempt", "retired_op",
   "thread_timer", "pr_watch", "thread_watch", "thread_question", "thread_done", "subagent_steer", "thread_link",
+  "command_watch",
 ] as const
 
 /** Idempotent; run by every createStorage and by frizz-db.ts before an import. */
@@ -1799,6 +1880,44 @@ export function createStorage(source: string | Database, projectId: string): Sto
   `)
   const prWatchCursorStmt = scope.prepare("UPDATE pr_watch SET cursor = ? WHERE project_id = @project_id AND id = ? AND state = 'armed'")
   const delPrWatches = scope.prepare("DELETE FROM pr_watch WHERE project_id = @project_id AND thread_slug = ?")
+  const armCommandWatchStmt = scope.prepare<{
+    id: string; slug: string; command: string; everyMs: number; createdAtMs: number; expiresAtMs: number
+    runs: number; lastRunAt: number | null; lastOutcome: string | null; lastExit: number | null; lastOutput: string | null
+  }, CommandWatchRow>(`
+    INSERT INTO command_watch (project_id, id, thread_slug, command, every_ms, state, created_at, expires_at, settled_at,
+                               runs, last_run_at, last_outcome, last_exit, last_output)
+    VALUES (@project_id, @id, @slug, @command, @everyMs, 'armed', @createdAtMs, @expiresAtMs, NULL,
+            @runs, @lastRunAt, @lastOutcome, @lastExit, @lastOutput)
+    RETURNING *
+  `)
+  const commandWatchesBySlugStmt = scope.prepare<[string], CommandWatchRow>(
+    "SELECT * FROM command_watch WHERE project_id = @project_id AND thread_slug = ? ORDER BY created_at, id",
+  )
+  const armedCommandWatchesBySlugStmt = scope.prepare<[string], CommandWatchRow>(
+    "SELECT * FROM command_watch WHERE project_id = @project_id AND thread_slug = ? AND state = 'armed' ORDER BY created_at, id",
+  )
+  const commandWatchByIdStmt = scope.prepare<[string], CommandWatchRow>(
+    "SELECT * FROM command_watch WHERE project_id = @project_id AND id = ?",
+  )
+  const armedCommandWatchesStmt = scope.prepare<[], CommandWatchRow>(
+    "SELECT * FROM command_watch WHERE project_id = @project_id AND state = 'armed' ORDER BY created_at, id",
+  )
+  const expiredCommandWatchesStmt = scope.prepare<[number], CommandWatchRow>(
+    "SELECT * FROM command_watch WHERE project_id = @project_id AND state = 'armed' AND expires_at <= ? ORDER BY expires_at, id",
+  )
+  const recordCommandWatchRunStmt = scope.prepare(`
+    UPDATE command_watch SET runs = runs + 1, last_run_at = ?, last_outcome = ?, last_exit = ?, last_output = ?
+    WHERE project_id = @project_id AND id = ? AND state = 'armed'
+  `)
+  const dropCommandWatchStmt = scope.prepare(`
+    UPDATE command_watch SET state = 'dropped', settled_at = ?
+    WHERE project_id = @project_id AND id = ? AND thread_slug = ? AND state = 'armed'
+  `)
+  const settleCommandWatchStmt = scope.prepare(`
+    UPDATE command_watch SET state = ?, settled_at = ?
+    WHERE project_id = @project_id AND id = ? AND state = 'armed'
+  `)
+  const delCommandWatches = scope.prepare("DELETE FROM command_watch WHERE project_id = @project_id AND thread_slug = ?")
   const upsertThreadLinkStmt = scope.prepare<{
     id: string; slug: string; kind: "link" | "file"; label: string; target: string; createdAtMs: number
   }, ThreadLinkRow>(`
@@ -2003,6 +2122,9 @@ export function createStorage(source: string | Database, projectId: string): Sto
     // And its PR watchers, for the same reason: a watcher on a thread that no longer exists has nothing
     // to wake, and the scheduler polls every armed row.
     delPrWatches.run(existing.slug)
+    // Its command watches too — and here the cost of leaving one is not a poll but a SHELL COMMAND the
+    // server would keep running for a thread nobody can be woken for.
+    delCommandWatches.run(existing.slug)
     delThreadWatches.run(existing.slug)
     delThreadLinks.run(existing.slug)
     delThreadQuestions.run(existing.slug)
@@ -2604,6 +2726,30 @@ export function createStorage(source: string | Database, projectId: string): Sto
     dropPrWatch: (slug, id, settledAtMs) => dropPrWatchStmt.run(settledAtMs, id, slug).changes === 1,
     settlePrWatch: (id, settledAtMs) => settlePrWatchStmt.run(settledAtMs, id).changes === 1,
     setPrWatchCursor: (id, cursor) => prWatchCursorStmt.run(cursor, id).changes === 1,
+    armCommandWatch: (watch) =>
+      armCommandWatchStmt.get({
+        id: watch.id,
+        slug: watch.slug,
+        command: watch.command,
+        everyMs: watch.everyMs,
+        createdAtMs: watch.createdAtMs,
+        expiresAtMs: watch.expiresAtMs,
+        runs: watch.firstRun ? 1 : 0,
+        lastRunAt: watch.firstRun?.atMs ?? null,
+        lastOutcome: watch.firstRun?.outcome ?? null,
+        lastExit: watch.firstRun?.exitCode ?? null,
+        lastOutput: watch.firstRun?.output ?? null,
+      })!,
+    listCommandWatches: (slug, opts) =>
+      (opts?.armedOnly ? armedCommandWatchesBySlugStmt : commandWatchesBySlugStmt).all(slug),
+    armedCommandWatchesBySlug: () => groupBySlug(armedCommandWatchesStmt.all()),
+    getCommandWatch: (id) => commandWatchByIdStmt.get(id),
+    armedCommandWatches: () => armedCommandWatchesStmt.all(),
+    expiredCommandWatches: (nowMs) => expiredCommandWatchesStmt.all(nowMs),
+    recordCommandWatchRun: (id, run) =>
+      recordCommandWatchRunStmt.run(run.atMs, run.outcome, run.exitCode, run.output, id).changes === 1,
+    dropCommandWatch: (slug, id, settledAtMs) => dropCommandWatchStmt.run(settledAtMs, id, slug).changes === 1,
+    settleCommandWatch: (id, state, settledAtMs) => settleCommandWatchStmt.run(state, settledAtMs, id).changes === 1,
     upsertThreadLink: (link) => upsertThreadLinkStmt.get(link)!,
     listThreadLinks: (slug) => threadLinksBySlugStmt.all(slug),
     threadLinksBySlug: () => groupBySlug(threadLinksStmt.all()),
