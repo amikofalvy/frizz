@@ -28,9 +28,10 @@
 // and a right-pinned ref; a p-4 inset wrapped around a SINGLE 20px line, when every other card in that
 // shell has a body; and three marks on one row that all looked clickable (an underlined title, an
 // accent ref, the corner glyph) with no hierarchy between them.
-import { useId, useState } from "react"
+import { useId, useRef, useState } from "react"
 import { AlarmClock, Bell, Github, Hourglass, MessageCircleOff, TerminalSquare } from "lucide-react"
 import { isGithubWakeBacklog, parseGithubWakeSteer, parseLimitModelSwitchWake, parseLimitResumeWake, parseParkWake, parsePrWatchExpiredWake, parsePrWatchStateWake, parsePrWatchWake, parseQuestionsCancelledWake, parseShellDoneWake, parseTimerWake, stripWakeTrailer, type GithubWakeSteer, type LimitWindow, type ParkWake, type PrWatchStateWake, type PrWatchWake, type ShellDoneWake, type TimerWake } from "@frizz/shared"
+import { useMermaidIslands } from "./CodexRichOutput.tsx"
 import { QUEUE_WRAP, TranscriptCard } from "./TranscriptCard.tsx"
 import { VSpace } from "./rhythm.tsx"
 import { WakeDivider } from "./WakeDivider.tsx"
@@ -165,7 +166,15 @@ export function FrizzWake({ steer: served, text, sourceId, at, wrap }: { steer?:
 function WakeProse({ text, wrap }: { text: string; wrap?: boolean }) {
   const html = useMarkdownHtml(text)
   const inner = useInnerHtml(html)
-  return <div className={`md-body [overflow-wrap:anywhere]${wrap ? ` ${QUEUE_WRAP}` : ""}`} dangerouslySetInnerHTML={inner} />
+  // A ```mermaid fence a wake quotes — a review comment's, say — is a diagram, as in the cards.
+  const ref = useRef<HTMLDivElement>(null)
+  const diagrams = useMermaidIslands(ref, html)
+  return (
+    <>
+      <div ref={ref} className={`md-body [overflow-wrap:anywhere]${wrap ? ` ${QUEUE_WRAP}` : ""}`} dangerouslySetInnerHTML={inner} />
+      {diagrams}
+    </>
+  )
 }
 
 // ---- THE FIRED-TIMER HAIRLINE, WHICH IS THE ONE THAT KEEPS A BODY -----------------------------------
