@@ -896,7 +896,9 @@ export function fenceWatchViews(
 // sub-agent phantom deriveRuntime's `headlessLostWork` fixed, and the same lesson.
 function hasFreshDelivery(row: SessionRow, processGone: boolean): boolean {
   if (processGone) return false
-  return parseDeliveryLedger(row.delivery_ledger).some((d) => d.state === "sending" || d.state === "pending" || d.state === "enqueued" || d.state === "delivered")
+  // `held` counts: Frizz is keeping a message of the human's for exactly this rest and is about to
+  // deliver it (releaseHeldFollowUps), so the thread is not waiting on them either.
+  return parseDeliveryLedger(row.delivery_ledger).some((d) => d.state === "sending" || d.state === "pending" || d.state === "enqueued" || d.state === "delivered" || d.state === "held")
 }
 
 /** How long a message on its way to the worker keeps its row SPINNING (see deriveDeliveryInFlight). A

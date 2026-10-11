@@ -2880,6 +2880,30 @@ export function questionAnswerMessage(answers: readonly QuestionAnswer[], dismis
   return `${BURIED_ANSWERS_HEADER}\n${rows.map((row, i) => `${i + 1}. ${row}`).join("\n")}`
 }
 
+/** WHAT THE HUMAN TYPED BESIDE THEIR ANSWERS, in the same message. The prompt box's Send carries the
+ *  staged answers and whatever is in the box as ONE turn (maintainer 2026-10-11: "It's very annoying to
+ *  me that I can't send my answers and submit an additional steer at the same time, so we need to unify
+ *  them"), and the answer wire has no place for free prose: its parsers fold any line after a row into
+ *  that row's answer, so a note appended bare would render inside the last question's chip. This header
+ *  on its own UNINDENTED line ends the rows — an answer's own continuation lines are indented
+ *  (ANSWER_CONTINUATION_INDENT), so a typed answer can never forge it — and everything below it is the
+ *  note, verbatim. One writer and one splitter, here, for the same reason BURIED_ANSWERS_HEADER is here:
+ *  the browser composes the fenced form, the server the registered form, and the chat reads both. */
+export const ANSWERS_NOTE_HEADER = "Sent with these answers:"
+export function withAnswersNote(answersWire: string, note: string): string {
+  const trimmed = note.trim()
+  if (!answersWire) return trimmed
+  return trimmed ? `${answersWire}\n\n${ANSWERS_NOTE_HEADER}\n${trimmed}` : answersWire
+}
+/** Split a user message into its answers wire and the note sent with it. A message with no note header
+ *  comes back whole, as `answers`, whatever it is — the caller's own parser decides if it is one. */
+export function splitAnswersNote(text: string): { answers: string; note: string } {
+  const marker = `\n${ANSWERS_NOTE_HEADER}\n`
+  const at = text.indexOf(marker)
+  if (at < 0) return { answers: text, note: "" }
+  return { answers: text.slice(0, at).trimEnd(), note: text.slice(at + marker.length).trim() }
+}
+
 /** THE ONE WAKE ON THIS PATH FRIZZ WRITES IN ITS OWN VOICE, so it is the one the chat draws as a
  *  hairline instead of a card (FrizzWake's rule: frizz's own news is a line, someone else's prose keeps
  *  the card). It says nobody is coming — the thread went autonomous while questions were still open, so
@@ -3982,7 +4006,19 @@ export const FollowUpInput = z.object({
   // Binds the call to the session the tab is looking at, so a stale page cannot deliver a follow-up
   // into a thread that has since been re-dispatched (merged from origin/main, 2026-07-21).
   sessionId: z.string().min(1),
-  message: z.string().min(1),
+  // EMPTY only when `answers` ride: the staged answers alone are a message. The server refuses a send
+  // that carries neither.
+  message: z.string(),
+  // REGISTERED-QUESTION ANSWERS SENT WITH THIS MESSAGE — the prompt box's one Send. The server settles
+  // each question exactly as `answerQuestions` does, then delivers ONE turn: the answers in their wire
+  // form (questionAnswerMessage) and `message` under them as the note (withAnswersNote). They ride the
+  // follow-up rather than the scheduler's answer wake so the pair arrives together, in the order the
+  // human wrote it, and as fast as a steer does.
+  answers: z.array(QuestionAnswerSchema).optional(),
+  // SEND TO THE QUEUE: while the agent is mid-turn, Frizz keeps this message and delivers it when the
+  // thread comes to rest, so it opens the next turn instead of steering this one. At rest it is an
+  // ordinary send — there is nothing to wait for. See `held` in the server's delivery-ledger.ts.
+  hold: z.boolean().optional(),
   // Generated once before the optimistic clear so a transport replay can be idempotent.
   deliveryId: z.string().min(1).max(200).optional(),
   // Retire the worker's live process before delivering, so this message lands in a `claude` that has
@@ -4087,6 +4123,10 @@ export type DeliverQueuedNowInput = z.infer<typeof DeliverQueuedNowInput>
 export const DeliverQueuedNowResult = z.object({
   interrupted: z.boolean(),
   reason: z.string().optional(),
+  // How many messages Frizz was HOLDING for the agent's rest ("Send to queue") and has now handed over.
+  // Those were never in a provider queue, so on a runtime that cannot be interrupted this is the whole
+  // of what "send now" did — and it is a success the surface must not report as a refusal.
+  released: z.number().int().nonnegative().optional(),
 }).strict()
 export type DeliverQueuedNowResult = z.infer<typeof DeliverQueuedNowResult>
 
@@ -5616,7 +5656,8 @@ export const TranscriptMessage = z.object({
   // the server's from the instant it arrives. "failed": the transport threw, or never answered — the
   // text is kept until the operator retries, edits or dismisses it, and nothing retries it on its own.
   // Additive + optional: an older client renders both as a plain bubble (gray for "sending").
-  deliveryState: z.enum(["sending", "pending", "enqueued", "delivered", "unconfirmed", "failed"]).optional(),
+  // "held": the operator sent it TO THE QUEUE — Frizz has it and no transport does, until the agent rests.
+  deliveryState: z.enum(["sending", "pending", "enqueued", "delivered", "unconfirmed", "failed", "held"]).optional(),
   // Why a "failed" send failed, verbatim from the transport. Set only alongside deliveryState "failed".
   deliveryError: z.string().optional(),
   // FRIZZ wrote this user turn, not the human: it is a scheduler wake delivery (isWakeDelivery). The
