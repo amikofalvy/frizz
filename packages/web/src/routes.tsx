@@ -177,8 +177,12 @@ function BoardRoute() {
  */
 function GridRoute() {
   // `/` is the home the operator KEEPS: while that is the Console, the grid forwards to it. The switcher
-  // records "Projects" before it navigates here, so the grid is always one click away.
-  if (useHomeView() === "console") return <Navigate to={CONSOLE_PATH} replace />
+  // records "Projects" before it navigates here, so the grid is always one click away. Not on a phone:
+  // it has no switcher, and its board's back arrow comes HERE for the projects list — forwarding would
+  // send that arrow straight back to the Console it was leaving.
+  const homeView = useHomeView()
+  const isMobile = useIsMobile()
+  if (homeView === "console" && !isMobile) return <Navigate to={CONSOLE_PATH} replace />
   return <ProjectGrid />
 }
 

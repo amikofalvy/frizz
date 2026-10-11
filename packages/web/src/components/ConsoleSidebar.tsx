@@ -234,7 +234,10 @@ function ConsoleDispatch({ projects }: { projects: ProjectCard[] }) {
 
 /**
  * The prompt box's PROJECT chip: where a task typed here will run. Shaped like the profile pill beside
- * it (ProfileGridSelector's trigger) so the two read as one strip of settings for the next thread.
+ * it (ProfileGridSelector's trigger) so the two read as one strip of settings for the next thread: the
+ * same 26px height and border, and the same ink distance from its words to its chevron. The square sits
+ * 5px inside the border, as the approved mockup has it — a filled mark needs less room than a word.
+ * Measured 2026-10-11 (sans): square → name 6.75px of ink; the square centred on the name's cap band to 0.23px.
  */
 function ProjectChip({ project, projects, onPick }: { project: ProjectCard; projects: ProjectCard[]; onPick: (slug: string) => void }) {
   return (
@@ -245,11 +248,13 @@ function ProjectChip({ project, projects, onPick }: { project: ProjectCard; proj
           aria-label={`Project: ${project.name}`}
           title="The project a new thread runs in"
           data-console-project-chip={project.slug}
-          className="group inline-flex min-w-0 max-w-[min(14rem,40vw)] cursor-pointer items-center gap-1.5 rounded-md border border-border/50 bg-transparent py-1 pl-1 pr-2 text-left text-[12px] leading-4 text-fg/90 outline-none transition-colors hover:border-border hover:bg-panel-2 data-[state=open]:border-border data-[state=open]:bg-panel-2"
+          className="group inline-flex min-w-0 max-w-[min(14rem,40vw)] cursor-pointer items-center gap-1.5 rounded-md border border-border/50 bg-transparent py-1 pl-[5px] pr-2 text-left text-[12px] leading-4 text-fg/90 outline-none transition-colors hover:border-border hover:bg-panel-2 data-[state=open]:border-border data-[state=open]:bg-panel-2"
         >
           <ProjectSquare project={project} size={16} />
           <span className="min-w-0 truncate">{project.name}</span>
-          <ChevronDown aria-hidden size={13} className="shrink-0 text-fg/65 transition-transform group-data-[state=open]:rotate-180" />
+          {/* `-ml-[1.5px]`: on the shared 6px gap the name's ink sat 8.75px from the chevron's, where the profile
+              pill beside it reads 7.14 (scripts/ink-gaps.mjs, 2026-10-11, sans). The trim brings it to 7.25. */}
+          <ChevronDown aria-hidden size={13} className="-ml-[1.5px] shrink-0 text-fg/65 transition-transform group-data-[state=open]:rotate-180" />
         </button>
       </RadixDropdown.Trigger>
       <RadixDropdown.Portal>

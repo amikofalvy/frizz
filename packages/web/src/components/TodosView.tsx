@@ -1377,7 +1377,7 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
           collapsed, the header IS the whole card and takes the full block radius; otherwise it is
           rounded-top-only + a border-b, the dock carrying the bottom corners (a rounded-top + border-b
           would read as squared/doubled edges inside the shell). */}
-      <div ref={headerRef} className={`sticky top-[var(--frizz-sticky-top,0px)] z-10 flex items-center gap-2 bg-panel px-5 py-3.5 max-[800px]:top-10 ${collapsed ? BLOCK_RADIUS : `${BLOCK_RADIUS_TOP} border-b border-border/60`}`}>
+      <div ref={headerRef} className={`sticky top-[var(--frizz-sticky-top,0px)] z-10 flex items-center gap-2 bg-panel px-5 py-3.5 max-[800px]:top-[var(--frizz-sticky-top-narrow,2.5rem)] ${collapsed ? BLOCK_RADIUS : `${BLOCK_RADIUS_TOP} border-b border-border/60`}`}>
         <div className="min-w-0 flex-1">
           {/* The name is the same ThreadTitle the drawer header renders: click it to type a new title,
               hover it for the Claude refresh mark. It was a plain div with only the refresh mark until
