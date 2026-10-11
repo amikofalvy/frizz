@@ -2774,6 +2774,11 @@ test("the MCP mount rides only the threads whose contract taught it", async () =
     const [legacyBag, cliBag] = requestsOf(h.processes[0]!, "thread/start").map(bagOf)
     assert.ok((legacyBag!.mcp_servers as Record<string, unknown>)[FRIZZ_MCP.name])
     assert.equal(cliBag?.mcp_servers, undefined)
+    // …and switched OFF, for the app-server from before the update that still mounts it process-wide:
+    // `enabled = false` with a command beside it, the one spelling codex 0.161.0 accepts on both kinds
+    // of app-server (`_live_codex_mcp_disable.mts`).
+    assert.equal(cliBag?.[`mcp_servers.${FRIZZ_MCP.name}.enabled`], false)
+    assert.equal(cliBag?.[`mcp_servers.${FRIZZ_MCP.name}.command`], process.execPath)
     // …and nothing mounts it process-wide behind the bag's back: the app-server's own argv carries
     // no `mcp_servers` override, or every thread in the project would have the tools again.
     assert.ok(!h.hostCalls.some((call) => call.frizzMcp), "the app-server was started with a process-wide MCP mount")
@@ -2786,6 +2791,7 @@ test("the MCP mount rides only the threads whose contract taught it", async () =
     const [legacyResume, cliResume] = requestsOf(h.processes[1]!, "thread/resume").map(bagOf)
     assert.ok((legacyResume!.mcp_servers as Record<string, unknown>)[FRIZZ_MCP.name])
     assert.equal(cliResume?.mcp_servers, undefined)
+    assert.equal(cliResume?.[`mcp_servers.${FRIZZ_MCP.name}.enabled`], false)
   } finally { h.close() }
 })
 

@@ -37,7 +37,7 @@ import {
 } from "./codex-app-server-host.ts"
 import { nativeListenCodexAppServerHost } from "./codex-app-server-native.ts"
 import { readCodexAccountId } from "./auth-status.ts"
-import { codexThreadMcpConfig } from "./codex-mcp.ts"
+import { codexThreadMcpConfig, codexThreadMcpOff } from "./codex-mcp.ts"
 import { codexThreadShellConfig } from "./codex-shell-env.ts"
 import { codexProviderError } from "./codex-error.ts"
 import { CodexExecutionHealth } from "./codex-execution-health.ts"
@@ -3403,7 +3403,9 @@ export class CodexAppServerBridge {
     callerConfig?: Record<string, unknown>,
   ): { config?: Record<string, unknown> } {
     const config = {
-      ...(this.options.mountsMcp?.(threadSlug) === false ? {} : codexThreadMcpConfig(this.options.frizzMcp, threadSlug)),
+      // A thread taught `frizzctl` is given no frizz MCP server, and one an app-server from before the
+      // update still mounts process-wide is switched off for it (codexThreadMcpOff).
+      ...(this.options.mountsMcp?.(threadSlug) === false ? codexThreadMcpOff() : codexThreadMcpConfig(this.options.frizzMcp, threadSlug)),
       ...codexThreadShellConfig(this.options.frizzCli, threadSlug, codexAppServerEnvironment()),
       ...codexContextWindowConfig(this.options.getSettings?.()),
       ...(sessionId ? this.options.workerConfig?.(threadSlug, sessionId) : undefined),
