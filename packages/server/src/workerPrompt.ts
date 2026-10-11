@@ -939,6 +939,53 @@ once your context is summarized — but the frizz \`goal\` tool can arm a goal, 
 emptied window. Whether to keep notes, and whether to arm anything, is yours to decide per effort.`,
 }
 
+// WHY THIS EARNS ITS TOKENS (the SIZING bar above): the contract named no location, so every worker
+// invented one. Counted 2026-10-11 with `git worktree list` across this machine's projects: Frizz had
+// one in `/private/tmp/frizz-floor` and one in a sibling `frizz-wt-idle`, reylo three in a sibling
+// `reylo-wt/`, pullfrog one in its own `.worktrees/` (maintainer: "I'm a little confused about why
+// these projects are creating worktrees inside of temp directories anyway, instead of in some
+// dedicated location where worktrees can live inside of the current project").
+//
+// WHY `.frizz/worktrees/`: `.frizz/` is the one directory every Frizz project already has AND that
+// ignores itself (project-root.ts writes `.frizz/.gitignore` = `*`), so a checkout there never reaches
+// `git status` in a project that has never heard of Frizz. Git reads no ignore file above a worktree's
+// own root, so that `*` does not leak INTO the checkout: measured the same day in a worktree at
+// `.frizz/worktrees/<slug>` of this repo, `git status`, ripgrep, `tsc -b`, a Tailwind build and a
+// @parcel/watcher subscription rooted there all saw its files normally.
+//
+// TWO PIECES OF THE SERVER KNOW THE PATH, and move with it: board.ts prunes it from the `.frizz`
+// watcher (FRIZZ_WATCH_IGNORED_DIRS), and repo-files.ts asks the worktree itself whether a file in it
+// is ignored, so a worker's edits there still reach the edited-files rail.
+//
+// The install bullet is the one hazard the location CREATES. Module resolution walks up, and a checkout
+// nested in the project finds the parent's `node_modules`: before `nub install`, `@frizz/shared`
+// imported from this repo's worktree resolved to the MAIN checkout's `packages/shared`. A `/tmp`
+// worktree failed loudly there instead.
+//
+// The harness bullet is Claude-only because only Claude Code has such tools. `EnterWorktree` and the
+// Agent tool's `isolation: "worktree"` write to `.claude/worktrees/`, which a project ignores only if
+// it happens to say so.
+const WORKTREES = `## Git worktrees
+
+When you want an isolated checkout — for yourself or for a sub-agent — it lives in ONE place, inside
+the project: \`.frizz/worktrees/<slug>/\`. From the project root:
+\`git worktree add .frizz/worktrees/<slug> -b <slug>\`. Never \`/tmp\`, never a sibling folder, never a
+place of your own choosing. \`.frizz/\` ignores itself, so the project's \`git status\` never shows the
+checkout and no \`.gitignore\` needs an edit.
+
+- **A project that names its own worktree location or command keeps it.** That is a project norm, and
+  it outranks this default.
+- **Install its dependencies before you trust a result from it.** It sits inside the project, so a
+  checkout with nothing installed can resolve the PARENT checkout's packages and quietly test the
+  wrong code.
+- **Remove it once its branch has landed or been abandoned** — \`git worktree remove
+  .frizz/worktrees/<slug>\` — and never move or remove one you did not create: its owner may still be
+  running in it.`
+
+const WORKTREES_HARNESS = `- **Create it with \`git worktree add\`, not with the harness.** \`EnterWorktree\` and the Agent tool's
+  \`isolation: "worktree"\` put theirs under \`.claude/worktrees/\`; make the checkout here instead and
+  name its absolute path in the sub-agent's prompt.`
+
 const BACKEND: Record<BackendKind, string> = {
   claude: `## Sub-agents
 
@@ -1399,6 +1446,7 @@ export function buildWorkerPrompt(kind: BackendKind = "claude", opts: { monitors
     ACTIVITY_CAPTIONS,
     SIGNALS,
     SCRATCHPAD[kind],
+    kind === "claude" ? `${WORKTREES}\n${WORKTREES_HARNESS}` : WORKTREES,
     BACKEND[kind],
     THREAD_NAME,
     SPAWN_THREAD,

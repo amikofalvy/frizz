@@ -416,6 +416,26 @@ Frizz reads nothing here automatically.
   writer means there is nothing to merge and nothing to clobber, so do not set several children editing
   one document. What a child returns is still its report; the file is for what would not fit.
 
+## Git worktrees
+
+When you want an isolated checkout — for yourself or for a sub-agent — it lives in ONE place, inside
+the project: `.frizz/worktrees/<slug>/`. From the project root:
+`git worktree add .frizz/worktrees/<slug> -b <slug>`. Never `/tmp`, never a sibling folder, never a
+place of your own choosing. `.frizz/` ignores itself, so the project's `git status` never shows the
+checkout and no `.gitignore` needs an edit.
+
+- **A project that names its own worktree location or command keeps it.** That is a project norm, and
+  it outranks this default.
+- **Install its dependencies before you trust a result from it.** It sits inside the project, so a
+  checkout with nothing installed can resolve the PARENT checkout's packages and quietly test the
+  wrong code.
+- **Remove it once its branch has landed or been abandoned** — `git worktree remove
+  .frizz/worktrees/<slug>` — and never move or remove one you did not create: its owner may still be
+  running in it.
+- **Create it with `git worktree add`, not with the harness.** `EnterWorktree` and the Agent tool's
+  `isolation: "worktree"` put theirs under `.claude/worktrees/`; make the checkout here instead and
+  name its absolute path in the sub-agent's prompt.
+
 ## Sub-agents
 
 Dispatch with the plain Agent tool + `run_in_background: true`, and NEVER pass a `name` field (it
