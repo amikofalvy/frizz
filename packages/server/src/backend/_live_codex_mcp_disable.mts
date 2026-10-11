@@ -23,7 +23,7 @@
 // WHAT "CALLABLE" MEANS here. gpt-5.6-sol runs in code mode and the request lists NO MCP tool at all
 // ("Some deferred nested tools may be omitted from this description"), so its reading is the `exec`
 // isolate's own `ALL_TOOLS`, which the mock's script prints. `PROBE_MODEL=mock-model` is offered MCP
-// tools in the request itself (as `mcp__frizz.<tool>`) and gave the same 24 readings.
+// tools in the request itself (as `mcp__frizz.<tool>`) and gave the same 28 readings.
 //
 // MEASURED 2026-10-11 against codex-cli 0.161.0 (macOS arm64). Every line is a `finding()` below and
 // the run exits 1 if one stops holding:
@@ -56,6 +56,12 @@
 //      the bag, a thread gets all 16 back: the switch is not in the rollout. Controls: the no-bag
 //      thread's resume and its child both have all 16.
 //
+//   6. THE BAG FRIZZ SHIPS for a thread taught frizzctl, `{ ...codexThreadMcpOff(), ...codexThreadShellConfig(…) }`
+//      imported and sent untouched, on BOTH a pre-update app-server (argv mount) and a post-update one:
+//      thread/start succeeds, no frizz tool is callable (the operator's 16 are), and the thread's shell
+//      runs bare `frizzctl title "…"` from this checkout, exit 0, with exactly one setOwnThreadTitle
+//      reaching the fake Frizz under that thread's slug. The process PATH carries no `cc-worker/bin`.
+//
 // NOT covered: the `--listen unix://` (native) transport, which shares the argv builder; a thread
 // that should KEEP the per-thread mount (codexThreadMcpConfig) while a sibling switches the argv one
 // off; Codex versions other than 0.161.0.
@@ -68,8 +74,9 @@ import { join } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { provisionedBinary, runtimesRoot } from "../runtimes.ts"
 import { CLIENT_CAPABILITIES, CLIENT_INFO, CODEX_APP_SERVER_SUPPORTED_VERSION } from "./codex-app-server.ts"
-import { codexAppServerArgv } from "./codex-mcp.ts"
-import type { FrizzMcp } from "./types.ts"
+import { codexAppServerArgv, codexThreadMcpOff } from "./codex-mcp.ts"
+import { codexThreadShellConfig } from "./codex-shell-env.ts"
+import type { FrizzCli, FrizzMcp } from "./types.ts"
 import { inheritWorkerEnvironment } from "./worker-env.ts"
 
 // The binary Frizz itself runs: its own provisioned pin (runtimes.ts), which is the audited version.
@@ -101,6 +108,26 @@ const frizzMcp: FrizzMcp = { scriptPath: wrapper, stateDir, projectId: "proj-1" 
 // THE TWO ARGVS, from the real builder. Before the update every app-server was started with the
 // process-wide mount; after it, with none.
 const PRE_ARGV = codexAppServerArgv(["--stdio"], frizzMcp)
+
+// ---- the bag Frizz now sends a thread taught frizzctl -----------------------------------------------
+// codexThreadMcpOff + codexThreadShellConfig, imported and sent untouched, with this checkout's command
+// and a fake Frizz that records what reaches it (the instrument of `_live_codex_frizzctl.mts`).
+const markers = join(root, "markers")
+mkdirSync(markers)
+const cli: FrizzCli = { binDir: realpathSync(fileURLToPath(new URL("../../../../cc-worker/bin", import.meta.url))), stateDir, projectId: "proj-1" }
+interface Seen { url: string; body: any }
+const seen: Seen[] = []
+const fakeFrizz = createServer((req, res) => {
+  let raw = ""
+  req.on("data", (chunk) => { raw += chunk })
+  req.on("end", () => {
+    let body: any
+    try { body = raw ? JSON.parse(raw) : undefined } catch { body = raw }
+    seen.push({ url: req.url ?? "", body })
+    res.writeHead(200, { "content-type": "application/json" })
+    res.end(JSON.stringify({ result: (req.url ?? "").endsWith("/rpc/setOwnThreadTitle") ? { accepted: true, title: body?.title } : {} }))
+  })
+})
 const POST_ARGV = codexAppServerArgv(["--stdio"])
 
 // ---- the mock model ---------------------------------------------------------------------------------
@@ -386,7 +413,7 @@ const readings: Reading[] = []
 const NOISE = /^(thread\/started|thread\/status\/changed|turn\/|item\/|thread\/tokenUsage|account\/|thread\/name|serverRequest\/)/
 
 /** Start one thread with `bag` on `server`, run one turn, and read what its first request offered. */
-async function arm(server: AppServer, { label, bag }: Arm, sandbox = "danger-full-access"): Promise<Reading> {
+async function arm(server: AppServer, { label, bag }: Arm, sandbox = "danger-full-access", cmd = "true"): Promise<Reading> {
   const notesFrom = server.notifications.length
   const stderrFrom = server.stderrLines.length
   const startsFrom = mcpStartCount()
@@ -397,7 +424,7 @@ async function arm(server: AppServer, { label, bag }: Arm, sandbox = "danger-ful
     const thread = await server.startThread(cwd, sandbox, bag)
     reading.started = true
     reading.threadId = thread.id
-    reading.status = await server.run(thread.id, label, "true")
+    reading.status = await server.run(thread.id, label, cmd)
   } catch (error) {
     reading.error = (error as Error).message
   }
@@ -430,6 +457,11 @@ try {
   const env: Record<string, string> = { ...inheritWorkerEnvironment(process.env) }
   for (const key of Object.keys(env)) if (key.startsWith("CODEX_")) delete env[key]
   env.CODEX_HOME = codexHome
+  // No Frizz's `cc-worker/bin` on the process PATH (a probe run from inside a Frizz worker inherits the
+  // installed one's), so a bare `frizzctl` can only come from the bag.
+  env.PATH = (env.PATH ?? "").split(":").filter((entry) => !/cc-worker\/bin\/?$/.test(entry)).join(":")
+  await listen(fakeFrizz, 0, "127.0.0.1")
+  writeFileSync(join(stateDir, "server.lock"), JSON.stringify({ port: (fakeFrizz.address() as { port: number }).port }))
 
   const ALL_TOOLS = ["spawn_thread", "goal", "timer", "watch_pr", "watch", "unwatch", "ask", "unask", "done", "title", "activity", "link", "unlink", "watch_issue", "secret", "steer"]
   // Every per-thread spelling that might switch the mount off. The config keys are the ones the
@@ -464,6 +496,25 @@ try {
   const postArms: Record<string, Reading> = {}
   for (const spelling of spellings) postArms[spelling.label] = await arm(post, { ...spelling, label: `post-${spelling.label}` })
   await post.stop()
+
+  // ==== 6: the bag Frizz ships (codexThreadMcpOff + codexThreadShellConfig) ===========================
+  console.log("\n======== 6: the shipped bag, on a pre-update and a post-update app-server ========")
+  const shipped: Record<string, { reading: Reading; slug: string; marker: string }> = {}
+  const post2 = new AppServer("post-2", env, POST_ARGV)
+  await post2.initialize()
+  for (const [shape, server] of [["pre", pre], ["post", post2]] as const) {
+    const slug = `probe-${shape}-update`
+    const bag = { ...codexThreadMcpOff(), ...codexThreadShellConfig(cli, slug, env) }
+    const file = join(markers, `${slug}.txt`)
+    const cmd = `{ echo "resolved=$(command -v frizzctl)"; frizzctl title "Probe ${slug}"; echo "exit=$?"; } > ${file} 2>&1`
+    const reading = await arm(server, { label: `shipped-${shape}`, bag }, "danger-full-access", cmd)
+    const marker = existsSync(file) ? readFileSync(file, "utf8") : "(absent)"
+    shipped[shape] = { reading, slug, marker }
+    console.log(`bag keys: ${Object.keys(bag).join(", ")}`)
+    console.log(`marker (written by the thread's shell):\n  ${marker.trim().split("\n").join("\n  ")}`)
+    console.log(`fake Frizz saw for "Probe ${slug}": ${JSON.stringify(seen.filter((request) => request.body?.title === `Probe ${slug}`))}`)
+  }
+  await post2.stop()
 
   // ==== 5: a sub-agent, and resume ====================================================================
   // For the two spellings that matter: `enabled: false` (the obvious one) and `mcp_servers: {}` (the one
@@ -559,6 +610,15 @@ try {
   finding("5. a thread that hid them, resumed WITHOUT its bag, gets all 16 back: the switch is not in the rollout", allSixteen(resumed.withoutBag!))
   finding("5. control: a spawn_agent child of the no-bag thread can call all 16", children.control!.started && allSixteen(children.control!))
 
+  for (const shape of ["pre", "post"] as const) {
+    const { reading, slug, marker } = shipped[shape]!
+    const requests = seen.filter((request) => request.url === "/_frizz/proj-1/rpc/setOwnThreadTitle" && request.body?.title === `Probe ${slug}`)
+    finding(`6. ${shape}-update app-server, the shipped bag: thread/start succeeds, no frizz tool is callable and no frizz process starts (the operator's one does)`,
+      reading.started && reading.frizz.length === 0 && reading.operator.length === 16 && reading.mcpStarts === 1, reading.error ?? { frizz: reading.frizz, mcpStarts: reading.mcpStarts })
+    finding(`6. ${shape}-update app-server: bare \`frizzctl title\` resolves to this checkout's command, exits 0, and Frizz gets ONE setOwnThreadTitle as ${slug}`,
+      marker.includes(`resolved=${join(cli.binDir, "frizzctl")}`) && /\nexit=0/.test(marker) && requests.length === 1 && requests[0]!.body.slug === slug,
+      requests.map((request) => request.body))
+  }
   console.log("\n======== summary ========")
   for (const reading of readings) console.log(`${reading.label.padEnd(30)} ${reading.server.padEnd(10)} start=${reading.started ? "ok" : "REFUSED"} frizz=${reading.frizz.length} operator=${reading.operator.length} tools=${reading.toolCount} mcpStarts=${reading.mcpStarts}${reading.error ? ` error=${reading.error}` : ""}`)
   console.log(`\nshell tool the mock called: ${[...shellToolsUsed].join(", ")}`)
@@ -572,7 +632,7 @@ try {
   for (const server of servers) if (server.stderr.trim()) console.error(`\napp-server ${server.label} stderr (tail):\n${server.stderr.slice(-3_000)}`)
 } finally {
   for (const server of servers) await server.stop()
-  await new Promise<void>((resolve) => { mock.closeAllConnections?.(); mock.close(() => resolve()) })
+  for (const server of [mock, fakeFrizz]) await new Promise<void>((resolve) => { server.closeAllConnections?.(); server.close(() => resolve()) })
   console.log(`\n${harnessError ? "THE PROBE COULD NOT FINISH" : drift === 0 ? "EVERY READING IS AS RECORDED" : `${drift} READING(S) DIFFER FROM THE RECORD`}`)
   process.exit(harnessError ? 2 : drift === 0 ? 0 : 1)
 }
