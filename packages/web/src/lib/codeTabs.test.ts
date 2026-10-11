@@ -2,7 +2,8 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { Marked } from "marked"
 import { MARKDOWN_OPTIONS } from "./markdown.ts"
-import { forgetCodeTabs, parseFenceLabel, rememberCodeTab, renderCodeTabs } from "./codeTabs.ts"
+import { forgetCodeTabs, parseFenceLabel, rememberCodeTab } from "./codeTabs.ts"
+import { renderCodeBlock } from "./codeBlock.ts"
 
 // The app's real marked configuration, as markdown.test.ts drives it: the sanitizer needs a DOM and is
 // read back in the browser (codeTabs.e2e.test.ts); the grouping and the markup are pure.
@@ -41,7 +42,7 @@ test("the fences Frizz draws as something else are never tabs", () => {
 test("consecutive labelled fences become one block with a tab each", () => {
   forgetCodeTabs()
   const html = render([fence("bash npm", "npm install frizz"), "", fence("bash pnpm", "pnpm add frizz"), "", fence("bash yarn", "yarn add frizz")].join("\n"))
-  assert.equal(count(html, `class="md-code md-code-tabs"`), 1)
+  assert.equal(count(html, `class="md-code md-code-frame md-code-tabs"`), 1)
   assert.equal(count(html, `class="md-code-copy"`), 1, "one copy button for the group")
   assert.match(html, /<span class="md-code-tablist" role="tablist"><button type="button" class="md-code-tab is-active" role="tab" aria-selected="true">npm<\/button><button type="button" class="md-code-tab" role="tab" aria-selected="false">pnpm<\/button>/)
   assert.equal(count(html, `role="tabpanel"`), 3)
@@ -97,9 +98,9 @@ test("tabs group inside a list item and a blockquote", () => {
   const item = ["1. Install it:", "", "   ```bash npm", "   npm i", "   ```", "", "   ```bash pnpm", "   pnpm i", "   ```", "2. Run it."].join("\n")
   const inList = render(item)
   assert.equal(count(inList, `role="tab"`), 2)
-  assert.match(inList, /<li><p>Install it:<\/p>\s*<span class="md-code md-code-tabs">[\s\S]*<\/span>\s*<\/li>\s*<li><p>Run it\.<\/p>/)
+  assert.match(inList, /<li><p>Install it:<\/p>\s*<span class="md-code md-code-frame md-code-tabs">[\s\S]*<\/span>\s*<\/li>\s*<li><p>Run it\.<\/p>/)
   const quoted = render(["> ```bash npm", "> npm i", "> ```", ">", "> ```bash pnpm", "> pnpm i", "> ```"].join("\n"))
-  assert.match(quoted, /<blockquote>\s*<span class="md-code md-code-tabs">/)
+  assert.match(quoted, /<blockquote>\s*<span class="md-code md-code-frame md-code-tabs">/)
   assert.equal(count(quoted, `role="tab"`), 2)
 })
 
@@ -117,7 +118,10 @@ test("labels and code are escaped, never markup", () => {
 
 test("a long label carries its full text as a tooltip, a short one does not", () => {
   const long = "packages/web/src/components/QuestionBlockCard.tsx"
-  const html = renderCodeTabs([{ label: long, info: `tsx title="${long}"`, text: "x" }, { label: "b.ts", info: "ts b.ts", text: "y" }])
+  const html = renderCodeBlock([
+    { label: long, info: `tsx title="${long}"`, text: "x", closed: true },
+    { label: "b.ts", info: "ts b.ts", text: "y", closed: true },
+  ])
   assert.ok(html.includes(`title="${long}">${long}</button>`))
   assert.ok(html.includes(`aria-selected="false">b.ts</button>`))
 })
