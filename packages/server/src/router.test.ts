@@ -2225,11 +2225,11 @@ function holdHarness() {
 test("a message sent to the queue mid-turn is held, and the rest delivers that same send", async () => {
   const { h, slug, sid, sent, ledger, rest } = holdHarness()
   await h.router.followUp.handler({ input: { slug, sessionId: sid, message: "after this, rebase", deliveryId: "d-hold", hold: true } })
-  assert.deepEqual(sent, [], "nothing is handed to the runtime while the turn runs")
+  assert.equal(sent.length, 0, "nothing is handed to the runtime while the turn runs")
   assert.deepEqual(ledger().map((i) => [i.id, i.state, i.text]), [["d-hold", "held", "after this, rebase"]])
   // A replayed call (the client's retry) must not deliver early, and must not hold a second copy.
   await h.router.followUp.handler({ input: { slug, sessionId: sid, message: "after this, rebase", deliveryId: "d-hold", hold: true } })
-  assert.deepEqual(sent, [])
+  assert.equal(sent.length, 0)
   assert.equal(ledger().length, 1)
   await rest()
   assert.deepEqual(sent.map((s) => s.deliveryId), ["d-hold"], "the same id: the bubble on screen becomes the delivered message")
@@ -2277,7 +2277,7 @@ test("a held message is taken back without asking the runtime, on any backend", 
   assert.deepEqual(cancelled, [], "the runtime never had it")
   assert.deepEqual(ledger(), [], "dropped outright: there is no provider record to keep a tombstone for")
   await rest()
-  assert.deepEqual(sent, [], "and the rest delivers nothing")
+  assert.equal(sent.length, 0, "and the rest delivers nothing")
   h.storage.close()
 })
 
@@ -2350,7 +2350,7 @@ test("answers sent to the queue settle at once and wait with the note for the re
   await h.router.followUp.handler({
     input: { slug, sessionId: sid, deliveryId: "d-held-answers", message: "no rush", hold: true, answers: [{ questionId: "qst_store", question: "Which store?", chosen: ["SQLite"] }] },
   })
-  assert.deepEqual(sent, [])
+  assert.equal(sent.length, 0)
   assert.equal(h.storage.getThreadQuestion("qst_store")?.state, "answered", "the card settles when the human sends, not when the agent rests")
   assert.deepEqual(h.storage.undeliveredSettlements(), [])
   assert.equal(ledger()[0].state, "held")
