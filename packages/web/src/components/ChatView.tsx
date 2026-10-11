@@ -46,9 +46,7 @@ import { timeBreakLabel, timeBreaks, type TimeBreak } from "../lib/timeBreaks.ts
 import { useUnqueueFollowUp, useUnqueueSupported } from "../lib/unqueueFollowUp.ts"
 import { useFailedDeliveryActions } from "../lib/failedDelivery.ts"
 import { useDeliverQueuedNow, useDeliverQueuedNowSupported } from "../lib/deliverQueuedNow.ts"
-import { useInnerHtml } from "../lib/innerHtml.ts"
 import { SessionMessageLine } from "./SessionMessageLine.tsx"
-import { useLocalFileCodeLinks } from "../lib/localFileCode.ts"
 import { lastAskIndex, messagePresentationText } from "../lib/messagePresentation.ts"
 import { snoozePresetInstant, formatSnoozeWake } from "../lib/snooze.ts"
 import { noteGithubRefs } from "../lib/githubHovercards.ts"
@@ -3125,7 +3123,6 @@ function SendMessageCard({ to, summary, body, type, status, durationMs }: { to?:
   const [expanded, setExpanded] = useState(false)
   const bodyId = useId()
   const html = useMarkdownHtml(body)
-  const inner = useInnerHtml(html)
   const lineCount = useMemo(() => body.split("\n").length, [body])
   const long = lineCount > SEND_MAX_LINES
   const hasBody = !!body.trim()
@@ -3157,9 +3154,10 @@ function SendMessageCard({ to, summary, body, type, status, durationMs }: { to?:
             <>
               {/* Quiet indented body: the border-top + 10px/8px padding mirror .frizz-bash-body, but the
                   content is MARKDOWN (md-body — sans, 14px) so a peer message reads like prose, not a code
-                  dump. The clamp caps a long body at ~320px until "Show all" expands it. */}
+                  dump — through LinkedHtml, so a gallery or a diagram in it is drawn as one. The clamp caps
+                  a long body at ~320px until "Show all" expands it. */}
               <div className={`border-t border-border px-2.5 py-2${long && !expanded ? " frizz-bash-clamp" : ""}`}>
-                <div className="md-body" dangerouslySetInnerHTML={inner} />
+                <LinkedHtml className="md-body" html={html} />
               </div>
               {long && (
                 <button
@@ -3841,13 +3839,13 @@ export const Message = memo(function Message({ m, answering, dense, paired, text
 // answering questions 9–11 of an earlier ask rendered "1" against a question that reads "9. …".
 function ProseHtml({ md, wrap }: { md: string; wrap?: boolean }) {
   const html = useMarkdownHtml(md)
-  const inner = useInnerHtml(html)
-  const ref = useRef<HTMLDivElement>(null)
-  // Make inline-code file references clickable (opens in the user's editor/default app) once the server
-  // confirms each resolves to a real file. Runs after render; a no-op when the prose has no such paths.
-  useLocalFileCodeLinks(ref, html)
   if (!html) return null
-  return <div ref={ref} className={`md-body${wrap ? ` ${QUEUE_WRAP}` : ""}`} dangerouslySetInnerHTML={inner} />
+  // Through LinkedHtml, as a card's prose is: inline-code file references become clickable once the
+  // server confirms each resolves to a real file, and a ```lightbox or ```mermaid fence still IN the
+  // prose is drawn where it stands. The splitter lifts those fences out when they are blocks of their
+  // own (lib/imagePaths.ts splitProseAttachments); the ones it leaves are inside something — a
+  // `<details>` section, a list item, a quote — where lifting would break the thing they are inside.
+  return <LinkedHtml className={`md-body${wrap ? ` ${QUEUE_WRAP}` : ""}`} html={html} />
 }
 
 // A local absolute image path rendered inline via the gated /local-image route, inside the shared

@@ -24,7 +24,7 @@
 //   cd packages/web && nubx vite --port 5831 --strictPort
 //   nub scripts/verify-md-blocks-ink.mjs --url=http://localhost:5831 [--theme=light] [--dsf=8]
 //     [--only=<substring of a row name>] [--css=<extra rules, to try a change before writing it>]
-import puppeteer from "puppeteer"
+import { launchHeadless } from "./lib/headless-browser.mjs"
 
 const args = process.argv.slice(2)
 const opt = (k, d) => { const hit = args.find((a) => a.startsWith(`--${k}=`)); return hit ? hit.slice(k.length + 3) : d }
@@ -52,11 +52,7 @@ const ROWS = [
   ["summary closed · chip", "[data-case=chip] summary", [8 / 24, 14 / 24]],
 ].filter(([name]) => name.includes(only))
 
-const browser = await puppeteer.launch({
-  headless: "new",
-  args: ["--no-sandbox", "--force-color-profile=srgb"],
-  protocolTimeout: 120_000,
-})
+const browser = await launchHeadless({ protocolTimeout: 120_000 })
 const failures = []
 try {
   const page = await browser.newPage()

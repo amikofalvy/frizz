@@ -125,6 +125,14 @@ async function zoomOf(page: Page) {
   return (await page.evaluate(read))!
 }
 
+// The viewer's picture, LOADED. A gesture zooms only once the picture knows its natural size (`geometry()` in
+// Lightbox.tsx is null until then), and `waitForSelector` returns as soon as the <img> exists — so a click
+// or a pinch right behind it is a race the picture loses on a loaded machine. Measured 2026-10-11: the
+// click test's second picture stayed at scale 1 in two full-suite runs at load average 160, and the pinch
+// test read a moved pixel in one at 260; neither ever failed on its own (0 of 15).
+const pictureLoaded = (page: Page) =>
+  page.waitForFunction(() => (document.querySelector<HTMLImageElement>("[data-lightbox] img")?.naturalWidth ?? 0) > 0)
+
 const close = (a: number, b: number, tolerance = 0.5) => Math.abs(a - b) <= tolerance
 // A browser serializes a transform's numbers to six significant digits, so a scale read back from one is
 // compared to that precision, and a movement — a difference of two translations — to a hundredth of a
@@ -209,7 +217,7 @@ test("a click zooms into the point under the cursor, a drag moves the magnified 
   const { browser, page, errors } = await launch()
   try {
     await (await page.$("[data-fixture-message='0'] [data-lightbox-tile]"))!.click()
-    await page.waitForSelector("[data-lightbox] img")
+    await pictureLoaded(page)
     const fit = await zoomOf(page)
     assert.deepEqual([fit.scale, fit.x, fit.y], [1, 0, 0])
     assert.equal(await page.$eval("[data-lightbox] img", (img) => getComputedStyle(img).cursor), "zoom-in")
@@ -251,10 +259,12 @@ test("a click zooms into the point under the cursor, a drag moves the magnified 
     await page.keyboard.press("Escape")
     await page.waitForFunction(() => !document.querySelector("[data-lightbox]"))
     await (await page.$("[data-fixture-message='1'] [data-lightbox-tile]"))!.click() // phone-375x812
-    await page.waitForSelector("[data-lightbox] img")
+    await pictureLoaded(page)
     const tall = await zoomOf(page)
+    const DIAG = await page.evaluate((x, y) => { const img = document.querySelector<HTMLImageElement>("[data-lightbox] img")!; const d = (el: Element) => `${el.tagName}[${[...el.attributes].map((a) => a.name === "class" || a.name === "style" ? `${a.name}=${a.value.slice(0, 70)}` : a.name).join(" ")}] pe=${getComputedStyle(el).pointerEvents}`; (window as any).__clicks = []; document.addEventListener("click", (e) => (window as any).__clicks.push(d(e.target as Element)), true); return { stack: document.elementsFromPoint(x, y).map(d), imgPe: getComputedStyle(img).pointerEvents, imgVis: getComputedStyle(img).visibility, imgDisplay: getComputedStyle(img).display, bodyPe: document.body.style.pointerEvents, dialogs: document.querySelectorAll("[role=dialog]").length, lightboxes: document.querySelectorAll("[data-lightbox]").length, imgs: document.querySelectorAll("[data-lightbox] img").length, imgConnected: img.isConnected, imgParent: d(img.parentElement!) } }, tall.rect.left + tall.rect.width / 2, tall.rect.top + tall.rect.height / 2)
     await page.mouse.click(tall.rect.left + tall.rect.width / 2, tall.rect.top + tall.rect.height / 2)
     const tallZoomed = await zoomOf(page)
+    if (tallZoomed.scale !== 2) { await new Promise((r) => setTimeout(r, 600)); console.log("DIAGFAIL", JSON.stringify({ before: DIAG, tall, tallZoomed, later: await zoomOf(page), clicks: await page.evaluate(() => (window as any).__clicks), rectLater: await page.$eval("[data-lightbox] img", (i) => JSON.parse(JSON.stringify(i.getBoundingClientRect()))) })) }
     assert.equal(tallZoomed.scale, 2)
     const stage = (await (await page.$("[data-lightbox-stage]"))!.boundingBox())!
     await page.mouse.click(stage.x + 8, stage.y + stage.height / 2)
@@ -272,7 +282,7 @@ test("the zoom buttons, the + − 0 keys and a ctrl-wheel or trackpad pinch zoom
   const { browser, page, errors } = await launch()
   try {
     await (await page.$("[data-fixture-message='0'] [data-lightbox-tile]"))!.click()
-    await page.waitForSelector("[data-lightbox] img")
+    await pictureLoaded(page)
     const disabled = (label: string) => page.$eval(`[data-lightbox] button[aria-label="${label}"]`, (b) => b.getAttribute("aria-disabled") === "true")
     assert.deepEqual([await disabled("Zoom out"), await disabled("Zoom in")], [true, false], "nothing to zoom out of at fit")
 
@@ -347,7 +357,7 @@ test("on a phone, a pinch zooms the picture, one finger pans it, a double tap to
   const { browser, page, errors } = await launch(PHONE)
   try {
     await (await page.$("[data-fixture-message='0'] [data-lightbox-tile]"))!.tap()
-    await page.waitForSelector("[data-lightbox] img")
+    await pictureLoaded(page)
     // A touch screen gets 44px header buttons and no zoom buttons — it pinches.
     const chrome = await page.evaluate(() => ({
       coarse: matchMedia("(pointer: coarse)").matches,
