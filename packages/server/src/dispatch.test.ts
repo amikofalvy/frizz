@@ -684,8 +684,9 @@ test("session-seed is a SLIM runtime pointer, not a fourth full contract copy", 
   assert.match(SESSION_SEED, /\.frizz\/threads\//)
   assert.doesNotMatch(SESSION_SEED, /scratch\.md/, "no filename is reserved in the scratch directory")
   for (const fence of [/```done/, /```awaiting/]) assert.match(SESSION_SEED, fence)
-  // A question is a registered row; the seed names `mcp__frizz__ask` and the empty placement marker only.
-  assert.match(SESSION_SEED, /mcp__frizz__ask/)
+  // A question is a registered row; the seed names `frizzctl ask` and the empty placement marker only.
+  assert.match(SESSION_SEED, /a question is a registered row, `frizzctl ask`/)
+  assert.doesNotMatch(SESSION_SEED, /mcp__frizz__/)
   assert.doesNotMatch(SESSION_SEED, /```done \/ ```awaiting \/ ```question/)
   assert.doesNotMatch(SESSION_SEED, /RUNTIME RELEASE GATE:/)
   assert.doesNotMatch(SESSION_SEED, /never build a bespoke screenshot tool/)
