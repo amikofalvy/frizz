@@ -1226,9 +1226,10 @@ export function createRouter(ctx: AppContext) {
   // accounted for (the replay no-op every branch used to spell as its own `hasDelivery` check). From
   // then on a throw can no longer take the words with it: the entry turns `failed` with the error, and
   // the error is tagged `deliveryKept` so the client knows the server has them and does not ALSO push
-  // them back into the prompt box — whose sessionStorage draft is exactly the copy a browser restart
-  // destroyed (2026-09-30: a ~4,000-character dictated steer, lost when a cold resume threw and Chrome
-  // then restarted).
+  // them back into the prompt box — whose draft, sessionStorage at the time, is exactly the copy a
+  // browser restart destroyed (2026-09-30: a ~4,000-character dictated steer, lost when a cold resume
+  // threw and Chrome then restarted). The draft is localStorage since 2026-10-11 and survives that
+  // restart, but it is still one browser's copy; the server's is the one every device can reach.
   //
   // A throw BEFORE `open()` — a stale session, a pending permission change, a refused restart — leaves
   // nothing on the server. Those are clean refusals of a send that never started, and the client hands
@@ -3983,7 +3984,7 @@ export function createRouter(ctx: AppContext) {
     // (claude-quota.ts — which also says when, and how rarely, it may start Claude Code instead).
     // Never throws — degrades to per-provider "unavailable".
     quota: query({
-      input: z.object({ force: z.boolean().optional() }).strict().optional(),
+      input: z.object({ force: z.union([z.boolean(), z.enum(["claude", "codex"])]).optional() }).strict().optional(),
       output: QuotaSnapshot,
       handler: async ({ input }) => readQuota({ claudeBin: ctx.claudeBin, codexBin: ctx.codexBin, force: input?.force }),
     }),
@@ -3992,9 +3993,12 @@ export function createRouter(ctx: AppContext) {
     // (whose "unavailable" is overloaded with transient endpoint failures): this reports only whether a
     // credential exists, so a dispatch can be blocked on a genuine "signed-out" without false-blocking
     // on a network blip. Never throws — degrades to per-provider "unknown", on which the gate fails open.
+    // `fresh` is a person saying "I've signed in, look again": it re-asks the Claude CLI at once
+    // instead of serving the verdict readAuthSnapshot remembers between polls.
     authStatus: query({
+      input: z.object({ fresh: z.boolean().optional() }).strict().optional(),
       output: AuthSnapshot,
-      handler: async () => readAuthSnapshot({ claudeBin: ctx.claudeBin }),
+      handler: async ({ input }) => readAuthSnapshot({ claudeBin: ctx.claudeBin, fresh: input?.fresh }),
     }),
 
     // Typed provider account action behind the `/logout` alias + confirm dialog (claude-auth plan).
