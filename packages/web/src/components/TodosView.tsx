@@ -10,6 +10,7 @@ import { rpc } from "../api/rpc.ts"
 import { useBoard, asThreads, useProjectDir, useTranscript } from "../hooks.ts"
 import { orderQueue, queued } from "../groups.ts"
 import { tailAskIdx, useLiveAnswering } from "../lib/answering.ts"
+import { SendScopeContext, useComposerSendHandle, useComposerSendPresent, useSendScope } from "../lib/sendScope.tsx"
 import { shouldSubmitStagedEnter } from "../lib/composerKeyboard.ts"
 import { hasQuestionBlock } from "../lib/questionBlocks.ts"
 import { showsRegisteredDoneCard } from "../lib/registeredDone.ts"
@@ -1244,19 +1245,26 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
   // place — TodosView's unmount effect then auto-scrolls the next card to the viewport top (like every
   // user-initiated dismissal). …and `onSendFailed` puts it straight back when the send is refused,
   // rather than leaving the human to wait out resolve()'s 8s reappear guard with only a toast.
-  const { answeringForMessage, answerable, anyAnswered, sendAnswers, sendMessage } = useLiveAnswering(thread.id, messages, () => {
+  // THE PROMPT BOX SENDS THE ANSWERS (lib/sendScope, maintainer 2026-10-11): the card's one send is the
+  // box's Send button, which carries every staged answer and whatever is typed in it as one turn. The
+  // handle is what the card-level Enter below and each question block's own Enter send through.
+  const composerSend = useComposerSendHandle()
+  const promptBoxSends = useComposerSendPresent(composerSend)
+  const { answeringForMessage, answerable, anyAnswered, sendAnswers, sendMessage, stagedCount, takeAnswers } = useLiveAnswering(thread.id, messages, () => {
     ;(document.activeElement as HTMLElement | null)?.blur()
     onResolve(thread.id)
-  }, { scrollToBottom: false, onSendFailed: () => onUnresolve(thread.id) })
-  // The card-level "Send answers" action shows for the standing ask (the common case) OR the moment the
-  // human touches an OLDER question's chips — an answer you can stage but not send would be a dead end.
+  }, { scrollToBottom: false, onSendFailed: () => onUnresolve(thread.id), composer: composerSend })
+  const sendScope = useSendScope(composerSend, { stagedCount, takeAnswers })
+  // The card-level "Send answers" action is the FALLBACK for a card with no prompt box mounted (a
+  // collapsed one): there it shows for the standing ask OR the moment the human touches an OLDER
+  // question's chips — an answer you can stage but not send would be a dead end.
   // Not for a standing ask whose every fence was folded into a registered card, though: that card
   // carries its own Send answers, and a second button under it would send an empty reply.
   const tailAskShadowed = useMemo(() => {
     const idx = tailAskIdx(messages)
     return idx !== -1 && allFencesShadowed(messages[idx].text, shadowedByMessage.get(idx) ?? [])
   }, [messages, shadowedByMessage])
-  const showSendAnswers = fencesLive && ((answerable && !tailAskShadowed) || anyAnswered)
+  const showSendAnswers = !promptBoxSends && fencesLive && ((answerable && !tailAskShadowed) || anyAnswered)
 
   // Dismiss THIS card through the same user-initiated auto-scroll exit the footer/header/answer paths
   // use, exposed to the in-transcript fence buttons (done Mark-as-done, awaiting park) via context so
@@ -1287,6 +1295,7 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
     // live (spinner + drill-in) and a done/awaiting fence card resolves its thread to show the confirm button.
     <ThreadSlugContext.Provider value={thread.id}>
     <QueueDismissContext.Provider value={queueDismiss}>
+    <SendScopeContext.Provider value={sendScope}>
     <RegisteredAnsweringProvider thread={thread}>
     {/* NO overflow-hidden: it would clip the sticky header out of stickiness. The header carries
         rounded-t so the card's top corners still look clipped; the root's BLOCK_RADIUS handles the bottom.
@@ -1304,7 +1313,7 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
         ...(vtSnap.vtReturnTarget === thread.id ? { viewTransitionName: "thread-chat" } : null),
       }}
       // Enter (or ⌘/Ctrl-Enter) from the card at rest sends the staged answers, provided at least
-      // one block is answered — the card-level twin of the Send answers button below. Every input
+      // one block is answered — the same send as the prompt box's button (sendAnswers goes through it). Every input
       // that owns the key itself (a question block's grid/free-text box, the composer with content)
       // stops propagation before it reaches here, so this catches it on the EMPTY composer and on
       // the card body. Buttons and links keep their native Enter (activation), and a composer that
@@ -1805,6 +1814,7 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
       )}
     </div>
     </RegisteredAnsweringProvider>
+    </SendScopeContext.Provider>
     </QueueDismissContext.Provider>
     </ThreadSlugContext.Provider>
   )

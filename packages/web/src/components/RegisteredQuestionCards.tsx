@@ -26,6 +26,7 @@ import type { QuestionAnswer, RegisteredQuestionView, SettledQuestionView, Threa
 import { rpc } from "../api/rpc.ts"
 import { draftKey, draftStore, useDraftValues, useProjectDir } from "../lib/drafts.ts"
 import { clearSteered, markSteered } from "../lib/steering.ts"
+import { SendScopeContext, usePromptBoxSends } from "../lib/sendScope.tsx"
 import type { BlockAnswer } from "../lib/questionBlocks.ts"
 import type { PairedAnswer } from "../lib/answersMessage.ts"
 import { ROOT_PATH, liveQuestionNodes, nodeAnswered, registeredAnswer, settledQuestionNodes } from "../lib/registeredQuestion.ts"
@@ -49,11 +50,28 @@ export interface RegisteredAnswering {
   onText: (q: RegisteredQuestionView, path: string, isMulti: boolean, text: string) => void
   dismiss: (id: string) => void
   dismissing: boolean
-  /** Send EVERY staged answer on the thread — placed or at an anchor, this rest's or an older one. */
+  /** Send EVERY staged answer on the thread — placed or at an anchor, this rest's or an older one.
+   *  Through the surface's prompt box when it has one (lib/sendScope), so whatever is typed there goes
+   *  with them; on its own otherwise. */
   submit: () => void
+  /** Hand every staged answer to the prompt box's send, which carries them in its own follow-up. Null
+   *  when nothing is staged. */
+  take: () => RegisteredTake | null
   staged: number
   sending: boolean
   error: string | undefined
+}
+
+/** The staged answers as the prompt box's send needs them, with the three edges of that send. */
+export interface RegisteredTake {
+  answers: QuestionAnswer[]
+  /** The same answers as the human may read them back — a secret's value never reaches a bubble. */
+  display: QuestionAnswer[]
+  /** The send has committed locally: the cards grey in place. */
+  onOptimistic: () => void
+  onSuccess: () => void
+  /** The send was refused. `kept`: the server holds it as a failed send, answers settled and all. */
+  onRollback: (kept: boolean) => void
 }
 
 export const RegisteredAnsweringContext = createContext<RegisteredAnswering | null>(null)
@@ -77,6 +95,7 @@ export function useRegisteredAnswering(thread: ThreadView | undefined): Register
   // the board to catch up, which is the window its answer rendered twice in (2026-09-01). Null on the
   // thread page, where there is no card to dismiss.
   const queueDismiss = useContext(QueueDismissContext)
+  const sendScope = useContext(SendScopeContext)
 
   // Picks and text share the tab's draft store, so queue, drawer, fullscreen and project remounts
   // all see the same staged answer. Secrets stay strictly in memory outside this subscription.
@@ -148,7 +167,31 @@ export function useRegisteredAnswering(thread: ThreadView | undefined): Register
     onError: (cause) => setError(errorText(cause)),
   })
 
-  const submit = () => {
+  // A secret's settled card never draws the value, not even for the beat before the server's own
+  // stored text (where the file went) replaces this.
+  const displayed = (pairs: typeof stagedPairs): QuestionAnswer[] =>
+    pairs.map(({ q, answer }) => (q.spec.secret ? { ...answer, text: "(secret sent)" } : answer))
+  // THE CARD GREYS IN PLACE ON SEND, before the round-trip: the answered question joins the settled
+  // list now, and the surface stops drawing the open card for any id that list holds (see
+  // withoutSettledQuestions). Waiting for the server instead left a beat where the open card had gone
+  // with the board push and the settled one had not arrived — the card blinking out and back.
+  const settleOptimistically = (owner: string, pairs: typeof stagedPairs) => {
+    const key = settledQuestionsKey(owner)
+    void queryClient.cancelQueries({ queryKey: key })
+    const settledAt = new Date().toISOString()
+    const ids = new Set(pairs.map((pair) => pair.q.id))
+    const shown = displayed(pairs)
+    queryClient.setQueryData<SettledQuestion[]>(key, (prev) => [
+      ...(prev ?? []).filter((s) => !ids.has(s.id)),
+      ...pairs.map(({ q }, i): SettledQuestion => ({ id: q.id, spec: q.spec, askedAt: q.askedAt, settledAt, pending: true, answer: shown[i] })),
+    ])
+  }
+  const draftKeysOf = (owner: string, pairs: typeof stagedPairs) =>
+    pairs.map(({ q }) => ({ id: q.id, keys: q.spec.secret ? [] : allPaths(q).flatMap((path) => [
+      draftKey.question(projectDir, owner, q.id, path), draftKey.questionPick(projectDir, owner, q.id, path),
+    ]) }))
+
+  const sendAlone = () => {
     if (!slug || staged.length === 0 || send.isPending) return
     setError(undefined)
     // Local truth FIRST, then the network — the ordering every other send on this card obeys, and the
@@ -159,29 +202,43 @@ export function useRegisteredAnswering(thread: ThreadView | undefined): Register
     // dropped its question mark on the board push, sat in the queue wearing the at-rest ellipsis, and only
     // moved to the running band once the delivery landed (lib/steering.ts).
     markSteered(slug)
-    // THE CARD GREYS IN PLACE ON SEND, before the round-trip: the answered question joins the settled
-    // list now, and the surface stops drawing the open card for any id that list holds (see
-    // withoutSettledQuestions). Waiting for the server instead left a beat where the open card had gone
-    // with the board push and the settled one had not arrived — the card blinking out and back.
-    const key = settledQuestionsKey(slug)
-    void queryClient.cancelQueries({ queryKey: key })
-    const settledAt = new Date().toISOString()
-    const ids = new Set(stagedPairs.map((pair) => pair.q.id))
-    queryClient.setQueryData<SettledQuestion[]>(key, (prev) => [
-      ...(prev ?? []).filter((s) => !ids.has(s.id)),
-      // A secret's settled card never draws the value, not even for the beat before the server's own
-      // stored text (where the file went) replaces this.
-      ...stagedPairs.map(({ q, answer }): SettledQuestion => ({
-        id: q.id, spec: q.spec, askedAt: q.askedAt, settledAt, pending: true,
-        answer: q.spec.secret ? { ...answer, text: "(secret sent)" } : answer,
-      })),
-    ])
-    send.mutate({
+    settleOptimistically(slug, stagedPairs)
+    send.mutate({ answers: staged, drafts: draftKeysOf(slug, stagedPairs) })
+  }
+  // THE PROMPT BOX'S SEND TAKES THEM (lib/sendScope). The same local truth as `sendAlone`, minus what
+  // that send already does for itself: it dissolves the queue card and marks the row steered, and its
+  // own failure toast says why a refused send came back.
+  const take = (): RegisteredTake | null => {
+    if (!slug || staged.length === 0) return null
+    const pairs = stagedPairs
+    const drafts = draftKeysOf(slug, pairs)
+    const settle = () => void queryClient.invalidateQueries({ queryKey: settledQuestionsKey(slug) })
+    const forget = () => {
+      setSecrets((prev) => {
+        if (!pairs.some(({ q }) => prev.has(q.id))) return prev
+        const next = new Map(prev)
+        for (const { q } of pairs) next.delete(q.id)
+        return next
+      })
+      for (const entry of drafts) for (const key of entry.keys) draftStore.clear(key)
+    }
+    return {
       answers: staged,
-      drafts: stagedPairs.map(({ q }) => ({ id: q.id, keys: q.spec.secret ? [] : allPaths(q).flatMap((path) => [
-        draftKey.question(projectDir, slug, q.id, path), draftKey.questionPick(projectDir, slug, q.id, path),
-      ]) })),
-    })
+      display: displayed(pairs),
+      onOptimistic: () => {
+        setError(undefined)
+        settleOptimistically(slug, pairs)
+      },
+      onSuccess: () => { forget(); settle() },
+      // Server truth replaces the optimistic settled cards either way. Refused outright, the questions
+      // are still open there and the cards come back with their staged answers intact; kept as a
+      // failed send, the questions ARE settled and the failed bubble carries the words.
+      onRollback: (kept) => { if (kept) forget(); settle() },
+    }
+  }
+  const submit = () => {
+    if (sendScope?.composer.run()) return
+    sendAlone()
   }
 
   return {
@@ -219,6 +276,7 @@ export function useRegisteredAnswering(thread: ThreadView | undefined): Register
     dismiss: (id) => dismiss.mutate(id),
     dismissing: dismiss.isPending,
     submit: () => submit(),
+    take,
     staged: staged.length,
     sending: send.isPending,
     error,
@@ -438,6 +496,10 @@ export function RegisteredQuestionStack({
   const own = useRegisteredAnswering(shared ? undefined : thread)
   const a = shared ?? own
   const phone = usePhoneQuestions()
+  // The surface's prompt box sends these (lib/sendScope), so this stack draws no Send of its own —
+  // and a stack with no card of its own, mounted only to carry that Send, has nothing left to draw.
+  const promptBoxSends = usePromptBoxSends()
+  const drawsSend = showSend && !promptBoxSends
 
   // THE ANSWER, ALREADY SENT AND NOT YET IN THE WORKER'S HANDS. Answering stores the row; a wake hands
   // it over a moment later (deliberately — an answer given while the worker's process is down has to
@@ -453,7 +515,7 @@ export function RegisteredQuestionStack({
   // the whole reason the rows arrive as a prop rather than off the thread — see unrenderedAnswers.
   // ON THE PHONE THREAD PAGE there is no per-stack Send — the bottom bar's Answer opens the sheet that
   // sends — so a stack whose questions were all placed in the prose above has nothing of its own to draw.
-  if (!slug || (questions.length === 0 && (!showSend || phone))) {
+  if (!slug || (questions.length === 0 && (!drawsSend || phone))) {
     if (!slug || !inFlight?.length) return null
     return (
       <section data-answers-in-flight aria-label="Your answer, on its way to the worker" className={`flex min-w-0 flex-col items-end ${className}`}>
@@ -488,18 +550,22 @@ export function RegisteredQuestionStack({
       {a.sending && (
         <div role="status" aria-live="polite" className="text-[11px] leading-snug text-muted">Sending…</div>
       )}
-      <div className="flex justify-start">
-        <button
-          type="button"
-          data-send-answers
-          disabled={a.staged === 0 || a.sending}
-          onClick={a.submit}
-          onMouseDown={(e) => e.preventDefault()}
-          className="button-outline rounded-md bg-fg px-3 py-1.5 text-[12px] font-medium text-bg outline-none transition-all hover:opacity-90 active:scale-95 disabled:opacity-30 disabled:hover:opacity-30"
-        >
-          Send answers
-        </button>
-      </div>
+      {/* Only where no prompt box sends them: there, its Send button is the one send for every
+          staged answer and the typed message together (maintainer 2026-10-11). */}
+      {!promptBoxSends && (
+        <div className="flex justify-start">
+          <button
+            type="button"
+            data-send-answers
+            disabled={a.staged === 0 || a.sending}
+            onClick={a.submit}
+            onMouseDown={(e) => e.preventDefault()}
+            className="button-outline rounded-md bg-fg px-3 py-1.5 text-[12px] font-medium text-bg outline-none transition-all hover:opacity-90 active:scale-95 disabled:opacity-30 disabled:hover:opacity-30"
+          >
+            Send answers
+          </button>
+        </div>
+      )}
     </section>
   )
 }

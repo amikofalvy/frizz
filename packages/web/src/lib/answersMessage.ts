@@ -1,4 +1,4 @@
-import { ANSWER_CONTINUATION_INDENT, ANSWER_FOLLOW_UP_MARKER, ANSWER_PICK_PREFIX, BURIED_ANSWERS_HEADER, DISMISSED_ANSWER, SECRET_ANSWER_MASK, isSecretAnswerText } from "@frizz/shared"
+import { ANSWER_CONTINUATION_INDENT, ANSWER_FOLLOW_UP_MARKER, ANSWER_PICK_PREFIX, BURIED_ANSWERS_HEADER, DISMISSED_ANSWER, SECRET_ANSWER_MASK, isSecretAnswerText, splitAnswersNote } from "@frizz/shared"
 import { splitQuestionBlocks, parseQuestionBlock, type MessageSegment } from "./questionBlocks.ts"
 
 // Detect + parse OUR OWN composed-answer format, so a user message that is a multi-block answer renders
@@ -31,9 +31,26 @@ import { splitQuestionBlocks, parseQuestionBlock, type MessageSegment } from "./
 // a notification card is that it is written in this form (see Message, which checks for it first). The
 // marked rows are that path's: its questions can be a static TREE, which is flat on the wire.
 
+//
+// EITHER FORM MAY CARRY A NOTE: what the human typed in the prompt box, sent in the same turn as the
+// answers (the box's one Send, 2026-10-11). It sits under its own header line after the rows
+// (withAnswersNote), and both parsers cut it off BEFORE reading a row — any line after a row is
+// otherwise a continuation of that row's answer, and the note would print inside the last chip.
+// `answersNote` hands it to the renderer, which draws it as the human's bubble under the card.
+
 export interface ParsedAnswer {
   n: number
   answer: string
+}
+
+// CR/CRLF → LF first: a terminal-injected follow-up arrives carriage-return-separated, which would
+// otherwise leave the whole message on one "line" and defeat detection (see the server's normalizer).
+const rowsOf = (text: string): string => splitAnswersNote(text.replace(/\r\n?/g, "\n")).answers
+
+/** The note sent with an answers message — "" when there is none, or when `text` is not one. */
+export function answersNote(text: string): string {
+  if (!text || parseAnswersCard(text) === null) return ""
+  return splitAnswersNote(text.replace(/\r\n?/g, "\n")).note
 }
 
 // A ParsedAnswer PAIRED with the question it answers — `question` is the originating ```question
@@ -60,9 +77,7 @@ function continueAnswer(row: { answer: string }, line: string): void {
 
 export function parseAnswersMessage(text: string): ParsedAnswer[] | null {
   if (!text) return null
-  // CR/CRLF → LF first: a terminal-injected follow-up arrives carriage-return-separated, which would
-  // otherwise leave the whole message on one "line" and defeat detection (see the server's normalizer).
-  const lines = text.replace(/\r\n?/g, "\n").split("\n")
+  const lines = rowsOf(text).split("\n")
   // First NON-empty line must be exactly the "Answers:" header.
   let i = 0
   while (i < lines.length && !lines[i].trim()) i++
@@ -114,7 +129,7 @@ const BURIED_QUESTION_CLOSE = /[”"]\s+→\s+/
 // returns null so the caller keeps the plain bubble.
 export function parseBuriedAnswersMessage(text: string): PairedAnswer[] | null {
   if (!text) return null
-  const lines = text.replace(/\r\n?/g, "\n").split("\n") // CR/CRLF → LF (terminal-injected follow-ups)
+  const lines = rowsOf(text).split("\n") // CR/CRLF → LF (terminal-injected follow-ups), note cut off
   let i = 0
   while (i < lines.length && !lines[i].trim()) i++
   if (i >= lines.length || lines[i].trim() !== BURIED_HEADER) return null

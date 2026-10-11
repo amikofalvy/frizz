@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState, type ReactElement, type ReactNode } from "react"
+import { useContext, useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react"
 import { useSnapshot } from "valtio"
 import type { AccountBackend, ThreadSkill, ThreadView } from "@frizz/shared"
-import { awaitingSteps } from "@frizz/shared"
+import { awaitingSteps, questionAnswerMessage, withAnswersNote } from "@frizz/shared"
 import { rpc } from "../api/rpc.ts"
 import { restoreContextItems, showToast, store, takeContextItems } from "../store.ts"
 import { buildMessageWithContext, hasToken } from "../lib/composerContext.ts"
@@ -19,6 +19,9 @@ import { threadLifecycleAvailability } from "../lib/threadLifecycle.ts"
 import { PhoneDoneButton } from "./PhoneDoneButton.tsx"
 import { RecurringPromptControl } from "./RecurringPromptControl.tsx"
 import type { PhoneBarApi } from "./Composer.tsx"
+import { RegisteredAnsweringContext } from "./RegisteredQuestionCards.tsx"
+import { SendScopeContext } from "../lib/sendScope.tsx"
+import { sendPlaceholder, setSendMode, useSendMode } from "../lib/sendMode.ts"
 
 // THE prompt box for a registered thread — the single block every "steer this thread" surface renders.
 // The <Composer> leaf was already shared; the ~14 lines AROUND it were not, and the queue card's copy had
@@ -98,16 +101,25 @@ export function ThreadComposerBox({
 }): ReactElement {
   const snap = useSnapshot(store)
   const thread = snap.board?.threads.find((candidate) => candidate.id === slug)
+  // THE ONE SEND (lib/sendScope). Everything staged on the surface's question cards leaves through
+  // this box: the registered questions' answers (shared through their own context) and the fenced
+  // ones (through the surface's scope). Either context may be absent — a box mounted with no question
+  // surface around it simply has nothing staged.
+  const registered = useContext(RegisteredAnsweringContext)
+  const scope = useContext(SendScopeContext)
+  const staged = (registered?.staged ?? 0) + (scope?.fencedCount ?? 0)
+  // "A turn is in flight" — the only time sending as a steer and sending to the queue differ.
+  const running = thread?.runtime === "running"
+  const mode = useSendMode(slug, running)
   // ONE placeholder for both surfaces, decided here from the thread — the queue card said "Reply to the
   // agent…" and the drawer "Follow up…" until 2026-10-09, and only the card said when the box was the
   // way AROUND an open question. An external session keeps its own sentence: it says what sending does,
   // which is to take the session over (see ThreadActionBar). An open question is a registered one or a
-  // fence the worker's last message still asks.
+  // fence the worker's last message still asks. With an answer staged the box is a note on it, and
+  // with the menu shut this line is also what says how the button will send (sendPlaceholder).
   const placeholder = thread?.foreign
     ? "Send a message to take over this session…"
-    : thread?.pendingQuestion || (thread?.questions?.length ?? 0) > 0
-      ? "Or skip the questions and reply…"
-      : "Reply to the agent…"
+    : sendPlaceholder({ staged, openQuestions: Boolean(thread?.pendingQuestion) || (thread?.questions?.length ?? 0) > 0, running, mode })
   const projectDir = useProjectDir()
   const key = draftKey.followUp(projectDir, slug, thread?.sessionId)
   const [message, setMessage, clearMessage] = useDraft(key)
@@ -154,7 +166,11 @@ export function ThreadComposerBox({
 
   function send(interrupt = false) {
     const text = message.trim()
-    if (!text) return
+    // The answers staged on the cards ride this send, on the desktop box only: the phone bar's answers
+    // go through its own sheet (PhoneQuestionCards), which this bar never registered a send for.
+    const answers = phoneBar ? null : registered?.take() ?? null
+    const fenced = phoneBar ? null : scope?.takeFenced() ?? null
+    if (!text && !answers && !fenced) return
     // `/login` / `/logout` are frizz-owned account actions for THIS thread's backend — invoked
     // locally, never delivered to the worker as a prompt (a leading slash is not a stable provider
     // command transport across the live-paste vs dead-resume lifecycles).
@@ -172,10 +188,25 @@ export function ThreadComposerBox({
     }
     // Staged ⌘I context items ride the send: serialized into the text (before any trailing
     // attachment paths) and cleared with it — restored on a rejected send exactly like the draft.
-    const staged = takeContextItems(slug)
-    const outgoing = buildMessageWithContext(text, staged, projectDir)
+    const context = takeContextItems(slug)
+    const note = text ? buildMessageWithContext(text, context, projectDir) : ""
+    // ONE TURN. Fenced answers are composed here and the typed words go under them as the note; the
+    // registered ones are settled and composed by the server, above all of it (FollowUpInput.answers),
+    // so `outgoing` may be empty when only those ride. `shown` is what the optimistic bubble draws
+    // until the server's own copy replaces it.
+    const outgoing = fenced ? withAnswersNote(fenced.wire, note) : note
+    const shown = answers ? withAnswersNote(questionAnswerMessage(answers.display), outgoing) : outgoing
     const callbacks: EagerFollowUpCallbacks = {
-      onOptimistic: clearMessage,
+      onOptimistic: () => {
+        clearMessage()
+        answers?.onOptimistic()
+        fenced?.onOptimistic()
+      },
+      onSuccess: () => answers?.onSuccess(),
+      ...(answers ? { answers: answers.answers, displayText: shown } : {}),
+      // "Send to queue" is the ticked row AND there is a turn to queue behind. The forced send never
+      // queues: ⌘/Ctrl-Enter means now.
+      ...(mode === "queue" && running && !interrupt ? { hold: true } : {}),
       // Re-sending words an earlier failure handed back replaces that failure's bubble — see
       // lib/failedDelivery.ts.
       supersedes: takeSupersededFailure(key, outgoing),
@@ -186,13 +217,28 @@ export function ThreadComposerBox({
       // because this draft is sessionStorage and does not survive a browser restart.
       onRollback: (failure) => {
         mergeIntoDraft(key, message)
-        restoreContextItems(slug, staged)
+        restoreContextItems(slug, context)
         noteFailedDraftOrigin(key, { ...failure, text: message })
+        answers?.onRollback(failure.kept)
+        fenced?.onRollback()
       },
     }
     if (submitOverride) submitOverride(outgoing, callbacks)
     else followUp.submit(outgoing, { ...callbacks, interrupt })
   }
+
+  // Register this box as its surface's send, so Enter in a question card's own text box — and the
+  // queue card's card-level Enter — is this same send, typed words included. Through a ref: `send`
+  // closes over the current draft and staged answers, and is a new function every render.
+  const sendRef = useRef(send)
+  sendRef.current = send
+  const composerHandle = phoneBar ? undefined : scope?.composer
+  useEffect(() => {
+    if (!composerHandle) return
+    const run = () => sendRef.current()
+    composerHandle.set(run)
+    return () => composerHandle.set(null)
+  }, [composerHandle])
 
   if (phoneBar) {
     return (
@@ -252,6 +298,9 @@ export function ThreadComposerBox({
         busy={controls.busy}
         footer={controls.footer}
         railLead={goal}
+        // An external session keeps the ↑: sending there takes the session over, and there is no turn
+        // of Frizz's to steer or queue behind until it has.
+        send={thread?.foreign ? undefined : { mode, onMode: (next) => setSendMode(slug, next), running, staged }}
       />
       {controls.status}
       {signInFor && <SignInModal backend={signInFor} onClose={() => setSignInFor(null)} onAuthed={() => setSignInFor(null)} />}

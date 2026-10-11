@@ -34,6 +34,8 @@ test("every rendered message variant still carries its own data-frizz-msg handle
   // assistant turn, user bubble, event line, reasoning block — plus the wake divider (WakeDivider.tsx)
   // and the answers card, which moved to its own module on 2026-08-27 when the registered-question path
   // needed to draw the human's answer while it was still in flight to the worker.
+  // …and, since 2026-10-11, answers sent with a note: one message drawn as a card and a bubble, whose
+  // shared wrapper carries the handle (AnswersWithNote) so neither half claims it alone.
   const hosts = sources.reduce((n, source) => n + [...source.matchAll(/data-frizz-msg=\{(?:m\.)?sourceId\}/g)].length, 0)
-  assert.equal(hosts, 6, "each rendered message variant must stamp its own sourceId")
+  assert.equal(hosts, 7, "each rendered message variant must stamp its own sourceId")
 })

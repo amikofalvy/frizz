@@ -74,8 +74,20 @@ const RAIL_BOX_GAP: Partial<Record<`${RailMark}>${RailMark}`, number>> = {
   "action>mic": -3,
 }
 
-/** Where each present mark sits (its CSS `right`, px) and how much right padding the prose keeps. */
-export function composerRail(present: { lead?: boolean; action?: boolean; mic?: boolean }): {
+/** THE THREAD COMPOSER'S SEND IS A SPLIT BUTTON, not a 28px square: the word "Send", a hairline, and a
+ *  caret that opens the two ways of sending (components/SendSplitButton.tsx, which owns these three
+ *  widths and the readings behind them). It is still filled edge to edge, so its ink is its box and
+ *  every gap in the table above holds unchanged — only the width the marks to its left clear grows. */
+export const SEND_SPLIT_LABEL_WIDTH = 45.5
+export const SEND_SPLIT_SEAM_WIDTH = 1
+export const SEND_SPLIT_CARET_WIDTH = 23
+export const SEND_SPLIT_WIDTH = SEND_SPLIT_LABEL_WIDTH + SEND_SPLIT_SEAM_WIDTH + SEND_SPLIT_CARET_WIDTH
+
+/** Where each present mark sits (its CSS `right`, px) and how much right padding the prose keeps.
+ *  `sendWidth` is the Send control's own width when it is not the 28px square. A fractional one is
+ *  rounded UP for the marks beside it: the button is filled and may end on a half pixel, but a bare
+ *  15px icon placed on one draws soft on a 1x screen. */
+export function composerRail(present: { lead?: boolean; action?: boolean; mic?: boolean; sendWidth?: number }): {
   right: Partial<Record<RailMark, number>>
   reserve: number
 } {
@@ -86,7 +98,7 @@ export function composerRail(present: { lead?: boolean; action?: boolean; mic?: 
   let neighbour: RailMark | null = null
   for (const mark of [...marks].reverse()) {
     right[mark] = neighbour ? edge + (RAIL_BOX_GAP[`${mark}>${neighbour}`] ?? RAIL_BOX_GAP["paperclip>send"]!) : RAIL_SEND_RIGHT
-    edge = right[mark]! + RAIL_BOX
+    edge = right[mark]! + (mark === "send" ? Math.ceil(present.sendWidth ?? RAIL_BOX) : RAIL_BOX)
     neighbour = mark
   }
   return { right, reserve: edge + RAIL_PROSE_CLEARANCE }

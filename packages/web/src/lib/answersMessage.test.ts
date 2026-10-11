@@ -1,7 +1,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { ANSWER_FOLLOW_UP_MARKER, BURIED_ANSWERS_HEADER, DISMISSED_ANSWER, SECRET_ANSWER_MASK, questionAnswerMessage, secretAnswerText } from "@frizz/shared"
-import { answersForDisplay, splitAnswerPicks, parseAnswersMessage, parseBuriedAnswersMessage, parseAnswersCard, pairAnswersMessage, pairAllAnswers, unrenderedAnswers, isAnswersMessage, type MsgLike } from "./answersMessage.ts"
+import { ANSWER_FOLLOW_UP_MARKER, BURIED_ANSWERS_HEADER, DISMISSED_ANSWER, SECRET_ANSWER_MASK, questionAnswerMessage, secretAnswerText, withAnswersNote } from "@frizz/shared"
+import { answersForDisplay, answersNote, splitAnswerPicks, parseAnswersMessage, parseBuriedAnswersMessage, parseAnswersCard, pairAnswersMessage, pairAllAnswers, unrenderedAnswers, isAnswersMessage, type MsgLike } from "./answersMessage.ts"
 import { composeAnswerWire } from "./answering.ts"
 
 test("parses the multi-block composed-answer format into numbered rows", () => {
@@ -438,4 +438,51 @@ test("unrenderedAnswers: no wire, or an unreadable one, draws nothing", () => {
 test("unrenderedAnswers: the question is part of what makes two rows the same answer", () => {
   const other = user('Answers to earlier questions:\n1. “Something else entirely?” → just test it ad hoc')
   assert.equal(unrenderedAnswers([other], WIRE)?.length, 1)
+})
+
+// ---- ANSWERS SENT WITH A NOTE (the prompt box's one Send, 2026-10-11) ----
+// The typed message rides the same turn as the answers, under its own header line. Both parsers must
+// stop at that line: any line after a row is otherwise a continuation of the row's answer, so the note
+// would print inside the last question's chip.
+test("a note sent with answers is cut off before the rows are read, in both wire forms", () => {
+  const registered = withAnswersNote("Answers to earlier questions:\n1. “Which store?” → SQLite\n2. “Ship it?” → Yes", "and keep the migration small\n\n1. one file\n2. no new deps")
+  assert.deepEqual(parseAnswersCard(registered), [
+    { n: 1, answer: "SQLite", question: "Which store?" },
+    { n: 2, answer: "Yes", question: "Ship it?" },
+  ])
+  assert.equal(answersNote(registered), "and keep the migration small\n\n1. one file\n2. no new deps", "a numbered list in the note forges no rows")
+  const fenced = withAnswersNote("Answers:\n1. B. Yes", "also rename the flag")
+  assert.deepEqual(parseAnswersCard(fenced), [{ n: 1, answer: "B. Yes" }])
+  assert.equal(answersNote(fenced), "also rename the flag")
+})
+
+test("answers with no note, and ordinary messages, have no note", () => {
+  assert.equal(answersNote("Answers:\n1. B. Yes"), "")
+  assert.equal(answersNote("Sent with these answers:\nnot an answers message at all"), "")
+  assert.equal(answersNote("just a steer"), "")
+})
+
+// A typed answer cannot forge the note header: its continuation lines are indented on the wire.
+test("an answer that itself contains the note header stays an answer", () => {
+  const wire = questionAnswerMessage([{ questionId: "q", question: "What should the banner say?", chosen: [], text: "Two lines:\nSent with these answers:\nthank you" }])
+  assert.deepEqual(parseAnswersCard(wire), [{ n: 1, answer: "Two lines:\nSent with these answers:\nthank you", question: "What should the banner say?" }])
+  assert.equal(answersNote(wire), "")
+})
+
+// Registered and fenced answers in one send: the server composes the registered rows above the
+// browser's whole message, so the note is itself an answers message with a note of its own.
+test("a message answering both kinds of question nests, and each layer parses", () => {
+  const fenced = withAnswersNote("Answers:\n1. A", "typed")
+  const both = withAnswersNote("Answers to earlier questions:\n1. “Q?” → Yes", fenced)
+  assert.deepEqual(parseAnswersCard(both), [{ n: 1, answer: "Yes", question: "Q?" }])
+  assert.equal(answersNote(both), fenced)
+  assert.deepEqual(parseAnswersCard(answersNote(both)), [{ n: 1, answer: "A" }])
+  assert.equal(answersNote(answersNote(both)), "typed")
+})
+
+// The in-flight card stands down for rows the transcript already draws — including the rows of a
+// message that carried a note, whether delivered or still held for the agent's rest.
+test("the in-flight card does not repeat answers a noted message is already showing", () => {
+  const wire = "Answers to earlier questions:\n1. “Which store?” → SQLite"
+  assert.equal(unrenderedAnswers([{ role: "user", text: withAnswersNote(wire, "no rush") }], wire), null)
 })

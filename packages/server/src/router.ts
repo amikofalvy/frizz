@@ -2590,6 +2590,9 @@ export function createRouter(ctx: AppContext) {
         // runtime with no interrupt the release is the entire act, and it is a steer there, read at the
         // agent's next step.
         const released = await releaseHeldFollowUps(input.slug, { force: true })
+        if (input.releaseOnly) {
+          return released > 0 ? { interrupted: false, released } : { interrupted: false, reason: "That message has already been sent" }
+        }
         if (row.backend !== "claude" || row.claude_runtime !== "broker") {
           return released > 0
             ? { interrupted: false, released }

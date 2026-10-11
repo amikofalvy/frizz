@@ -115,6 +115,7 @@ function AnswerSheet() {
   const [answers, setAnswers] = useState(() => new Map<string, BlockAnswer>())
   const answering: RegisteredAnswering = {
     slug: "fixture",
+    take: () => null,
     answerFor: (_q, path) => answers.get(path) ?? { chosen: null, chosenSet: [], text: "" },
     answersOf: () => answers,
     onChip: (_q, path, _multi, optIdx) => {

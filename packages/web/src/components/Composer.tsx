@@ -8,7 +8,9 @@ import { splitProseByTokens } from "../lib/composerContext.ts"
 import { shouldInterruptSubmitComposerEnter, shouldRestoreOptionEnterNewline, shouldSubmitComposerEnter } from "../lib/composerKeyboard.ts"
 import { queueComposerHandlesOptionEnter } from "../lib/queueComposerKeyboard.ts"
 import { focusQuestionFrom } from "../lib/questionKeys.ts"
-import { composerRail } from "../lib/iconRhythm.ts"
+import { composerRail, SEND_SPLIT_WIDTH } from "../lib/iconRhythm.ts"
+import type { SendMode } from "../lib/sendMode.ts"
+import { SendSplitButton } from "./SendSplitButton.tsx"
 import { useDictation } from "../lib/dictation.ts"
 import { prefs } from "../lib/prefs.ts"
 import { DictationLevel } from "./DictationLevel.tsx"
@@ -120,6 +122,18 @@ const LONG_PRESS_MS = 500
 // calls `hold(true)` for as long as its sheet is up, and the bar stays open until it lets go.
 export const PhoneBarHoldContext = createContext<((held: boolean) => void) | null>(null)
 
+// THE THREAD PROMPT BOX'S SEND — passed by ThreadComposerBox, absent on the dispatch composer (which
+// keeps the ↑ square: it starts a thread, and has nothing to steer or queue behind). With it the rail's
+// Send is the split button (SendSplitButton), and the box can send with NO text of its own: `staged`
+// counts the answers waiting on the question cards around it, which this same send carries.
+export interface ComposerSendControl {
+  mode: SendMode
+  onMode: (mode: SendMode) => void
+  /** A turn is in flight — the only time the menu's two rows differ. */
+  running: boolean
+  staged: number
+}
+
 // Auto-grow: reset to auto, then snap to content height clamped at maxHeight.
 function snapHeight(el: HTMLTextAreaElement, maxHeight: number): void {
   el.style.height = "auto"
@@ -143,6 +157,7 @@ export function Composer({
   contextTokens,
   slashSuggest,
   onInterruptSubmit,
+  send,
   phone,
   onUploadingChange,
 }: {
@@ -194,6 +209,8 @@ export function Composer({
   // needs no message payload because the send is already in the provider's queue. The shortcut stays
   // because it is a real send path with muscle memory behind it — only the picture was wrong.
   onInterruptSubmit?: () => void
+  // See ComposerSendControl. Desktop layouts only; the phone bar keeps its own primary button.
+  send?: ComposerSendControl
   // A phone layout (see PhoneComposerLayout). Absent everywhere above the phone breakpoint.
   phone?: PhoneComposerLayout
   // For a surface whose send lives OUTSIDE this box (the phone's new-thread page puts Start in its
@@ -498,6 +515,8 @@ export function Composer({
   }
 
   const hasContent = value.trim().length > 0
+  // Something to send: words in the box, or — on a thread composer — an answer staged on a card.
+  const armed = hasContent || (send?.staged ?? 0) > 0
   // ONE rail slot. Reserving it must track what is actually rendered — the padding/offset classes below
   // key off `railAction`, and a truthy element that renders null would carve out an empty hole (the bug
   // GithubTrigger's `useGithubTriggerVisible` exists to prevent). Its only filler now is `leftAction`
@@ -505,7 +524,7 @@ export function Composer({
   // ⌘/Ctrl-Enter — see the `onInterruptSubmit` prop doc.
   const railAction = leftAction ?? null
   // Where each rail mark sits, and the padding every text row keeps clear of the absolutely-placed rail.
-  const rail = composerRail({ action: Boolean(railAction), lead: Boolean(railLead), mic: micShown })
+  const rail = composerRail({ action: Boolean(railAction), lead: Boolean(railLead), mic: micShown, sendWidth: send && !phone ? SEND_SPLIT_WIDTH : undefined })
 
   function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     const el = e.currentTarget
@@ -577,7 +596,7 @@ export function Composer({
     // the prose WITHOUT the pending attachment, whose path then landed in the cleared composer and
     // silently rode along with the next unrelated message. Typing stays enabled during upload (the
     // commit re-derives from valueRef); only SENDING waits for the attachment to land.
-    const canSend = hasContent && !busy && !uploading
+    const canSend = armed && !busy && !uploading
     if (shouldSubmitComposerEnter(keyboardEvent, canSend)) {
       // A plain Enter is the ordinary send. Shift/Option-Enter and IME confirmations retain the
       // native textarea behavior, so they cannot accidentally submit or lose their newline.
@@ -1084,6 +1103,19 @@ export function Composer({
           )}
         </button>
       )}
+      {send ? (
+        <SendSplitButton
+          // `uploading` mirrors the Enter gate above: sending mid-upload dropped the pending attachment.
+          armed={armed && !busy && !uploading}
+          busy={busy}
+          mode={send.mode}
+          running={send.running}
+          right={rail.right.send}
+          onMode={send.onMode}
+          onSend={submit}
+          onMenuClosed={() => taRef.current?.focus({ preventScroll: true })}
+        />
+      ) : (
       <button
         type="button"
         // Prevent the mousedown default so clicking Send never blurs the textarea (the repo's idiom for
@@ -1106,6 +1138,7 @@ export function Composer({
       >
         {busy ? <Loader2 size={14} strokeWidth={2.5} className="animate-spin" /> : <ArrowUp size={14} strokeWidth={2.5} />}
       </button>
+      )}
     </div>
   )
 }

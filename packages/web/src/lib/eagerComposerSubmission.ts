@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react"
 import { useQueryClient, type QueryClient } from "@tanstack/react-query"
+import type { QuestionAnswer } from "@frizz/shared"
 import { isKeptDeliveryError, isRetryableRpcError, rpc } from "../api/rpc.ts"
 import { appendQueuedMessage, removeQueuedMessage } from "../hooks.ts"
 import { showToast, store, threadBySlug } from "../store.ts"
@@ -29,7 +30,16 @@ export type EagerFollowUpCallbacks = {
   scrollToBottom?: boolean
   // The deliveryId of a failed send this one re-sends (FollowUpInput.supersedes).
   supersedes?: string
+  // THE PROMPT BOX'S ONE SEND (ThreadComposerBox). Staged answers to registered questions travel in
+  // this same message — the server settles them and composes them above the text — so the text may be
+  // EMPTY when they ride. `displayText` is what the optimistic bubble shows meanwhile: the answers in
+  // their wire form with the text under them, which the server's own copy then replaces by deliveryId.
+  answers?: QuestionAnswer[]
+  displayText?: string
+  // "Send to queue": Frizz holds the message until the agent rests (FollowUpInput.hold).
+  hold?: boolean
 }
+type FollowUpExtras = { answers?: QuestionAnswer[]; hold?: boolean }
 
 export function beginEagerSubmission({
   optimistic,
@@ -157,6 +167,7 @@ export function sendFollowUpAttempt(
   interrupt?: boolean,
   timeoutMs: number = DELIVERY_SEND_TIMEOUT_MS,
   supersedes?: string,
+  extras: FollowUpExtras = {},
 ): Promise<void> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(new Error("Frizz did not answer this send")), timeoutMs)
@@ -164,14 +175,14 @@ export function sendFollowUpAttempt(
   // re-dispatched mid-retry must bind to its CURRENT session, and the guarded followUp is what turns
   // a stale id into a clean refusal instead of a misdelivery.
   return (rpc.followUp(
-    { slug, sessionId: threadBySlug(store.board, slug)?.sessionId ?? "", message, deliveryId, freshProcess, interrupt, ...(supersedes ? { supersedes } : {}) },
+    { slug, sessionId: threadBySlug(store.board, slug)?.sessionId ?? "", message, deliveryId, freshProcess, interrupt, ...(supersedes ? { supersedes } : {}), ...(extras.answers?.length ? { answers: extras.answers } : {}), ...(extras.hold ? { hold: true } : {}) },
     { signal: controller.signal },
   ) as Promise<void>).finally(() => clearTimeout(timer))
 }
 
-function deliverFollowUp(slug: string, message: string, deliveryId: string, freshProcess?: boolean, interrupt?: boolean, supersedes?: string): Promise<void> {
+function deliverFollowUp(slug: string, message: string, deliveryId: string, freshProcess?: boolean, interrupt?: boolean, supersedes?: string, extras?: FollowUpExtras): Promise<void> {
   return withDeliveryRetry(
-    () => sendFollowUpAttempt(slug, message, deliveryId, freshProcess, interrupt, DELIVERY_SEND_TIMEOUT_MS, supersedes),
+    () => sendFollowUpAttempt(slug, message, deliveryId, freshProcess, interrupt, DELIVERY_SEND_TIMEOUT_MS, supersedes, extras),
     () => markSteered(slug),
   )
 }
@@ -195,12 +206,18 @@ export function sendEagerFollowUp(
   callbacks: EagerFollowUpCallbacks & { failureToast?: (message: string) => string; freshProcess?: boolean; interrupt?: boolean } = {},
 ): boolean {
   const message = text.trim()
-  if (!message) return false
+  const answers = callbacks.answers?.length ? callbacks.answers : undefined
+  // Staged answers alone are a message; an empty box with nothing staged is not.
+  if (!message && !answers) return false
+  const shown = callbacks.displayText?.trim() || message
+  // Held only while a turn is running — at rest the server sends it at once, and the bubble must not
+  // claim a wait that is not going to happen.
+  const held = callbacks.hold === true && !callbacks.interrupt && threadBySlug(store.board, slug)?.runtime === "running"
   const deliveryId = newDeliveryId()
   beginEagerSubmission({
     optimistic: () => {
       callbacks.onOptimistic?.()
-      appendQueuedMessage(queryClient, slug, message, { scrollToBottom: callbacks.scrollToBottom, deliveryId })
+      appendQueuedMessage(queryClient, slug, shown, { scrollToBottom: callbacks.scrollToBottom, deliveryId, held })
       // The row is working again the instant the operator commits, not when the injection
       // returns ~half a second later — see lib/steering.ts.
       markSteered(slug)
@@ -209,13 +226,13 @@ export function sendEagerFollowUp(
     // Resolve the session id at SEND time from the live board (not render time), so a re-dispatch
     // between mount and send still binds the guarded followUp to the current session. Contention
     // refusals are retried in place — the composer only gets the message back once they are exhausted.
-    request: () => enqueueThreadSend(slug, () => deliverFollowUp(slug, message, deliveryId, callbacks.freshProcess, callbacks.interrupt, callbacks.supersedes)),
+    request: () => enqueueThreadSend(slug, () => deliverFollowUp(slug, message, deliveryId, callbacks.freshProcess, callbacks.interrupt, callbacks.supersedes, { answers, hold: callbacks.hold })),
     success: () => callbacks.onSuccess?.(),
     failure: (error) => {
       // The optimistic copy goes either way. When the server KEPT the send, its own failed bubble (same
       // deliveryId) is what the thread shows from here; when it did not, nothing should claim the
       // message is on its way.
-      removeQueuedMessage(queryClient, slug, message, deliveryId)
+      removeQueuedMessage(queryClient, slug, shown, deliveryId)
       clearSteered(slug)
       callbacks.onRollback?.({ deliveryId, text: message, kept: isKeptDeliveryError(error) })
       // A transport rejection is not enough evidence to expose terminal-recovery machinery.

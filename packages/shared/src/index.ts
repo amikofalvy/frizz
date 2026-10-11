@@ -4114,6 +4114,10 @@ export const DeliverQueuedNowInput = z.object({
   slug: ThreadSlug,
   // Same staleness guard as unqueueFollowUp: a stale tab must not preempt a re-dispatched session.
   sessionId: z.string().min(1),
+  // Hand over what Frizz is HOLDING for the agent's rest ("Send to queue") and stop there — no
+  // interrupt. The "Send now" under a held bubble: the operator changed their mind about waiting, not
+  // about interrupting, so the message goes in as the steer it would have been.
+  releaseOnly: z.boolean().optional(),
 }).strict()
 export type DeliverQueuedNowInput = z.infer<typeof DeliverQueuedNowInput>
 // `interrupted:false` is an expected outcome, NOT an error: there was no live turn to preempt (the

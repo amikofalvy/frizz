@@ -29,11 +29,13 @@ test("the map is built off the same messages and questions the anchors use, on a
 
 test("a folded fence leaves no Send button behind it", () => {
   // Message's own bottom button needs a block that actually rendered…
-  assert.match(chat, /else if \(showSendButton && answering && askBlocks\.length > 0\)/)
+  // (…and, since 2026-10-11, a surface with no prompt box to send them: where one is mounted its Send
+  // button carries every staged answer, and neither of these two is drawn — lib/sendScope.)
+  assert.match(chat, /else if \(showSendButton && answering && askBlocks\.length > 0 && !promptBoxSends\)/)
   // …and the queue card's card-level button stands down for a standing ask folded whole.
   // (Gated on `fencesLive` since 2026-09-11: a thread dispatched after the free-form fence was retired
   // has no fence chrome at all — shared QUESTION_FENCE_RETIRED_AT.)
-  assert.match(queue, /const showSendAnswers = fencesLive && \(\(answerable && !tailAskShadowed\) \|\| anyAnswered\)/)
+  assert.match(queue, /const showSendAnswers = !promptBoxSends && fencesLive && \(\(answerable && !tailAskShadowed\) \|\| anyAnswered\)/)
   assert.match(queue, /allFencesShadowed\(messages\[idx\]\.text, shadowedByMessage\.get\(idx\) \?\? \[\]\)/)
 })
 

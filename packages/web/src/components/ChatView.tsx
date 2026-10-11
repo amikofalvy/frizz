@@ -25,7 +25,7 @@ import { splitFenceBlocks, type FenceKind } from "../lib/fenceBlocks.ts"
 import { showsRegisteredDoneCard } from "../lib/registeredDone.ts"
 import { RestedCard, showsRestedCard } from "./RestedCard.tsx"
 import { ProviderErrorCard, providerErrorVisible } from "./ProviderErrorCard.tsx"
-import { parseAnswersCard, pairAllAnswers, unrenderedAnswers, type PairedAnswer } from "../lib/answersMessage.ts"
+import { answersNote, parseAnswersCard, pairAllAnswers, unrenderedAnswers, type PairedAnswer } from "../lib/answersMessage.ts"
 import { questionsByAnchor } from "../lib/questionAnchor.ts"
 import { fenceStandsFor, placedRestEnds, placeQuestions, questionsAtCurrentRest, registeredStandingAt, type QuestionPlacement } from "../lib/questionShadow.ts"
 import { settledQuestionPositions, type SettledPlacement } from "../lib/settledQuestions.ts"
@@ -36,6 +36,7 @@ import { parseSentContext, splitProseByTokens, tokenLabel, type SentContextItem 
 import { AnswersCard } from "./AnswersCard.tsx"
 import { WakeDivider } from "./WakeDivider.tsx"
 import { useLiveAnswering, type LiveAnswering } from "../lib/answering.ts"
+import { SendScopeContext, useComposerSendHandle, usePromptBoxSends, useSendScope } from "../lib/sendScope.tsx"
 import { useIsMobile } from "../lib/mobile.ts"
 import { MobileAnswerSheet } from "./MobileAnswerSheet.tsx"
 import { PhoneAnswerBar, PhoneQuestionsContext, type PhoneQuestions } from "./PhoneQuestionCards.tsx"
@@ -338,7 +339,11 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
   // scroll back to a question a sub-agent return / the agent's own continuation buried and answer it in
   // place. answeringForMessage wires each ask's chips AND its own bottom Send button (scoped to just
   // that message's blocks). The queue card runs the identical scope through the same controller.
-  const { answeringForMessage } = useLiveAnswering(slug, messages)
+  // THE PROMPT BOX SENDS THEM (lib/sendScope): with the thread's prompt box mounted under this
+  // transcript, Enter in a block is that box's send, and no message draws a Send answers of its own.
+  const composerSend = useComposerSendHandle()
+  const { answeringForMessage, stagedCount, takeAnswers } = useLiveAnswering(slug, messages, undefined, { composer: composerSend })
+  const sendScope = useSendScope(composerSend, { stagedCount, takeAnswers })
   // The registered questions standing at each message — its rest and every later one — so a fence
   // restating or naming one folds into its card.
   const shadowedByMessage = useMemo(() => registeredStandingAt(messages, openQuestions), [messages, openQuestions])
@@ -408,6 +413,7 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
 
   return (
     <ThreadSlugContext.Provider value={slug}>
+    <SendScopeContext.Provider value={sendScope}>
     <RegisteredAnsweringProvider thread={thread}>
     <PhoneQuestionsContext.Provider value={phoneQuestions}>
     <div
@@ -647,6 +653,7 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
     </div>
     </PhoneQuestionsContext.Provider>
     </RegisteredAnsweringProvider>
+    </SendScopeContext.Provider>
     </ThreadSlugContext.Provider>
   )
 }
@@ -3283,7 +3290,59 @@ function FailedSendRow({ deliveryId, text, rawText, error }: { deliveryId: strin
   )
 }
 
-function UserBubble({ text, rawText, queued, deliveryUnconfirmed, deliveryFailed, deliveryError, deliveryId, sourceId }: { text: string; rawText?: string; queued?: boolean; deliveryUnconfirmed?: boolean; deliveryFailed?: boolean; deliveryError?: string; deliveryId?: string; sourceId?: string }) {
+// UNDER A MESSAGE SENT TO THE QUEUE — the one line that says why it is still gray, with the two things
+// the operator can do about it. "Send now" hands it over as the steer it would have been (no interrupt:
+// the forced send stays on the ↑ beside the bubble and on ⌘/Ctrl-Enter); "Take back" drops it and puts
+// the words back in the prompt box. `text` is the WHOLE message — for answers sent with a note, both.
+function HeldLine({ deliveryId, text, rawText }: { deliveryId: string; text: string; rawText: string }) {
+  const slug = useContext(ThreadSlugContext)
+  const { unqueue, pending: takingBack } = useUnqueueFollowUp(slug)
+  const { releaseHeld, pending: sending } = useDeliverQueuedNow(slug)
+  const action = "underline decoration-border underline-offset-2 outline-none transition-colors hover:text-fg focus-visible:text-fg disabled:opacity-50"
+  return (
+    <div data-held-line className="mt-1 flex items-baseline justify-end gap-2 text-[11.5px] leading-[16px] text-muted">
+      <span>Queued until the agent rests</span>
+      {slug && (
+        <>
+          <span aria-hidden className="text-muted-60">·</span>
+          <button type="button" data-held-send-now className={action} disabled={sending || takingBack} onMouseDown={(e) => e.preventDefault()} onClick={releaseHeld} title="Send it now — the agent reads it at its next step">
+            Send now
+          </button>
+          <span aria-hidden className="text-muted-60">·</span>
+          <button type="button" data-held-take-back className={action} disabled={sending || takingBack} onClick={(e) => unqueue({ deliveryId, text, rawText, from: e.currentTarget })} title="Put it back in the prompt box">
+            Take back
+          </button>
+        </>
+      )}
+    </div>
+  )
+}
+
+// ANSWERS SENT WITH A NOTE — the prompt box's one Send (2026-10-11) carries the staged answers and the
+// typed message as one turn, and it reads as one: the Answers card, and the human's words in their own
+// bubble under it. The note of a message that answered both registered and fenced questions is itself
+// an answers message (the fenced ones, composed in the browser), so it draws the same way, recursively.
+function AnswersWithNote({ m, text, answers, note }: { m: ChatMessage; text: string; answers: PairedAnswer[]; note: string }) {
+  const body = (noteText: string, depth: number): ReactNode => {
+    if (!noteText) return null
+    const inner = depth < 2 ? parseAnswersCard(noteText) : null
+    if (inner) return <>{<AnswersCard answers={inner} queued={m.queued} />}{body(answersNote(noteText), depth + 1)}</>
+    // No deliveryId: the bubble is half of a send, and taking back half of it is not a thing. A held
+    // one is taken back whole from the line below.
+    return <UserBubble text={noteText} rawText={m.text} queued={m.queued} />
+  }
+  return (
+    // Full width and a column, so each child's own `self-end` + 85% cap lands exactly where it would
+    // as a direct child of the transcript column.
+    <div data-frizz-msg={m.sourceId} data-answers-with-note className="flex w-full flex-col gap-2 self-end">
+      <AnswersCard answers={answers} queued={m.queued} />
+      {body(note, 0)}
+      {m.deliveryState === "held" && m.deliveryId && <div className="self-end"><HeldLine deliveryId={m.deliveryId} text={text} rawText={m.text} /></div>}
+    </div>
+  )
+}
+
+function UserBubble({ text, rawText, queued, held, deliveryUnconfirmed, deliveryFailed, deliveryError, deliveryId, sourceId }: { text: string; rawText?: string; queued?: boolean; held?: boolean; deliveryUnconfirmed?: boolean; deliveryFailed?: boolean; deliveryError?: string; deliveryId?: string; sourceId?: string }) {
   // TAKE IT BACK. A still-queued send is the one bubble in the transcript that isn't history yet, so
   // it alone is clickable: the click unqueues it at the provider and hands the words back to the
   // prompt box (see lib/unqueueFollowUp.ts). Three gates, all of them load-bearing:
@@ -3295,7 +3354,9 @@ function UserBubble({ text, rawText, queued, deliveryUnconfirmed, deliveryFailed
   const unqueueSlug = useContext(ThreadSlugContext)
   const unqueueSupported = useUnqueueSupported(unqueueSlug)
   const { unqueue, pending: unqueuePending } = useUnqueueFollowUp(unqueueSlug)
-  const unqueueable = Boolean(queued && deliveryId && unqueueSlug && unqueueSupported)
+  // A HELD message (sent to the queue) is Frizz's alone to hand back, on every backend: no provider
+  // has it. Its own line below carries the same two verbs in words.
+  const unqueueable = Boolean(queued && deliveryId && unqueueSlug && (unqueueSupported || held))
   // PUSH IT THROUGH. The other half of what you can do to a message that hasn't been read yet: instead
   // of taking it back, stop waiting for it. A ↑ appears left of the bubble on hover and preempts the
   // turn standing in front of the queue (see lib/deliverQueuedNow.ts). It replaces the composer's ⚡,
@@ -3420,6 +3481,7 @@ function UserBubble({ text, rawText, queued, deliveryUnconfirmed, deliveryFailed
       {deliveryFailed && deliveryId && (
         <FailedSendRow deliveryId={deliveryId} text={text} rawText={rawText ?? text} error={deliveryError} />
       )}
+      {held && deliveryId && <HeldLine deliveryId={deliveryId} text={text} rawText={rawText ?? text} />}
       {/* No "click to unqueue" hint: the hover lift above already says the bubble is live, and a
           label spelling that out is noise on every queued send. Only the IN-FLIGHT retraction gets a
           line, because "did my click land?" isn't something the hover state can answer. It reserves no
@@ -3467,6 +3529,9 @@ export const Message = memo(function Message({ m, answering, dense, paired, text
   // produced them but a 44pt-thumb answer never has to land on a 24pt chip inside a scrolling message.
   const isMobile = useIsMobile()
   const [answerSheetOpen, setAnswerSheetOpen] = useState(false)
+  // The surface's prompt box sends the staged answers (lib/sendScope), so this message draws no Send
+  // of its own. False wherever no prompt box is mounted — a sub-agent's sheet, a phone thread page.
+  const promptBoxSends = usePromptBoxSends()
   // An event line (a sub-agent completion) is transcript PUNCTUATION — a quiet full-width line, not a
   // bubble or a tool band. Rendered before the role branches (its role field is nominal).
   if (m.providerError) return <ProviderErrorCard error={m.providerError} />
@@ -3495,7 +3560,11 @@ export const Message = memo(function Message({ m, answering, dense, paired, text
     const answers = paired !== undefined ? paired : parseAnswersCard(text)
     // …unless it FAILED: the answers card has no failure row, and a failed send must always show its
     // Retry / Edit / Dismiss (lib/failedDelivery.ts). The plain bubble carries the same words.
-    if (answers && m.deliveryState !== "failed") return <AnswersCard answers={answers} queued={m.queued} sourceId={m.sourceId} />
+    if (answers && m.deliveryState !== "failed") {
+      const note = answersNote(text)
+      if (!note && m.deliveryState !== "held") return <AnswersCard answers={answers} queued={m.queued} sourceId={m.sourceId} />
+      return <AnswersWithNote m={m} text={text} answers={answers} note={note} />
+    }
     // A scheduler wake is recorded as a user turn because it is pasted into the worker's composer —
     // but FRIZZ wrote it, not the human, so it must not wear the human's off-white right-justified
     // bubble. `m.wake` is the server's own tell (the delivery token it stripped), never a text guess.
@@ -3519,7 +3588,7 @@ export const Message = memo(function Message({ m, answering, dense, paired, text
     // `rawText` rides alongside the presentation text because the two differ: the bubble shows the
     // stripped/normalized copy, while the optimistic cache entry an unqueue has to evict is keyed on
     // the message's own raw text.
-    return <UserBubble text={text} rawText={m.text} queued={m.queued} deliveryUnconfirmed={m.deliveryState === "unconfirmed"} deliveryFailed={m.deliveryState === "failed"} deliveryError={m.deliveryError} deliveryId={m.deliveryId} sourceId={m.sourceId} />
+    return <UserBubble text={text} rawText={m.text} queued={m.queued} held={m.deliveryState === "held"} deliveryUnconfirmed={m.deliveryState === "unconfirmed"} deliveryFailed={m.deliveryState === "failed"} deliveryError={m.deliveryError} deliveryId={m.deliveryId} sourceId={m.sourceId} />
   }
 
   // Build ONE ordered list of block-level children, then interleave with explicit spacers. The
@@ -3723,7 +3792,7 @@ export const Message = memo(function Message({ m, answering, dense, paired, text
         </button>
       </div>,
     )
-  } else if (showSendButton && answering && askBlocks.length > 0) {
+  } else if (showSendButton && answering && askBlocks.length > 0 && !promptBoxSends) {
     // `askBlocks` can be empty with a controller present: every fence of this message was folded into
     // a registered card, and that card carries its own Send answers.
     push(

@@ -2292,6 +2292,17 @@ test("push-it-now hands over what was held, then preempts the turn", async () =>
   h.storage.close()
 })
 
+// "Send now" under a held bubble: the operator stopped waiting, and did NOT ask for an interrupt.
+test("releasing a held message on request delivers it as a steer and preempts nothing", async () => {
+  const { h, slug, sid, order, ledger } = holdHarness()
+  await h.router.followUp.handler({ input: { slug, sessionId: sid, message: "actually, now is fine", deliveryId: "d-hold", hold: true } })
+  const result = await h.router.deliverQueuedNow.handler({ input: { slug, sessionId: sid, releaseOnly: true } })
+  assert.deepEqual(result, { interrupted: false, released: 1 })
+  assert.deepEqual(order, ["followUp"], "no interruptTurn")
+  assert.equal(ledger()[0].state, "enqueued", "in the provider's queue now, read at the agent's next step")
+  h.storage.close()
+})
+
 // A release that throws must leave the operator's words as a failed send they can retry, never drop them.
 test("a held message whose release fails is kept as a failed send", async () => {
   const { h, slug, sid, ledger, rest } = holdHarness()
