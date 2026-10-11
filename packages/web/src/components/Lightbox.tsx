@@ -4,6 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { createPortal } from "react-dom"
 import { useSnapshot } from "valtio"
 import { closeLightbox, openLightbox, stepLightbox, store } from "../store.ts"
+import { useFenceIslands } from "../lib/fenceIslands.ts"
 import { justifyRows } from "../lib/justifiedRows.ts"
 import { isLightboxVideo, lightboxLabel, parseLightboxBody, resolveLightboxPath, type LightboxEntry, type LightboxImage } from "../lib/lightbox.ts"
 import { useBackClosesLayer } from "../lib/backDismiss.ts"
@@ -239,34 +240,14 @@ function useContentWidth(el: HTMLElement | null): number {
  * The ```lightbox fences inside one block of rendered Markdown, drawn as galleries — for every surface
  * that renders a worker's Markdown as ONE string of sanitized HTML rather than through the transcript's
  * splitter: the done and awaiting cards, a question's options, the `.md` reader (LinkedHtml,
- * MarkdownDrawer, FileViewerPanel). There a fence is only a highlighted code block, tagged
- * `language-lightbox` (lib/syntaxHighlight.ts); this swaps each one, after the HTML lands, for an empty
- * host and portals a LightboxGallery into it. The sanitizer learns no new tag, and the gallery is the
- * transcript's own component rather than a lookalike drawn from markup.
+ * MarkdownDrawer, FileViewerPanel). The finding and swapping is lib/fenceIslands.ts, shared with the
+ * ```mermaid fence (useMermaidIslands); this names the fence and portals a LightboxGallery into each host.
  *
- * Returns the portals; render them anywhere in the host component. Rescans whenever the markup OR the
- * element changes: a host that remounts its element with the same markup (the split viewer's
- * Rendered/Source toggle) gets fresh, unscanned HTML from React. The markup itself is only rewritten
- * when it changes (lib/innerHtml.ts), which is what keeps the hosts in place between scans.
+ * Returns the portals; render them anywhere in the host component.
  */
 export function useLightboxIslands(ref: RefObject<HTMLElement | null>, html: string, baseDir?: string): ReactNode {
-  const [islands, setIslands] = useState<{ host: HTMLElement; entries: LightboxEntry[] }[]>([])
-  const scanned = useRef<{ root: HTMLElement | null; html: string } | null>(null)
-  useLayoutEffect(() => {
-    const root = ref.current
-    if (scanned.current && scanned.current.root === root && scanned.current.html === html) return
-    scanned.current = { root, html }
-    const found: { host: HTMLElement; entries: LightboxEntry[] }[] = []
-    for (const code of root?.querySelectorAll<HTMLElement>("pre > code.language-lightbox") ?? []) {
-      const block = code.closest(".md-code") ?? code.parentElement!
-      const host = document.createElement("div")
-      host.className = "md-lightbox"
-      block.replaceWith(host)
-      found.push({ host, entries: parseLightboxBody(code.textContent ?? "") })
-    }
-    setIslands((prev) => (prev.length === 0 && found.length === 0 ? prev : found))
-  })
-  return islands.map(({ host, entries }, i) => createPortal(<LightboxGallery entries={entries} baseDir={baseDir} />, host, String(i)))
+  const islands = useFenceIslands(ref, html, "lightbox", "md-lightbox", parseLightboxBody)
+  return islands.map(({ key, host, value }) => createPortal(<LightboxGallery entries={value} baseDir={baseDir} />, host, key))
 }
 
 /**
