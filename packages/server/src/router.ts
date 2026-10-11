@@ -3979,7 +3979,8 @@ export function createRouter(ctx: AppContext) {
 
     // Provider subscription quota (5h + weekly rate-limit windows) for the sidebar status bar. Codex
     // reads live from the app-server's `account/rateLimits/read`, falling back to the rollout JSONL
-    // frizz already tails; Claude delegates to Claude Code's own non-interactive `/usage` command.
+    // frizz already tails; Claude reads the OAuth usage endpoint with the machine's own credential
+    // (claude-quota.ts — which also says when, and how rarely, it may start Claude Code instead).
     // Never throws — degrades to per-provider "unavailable".
     quota: query({
       input: z.object({ force: z.boolean().optional() }).strict().optional(),
@@ -4108,9 +4109,10 @@ export function createRouter(ctx: AppContext) {
      * every live worker losing the server, so `deleteData` is refused there.
      *
      * Forgetting it was refused too until 2026-10-10, and the operator could not act on the refusal:
-     * a `frizz` run from `$HOME` or an unadopted folder is hosted on the most recently opened project
-     * (launcher.ts `resolveLaunchIntent`), so "the launching project" is routinely one nobody chose,
-     * and "restart from another folder" picked the same one again. Forgetting needs none of what the
+     * a `frizz` run from `$HOME` or an unadopted folder was then hosted on the most recently opened
+     * project (launcher.ts `resolveLaunchIntent`; Frizz's own folder since 2026-10-11), so "the
+     * launching project" was routinely one nobody chose, and "restart from another folder" picked the
+     * same one again. Forgetting needs none of what the
      * refusal protects — only the registry entry goes. The tenant itself stays open until the process
      * ends, because it is also the app every unprefixed request is answered by: its card and its URL
      * are gone at once, and its tailer and timers stop with the server rather than with the click.
