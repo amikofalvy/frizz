@@ -4,7 +4,7 @@
 // Run: nub scripts/verify-server-updates.mjs --out=/absolute/evidence
 import assert from "node:assert/strict"
 import { spawn, execFileSync } from "node:child_process"
-import { createHash } from "node:crypto"
+import { createHash, randomBytes } from "node:crypto"
 import { once } from "node:events"
 import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { createServer } from "node:http"
@@ -14,6 +14,7 @@ import { dirname, join, resolve } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import { launchHeadless } from "./lib/headless-browser.mjs"
 import { resolveNpmCli } from "../src/server-release.ts"
+import { SESSION_EPOCH } from "../packages/server/src/access-codes.ts"
 import { frizzPaths } from "../packages/server/src/frizz-paths.ts"
 import { ensureProjectIdFile } from "../packages/server/src/project-root.ts"
 import { createRpcClient } from "./lib/rpc-client.mjs"
@@ -600,8 +601,13 @@ try {
   // A published server reports nothing to the fixtures' event file, so the launcher is found by the
   // record it publishes and readiness by the supervisor's own status.
   const launchPublished = async (shell, server, cwd = nowhere) => {
+    const landings = () => launcherLogs(newHome).match(/started Frizz at /g)?.length ?? 0
+    const landed = landings()
     start(`launcher-${processes.length}`, [npmCli, "exec", "--yes", `--package=frizz@${shell}`, "--", "frizz", "--no-app", "--port", new URL(base).port], cwd)
     await until(`server ${server} under shell ${shell}`, async () => { const value = await status(); return value.state === "ready" && value.version === server }, 300_000)
+    // The supervisor answers before the launcher has asked where it lands, and a launcher stopped in
+    // that window never asked at all. Its own line says the launch is finished.
+    await until(`shell ${shell} says where it landed`, () => landings() > landed, 30_000)
     const projects = join(newHome, "data/frizz/projects")
     const pidIn = (name) => readdirSync(projects).map((project) => {
       try { return JSON.parse(readFileSync(join(projects, project, name), "utf8")).pid } catch { return undefined }
@@ -609,21 +615,41 @@ try {
     shellPid = await until("the launcher's owner record", () => pidIn("project-launch.owner"), 10_000)
     for (const pid of [shellPid, pidIn("server.lock")]) if (pid) publishedPids.add(pid)
   }
+  // This machine ran Frizz before the server moved onto its own folder, so its remote sign-ins are
+  // under the project it was last started in. The first launch brings them along: the launcher goes
+  // on signing sessions with the key the phones already hold, and the move signs nobody out.
+  const formerHost = join(newHome, "data/frizz/projects/11111111-1111-4111-8111-111111111111")
+  const sessionKey = randomBytes(32)
+  mkdirSync(formerHost, { recursive: true })
+  writeFileSync(join(formerHost, "session-key"), sessionKey, { mode: 0o600 })
+  writeFileSync(join(formerHost, "session-epoch"), JSON.stringify({ epoch: SESSION_EPOCH }))
   await launchPublished("0.13.20", OLD_SERVER)
   assert.equal(selected(newHome).version, OLD_SERVER)
+  await until("the launcher says whose sign-in state it carried over", () => /carried the remote sign-in state over from \S*11111111-1111-4111-8111-111111111111$/m.test(launcherLogs(newHome)), 10_000)
+  const sessionKeys = readdirSync(dirname(formerHost)).map((project) => join(dirname(formerHost), project, "session-key")).filter((path) => existsSync(path))
+  assert.equal(sessionKeys.length, 2, "the former host's key, and the one Frizz's own folder now holds")
+  for (const path of sessionKeys) assert.ok(readFileSync(path).equals(sessionKey), `${path} is the key the devices already hold`)
+  record("remote-sign-ins-carried-over", { from: formerHost, keys: sessionKeys })
   await stopShell()
-  // The pairing as it ships without a minimum: the installed server stands, whatever the shell pins,
-  // and the dashboard has a project the operator never added and cannot open usefully. Typed in a
-  // project this time, against a server from before the launch route: the launcher gets no answer,
-  // and its own rules open the project exactly as they always did.
+  // The pairing as it ships without a minimum: the installed server stands, whatever the shell pins.
+  // Typed in a project first, against a server from before the launch route: the launcher gets no
+  // answer, and its own rules open the project exactly as they always did.
   const theirs = join(root, "their-project")
   mkdirSync(theirs); execFileSync("git", ["init", "-q"], { cwd: theirs }); ensureProjectIdFile(theirs, newHome)
   await launchPublished("0.13.21", OLD_SERVER, theirs)
   assert.equal(selected(newHome).version, OLD_SERVER, "a shell without a minimum never moves the installed server")
-  assert.match(launcherLogs(newHome), /did not say where this launch lands; using this launcher's own rules/)
-  assert.match(launcherLogs(newHome), new RegExp(`started Frizz at ${base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/project/their-project$`, "m"))
-  await until("the older server lists Frizz's own launch folder", async () => (await listed()).includes(launchFolder()), 30_000)
+  assert.match(launcherLogs(newHome), new RegExp(`started Frizz at ${base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/project/their-project$`, "m"), "the launcher opened the project by its own rules")
+  // Both launches so far met a server with no launch route: the one that installed it, and this one.
+  assert.equal(launcherLogs(newHome).match(/did not say where this launch lands; using this launcher's own rules/g)?.length, 2)
   assert.ok((await listed()).includes(realpathSync(theirs)))
+  record("launch-without-a-route-opens-the-project", { server: OLD_SERVER, listed: await listed() })
+  await stopShell()
+  // Then typed outside one, which is the launch that leaves the dashboard with a project the operator
+  // never added and cannot open usefully. It has to be this launch: the one above registered a
+  // project through the launcher's own registry code, which writes the list back without Frizz's
+  // folder, and the older server only puts it there as it boots.
+  await launchPublished("0.13.21", OLD_SERVER)
+  await until("the older server lists Frizz's own launch folder", async () => (await listed()).includes(launchFolder()), 30_000)
   record("older-server-lists-the-launch-folder", { server: OLD_SERVER, listed: await listed() })
   await stopShell()
   await launch("0.13.22", nowhere); await healthy("0.15.99")
