@@ -225,6 +225,32 @@ test("the viewer pages with the arrow keys, stops at the ends, and Escape closes
   }
 })
 
+// The header's buttons are the thread header's icon controls (lib/headerIcon.ts), named by its immediate
+// tooltip. A tooltip that is open is a layer ABOVE the dialog, so it takes Escape from it — and the key
+// then has to close the viewer from the dialog's own handler, or it closes only the tooltip and reaches
+// the page with the viewer still up.
+test("the header's buttons are the thread header's squares with its tooltips, and Escape over a tooltip still closes the viewer", { skip: !baseUrl, timeout: 120_000 }, async () => {
+  const { browser, page, errors } = await launch()
+  try {
+    await (await page.$("[data-fixture-message='0'] [data-lightbox-tile]"))!.click()
+    await pictureReady(page)
+    const buttons = await page.$$eval("[data-lightbox] header button", (els) => els.map((b) => {
+      const box = b.getBoundingClientRect()
+      return [b.getAttribute("aria-label"), box.width, box.height, b.querySelector("svg")!.getBoundingClientRect().width]
+    }))
+    assert.deepEqual(buttons, [["Zoom out", 28, 28, 14], ["Zoom in", 28, 28, 14], ["Open in default viewer", 28, 28, 14], ["Close", 28, 28, 15]])
+
+    await page.hover('[data-lightbox] button[aria-label="Open in default viewer"]')
+    await page.waitForFunction(() => document.querySelector("[role=tooltip]")?.textContent === "Open in default viewer", { timeout: 5000 })
+    await page.keyboard.press("Escape")
+    await page.waitForFunction(() => !document.querySelector("[data-lightbox]"), { timeout: 5000 })
+    assert.deepEqual(await pageKeys(page), [], "the Escape that closed the viewer must not reach the page")
+    assert.deepEqual(errors, [])
+  } finally {
+    await browser.close()
+  }
+})
+
 test("a click zooms into the point under the cursor, a drag moves the magnified picture, and a click zooms back out", { skip: !baseUrl, timeout: 120_000 }, async () => {
   const { browser, page, errors } = await launch()
   try {
