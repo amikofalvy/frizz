@@ -104,7 +104,6 @@ import { drawsWorking, frozenPendingAsk } from "../lib/operatorBlock.ts"
 // import path while the definitions live where both question producers can reach them.
 export { CARD_BODY, CARD_PRIMARY_BUTTON, CardActions, TranscriptCard } from "./TranscriptCard.tsx"
 export { QuestionBlockCard } from "./QuestionBlockCard.tsx"
-import { CopyTerminalCommandButton, useCopyTerminalCommand } from "./ExternalTerminalCommand.tsx"
 import { SignInModal } from "./SignInModal.tsx"
 import { PROVIDER_LABEL } from "../lib/signIn.ts"
 import { takeFullscreenEnterAnchor } from "../lib/fullscreenHandoff.ts"
@@ -261,7 +260,6 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
   )
   const [answerSheetOpen, setAnswerSheetOpen] = useState(false)
   const running = thread?.runtime === "running" || thread?.runtime === "spawning"
-  const copyTerminalCommand = useCopyTerminalCommand(slug)
 
   // Freshness is centrally managed (transcript-live.ts keeps every observed transcript live); `poll`
   // only gates the SSE-fallback interval for a running thread.
@@ -464,7 +462,6 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
           fencesLive={fencesLive}
           thread={thread}
           running={running}
-          copyTerminalCommand={copyTerminalCommand}
           transportFallback={q.transportFallback}
           isFetching={q.isFetching}
           refresh={() => void q.refetch()}
@@ -568,7 +565,6 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
                 state={runtimeStatus}
                 slug={slug}
                 retryText={lastUserIdx >= 0 ? messages[lastUserIdx]?.text : undefined}
-                onTerminal={copyTerminalCommand}
                 liveRuntimeStart={liveRuntimeStart}
                 liveActivityLabel={liveActivityLabel}
                 liveToolRun={liveToolRun}
@@ -805,7 +801,6 @@ export function RuntimeStatusLadder({
   state,
   slug,
   retryText,
-  onTerminal,
   liveRuntimeStart,
   liveActivityLabel,
   liveToolRun,
@@ -817,7 +812,6 @@ export function RuntimeStatusLadder({
   slug: string
   /** The human's last ask, for the fault card's retry. */
   retryText: string | undefined
-  onTerminal: () => void
   liveRuntimeStart: string | undefined
   liveActivityLabel: string | undefined
   liveToolRun: { tools: readonly TranscriptToolCall[]; at?: string } | undefined
@@ -838,7 +832,7 @@ export function RuntimeStatusLadder({
     case "limit-pause":
       return <LimitPauseCard slug={slug} sessionId={thread!.sessionId} pause={thread!.limitPause!} />
     case "pending-ask":
-      return <PendingAskCard ask={frozenPendingAsk(thread)!} onTerminal={onTerminal} />
+      return <PendingAskCard ask={frozenPendingAsk(thread)!} />
     case "working":
       return <WorkingIndicator since={thread?.lastUserAt} startedAt={liveRuntimeStart} activityLabel={liveActivityLabel} run={liveToolRun} />
     case "snooze":
@@ -873,7 +867,6 @@ function VirtualizedThreadTranscript({
   fencesLive,
   thread,
   running,
-  copyTerminalCommand,
   transportFallback,
   isFetching,
   refresh,
@@ -903,7 +896,6 @@ function VirtualizedThreadTranscript({
   fencesLive: boolean
   thread: ThreadViewData | undefined
   running: boolean
-  copyTerminalCommand: () => void
   transportFallback: TranscriptTransportFallback
   isFetching: boolean
   refresh: () => void
@@ -1599,7 +1591,6 @@ function VirtualizedThreadTranscript({
                   state={runtimeStatus}
                   slug={slug}
                   retryText={lastUserIdx >= 0 ? messages[lastUserIdx]?.text : undefined}
-                  onTerminal={copyTerminalCommand}
                   liveRuntimeStart={liveRuntimeStart}
                   liveActivityLabel={liveActivityLabel}
                   liveToolRun={liveToolRun}
@@ -1650,8 +1641,8 @@ function JumpToLatest({ overlay, hidden, onJump }: { overlay: HTMLElement | null
 
 // The thread's top bar: title, then "Last active · context" (ThreadHeaderFacts), and at the far right the
 // shared HeaderActions closed by the two lifecycle verbs, snooze and mark as done (ThreadLifecycleActions)
-// — the same strip the queue card's header draws. Owned sessions expose a command-copy icon; foreign rows
-// do not. It carried a Chat|Doc tab strip until 2026-08-06; see ThreadView for why that went.
+// — the same strip the queue card's header draws. It carried a Chat|Doc tab strip until 2026-08-06; see
+// ThreadView for why that went.
 export function ThreadHeader({ slug, onStatusApplied, onClose, showReturnToQueue = false }: { slug: string; onStatusApplied?: () => void; onClose?: () => void; showReturnToQueue?: boolean }) {
   const board = useBoard()
   const thread = threadBySlug(board, slug)
@@ -1664,7 +1655,6 @@ export function ThreadHeader({ slug, onStatusApplied, onClose, showReturnToQueue
   const docQ = useQuery({ queryKey: ["threadBody", slug], queryFn: () => rpc.threadBody({ slug }) })
   const hasDoc = stripFrontmatter(docQ.data?.markdown ?? "").trim().length > 0
   if (!thread) return null
-  const showTerminalCommand = thread.kind === "session" && thread.foreign !== true
   return (
     <header
       data-thread-header
@@ -1694,11 +1684,9 @@ export function ThreadHeader({ slug, onStatusApplied, onClose, showReturnToQueue
           clickable title and its activity stamp readable instead of competing with fixed-width
           tabs/actions, while the control row itself remains a single unbroken cluster. */}
       <div className={THREAD_HEADER_CONTROLS_CLASS}>
-        {/* `gap-0.5` — the action strip's own distance, so the copy button and HeaderActions' icons
-            read as one row. With no gap at all this button sat 17.75px of ink from its neighbour where
-            the rest of the strip kept 20.25 and 21.5 (`scripts/ink-gaps.mjs` --dsf=4, real drawer). */}
+        {/* `gap-0.5` — the action strip's own distance (HeaderActions spaces its icons on the same one),
+            so the lifecycle verbs that close the strip stand in the row's rhythm. */}
         <div className="flex shrink-0 items-center gap-0.5">
-          {showTerminalCommand && <CopyTerminalCommandButton slug={slug} />}
           <HeaderActions
             thread={thread}
             // The /full page is the one surface with a fullscreen to LEAVE, and it leaves through the
@@ -4454,9 +4442,11 @@ export function BackgroundOpsStrip({
 
 // The read-only render of a PENDING native AskUserQuestion (the safety net for a session that bypassed
 // the thread-file ask channel). Shows the REAL question(s) + options as NON-interactive rows —
-// deliberately NOT answer-chips: answering a native TUI dialog by keystroke injection is too fragile, so
-// the ONE affordance copies an external-terminal command, where the dialog can actually be answered.
-export function PendingAskCard({ ask, onTerminal }: { ask: PendingAsk; onTerminal: () => void }) {
+// deliberately NOT answer-chips: answering a native TUI dialog by keystroke injection is too fragile.
+// It carries NO action at all. It draws for a foreign session only (lib/operatorBlock.ts
+// `frozenPendingAsk`), which the operator is already running in their own terminal: the label says
+// where the answer goes, and Frizz has no session of its own there to hand them a command for.
+export function PendingAskCard({ ask }: { ask: PendingAsk }) {
   return (
     <TranscriptCard tone="attention" icon={HelpCircle} label="Waiting on your answer — in your external terminal">
       <div className="flex flex-col gap-3">
@@ -4481,19 +4471,6 @@ export function PendingAskCard({ ask, onTerminal }: { ask: PendingAsk; onTermina
           </div>
         ))}
       </div>
-      <CardActions>
-        <button
-          onClick={() => onTerminal()}
-          onMouseDown={(e) => e.preventDefault()}
-          className={CARD_PRIMARY_ACTION}
-        >
-          {/* No literal space before the label — the flex `gap` IS the spacing. A JSX space here
-              rendered as a real space character ON TOP of the gap and made this the widest icon/label
-              gap on the page by ~3px. */}
-          <KeyRound size={12} className={`shrink-0 ${ICON_LABEL_NUDGE}`} />
-          Copy terminal command
-        </button>
-      </CardActions>
     </TranscriptCard>
   )
 }
@@ -4708,7 +4685,7 @@ function EventLine({ text, boundary, sourceId, at }: { text: string; boundary?: 
   //
   // The glyph is why the server names the KIND rather than sending a bare flag. A `wake` is a
   // background shell/task coming back, and it takes the terminal glyph the rest of the app already uses
-  // for a background shell (BackgroundShellSheet, ExternalTerminalCommand). A `compaction` is not a
+  // for a background shell (BackgroundShellSheet, AwaitingBackgroundCard). A `compaction` is not a
   // child returning at all — nothing ran, the provider just dropped the conversation above this line —
   // so it takes NO glyph rather than borrowing one that would misname it. Nor does a `rest`: it was the
   // most FREQUENT divider by far — one per turn — and a mark on every one of them is noise the quieter

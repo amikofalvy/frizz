@@ -182,7 +182,6 @@ import { adoptionRuntimeBinding, type AdoptionPaneLookup, type ExpectedAdoptionP
 import { parseIssueRef, parsePrRef, readGithubIssueStatusBook, readGithubStatusBook, GITHUB_ISSUE_STATUS_SETTING, GITHUB_STATUS_SETTING } from "./awaiting.ts"
 import { isBrokerClaudeRow, type SessionRow, type Storage, type SubAgentSteerRow } from "./storage.ts"
 import type { SessionTelemetry } from "./tailer.ts"
-import { providerResumeCommand } from "./external-terminal.ts"
 import { backgroundShellLineCount, readBackgroundShellOutput } from "./background-shell-output.ts"
 import { projectRetiredBackgroundOps, retiredOpsFor } from "./transcript.ts"
 import { clearProjectIcon, customIconPath, findById, forgetProject, ICON_SCAN_VERSION, listProjects, moveProjectDirectory, renameProject, reorderProjects, setProjectIcon, type RegistryEntry } from "./project-registry.ts"
@@ -3679,55 +3678,6 @@ export function createRouter(ctx: AppContext) {
         await stopAndForgetRegisteredRuntime(ctx.storage, row, cachedLivenessTerminator, ctx.codexAppServer, ctx.claudeBroker, ctx.acpBridge)
         ctx.tailer.forget(input.slug)
         ctx.board.refresh() // storage-only change — the removed row fans out as a delete delta on SSE
-      },
-    }),
-
-    // Copy only a provider-native resume invocation. The durable session registry is the ownership
-    // boundary: board session views are derived from these exact rows, while foreign discoveries and
-    // legacy docs have no row. Avoid rebuilding the full board on this latency-sensitive click path.
-    // The command attaches a SECOND provider client and never touches Frizz's own worker daemon, so it
-    // is offered in every runtime state, live too. An absent/replaced row fails closed.
-    threadTerminalCommand: query({
-      input: SlugInput,
-      output: z.object({ command: z.string().nullable(), mode: z.enum(["attach", "resume", "unavailable"]), reason: z.string().nullable() }),
-      handler: async ({ input }) => {
-        const row = ctx.storage.getSession(input.slug)
-        if (!row) {
-          throw new Error("No Frizz-owned terminal session is available for this thread")
-        }
-        // Always a RESUME. There used to be an ATTACH branch for a worker frizz held open in a terminal
-        // — a genuinely different thing, since `<cli> resume` replays the transcript in a SEPARATE
-        // process and can show neither live runtime state nor a permission prompt the worker is parked
-        // on, which is never written to the transcript at all. Workers run in detached daemons now, with
-        // no terminal for a human to join, so there is nothing to attach to and the resume is the only
-        // honest offer.
-        // Gated only on a real provider-native id existing — no paternalistic "wait for it" block.
-        const backend = row.backend
-        if (backend === "claude" || backend === "codex") {
-          // Claude pins session_id via --session-id, so its native id IS session_id. Codex mints its OWN
-          // rollout id (agent_session_id), discovered shortly after spawn; the Frizz UUID would not resume
-          // it, so require the discovered id rather than falling back to session_id.
-          const nativeId = backend === "codex" ? row.agent_session_id : (row.agent_session_id ?? row.session_id)
-          if (nativeId) {
-            return {
-              command: providerResumeCommand(backend, ctx.project.dir, nativeId),
-              mode: "resume" as const,
-              reason: null,
-            }
-          }
-          if (backend === "codex") {
-            return {
-              command: null,
-              mode: "unavailable" as const,
-              reason: "Codex hasn't reported its resumable session id yet — it appears once the first turn begins.",
-            }
-          }
-        }
-        return {
-          command: null,
-          mode: "unavailable" as const,
-          reason: "This Frizz-owned thread has no verified provider session available to resume.",
-        }
       },
     }),
 

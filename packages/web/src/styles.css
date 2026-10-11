@@ -1281,11 +1281,10 @@ a[href] {
 .md-body > .md-lightbox:last-child {
   margin-bottom: 0;
 }
-/* Geometry is ExternalTerminalCommand's copy button — the app's existing one — expressed in `em` so it
-   tracks the prose scale instead of being pinned at the transcript's 14px (a card's .md-body renders at
-   13px). That button is a 24px box holding a 14px lucide glyph; 1.7em and 0.58 of the box are those two
-   numbers. Inset 0.35em sits the button inside the `pre`'s own 0.75em/1em padding, so it never overhangs
-   the border. */
+/* Geometry in `em`, so it tracks the prose scale instead of being pinned at the transcript's 14px (a
+   card's .md-body renders at 13px): a 24px box holding a 14px lucide glyph at that 14px, which is what
+   1.7em and 0.58 of the box are. Inset 0.35em sits the button inside the `pre`'s own 0.75em/1em padding,
+   so it never overhangs the border. */
 .md-body .md-code-copy {
   /* --md-copy-box and --md-copy-inset are declared just above. ONE inset, used three times, because the
      corner depends on it — see the radius below. */
@@ -1344,13 +1343,12 @@ a[href] {
    sanitizer never sees can still carry lucide's exact geometry and let `currentColor` paint it.
 
    THE TWO PEN WIDTHS DIFFER, and they are measurements rather than taste — re-measure with
-   scripts/verify-md-code-copy-button.mjs, do not re-guess. The resting icon takes 1.8, which is what
-   ExternalTerminalCommand (the app's other copy button) draws its resting glyph at. The check takes
-   2.4 rather than that button's 2.2, because a single-polyline tick lays down far less ink than an
-   outlined two-sheet icon and reads as the lighter mark: at 2.2 the states measured 4.70% and 2.81%
-   perceived ink (1.67×, over the 1.6× gate); 2.4 puts the check at 3.09% (1.52×). Going further is
-   the wrong lever — closing the RAW-AREA gap (still 2.53×) with the pen alone would need stroke ~3.9,
-   heavier than any other glyph in the app; the tone step below is what actually carries it. */
+   scripts/verify-md-code-copy-button.mjs, do not re-guess. The resting icon takes 1.8. The check takes
+   2.4, because a single-polyline tick lays down far less ink than an outlined two-sheet icon and reads
+   as the lighter mark: at 2.2 the states measured 4.70% and 2.81% perceived ink (1.67×, over the 1.6×
+   gate); 2.4 puts the check at 3.09% (1.52×). Going further is the wrong lever — closing the RAW-AREA
+   gap (still 2.53×) with the pen alone would need stroke ~3.9, heavier than any other glyph in the
+   app; the tone step below is what actually carries it. */
 .md-body .md-code-copy::after {
   content: "";
   position: absolute;

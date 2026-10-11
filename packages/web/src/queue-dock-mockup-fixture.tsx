@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client"
 import { Fragment, useEffect, useId, useLayoutEffect, useReducer, useRef, useState, type ComponentType, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from "react"
 import {
   AlarmClock, AlarmClockOff, ArrowUp, Check, ChevronDown, ChevronUp, ChevronsDownUp, ExternalLink, FileText, GitPullRequest,
-  Maximize2, MessageSquare, MessageSquarePlus, Paperclip, Pencil, Plug, RefreshCw, RotateCcw, TerminalSquare, Trash2,
+  Maximize2, MessageSquare, MessageSquarePlus, Paperclip, Pencil, Plug, RefreshCw, RotateCcw, Trash2,
 } from "lucide-react"
 import type { ChatMessage } from "./hooks.ts"
 import { Message, withMessageSpacers } from "./components/ChatView.tsx"
@@ -890,7 +890,6 @@ function CardHeader({ data, layout, force, contextLook = "ring", snoozedUntil, d
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-0.5">
-        <HeaderIcon label="Copy terminal command" icon={TerminalSquare} />
         <HeaderIcon label="Collapse" icon={ChevronsDownUp} size={13} />
         {data.plugins && <HeaderIcon label="Reload plugins — hooks, skills, agents and MCP re-read from disk, same conversation" icon={Plug} />}
         {data.restart && <HeaderIcon label="Restart worker" icon={RefreshCw} forceTip={force?.tip === "restart"} />}
@@ -1103,7 +1102,7 @@ function Playground() {
 
 function RuleTable() {
   const rows: [string, string, string][] = [
-    ["Top bar", "The thread as a whole — what it is, and managing it", "Title · last active · context fullness (Compact now on hover) · terminal command, collapse, fullscreen · Retry, restart worker, reload plugins · snooze (alarm clock) · mark as done (check)"],
+    ["Top bar", "The thread as a whole — what it is, and managing it", "Title · last active · context fullness (Compact now on hover) · collapse, fullscreen · Retry, restart worker, reload plugins · snooze (alarm clock) · mark as done (check)"],
     ["Line above the prompt box", "What this run has outstanding — yours on the left, the worker's on the right", "Pending comments ↑ ↓ · live agents, shells, PR watches, files and links as counts, rows on hover"],
     ["Prompt box", "What you say next, and how it runs", "The message · model and effort · permission mode · the goal (a standing message) · attach · send"],
   ]

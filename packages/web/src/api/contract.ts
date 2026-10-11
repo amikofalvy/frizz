@@ -269,9 +269,6 @@ export interface Api {
   // Hard-delete: drop a stalled/exited phantom's registry row and tombstone its transcript id.
   // Refused for a genuinely live session — archive that one instead.
   forgetThread(input: { slug: string }): Promise<void>
-  // Server-authoritative, shell-safe provider resume command for a registered Frizz-owned session.
-  // A live Frizz-owned runtime is deliberately unavailable: a second provider client is uncoordinated.
-  threadTerminalCommand(input: { slug: string }): Promise<{ command: string | null; mode: "attach" | "resume" | "unavailable"; reason: string | null }>
   openExternal(input: { url: string }): Promise<void>
   openLocalFile(input: { path: string; image?: boolean }): Promise<{ action: "opened" | "copy"; path: string }>
   // A disk-local Markdown file's source, for the built-in reader drawer. Openable-root gated and
@@ -439,7 +436,6 @@ export const PROCEDURES = {
   reloadThreadPlugins: "mutation",
   snoozeAwaitingBackground: "mutation",
   forgetThread: "mutation",
-  threadTerminalCommand: "query",
   openExternal: "mutation",
   openLocalFile: "mutation",
   localMarkdown: "query",
