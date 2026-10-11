@@ -105,15 +105,15 @@ const GOAL = {
   name: "goal",
   description:
     "Arm a GOAL on YOUR OWN thread: one piece of text that frizz re-sends you, on any or all of three " +
-    "triggers, for as long as it is armed. The board shows it as the thread's Goal. (This tool was " +
-    "named `goal` until 2026-08-28 — a summary or note that says so means this one.)\n\n" +
-    "  stop_hook          — every time you come to REST. Use it to keep a long autonomous effort moving " +
+    "triggers, for as long as it is armed. The board shows it as the thread's Goal. (This command was " +
+    "the `recurring_prompt` tool until 2026-08-28 — a summary or note that says so means this one.)\n\n" +
+    "  --stop-hook           — every time you come to REST. Use it to keep a long autonomous effort moving " +
     "without the human driving every step, and to rescue yourself from a wait that may never resolve.\n" +
-    "  heartbeat_seconds  — on a CLOCK, whatever you are doing. This one reaches you MID-TURN: it arrives as " +
+    "  --heartbeat-seconds   — on a CLOCK, whatever you are doing. This one reaches you MID-TURN: it arrives as " +
     "a queued message you read at your next tool boundary rather than waiting for you to stop, and it " +
     "never aborts what you are running. Use it for something that must be revisited on a schedule no " +
     "matter what you happen to believe at the time.\n" +
-    "  post_compaction    — every time your CONTEXT IS COMPACTED, delivered into the emptied window. If " +
+    "  --post-compaction     — every time your CONTEXT IS COMPACTED, delivered into the emptied window. If " +
     "you keep notes in your scratch directory, a prompt that LINKS them comes back at the exact moment " +
     "you have lost everything else. Also mid-turn — a compaction happens while you are working.\n\n" +
     "Set at least one; any combination is fine.\n\n" +
@@ -122,7 +122,7 @@ const GOAL = {
     "as ANY background task of yours is outstanding, so the moment you are parked behind a background " +
     "shell or a sub-agent — exactly when you most need waking — they go silent. This one is delivered by " +
     "frizz itself and is unaffected.\n\n" +
-    "READ IT BACK WITH `action: \"get\"` — and do that BEFORE any `start` that is not a fresh arming. A " +
+    "READ IT BACK WITH `frizzctl goal get` — and do that BEFORE any `start` that is not a fresh arming. A " +
     "thread has AT MOST ONE goal, so a `start` REPLACES whatever is there, triggers and all, " +
     "and the text you are about to destroy may not be yours: the HUMAN can edit it in the thread footer, " +
     "and a compaction can take your own memory of arming it. `get` answers with the exact text currently " +
@@ -133,12 +133,12 @@ const GOAL = {
     "The text arrives VERBATIM as an ordinary user turn, so write it as an instruction to your future " +
     "self. At most one scheduled delivery is ever outstanding and its clock runs from the last one " +
     "DELIVERED, so you can never be handed a backlog at once.\n\n" +
-    "STOP IT when the work it drives is done (`action: \"stop\"`) — one left armed on a finished thread " +
+    "STOP IT when the work it drives is done (`frizzctl goal stop`) — one left armed on a finished thread " +
     "wakes it forever. The human sees it in the thread footer and can edit or switch it off there. " +
     "Signing off with a ```done fence stops it too, every trigger at once — but only when the work is " +
     "genuinely finished, because that files the thread away and a thread nobody is watching does not " +
     "restart itself.\n\n" +
-    "You can only ever arm your OWN thread — there is no parameter for anyone else's.",
+    "You can only ever arm your OWN thread — there is no argument for anyone else's.",
   inputSchema: {
     type: "object",
     properties: {
@@ -160,8 +160,8 @@ const GOAL = {
       stop_hook: {
         type: "boolean",
         description:
-          "Send it every time you come to rest. Defaults to true when neither `heartbeat_seconds` nor " +
-          "`post_compaction` is given, so a `start` that names no mechanism still does the obvious thing.",
+          "Send it every time you come to rest. Defaults to true when neither `--heartbeat-seconds` nor " +
+          "`--post-compaction` is given, so a `start` that names no mechanism still does the obvious thing.",
       },
       heartbeat_seconds: {
         type: "integer",
@@ -208,7 +208,7 @@ const TIMER = {
     "done yet\" is strictly worse than being woken when it is.\n\n" +
     "The text arrives VERBATIM as an ordinary user turn, so write it as an instruction to your future " +
     "self — self-contained and actionable, because you may receive it with none of the context you have " +
-    "now. Give exactly one of `in_seconds` or `at`. You can only ever set a timer on your OWN thread.",
+    "now. Give exactly one of `--in-seconds` or `--at`. You can only ever set a timer on your OWN thread.",
   inputSchema: {
     type: "object",
     properties: {
@@ -228,14 +228,14 @@ const TIMER = {
         type: "integer",
         description:
           `For \`set\`: fire this many seconds from now (minimum ${TIMER_MIN_DELAY_SECONDS}, maximum ` +
-          `${TIMER_MAX_DELAY_SECONDS} — thirty days). Give this OR \`at\`, not both. Sub-minute precision ` +
+          `${TIMER_MAX_DELAY_SECONDS} — thirty days). Give this OR \`--at\`, not both. Sub-minute precision ` +
           "is not real: the delivery is read at your next tool boundary.",
       },
       at: {
         type: "string",
         description:
           "For `set`: fire at this exact instant, as an ISO-8601 timestamp (e.g. `2026-08-04T15:00:00Z`). " +
-          "Give this OR `in_seconds`, not both. Must be in the future and within thirty days.",
+          "Give this OR `--in-seconds`, not both. Must be in the future and within thirty days.",
       },
       id: {
         type: "string",
@@ -254,26 +254,26 @@ const WATCH_PR = {
     "green or red, and every later review, approval or comment, from a human or a bot alike. Register " +
     "it, come to rest, and you are woken. Drop it when it stops mattering.\n\n" +
     "IT REPORTS REPEATEDLY, unlike a timer. One registration covers the whole life of the PR: CI goes " +
-    "red, you push a fix, CI goes green, a reviewer comments — that is four wakes from one call, and you " +
+    "red, you push a fix, CI goes green, a reviewer comments — that is four wakes from one registration, and you " +
     "never have to re-register between them. It settles itself when the PR merges or closes, because " +
     "there is then nothing left to report.\n\n" +
     "REGISTER IT THE MOMENT YOU OPEN OR PUSH A PR. Nothing else watches for you: your runtime knows " +
     "nothing about GitHub, and an ```awaiting fence STATES what you are waiting on without creating any " +
-    "wait at all. This tool is the wait.\n\n" +
+    "wait at all. This command is the wait.\n\n" +
     "THE ```awaiting FENCE IS STILL WORTH WRITING, and it is a different job: it is how you come to REST " +
     "without frizz asking you for a handoff, and how the human sees what you are waiting for. Register " +
-    "the watcher with this tool, then name the same PR in your fence's `prs:` list — and give the fence " +
+    "the watcher with this command, then name the same PR in your fence's `prs:` list — and give the fence " +
     "the same long `for:` you gave the watcher, or the fence expires first and bumps you anyway.\n\n" +
-    "GIVE AN EXTERNAL PR A LONG `for` — MONTHS, up to a year. A pull request into a repo nobody here " +
+    "GIVE AN EXTERNAL PR A LONG `--for` — MONTHS, up to a year. A pull request into a repo nobody here " +
     "controls moves on its maintainers' clock, not yours, and a short watcher on one expires against a " +
     "PR that has not changed: a wake with nothing in it, and a re-arm. Long costs nothing — real " +
     "activity still wakes you the instant it lands, and the human snoozes or archives the thread if " +
     "they want it off the board.\n\n" +
     "REGISTERING IS IDEMPOTENT per pull request: asking twice returns the SAME id and tells you it was " +
-    "already armed, so re-registering after a compaction is safe and is the right instinct. Use `list` " +
-    "when you want to know what you are holding without changing anything — it answers with each PR's " +
-    "current check state too.\n\n" +
-    "You can only ever watch a PR on your OWN thread — there is no parameter for anyone else's.",
+    "already armed, so re-registering after a compaction is safe and is the right instinct. Use " +
+    "`frizzctl watch-pr list` when you want to know what you are holding without changing anything — it " +
+    "answers with each PR's current check state too.\n\n" +
+    "You can only ever watch a PR on your OWN thread — there is no argument for anyone else's.",
   inputSchema: {
     type: "object",
     properties: {
@@ -302,7 +302,7 @@ const WATCH_PR = {
           "MATCH IT TO WHOSE PR IT IS, and the two cases are far apart. Your own PR, waiting on CI or on " +
           "a review you expect today: hours. A PULL REQUEST IN A REPO NOBODY HERE CONTROLS — an upstream " +
           "project, someone else's maintainers — takes as long as it takes, so give it MONTHS (`90d`, " +
-          "`180d`, `365d`). A short `for` on one of those does not make it get reviewed sooner; it just " +
+          "`180d`, `365d`). A short `--for` on one of those does not make it get reviewed sooner; it just " +
           "expires against a PR nothing has touched, wakes you for nothing, and costs a re-arm. That is " +
           "not hypothetical — a watcher on an external PR re-armed at the old 24h ceiling four days " +
           "running, with zero maintainer activity in between. Long is FREE here: real activity wakes you " +
@@ -324,23 +324,23 @@ const WATCH_ISSUE = {
     "REGISTER A GITHUB ISSUE and frizz brings you back whenever something happens on it — every later " +
     "comment, from a human or a bot alike, a label added or removed, someone assigned, and the issue " +
     "closing. Register it, come to rest, and you are woken. Drop it when it stops mattering.\n\n" +
-    "IT REPORTS REPEATEDLY, like `watch_pr` and unlike a timer: one registration covers the whole life " +
+    "IT REPORTS REPEATEDLY, like `watch-pr` and unlike a timer: one registration covers the whole life " +
     "of the issue, and it settles itself when the issue closes, because there is then nothing left to " +
     "report. There is no CI and no merge on an issue, so those are the only things it can say.\n\n" +
     "USE IT WHEN THE NEXT STEP IS SOMEONE ELSE'S REPLY ON AN ISSUE — a reporter you asked for a " +
     "reproduction, a maintainer you asked to triage, a discussion you are waiting to see resolved. " +
     "Nothing else watches for you: your runtime knows nothing about GitHub, and an ```awaiting fence " +
-    "STATES what you are waiting on without creating any wait at all. This tool is the wait. A PULL " +
-    "REQUEST is `watch_pr`, not this — `gh issue view` refuses a PR number, and so does this.\n\n" +
-    "THE ```awaiting FENCE IS STILL WORTH WRITING, for the same reason it is beside `watch_pr`: it is " +
+    "STATES what you are waiting on without creating any wait at all. This command is the wait. A PULL " +
+    "REQUEST is `frizzctl watch-pr`, not this — `gh issue view` refuses a PR number, and so does this.\n\n" +
+    "THE ```awaiting FENCE IS STILL WORTH WRITING, for the same reason it is beside `watch-pr`: it is " +
     "how you come to REST without frizz asking for a handoff, and how the human sees what you wait for. " +
     "Register the watcher, then name the same issue in the fence's `issues:` list, with the same long " +
     "`for:`.\n\n" +
-    "GIVE IT A LONG `for` — an issue in someone else's repo moves on their clock, and a short watcher " +
+    "GIVE IT A LONG `--for` — an issue in someone else's repo moves on their clock, and a short watcher " +
     "expires against an issue nobody has touched: a wake with nothing in it. Months are free; real " +
     "activity wakes you the instant it lands either way.\n\n" +
     "REGISTERING IS IDEMPOTENT per issue: asking twice returns the SAME id and says so, so re-registering " +
-    "after a compaction is safe. `list` reads back the issues watched on this thread without changing " +
+    "after a compaction is safe. `frizzctl watch-issue list` reads back the issues watched on this thread without changing " +
     "anything. You can only ever watch an issue on your OWN thread.",
   inputSchema: {
     type: "object",
@@ -376,26 +376,26 @@ const WATCH_ISSUE = {
 }
 
 // The registry that replaces a ```awaiting fence's `shells:` line: a wait the worker CREATES rather
-// than one it restates at every rest. Two tools rather than one action-switch, because they are two
+// than one it restates at every rest. Two commands rather than one action-switch, because they are two
 // verbs and a worker reaching for `unwatch` should find `unwatch`. See plans/rest-by-registration.md.
 const WATCH = {
   name: "watch",
   description:
     "REGISTER A WAIT on something this thread already has running — a background shell, a sub-agent — " +
-    "and frizz brings you back when it finishes, or when `for` runs out.\n\n" +
+    "and frizz brings you back when it finishes, or when `--for` runs out.\n\n" +
     "IT IS A ROW, NOT A SENTENCE. A ```awaiting fence has the lifetime of the message carrying it; this " +
     "survives your turn ending, a compaction and a frizz restart.\n\n" +
     "IT DOES NOT REPLACE THE FENCE. Where the thread sits while you wait is an answer about each REST, " +
     "so every rest on running work still ends with a ```awaiting fence that names the work and answers " +
     "`status: working|watching|needs_input` — `working` and `watching` keep the thread out of the " +
     "human's queue, and a rest with no fence lands in it.\n\n" +
-    "`for` IS REQUIRED and it is a DURATION, never an instant. When it runs out the row is CANCELLED " +
+    "`--for` IS REQUIRED and it is a DURATION, never an instant. When it runs out the row is CANCELLED " +
     "and you are woken to re-decide — that is deliberate, and it is what stops a wait outliving the " +
     "reason you made it. Register again if you still mean it.\n\n" +
     "THE TARGET IS CHECKED AGAINST WHAT IS ACTUALLY RUNNING, not against its shape. A handle nothing " +
     "live answers to is REFUSED rather than stored, and so is a `kind` that disagrees with what frizz " +
     "can see — a sub-agent registered as a shell is refused and told what it actually is. If you have " +
-    "lost an id (a compaction, a long turn), call `activity` rather than guessing.\n\n" +
+    "lost an id (a compaction, a long turn), run `frizzctl activity` rather than guessing.\n\n" +
     "A SUB-AGENT NEEDS NO REGISTRATION — its return re-invokes you — so the case this exists for is a " +
     "background SHELL: frizz cannot tell a build you are waiting on from a dev server you started and " +
     "moved on from, and only you know which it is.\n\n" +
@@ -404,7 +404,7 @@ const WATCH = {
     "will never finish.\n\n" +
     "REGISTERING IS IDEMPOTENT per (kind, target): asking twice returns the SAME id, says it was " +
     "already armed, and leaves the original expiry alone — so re-registering after a compaction is safe " +
-    "and is the right instinct. Use `unwatch` to withdraw one. A PULL REQUEST is `watch_pr`, not this: " +
+    "and is the right instinct. Use `frizzctl unwatch <id>` to withdraw one. A PULL REQUEST is `frizzctl watch-pr`, not this: " +
     "that one polls GitHub and reports repeatedly.\n\n" +
     "You can only ever watch work on your OWN thread.",
   inputSchema: {
@@ -424,7 +424,7 @@ const WATCH = {
           "The handle you were shown. For a shell that is the runtime's own background-task id " +
           "(\"Command running in background with ID: bzvtnt3ig\"); its launch tool_use id and its " +
           "command label are accepted too. For a sub-agent it is the dispatch id or its description. " +
-          "`activity` prints all of them.",
+          "`frizzctl activity` prints all of them.",
       },
       for: {
         type: "string",
@@ -433,7 +433,7 @@ const WATCH = {
           "instant, and there is no default: choose it for THIS wait. When it elapses the row is " +
           "cancelled and you are woken to re-decide, so an over-long guess costs a wait that outlives " +
           "its reason and a too-short one costs one extra turn. The ceiling is a DAY here, unlike " +
-          "`watch_pr`'s year: a shell or a sub-agent dies with this session, so a wait on one that has " +
+          "`watch-pr`'s year: a shell or a sub-agent dies with this session, so a wait on one that has " +
           "stood for a day is a wait on something already gone.",
       },
     },
@@ -444,19 +444,19 @@ const WATCH = {
 const UNWATCH = {
   name: "unwatch",
   description:
-    "WITHDRAW A WATCH you registered with `watch`, by its id. It will not wake you any more.\n\n" +
+    "WITHDRAW A WATCH you registered with `frizzctl watch`, by its id. It will not wake you any more.\n\n" +
     "Use it the moment a wait stops mattering — you decided not to wait for that build after all, or " +
     "you are about to end the thread. A watch you no longer care about still wakes you for nothing, and " +
     "it blocks `done` until it is withdrawn.\n\n" +
     "You do NOT need this when the work simply finishes: frizz settles the row itself and wakes you. " +
-    "`activity` prints the id of everything you hold. A `watch_pr` / `watch_issue` id (`prw_…` / " +
+    "`frizzctl activity` prints the id of everything you hold. A `watch-pr` / `watch-issue` id (`prw_…` / " +
     "`isw_…`) or a `timer` id (`tmr_…`) is withdrawn here too.",
   inputSchema: {
     type: "object",
     properties: {
       id: {
         type: "string",
-        description: "The watch id `watch` returned (or that `activity` lists), or a PR, issue or timer id. Only your own thread's.",
+        description: "The watch id `frizzctl watch` printed (or that `frizzctl activity` lists), or a PR, issue or timer id. Only your own thread's.",
       },
     },
     required: ["id"],
@@ -575,7 +575,7 @@ const ASK = {
     "answerable card on the board and in the thread, and it STAYS there: it survives your turn ending, " +
     "a compaction, a restart, and the transcript scrolling past. A fence has the lifetime of the " +
     "message carrying it, which is why a question written into one was unanswerable an hour later.\n\n" +
-    "YOUR DEFAULT IS TO DECIDE, AND THIS TOOL DOES NOT CHANGE THAT. A reversible call costs minutes to " +
+    "YOUR DEFAULT IS TO DECIDE, AND THIS COMMAND DOES NOT CHANGE THAT. A reversible call costs minutes to " +
     "redo; a round-trip to the human costs hours with the whole effort idle. Anything derivable from " +
     "the code, the conventions or ordinary engineering judgement is yours: make it, say which way you " +
     "went, and keep moving. THE TEST THAT CATCHES ALMOST EVERY BAD QUESTION: if you are about to mark " +
@@ -593,15 +593,15 @@ const ASK = {
     "card draws itself at the tail of the rest the question was asked — never write the question into " +
     "your handoff (one question, one card). AT EVERY LATER REST it is no longer your sign-off and frizz " +
     "does not redraw it under your newer handoff: name it under `questions:` in an ```awaiting fence " +
-    "while you still need the answer (its card is drawn there), or withdraw it with `unask`. TO PLACE IT " +
+    "while you still need the answer (its card is drawn there), or withdraw it with `frizzctl unask <id>`. TO PLACE IT " +
     "INSIDE YOUR PROSE instead, write " +
-    "an EMPTY fence naming the id this tool returned — ```question qst_ab12cd34 on one line, ``` on " +
+    "an EMPTY fence naming the id this command printed — ```question qst_ab12cd34 on one line, ``` on " +
     "the next — and the card renders there. One marker per question; nothing in the body; placement is " +
     "optional, and every answer of the rest still sends together.\n\n" +
-    "SEVERAL AT ONCE IS ONE CALL. The card sends every answer as a unit, so a second `ask` for a second " +
+    "SEVERAL AT ONCE IS ONE COMMAND. The card sends every answer as a unit, so a second `frizzctl ask` for a second " +
     "question just makes the human send twice. Register them together.\n\n" +
     "The answer comes back to you as its own wake, restating what was asked. Withdraw one you no longer " +
-    "need with `unask` — a question you have since answered yourself, still sitting on the human's " +
+    "need with `frizzctl unask <id>` — a question you have since answered yourself, still sitting on the human's " +
     "board, is worse than never having asked it.\n\n" +
     "ON AN AUTONOMOUS THREAD THIS REFUSES, and tells you the standing instruction you are working " +
     "under. A thread carrying a rest Goal has already been told to keep going and decide for itself, " +
@@ -614,7 +614,7 @@ const ASK = {
   inputSchema: {
     type: "object",
     properties: {
-      // No `maxItems` (four until 2026-09-03): "several at once is one call" above, and a cap here told
+      // No `maxItems` (four until 2026-09-03): "several at once is one command" above, and a cap here told
       // a worker with six to batch them and then refused the batch.
       questions: {
         type: "array",
@@ -630,7 +630,7 @@ const ASK = {
 const UNASK = {
   name: "unask",
   description:
-    "WITHDRAW A QUESTION you registered with `ask`, by its id. Its card disappears and the human is " +
+    "WITHDRAW A QUESTION you registered with `frizzctl ask`, by its id. Its card disappears and the human is " +
     "never asked.\n\n" +
     "Use it the moment the question stops mattering: you worked out the answer yourself, the code moved " +
     "and the fork is gone, or you are about to finish. A stale question on someone's board is worse " +
@@ -640,7 +640,7 @@ const UNASK = {
   inputSchema: {
     type: "object",
     properties: {
-      id: { type: "string", description: "The question id `ask` returned, or that `activity` lists. Only your own thread's." },
+      id: { type: "string", description: "The question id `frizzctl ask` printed, or that `frizzctl activity` lists. Only your own thread's." },
     },
     required: ["id"],
   },
@@ -652,9 +652,9 @@ const SECRET = {
     "ASK THE HUMAN FOR A SECRET VALUE — a one-time 2FA code, an API token, a password — that a command " +
     "needs and you must never see. The human may be on a phone, far from this machine: this is how a " +
     "code reaches a command without anyone typing into a terminal here.\n\n" +
-    "It registers a question like `ask`, drawn as a card with ONE MASKED BOX. What the human pastes is " +
+    "It registers a question like `frizzctl ask`, drawn as a card with ONE MASKED BOX. What the human pastes is " +
     "held in Frizz's memory — never on disk — and served through a private named pipe whose path this " +
-    "tool returns NOW. It never enters the transcript, the database or your context: the answer you are " +
+    "command prints NOW. It never enters the transcript, the database or your context: the answer you are " +
     "woken with names the path, not the value.\n\n" +
     "THE PATH CAN BE READ ONCE, within 15 minutes of the answer; then it is gone. So read it INSIDE the " +
     "command that uses it: `npm publish --otp \"$(cat '<path>')\"`, `<cmd> < '<path>'`. A value several " +
@@ -665,7 +665,7 @@ const SECRET = {
     "A one-time code expires in about thirty seconds, so have the command ready BEFORE you rest: when the " +
     "answer wakes you, run it at once.\n\n" +
     "Like a question, it is your rest's sign-off and it gates `done` until answered; name it under " +
-    "`questions:` at later rests, withdraw it with `unask`. It is allowed on an autonomous thread — a " +
+    "`questions:` at later rests, withdraw it with `frizzctl unask <id>`. It is allowed on an autonomous thread — a " +
     "credential is not something you can decide.",
   inputSchema: {
     type: "object",
@@ -687,7 +687,7 @@ const SECRET = {
 // cross-session `SendMessage` reaches a session only while its process is live, so a worker told to hand
 // its results to a resting thread had no tool for it, and went looking for the board's `followUp` route
 // to curl by hand — sixteen tool calls to find the route, the slug and the session id. This is that
-// delivery, as a tool: the server reads the target's current session, wraps the body so the receiver
+// delivery, as a command: the server reads the target's current session, wraps the body so the receiver
 // and the chat both know who sent it, and wakes, queues into, or reopens the target as a human
 // follow-up would.
 const STEER = {
@@ -696,14 +696,14 @@ const STEER = {
     "SEND A MESSAGE TO ANOTHER THREAD on this board, running or resting, and it reads it as its next " +
     "input. A running thread reads it at its next tool boundary; a resting thread is WOKEN by it and " +
     "starts a turn on it; a thread marked done is reopened. The receiver sees which thread sent it and " +
-    "can answer with this same tool.\n\n" +
+    "can answer with this same command.\n\n" +
     "USE IT INSTEAD OF RELAYING THROUGH THE HUMAN. Whenever another thread needs what you have, send it " +
     "there yourself: results a thread is waiting on (\"when the audit is done, send the results to " +
     "<thread>\"), a finding that changes another thread's work (it is chasing the bug you just fixed, it " +
     "depends on a commit you just landed, it is about to redo what you already did), or the answer to a " +
     "message another thread sent you. A finding that sits in your handoff until the human copies it " +
-    "across costs them a trip and the other thread hours; sending it costs one call. A thread you spawned " +
-    "with `spawn_thread`, or the one that spawned you, is reachable the same way.\n\n" +
+    "across costs them a trip and the other thread hours; sending it costs one command. A thread you spawned " +
+    "with `frizzctl spawn-thread`, or the one that spawned you, is reachable the same way.\n\n" +
     "WRITE IT TO BE READ COLD. The receiver has none of your context: say what you found or what you " +
     "need, with the evidence, paths, commits and links it needs to act — in one complete message, not a " +
     "drip of partial ones. Every steer costs the receiver a turn on its full context, so do not send " +
@@ -722,7 +722,7 @@ const STEER = {
         type: "string",
         description:
           "The thread to message: its slug (`fix-queue-focus`), or any link naming it — the " +
-          "`[title](/thread/<slug>)` link `spawn_thread` returns, or a full board URL such as " +
+          "`[title](/thread/<slug>)` link `frizzctl spawn-thread` prints, or a full board URL such as " +
           "`http://localhost:9393/project/frizz/thread/<slug>/full`.",
       },
       message: {
@@ -742,11 +742,11 @@ const DONE = {
     "DECLARE THIS EFFORT FINISHED, with the write-up the human reads. Your thread cards as a checked " +
     "success in their queue and stays there until they archive it — marking done is not dismissal, and " +
     "it does not close, archive or hide anything.\n\n" +
-    "FRIZZ CAN REFUSE THIS, which is the whole reason it is a tool rather than a fence. An OPEN " +
+    "FRIZZ CAN REFUSE THIS, which is the whole reason it is a command rather than a fence. An OPEN " +
     "QUESTION or an ARMED REGISTRATION blocks it, and the refusal names each one by id: a question " +
     "nobody answered dies with the card, and a live wait means the thing you were waiting for has not " +
     "happened yet. Resolve them for real — answer it yourself and `unask`, or `unwatch` the wait you no " +
-    "longer need — then call again. There is no force parameter and there will not be one.\n\n" +
+    "longer need — then run it again. There is no force flag and there will not be one.\n\n" +
     "IT ONLY COUNTS WHAT IS REGISTERED. A background shell or a sub-agent you never registered does " +
     "not block this, because frizz cannot tell a build you are waiting on from a dev server you walked " +
     "away from. That judgement is yours, and registering it is how you make it.\n\n" +
@@ -754,7 +754,7 @@ const DONE = {
     "plan, doc or commissioned report written INTO A FILE. An open pull request is not done — the " +
     "merge is. An investigation headed for a fix is not done — the fix is. And a verdict that ends in " +
     "SOMEBODY SHOULD NOW DO SOMETHING (merge it, post this, pick one of these) is not done either: " +
-    "that is an `ask`, carrying your recommendation as the first option.\n\n" +
+    "that is a `frizzctl ask`, carrying your recommendation as the first option.\n\n" +
     "THE TEST IS NEVER \"HAVE I STOPPED WORKING\". It is: WHAT IS LOST IF NOBODY EVER OPENS THIS " +
     "THREAD AGAIN? Name one thing and you are not done. Uncertain is not done.",
   inputSchema: {
@@ -784,10 +784,10 @@ const TITLE = {
     "paraphrase what the operator typed — so it inherits their shorthand, their ambiguity and their " +
     "typos. One zod thread went onto the board as \"Zon4.5 features and z.properties documentation " +
     "audit\" because the operator typed \"Zon4.5\" and nothing in the session yet knew the product is " +
-    "called Zod. You know. That is the entire point of this tool.\n\n" +
-    "WHEN TO CALL IT: after you have oriented — read the issue, opened the code, found the bug — and " +
+    "called Zod. You know. That is the entire point of this command.\n\n" +
+    "WHEN TO RUN IT: after you have oriented — read the issue, opened the code, found the bug — and " +
     "can name the actual work in your own words. Not on arrival: a name you register before you " +
-    "understand the task is the same guess the board already has. Once is normally enough; call it " +
+    "understand the task is the same guess the board already has. Once is normally enough; run it " +
     "again only if the work turns out to be genuinely something else.\n\n" +
     "NAME THE WORK, NOT THE PROMPT. \"Is this true? We should probably…\" is what the human said, not " +
     "what you are doing. A good name is the thing a reader picking one card out of thirty needs: the " +
@@ -810,10 +810,9 @@ const TITLE = {
   },
 }
 
-// The unified server's tool registry: `tools/list` returns these and `tools/call` routes by name.
-// Adding a worker-facing frizz tool = one entry here + one handler in `HANDLERS` — never a second
-// MCP server, so every frizz tool stays under the same `mcp__frizz__*` namespace and the same
-// server-level pre-approval the dispatch layer already grants.
+// The registry: `frizzctl` lists these and routes a command by name (and the legacy MCP front-end
+// answers `tools/list` and `tools/call` from the same list). Adding a worker-facing capability = one
+// entry here + one handler in `HANDLERS` + its spelling in `CLI` — never a second surface.
 const MIN_INTERVAL_SECONDS = 60
 const MAX_INTERVAL_SECONDS = 24 * 60 * 60
 
@@ -828,8 +827,8 @@ const ACTIVITY = {
     "your thread queues. The same goes for the ids `unwatch` and `unask` take, and for the id you put in " +
     "an EMPTY ```question fence to PLACE a registered question in your handoff (a marker naming no open " +
     "question of yours draws nothing). So if you have lost one (a " +
-    "compaction, a long turn, a wake you did not expect), call this rather than guessing. Guessing is " +
-    "the failure this tool exists to remove — and it is the only way to read your open questions " +
+    "compaction, a long turn, a wake you did not expect), run this rather than guessing. Guessing is " +
+    "the failure this command exists to remove — and it is the only way to read your open questions " +
     "WITHOUT registering or withdrawing one.\n\n" +
     "It takes nothing and changes nothing. You can only ever read your OWN thread.",
   inputSchema: { type: "object", properties: {}, required: [] },
@@ -843,7 +842,7 @@ const LINK = {
     "HTTP(S) destinations render as Link; local files render as File and use Frizz's existing file reader/opener. " +
     "Files must exist. Relative paths resolve from the project root; use absolute paths for worktrees. " +
     "Registration survives rests and restarts, but does not start, monitor, or verify a server. " +
-    "It never blocks done or parks the thread. Read registrations with activity; remove one with unlink.",
+    "It never blocks done or parks the thread. Read registrations with `frizzctl activity`; remove one with `frizzctl unlink <id>`.",
   inputSchema: {
     type: "object",
     properties: {
@@ -856,7 +855,7 @@ const LINK = {
 }
 const UNLINK = {
   name: "unlink",
-  description: "Remove one saved link/file from this thread by its lnk_ id (returned by link or listed by activity). " +
+  description: "Remove one saved link/file from this thread by its lnk_ id (printed by `frizzctl link` or listed by `frizzctl activity`). " +
     "Only removes the registration: it never deletes a file or stops a server.",
   inputSchema: {
     type: "object", properties: { id: { type: "string", description: "The lnk_ id of a registration on this thread." } },
@@ -925,13 +924,13 @@ async function link(args) {
   const result = (await callRpc("upsertOwnLink", { slug: threadSlug(), label, target }))?.result
   const saved = result?.link
   if (!saved?.id) throw new Error("Frizz did not return a saved link")
-  return `Registered ${saved.kind} ${saved.id}: ${saved.label}\n${saved.target}\n\nThis reference stays underneath the prompt. It does not assert a server is running or block completion. Remove it with unlink.`
+  return `Registered ${saved.kind} ${saved.id}: ${saved.label}\n${saved.target}\n\nThis reference stays underneath the prompt. It does not assert a server is running or block completion. Remove it with \`frizzctl unlink ${saved.id}\`.`
 }
 
 /** @param {Record<string, unknown>} args @returns {Promise<string>} */
 async function unlink(args) {
   const id = typeof args.id === "string" ? args.id.trim() : ""
-  if (!id) throw new Error("`id` is required — take it from link or activity")
+  if (!id) throw new Error("`id` is required — take it from `frizzctl link` or `frizzctl activity`")
   const result = (await callRpc("dropOwnLink", { slug: threadSlug(), id }))?.result
   return result?.dropped ? `Removed registration ${id}. No file was deleted and no server was stopped.` : `No registration ${id} on this thread.`
 }
@@ -949,7 +948,7 @@ async function title(args) {
   if (result?.lockedByHuman) {
     return (
       `Not renamed — the human has named this thread "${result.title}" themselves, and their name ` +
-      "outranks yours. Leave it; do not call this again for this thread."
+      "outranks yours. Leave it; do not run this again for this thread."
     )
   }
   return `Not renamed — frizz did not accept the write. This thread still reads "${result?.title ?? slug}".`
@@ -962,7 +961,7 @@ async function activity() {
   const items = Array.isArray(result?.activity) ? result.activity : []
   const questions = Array.isArray(result?.questions) ? result.questions : []
   const links = Array.isArray(result?.links) ? result.links : []
-  const linksBlock = links.length === 0 ? "" : "\n\nSaved links and files (not running work; remove with unlink):\n" +
+  const linksBlock = links.length === 0 ? "" : "\n\nSaved links and files (not running work; remove with `frizzctl unlink <id>`):\n" +
     links.map((link) => `  ${link.id}  ${link.kind}: ${link.label}\n    ${link.target}`).join("\n")
   // THE QUESTIONS GET THEIR OWN SECTION, because they are not running work: a question waits on a
   // person. Since 2026-10-05 a fence names the ones still needed under `questions:` (and must name every
@@ -972,7 +971,7 @@ async function activity() {
     questions.map((q) => `  question: ${q.id}\n    ${String(q?.spec?.question ?? "").replace(/\s+/g, " ").slice(0, 160)}`).join("\n") +
     "\n\nEach one blocks `done` until it is answered or withdrawn, and draws its own card at the rest " +
     "it was asked — never write it into a handoff; an EMPTY ```question fence naming its id places it " +
-    "inside your prose. `unask` the ones since decided. Any ```awaiting fence names EVERY open one " +
+    "inside your prose. `frizzctl unask <id>` the ones since decided. Any ```awaiting fence names EVERY open one " +
     "under `questions:` or is refused, and at a rest after the one that asked, a question you neither " +
     "name nor withdraw gets you bumped. In a fence: `questions: [" +
     questions.map((q) => q.id).join(", ") + "]`"
@@ -990,7 +989,7 @@ async function activity() {
       "Nothing is running on this thread — no background shells, no sub-agents, no armed timers, no " +
       "registered PRs, and no open questions.\n\nSo there is nothing to wait on: an ```awaiting fence " +
       "would have nothing to name, and a fence naming nothing is not a park. End with ```done, or " +
-      "register a question with `ask` if you need the human." + linksBlock
+      "register a question with `frizzctl ask` if you need the human." + linksBlock
     )
   }
   const lines = items.map((i) => {
@@ -1002,7 +1001,7 @@ async function activity() {
   })
   // A READY-TO-PASTE FENCE, not a description of one. The frontmatter is YAML since 2026-08-24 and its
   // keys are PLURAL sequences, so an id printed on its own line is no longer something a worker can copy
-  // into a fence — it has to see the shape. This tool is where the contract sends a worker that has lost
+  // into a fence — it has to see the shape. This command is where the contract sends a worker that has lost
   // an id, so printing the retired one-line-per-item form would teach the very grammar frizz refuses.
   const byKind = { shell: [], agent: [], timer: [], pr: [], issue: [] }
   for (const i of items) if (byKind[i.kind] && i.id) byKind[i.kind].push(i.id)
@@ -1028,7 +1027,7 @@ async function activity() {
     `${block.join("\n")}\n  status: ${status}\n  for: 2h\n` +
     "```\n\nDrop the lines you are not actually waiting on — a dev server you left running is not a wait " +
     "— and change `status:` if it names the wrong place." +
-    "\n\nA `watch` registration (marked `[watched as …]` above) keeps the WAKE across a compaction and a " +
+    "\n\nA `frizzctl watch` registration (marked `[watched as …]` above) keeps the WAKE across a compaction and a " +
     "restart, but it does not replace the fence: name the work in the fence all the same." +
     askedBlock + linksBlock
   )
@@ -1129,7 +1128,7 @@ function serverLockPort() {
     throw new NoFrizzState(
       "cannot locate the Frizz server: this environment names no Frizz state (FRIZZ_STATE_DIR, " +
       "FRIZZ_SERVER_LOCK and FRIZZ_PERM_DIR are all unset). That is what a shell OUTSIDE a Frizz worker " +
-      "looks like; inside one it is a Frizz bug. NOTHING WAS SAVED — this call had no effect.",
+      "looks like; inside one it is a Frizz bug. NOTHING WAS SAVED — this command had no effect.",
     )
   }
   // SAY THAT NOTHING WAS SAVED, and say to retry. A worker reads "is frizz running?" as a fact about the
@@ -1141,8 +1140,8 @@ function serverLockPort() {
   throw new Error(
     `no running frizz server found (looked at ${candidates.join(", ")} and every project lock under ` +
     `${root ? join(root, "projects") : "the frizz root"}; each was missing, malformed, or written by a process that is gone). ` +
-    `NOTHING WAS SAVED — this call had no effect. frizz is probably mid-restart, which is ordinary and ` +
-    `brief; RETRY this exact call before you do anything else, and do not come to rest assuming it took.`,
+    `NOTHING WAS SAVED — this command had no effect. frizz is probably mid-restart, which is ordinary and ` +
+    `brief; RETRY this exact command before you do anything else, and do not come to rest assuming it took.`,
   )
 }
 
@@ -1212,7 +1211,7 @@ async function spawnThread(args) {
   const parent = process.env.FRIZZ_THREAD_SLUG || process.env.FRIZZ_THREAD
   const footer = parent
     ? `\n\n---\nSpawned by the Frizz thread \`${parent}\`. If this prompt asks for results back, or you find ` +
-      `something that thread must know, send it there with the frizz \`steer\` tool (\`to: "${parent}"\`).`
+      `something that thread must know, send it there with \`frizzctl steer ${parent} --message-file <file|->\`.`
     : ""
   /** @type {Record<string, unknown>} */
   const body = { prompt: prompt + footer, model, effort }
@@ -1249,7 +1248,7 @@ async function spawnThread(args) {
     `Spawned a new frizz thread \`${slug}\`. It is now on the board driving independently — it reports ` +
     `to the human via its own final message, so do not wait on a result from it. It knows your slug: if ` +
     `its prompt asked for results back, they arrive as a \`steer\` that wakes you. You can message it ` +
-    `the same way, with \`steer\` and \`to: "${slug}"\`.\n\n` +
+    `the same way, with \`frizzctl steer ${slug}\`.\n\n` +
     `Paste this link to let the human open it in the drawer:\n\n[${label}](/thread/${slug})`
   )
 }
@@ -1462,7 +1461,7 @@ async function goal(args) {
   const stopHook = typeof args.stop_hook === "boolean" ? args.stop_hook : !hasHeartbeat && !postCompaction
   const heartbeat = hasHeartbeat
   if (!stopHook && !heartbeat && !postCompaction) {
-    throw new Error("at least one is required: set `stop_hook: true`, give `heartbeat_seconds`, set `post_compaction: true`, or any combination")
+    throw new Error("at least one is required: `--stop-hook`, `--heartbeat-seconds <n>`, `--post-compaction`, or any combination")
   }
 
   const written = await callRpc("setOwnThreadRecurringPrompt", {
@@ -1493,7 +1492,7 @@ async function goal(args) {
   // are the only way the worker can put them back.
   const superseded = replaced
     ? `\n\nIT REPLACED an existing goal — check that discarding it was intended, and restore ` +
-      `it with another \`start\` if it was not:\n\n${goalReport(replaced)}\n`
+      `it with another \`frizzctl goal start\` if it was not:\n\n${goalReport(replaced)}\n`
     : ""
   // NO QUESTION HOLD ANY MORE (2026-08-16). Every trigger fires while you are waiting on the human, and
   // the at-rest one fires over your own unanswered registered question — the delivery says so, and expects
@@ -1501,7 +1500,7 @@ async function goal(args) {
   // wait frizz itself will deliver, still stop the at-rest trigger.
   return (
     `Goal armed — frizz will send you this ${when}.${superseded}\n\n` +
-    "Call this tool again with `action: \"stop\"` once the work it drives is finished — one left armed on " +
+    "Run `frizzctl goal stop` once the work it drives is finished — one left armed on " +
     "a finished thread wakes it forever. The human can also edit or switch it off in the thread footer. " +
     "Signing off with a ```done fence stops it too, but only when there is genuinely nothing left: it " +
     "files the thread away until the human sends more work."
@@ -1537,7 +1536,7 @@ async function timer(args) {
 
   if (action === "cancel") {
     const id = typeof args.id === "string" ? args.id.trim() : ""
-    if (!id) throw new Error("`id` is required to cancel a timer — take it from `set`'s reply or from `action: \"list\"`")
+    if (!id) throw new Error("`id` is required to cancel a timer — take it from `frizzctl timer set`'s reply or from `frizzctl timer list`")
     const result = (await callRpc("cancelOwnThreadTimer", { slug, id }))?.result
     const head = result?.cancelled
       ? `Timer ${id} cancelled — it will not fire.`
@@ -1552,8 +1551,8 @@ async function timer(args) {
   // and a worker that gave two different times meant something by each of them.
   const hasIn = args.in_seconds !== undefined && args.in_seconds !== null
   const hasAt = typeof args.at === "string" && args.at.trim() !== ""
-  if (hasIn && hasAt) throw new Error("give `in_seconds` OR `at`, not both")
-  if (!hasIn && !hasAt) throw new Error("give either `in_seconds` (fire N seconds from now) or `at` (an ISO-8601 instant)")
+  if (hasIn && hasAt) throw new Error("give `--in-seconds` OR `--at`, not both")
+  if (!hasIn && !hasAt) throw new Error("give either `--in-seconds` (fire N seconds from now) or `--at` (an ISO-8601 instant)")
 
   const nowMs = Date.now()
   let fireMs
@@ -1582,7 +1581,7 @@ async function timer(args) {
   return (
     `Timer ${id} set for ${fireAt} (${Math.round((fireMs - nowMs) / 1000)}s from now). It fires ONCE and ` +
     "then is gone — it may reach you mid-turn, so receiving it does not mean you had stopped. Cancel it " +
-    `with \`action: "cancel", id: "${id}"\` if it stops being useful.\n\n${armedList(result)}`
+    `with \`frizzctl timer cancel ${id}\` if it stops being useful.\n\n${armedList(result)}`
   )
 }
 
@@ -1590,7 +1589,7 @@ async function timer(args) {
 /** How the armed PR-watcher set reads back, on every action, so a worker never needs a second call.
  * @param {{ watches?: Array<{id: string, target: string, github?: {checks: string, running: number, passed: number, failed: number, failing: string[], merge: string, state: string}}> }|undefined} result */
 function armedPrWatchList(result) {
-  // Only the PULL REQUESTS: the registry holds issues too (`watch_issue`), and each tool reads back its
+  // Only the PULL REQUESTS: the registry holds issues too (`watch_issue`), and each command reads back its
   // own kind so a worker asking where its PRs stand is not told about an issue it registered elsewhere.
   const watches = (Array.isArray(result?.watches) ? result.watches : []).filter((w) => w.kind !== "issue")
   if (!watches.length) return "No pull requests are watched on this thread — nothing will wake you."
@@ -1649,7 +1648,7 @@ async function watch(args) {
   const kind = typeof args.kind === "string" ? args.kind.trim() : ""
   if (kind !== "shell" && kind !== "agent") throw new Error("`kind` must be \"shell\" or \"agent\"")
   const target = typeof args.target === "string" ? args.target.trim() : ""
-  if (!target) throw new Error("`target` is required — the handle you were shown; `activity` prints them all")
+  if (!target) throw new Error("`target` is required — the handle you were shown; `frizzctl activity` prints them all")
   const forValue = typeof args.for === "string" ? args.for.trim() : ""
   if (!forValue) throw new Error("`for` is required — a DURATION like `30m`, `2h` or `3d` (max 24h), never an instant")
   const result = (await callRpc("addOwnWatch", { slug, kind, target, for: forValue }))?.result
@@ -1660,12 +1659,12 @@ async function watch(args) {
       "registration survives your turn ending, a compaction and a frizz restart."
   // A clamp is news here for the same reason it is on `watch_pr` — see that handler.
   const clamped = result?.clampedFrom
-    ? `\n\nYOUR \`for: ${result.clampedFrom}\` WAS CAPPED at the 24h ceiling for a shell or a sub-agent — ` +
+    ? `\n\nYOUR \`--for ${result.clampedFrom}\` WAS CAPPED at the 24h ceiling for a shell or a sub-agent — ` +
       "the expiry listed below is what you actually hold."
     : ""
   return (
-    `${head}${clamped}\n\nWHEN \`for\` RUNS OUT the row is CANCELLED and you are woken to re-decide — register ` +
-    `again if you still mean it.\n\nDROP IT the moment it stops mattering (\`unwatch\`, id \`${id}\`); ` +
+    `${head}${clamped}\n\nWHEN \`--for\` RUNS OUT the row is CANCELLED and you are woken to re-decide — register ` +
+    `again if you still mean it.\n\nDROP IT the moment it stops mattering (\`frizzctl unwatch ${id}\`); ` +
     `you do NOT need to when the work simply finishes.\n\n${armedWatchList(result)}`
   )
 }
@@ -1675,7 +1674,7 @@ async function watch(args) {
 async function unwatch(args) {
   const slug = threadSlug()
   const id = typeof args.id === "string" ? args.id.trim() : ""
-  if (!id) throw new Error("`id` is required — take it from `watch` or from `activity`")
+  if (!id) throw new Error("`id` is required — take it from `frizzctl watch` or from `frizzctl activity`")
   // A PR, issue or timer id is not a `watch` row, and dropOwnWatch would report it "already settled"
   // while it stayed armed. The id prefix names its kind, so the one verb a worker reaches for routes it
   // to the call that really withdraws it.
@@ -1730,7 +1729,7 @@ async function ask(args) {
     "KEEP WORKING. A question waits on a person, carries no timeout and does not end your turn — do " +
     "everything that does not depend on the answer while it sits there. The answer arrives as its own " +
     "wake, restating what was asked.\n\n" +
-    "WITHDRAW ONE THE MOMENT IT STOPS MATTERING (`unask`), above all if you work the answer out " +
+    "WITHDRAW ONE THE MOMENT IT STOPS MATTERING (`frizzctl unask <id>`), above all if you work the answer out " +
     `yourself.\n\n${openQuestionList(result)}`
   )
 }
@@ -1767,7 +1766,7 @@ async function secret(args) {
 async function unask(args) {
   const slug = threadSlug()
   const id = typeof args.id === "string" ? args.id.trim() : ""
-  if (!id) throw new Error("`id` is required — take it from `ask`")
+  if (!id) throw new Error("`id` is required — take it from `frizzctl ask` or `frizzctl activity`")
   const result = (await callRpc("unask", { slug, id }))?.result
   // A withdrawal that matched nothing is reported rather than swallowed: the id was wrong, the human
   // already answered it, or it is another thread's — and a worker that believes it withdrew a question
@@ -1789,10 +1788,10 @@ async function done(args) {
     return (
       "Marked done. Your thread cards as a checked success in the human's queue and stays there until " +
       "they archive it.\n\nNOTHING WAS CLOSED, HIDDEN OR ARCHIVED — if there is more to say, say it in " +
-      "your final message; if more work appears, keep going and call this again."
+      "your final message; if more work appears, keep going and run this again."
     )
   }
-  // REFUSED, with everything that refuses it named by id, so the next move is a tool call and not a
+  // REFUSED, with everything that refuses it named by id, so the next move is a command and not a
   // guess. Reported as an ordinary result rather than thrown: this is a gate doing its job, not a fault.
   const questions = (result?.blockingQuestions ?? []).map((q) => `  ${q.id}  ${(q.question ?? "").split("\n")[0]}`)
   const watches = (result?.blockingWatches ?? []).map((w) => `  ${w.id}  ${w.what}`)
@@ -1800,7 +1799,7 @@ async function done(args) {
   if (questions.length) {
     parts.push(
       `${questions.length} question${questions.length === 1 ? "" : "s"} the human has not answered:\n${questions.join("\n")}\n` +
-      "Each one dies unread with a done card. Decide it yourself and withdraw it (`unask`), or leave it " +
+      "Each one dies unread with a done card. Decide it yourself and withdraw it (`frizzctl unask <id>`), or leave it " +
       "open and keep working until it is answered.",
     )
   }
@@ -1808,10 +1807,10 @@ async function done(args) {
     parts.push(
       `${watches.length} registration${watches.length === 1 ? "" : "s"} still armed:\n${watches.join("\n")}\n` +
       "A live wait means the thing you were waiting for has not happened. Wait for it, or drop the ones " +
-      "that stopped mattering (`unwatch`, or `watch_pr` / `watch_issue` with `action: \"drop\"`, or `timer` cancel).",
+      "that stopped mattering (`frizzctl unwatch <id>` takes a watch, a PR or issue watcher, or a timer).",
     )
   }
-  parts.push("There is no force parameter. Resolve them and call `done` again.")
+  parts.push("There is no force flag. Resolve them and run `frizzctl done` again.")
   return new Refused(parts.join("\n\n"))
 }
 
@@ -1853,13 +1852,13 @@ async function watchPr(args) {
   // A CLAMP IS NEWS. Silently handing back less coverage than was asked for is how a worker comes to
   // rest believing it is watched for a year when it is watched for one day.
   const clamped = result?.clampedFrom
-    ? `\n\nYOUR \`for: ${result.clampedFrom}\` WAS CAPPED at the ceiling — the expiry above is what you ` +
+    ? `\n\nYOUR \`--for ${result.clampedFrom}\` WAS CAPPED at the ceiling — the expiry above is what you ` +
       "actually hold. Nothing else about the watcher changed."
     : ""
   return (
     `${head}${clamped}\n\nNAME IT IN YOUR \`\`\`awaiting FENCE TOO (\`prs: [${ref}]\`) — the watcher does the ` +
     `waking, the fence is what lets you come to rest and shows the human what you are waiting for.\n\n` +
-    `DROP IT when it stops mattering (\`action: "drop", id: "${id}"\`).\n\n${armedPrWatchList(result)}`
+    `DROP IT when it stops mattering (\`frizzctl watch-pr drop ${id}\`).\n\n${armedPrWatchList(result)}`
   )
 }
 
@@ -1900,13 +1899,13 @@ async function watchIssue(args) {
     : `Watching issue ${ref} as ${id}${until}. Frizz wakes you on every later comment, on a label or ` +
       "assignee change, and when the issue closes; the registration survives your turn ending, a compaction and a frizz restart."
   const clamped = result?.clampedFrom
-    ? `\n\nYOUR \`for: ${result.clampedFrom}\` WAS CAPPED at the ceiling — the expiry above is what you ` +
+    ? `\n\nYOUR \`--for ${result.clampedFrom}\` WAS CAPPED at the ceiling — the expiry above is what you ` +
       "actually hold. Nothing else about the watcher changed."
     : ""
   return (
     `${head}${clamped}\n\nNAME IT IN YOUR \`\`\`awaiting FENCE TOO (\`issues: [${ref}]\`) — the watcher does the ` +
     `waking, the fence is what lets you come to rest and shows the human what you are waiting for.\n\n` +
-    `DROP IT when it stops mattering (\`action: "drop", id: "${id}"\`).\n\n${armedIssueWatchList(result)}`
+    `DROP IT when it stops mattering (\`frizzctl watch-issue drop ${id}\`).\n\n${armedIssueWatchList(result)}`
   )
 }
 
@@ -1999,7 +1998,7 @@ const CLI = {
     summary: "Wake on a GitHub issue's comments, labels, assignees and close",
     positional: ["action"],
     then: { add: ["target"], drop: ["id"] },
-    examples: ["frizzctl watch-issue add acme/app#482 --for 30d", "frizzctl watch-issue list"],
+    examples: ["frizzctl watch-issue add acme/app#482 --for 30d", "frizzctl watch-issue list", "frizzctl watch-issue drop isw_ab12cd34"],
   },
   timer: {
     group: "Waiting",
