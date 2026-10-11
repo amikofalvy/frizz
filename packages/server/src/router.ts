@@ -3954,13 +3954,13 @@ export function createRouter(ctx: AppContext) {
     }),
 
     /**
-     * Each project's queue size and Active-band size, keyed by project id — the rail's badges — plus its
+     * Each project's queue size and Active-band size, keyed by project id — the rail's counts — plus its
      * ask count (`boardAskThread`), which only the phone's projects list reads.
      *
-     * The rail draws ONE yellow badge per project whose number is the SUM, with a spinner lapping it
-     * while `running` is non-zero, and its tooltip splits the two (issue #41: which projects still
-     * have work in flight, at a glance). `running` is `activeBandThread` — the rows the sidebar draws
-     * below the rule — so the rail and the sidebar beside it count with one rule.
+     * The rail draws one yellow badge per project whose number is `queued`, and names `running` beside
+     * it in the square's tooltip (issue #41: which projects still have work in flight). `running` is
+     * `activeBandThread` — the rows the sidebar draws below the rule — so the rail and the sidebar
+     * beside it count with one rule.
      *
      * MACHINE-WIDE, answered from the boards this process has OPEN. A queue count is a board fact:
      * `needsYou` is derived from the tailer's live view of each session, so a project with no board

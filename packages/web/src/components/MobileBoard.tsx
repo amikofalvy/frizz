@@ -463,7 +463,7 @@ export function MobileBoard() {
   // counts for the projects list's accent number, so the list and this header cannot disagree.
   const askCount = useMemo(() => all.filter(boardAskThread).length, [all])
   // "Working" is the maintainer's ACTIVE band — the rows that are spinning — counted with the predicate
-  // the desktop rail's badge uses (activeBandThread), so the phone and the rail cannot disagree.
+  // the desktop rail's tooltip uses (activeBandThread), so the phone and the rail cannot disagree.
   const working = useMemo(() => all.filter(activeBandThread).length, [all])
 
   const rows = tab === "queue" ? queue : tab === "snoozed" ? sections.snoozed : sections.inactive
