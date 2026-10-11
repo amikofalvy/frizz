@@ -73,6 +73,7 @@ test("the shell bootstraps the versioned public server contract", () => {
   assert.deepEqual(manifest.frizzServer, {
     package: "frizz-server",
     version: "0.15.22",
+    minimum: "0.15.21",
     protocol: 1,
     dataEpoch: 1,
   });
