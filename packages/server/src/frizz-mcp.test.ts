@@ -899,7 +899,7 @@ test("`goal` refuses to act when its thread identity was never stamped into its 
     rpc.send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "goal", arguments: { action: "stop" } } })
     const failed = await rpc.next(2)
     assert.equal(failed.result.isError, true)
-    assert.match(failed.result.content[0].text, /not told which thread it belongs to/)
+    assert.match(failed.result.content[0].text, /could not tell which thread is calling/)
   } finally {
     rpc.kill()
   }
