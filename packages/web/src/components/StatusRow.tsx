@@ -6,6 +6,7 @@ import { STATUS_ROW_ACTION, STATUS_ROW_ICON } from "../lib/statusRow.ts"
 import { projectIdentity } from "./Sidebar.tsx"
 import { QuotaChips, useQuotaChipsVisible } from "./QuotaBar.tsx"
 import { RestartFrizzButton } from "./RestartFrizzButton.tsx"
+import { homeHref, useHomeView } from "../lib/homeView.ts"
 
 // THE STATUS ROW — one loose line along the TOP OF THE PROMPT BOX, controls at the left edge and the
 // project at the right:
@@ -93,8 +94,11 @@ function StartTruncated({ text, title, className }: { text: string; title?: stri
  * whole queue column to the store to feed a 24px strip. valtio's useSnapshot tracks the properties
  * actually READ, so this re-renders on a board change and on nothing else.
  */
-export function StatusRow() {
+export function StatusRow({ label }: { label?: string } = {}) {
   const board = useBoard()
+  // Home is the one the operator keeps — the grid or the Console (lib/homeView.ts).
+  const homeView = useHomeView()
+  const homeLabel = homeView === "console" ? "Console" : "All projects"
   // A missing board is not evidence that this project is named "frizz". Keep the row neutral until a
   // board keyframe supplies an actual name; reconnects retain their adopted board.
   const identity = projectIdentity(board)
@@ -107,9 +111,12 @@ export function StatusRow() {
   // display label alone cannot decide this — a GitLab origin yields an owner/repo there too.
   const githubRepo = board?.githubRepo ?? null
 
-  const name = identity.state === "verified" ? identity.label : identity.state === "local" ? identity.name : null
+  // The Console belongs to no project, so its row names what it shows instead (`label`), as prose.
+  const name = label ?? (identity.state === "verified" ? identity.label : identity.state === "local" ? identity.name : null)
   const accessibleName =
-    identity.state === "verified"
+    label !== undefined
+      ? label
+      : identity.state === "verified"
       ? `Project: ${identity.label}`
       : identity.state === "local"
         ? `Project: ${identity.name}; local repository with no git remote`
@@ -136,7 +143,7 @@ export function StatusRow() {
           an oversight rather than a decision — the router refactor that made the rail outlive a
           navigation predates this row by a fortnight, and `/` has had its own SPA route the whole time.
           The rail is hidden under 800px and off by default, so THIS was the door most operators used. */}
-      <Link to="/" title="All projects" aria-label="All projects" className={`${STATUS_ROW_ACTION} -ml-px`}>
+      <Link to={homeHref(homeView)} title={homeLabel} aria-label={homeLabel} className={`${STATUS_ROW_ACTION} -ml-px`}>
         <House size={STATUS_ROW_ICON} aria-hidden="true" />
       </Link>
       <Divider />
@@ -166,7 +173,7 @@ export function StatusRow() {
         aria-label={accessibleName}
         aria-busy={identity.state === "loading" || undefined}
       >
-        {name && githubRepo ? (
+        {name && githubRepo && label === undefined ? (
           // The name IS the anchor: the same hover every other text link in the app wears
           // (GithubPickerModal's rows, ChildOpRow's labels) — full fg plus an underline — is what tells
           // a reader this one is a control, and the title says where it goes. `text-fg/90` at rest is

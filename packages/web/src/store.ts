@@ -11,6 +11,7 @@ import { resolveThreadRoute } from "./lib/threadRouteState.ts"
 import { standaloneThreadHref } from "./lib/standaloneThreadRoute.ts"
 import { ownedByThisPage } from "./lib/projectOwnership.ts"
 import { isConsolePath } from "./lib/base-path.ts"
+import { HOME_BAND_PX } from "./lib/homeView.ts"
 import { setGithubRepo } from "./lib/githubAutolink.ts"
 import { resetGithubCards } from "./lib/githubHovercards.ts"
 import { setLocalPathBase } from "./lib/localPathBase.ts"
@@ -25,6 +26,15 @@ import type { RestartAttempt } from "./api/restart.ts"
 // predecessor's rule. It was 12px until 2026-08-25, which read as the card being pressed against the
 // top of the window (maintainer: "we should leave the full 40 px").
 export const QUEUE_CARD_VIEWPORT_TOP = 40
+
+/**
+ * The landing, measured from the window's top: QUEUE_CARD_VIEWPORT_TOP below whatever fixed chrome sits
+ * there — the Console's home band on a wide window (lib/homeView.ts HOME_BAND_PX), nothing on a board.
+ */
+export function queueCardViewportTop(): number {
+  const wide = typeof window === "undefined" || typeof window.matchMedia !== "function" || !window.matchMedia("(max-width: 800px)").matches
+  return QUEUE_CARD_VIEWPORT_TOP + (isConsolePath() && wide ? HOME_BAND_PX : 0)
+}
 
 // The BORDERED CARD ROOT inside a queue slot. The outer `[data-queue-card]` slot is the fade wrapper:
 // it also spans the root's own bottom scroll-reserve margin, and it is not the element that draws the
@@ -70,7 +80,7 @@ export function queueCardTargetY(slug: string): number | null {
   if (isFirstQueueCard(slug)) return 0
   // matchMedia guarded: unit tests stub a minimal window without it (store.queue-navigation.test.ts).
   const navOffset = typeof window.matchMedia === "function" && window.matchMedia("(max-width: 800px)").matches ? 40 : 0
-  return Math.max(0, pageScrollY() + root.getBoundingClientRect().top - QUEUE_CARD_VIEWPORT_TOP - navOffset)
+  return Math.max(0, pageScrollY() + root.getBoundingClientRect().top - queueCardViewportTop() - navOffset)
 }
 
 export type ConnectionState = "connecting" | "open" | "closed"

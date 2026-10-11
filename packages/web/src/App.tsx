@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useRef, useState, type CSSProperties } from "react"
 import { useNavigate } from "react-router"
 import { useSnapshot } from "valtio"
 import { useQuery } from "@tanstack/react-query"
@@ -8,7 +8,9 @@ import { closeDrawerAnimated } from "./lib/overlays.ts"
 import { takeScrollAfterUnlock } from "./lib/pageScrollLock.ts"
 import { startRouter } from "./lib/router.ts"
 import { nextSidebarPresence, readSidebarMirror, writeSidebarMirror, type SidebarPresence } from "./lib/sidebarPresence.ts"
-import { projectSlug } from "./lib/base-path.ts"
+import { isConsolePath, projectSlug } from "./lib/base-path.ts"
+import { HOME_BAND_PX } from "./lib/homeView.ts"
+import { CONSOLE_SIDEBAR_COLUMN_CLASS, ConsoleSidebar } from "./components/ConsoleSidebar.tsx"
 import { rpc } from "./api/rpc.ts"
 import { SIDEBAR_COLUMN_CLASS, Sidebar } from "./components/Sidebar.tsx"
 import { MobileBoard } from "./components/MobileBoard.tsx"
@@ -50,14 +52,18 @@ function maybeShowSignInHint() {
 
 export function App() {
   const snap = useSnapshot(store)
+  // THE CONSOLE is this same board shell over every project's threads (routes.tsx ConsoleRoute): its own
+  // sidebar, no seed (the feed's first keyframes are the board), and room at the top for the home band.
+  const onConsole = isConsolePath()
   const sidebarPresence = useRef<SidebarPresence>({ projectDir: null, hasBeenVisible: false })
 
   // Seed the board once at startup so the first paint doesn't wait on the SSE connect; SSE keeps it
   // fresh afterward. seedBoard (not setBoard) so a late-resolving seed can't clobber a board the SSE
   // stream has already established + advanced with deltas.
   useEffect(() => {
+    if (onConsole) return
     rpc.board().then(seedBoard).catch(() => {})
-  }, [])
+  }, [onConsole])
 
   // STORE → URL (opening a drawer writes the address bar). The other direction is the route tree's —
   // see routes.tsx useRouteToStore. Navigation goes through the router so its history stack and its
@@ -246,15 +252,16 @@ export function App() {
   useEffect(() => { resolveRoutedThread() }, [board, snap.routeThreadSlug])
 
   sidebarPresence.current = nextSidebarPresence(sidebarPresence.current, board)
-  const showSidebar = board !== null && sidebarPresence.current.hasBeenVisible
+  // The Console's sidebar is always there: it carries the Console's only prompt box.
+  const showSidebar = board !== null && (onConsole || sidebarPresence.current.hasBeenVisible)
   // Before the first board lands, hold the sidebar's column open if this project had one last time —
   // the workpane then renders in its final place on the first frame instead of centering alone and
   // jumping when the sidebar mounts. Written back on every board so the mirror tracks the answer.
-  const reserveSidebar = board === null && readSidebarMirror(projectSlug())
+  const reserveSidebar = board === null && (onConsole || readSidebarMirror(projectSlug()))
   const hasBeenVisible = sidebarPresence.current.hasBeenVisible
   useEffect(() => {
-    if (board !== null) writeSidebarMirror(projectSlug(), hasBeenVisible)
-  }, [board, hasBeenVisible])
+    if (board !== null && !onConsole) writeSidebarMirror(projectSlug(), hasBeenVisible)
+  }, [board, hasBeenVisible, onConsole])
   // Window title carries the project identity. In the INSTALLED APP window (display-mode:
   // standalone) Chrome prefixes the title bar with the app name itself ("Frizz - <title>"), so the
   // page title must NOT repeat the wordmark — just the repo label ("Frizz - nubjs/nub"). In an
@@ -285,7 +292,12 @@ export function App() {
     {/* While restarting, the whole app subtree goes inert so nothing behind the scrim is focusable or
         clickable; the overlay above is a sibling OUTSIDE it so it stays interactive. Once the hold has
         stalled the overlay stops blocking, and so does this. */}
-    <div inert={snap.controlPlaneState === "restarting" && !hold.stalled} className="relative min-h-screen bg-bg text-fg text-sm">
+    <div
+      inert={snap.controlPlaneState === "restarting" && !hold.stalled}
+      className="relative min-h-screen bg-bg text-fg text-sm"
+      // What sticks to the window's top sticks below the Console's home band instead (the cards' headers).
+      style={onConsole ? ({ "--frizz-sticky-top": `${HOME_BAND_PX}px` } as CSSProperties) : undefined}
+    >
       {/* NO FIXED CHROME IN EITHER TOP CORNER. Identity, settings, reload and both quota chips used to
           be a bar pinned to the upper-left, a screen's width from the column they describe; they are
           the StatusRow along the top of the prompt box now (Sidebar.tsx, and TodosView's centered
@@ -324,15 +336,16 @@ export function App() {
             a bad row in the sidebar must not take the workpane with it, and vice versa. */}
         {showSidebar && (
           <ErrorBoundary label="the sidebar">
-            <Sidebar />
+            {onConsole ? <ConsoleSidebar /> : <Sidebar />}
           </ErrorBoundary>
         )}
-        {reserveSidebar && <aside aria-hidden className={SIDEBAR_COLUMN_CLASS} data-sidebar-reserved />}
+        {reserveSidebar && <aside aria-hidden className={onConsole ? CONSOLE_SIDEBAR_COLUMN_CLASS : SIDEBAR_COLUMN_CLASS} data-sidebar-reserved />}
         <main
           id="workpane"
           // min-h-screen where content is vertically CENTERED: the boot loader and the empty queue's
           // prompt box (TodosView's flex-1 centering needs a full-height parent); populated queues just
           // top-align and grow past. Threads render in DRAWERS, never here.
+          style={onConsole ? { paddingTop: HOME_BAND_PX + 20 } : undefined}
           className={`w-[720px] max-w-[62vw] min-w-0 flex flex-col py-5 max-[800px]:w-full max-[800px]:max-w-none ${
             snap.view === "todos" || !board ? "min-h-screen" : ""
           } ${

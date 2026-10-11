@@ -44,10 +44,19 @@ const MAX_BUDGET_RETRIES = 5
 let qc: QueryClient | null = null
 const feeds = new Map<string, ProjectFeed>()
 let health: ReturnType<typeof setInterval> | null = null
+/** Is the Console holding the feed? Set by startConsoleFeed, cleared by stopConsoleFeed. */
+let active = false
+// The merged board BEFORE it is shown. The Console's first paint waits for every project's first keyframe
+// (or PUBLISH_DEADLINE_MS, whichever is sooner): a board painted from the first project to answer would
+// reorder its queue under the operator as each other project's threads arrived, and the card at the top —
+// the one they were about to read — would be replaced by an older one a beat later.
+let staged: BoardSnapshot | null = null
+let publishDeadline: ReturnType<typeof setTimeout> | null = null
+const PUBLISH_DEADLINE_MS = 2_500
 
 /** The merged board's own fields. It belongs to no project, so it carries no project's identity. */
 function emptyUnion(): BoardSnapshot {
-  return { projectDir: "", projectName: "Console", projectLabel: "All projects", threads: [], errors: [], warnings: [] }
+  return { projectDir: "", projectName: "Console", projectLabel: "Console", threads: [], errors: [], warnings: [] }
 }
 
 /** A project's thread under its key. `dependsOn` names threads of the same project, so it is keyed too. */
@@ -81,6 +90,8 @@ export function dropProject(union: BoardSnapshot, project: string): void {
 class ProjectFeed {
   private ws: WebSocket | null = null
   private seq = -1
+  /** Has this project's first keyframe landed? The Console's first paint waits for every project's. */
+  keyframed = false
   private confirmed = false
   private protocolReady = false
   private failures = 0
@@ -137,6 +148,7 @@ class ProjectFeed {
   private setState(state: ProjectFeed["state"]): void {
     this.state = state
     reportConnection()
+    maybePublish()
   }
 
   private scheduleReconnect(immediate = false): void {
@@ -197,7 +209,8 @@ class ProjectFeed {
     if (this.pollTimer) clearInterval(this.pollTimer)
     this.reconnectTimer = this.replayTimer = this.pollTimer = null
     this.budgetTimers.clear()
-    if (store.board) dropProject(store.board, this.project)
+    const board = store.board ?? staged
+    if (board) dropProject(board, this.project)
     for (const slug of this.subs.keys()) delete store.socketTranscriptFallbacks[threadKey(this.project, slug)]
   }
 
@@ -250,14 +263,16 @@ class ProjectFeed {
       case "board-delta":
         noteServerBootId(event.bootId)
         switch (deltaAction(this.seq, event.seq)) {
-          case "apply":
-            if (!store.board) {
+          case "apply": {
+            const board = store.board ?? staged
+            if (!board) {
               this.resync()
               return true
             }
-            mergeDelta(store.board, this.project, event)
+            mergeDelta(board, this.project, event)
             this.seq = event.seq
             return true
+          }
           case "ignore":
             return true
           case "resync":
@@ -278,9 +293,10 @@ class ProjectFeed {
   }
 
   private adoptKeyframe(board: BoardSnapshot): void {
-    if (!isConsolePath()) return
-    if (!store.board) store.board = emptyUnion()
-    mergeKeyframe(store.board, this.project, board)
+    if (!isConsolePath() || !active) return
+    mergeKeyframe(store.board ?? (staged ??= emptyUnion()), this.project, board)
+    this.keyframed = true
+    maybePublish()
   }
 
   /** A board too big for the socket: read it over HTTP on a clock, and keep the socket for transcripts. */
@@ -368,6 +384,19 @@ class ProjectFeed {
   }
 }
 
+/**
+ * Show the merged board once every project has answered — its first keyframe, or a connection given up
+ * on — or once the deadline says to stop waiting for the stragglers (`force`).
+ */
+function maybePublish(force = false): void {
+  if (!active || store.board || !isConsolePath()) return
+  if (!force && [...feeds.values()].some((feed) => !feed.keyframed && feed.state !== "closed")) return
+  store.board = staged ?? emptyUnion()
+  staged = null
+  if (publishDeadline) clearTimeout(publishDeadline)
+  publishDeadline = null
+}
+
 /** The status bar's one reading of N connections: live once every project's is, closed if any is. */
 function reportConnection(): void {
   if (!isConsolePath()) return
@@ -419,19 +448,26 @@ export function setConsoleProjects(projects: readonly string[]): void {
   }
   installHealth()
   reportConnection()
+  // No project to wait for (none is open) publishes the empty board now; otherwise each keyframe asks.
+  maybePublish()
 }
 
 /** Is the Console's feed running? The route's binding asks, as a project route asks api/socket.ts. */
 export function consoleFeedActive(): boolean {
   return active
 }
-let active = false
 
-/** Start the Console's feed: an empty merged board, filled as each project's keyframe arrives. */
+/** Start the Console's feed. The merged board is shown once its projects have answered (maybePublish). */
 export function startConsoleFeed(): void {
   active = true
-  store.board = emptyUnion()
+  store.board = null
+  staged = null
   store.connection = "connecting"
+  if (publishDeadline) clearTimeout(publishDeadline)
+  publishDeadline = setTimeout(() => {
+    publishDeadline = null
+    maybePublish(true)
+  }, PUBLISH_DEADLINE_MS)
 }
 
 /** Close every connection and forget the merged board. Leaving the Console for a project calls this. */
@@ -440,6 +476,9 @@ export function stopConsoleFeed(): void {
   active = false
   for (const feed of feeds.values()) feed.close()
   feeds.clear()
+  staged = null
+  if (publishDeadline) clearTimeout(publishDeadline)
+  publishDeadline = null
 }
 
 function feedFor(key: string): { feed: ProjectFeed; slug: string } | null {

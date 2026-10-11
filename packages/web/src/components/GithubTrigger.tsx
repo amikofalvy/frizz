@@ -1,7 +1,8 @@
 import { useQuery } from "@tanstack/react-query"
 import { Github } from "lucide-react"
-import { rpc } from "../api/rpc.ts"
 import { openGithubPicker } from "../store.ts"
+import { isConsolePath } from "../lib/base-path.ts"
+import { scopedKey, useProjectScope, useRpc } from "../lib/projectScope.tsx"
 
 // THE one query definition every gh-gated surface shares (this trigger, App's sign-in hint, the
 // picker) so their options can't drift apart.
@@ -15,9 +16,13 @@ import { openGithubPicker } from "../store.ts"
 // `staleTime` throttles the refetch so a burst of tab switches can't spawn a `gh` per switch.
 // (Signing in from frizz's OWN terminal never blurs the window — that one still needs a reload.)
 export function useGithubStatus() {
+  const project = useProjectScope()
+  const api = useRpc()
   return useQuery({
-    queryKey: ["githubStatus"],
-    queryFn: () => rpc.githubStatus(),
+    queryKey: scopedKey(["githubStatus"], project),
+    queryFn: () => api.githubStatus(),
+    // The Console belongs to no repo: it asks only for a surface that names its project.
+    enabled: project !== undefined || !isConsolePath(),
     staleTime: 30_000,
     refetchOnWindowFocus: true,
     // A NO IS NEVER FINAL — re-ask on a slow interval until it turns yes, then stop.
@@ -48,7 +53,8 @@ export function useGithubStatus() {
 // passing it unconditionally reserves an empty hole where the icon would be.
 export function useGithubTriggerVisible(): boolean {
   const status = useGithubStatus()
-  return Boolean(status.data?.inRepo && status.data.authed)
+  // Not on the Console: the picker it opens is one project's issues and PRs, mounted by the page.
+  return Boolean(status.data?.inRepo && status.data.authed) && !isConsolePath()
 }
 
 // The auth-gated door into the GitHub picker — a small GitHub icon that sits just LEFT of the dispatch

@@ -5,6 +5,7 @@ import { RootErrorBoundary } from "./components/ErrorBoundary.tsx"
 import { RouterProvider } from "react-router"
 import { router } from "./routes.tsx"
 import { connectSync } from "./api/socket.ts"
+import { initConsoleFeed } from "./api/consoleFeed.ts"
 import { initTranscriptLive } from "./api/transcript-live.ts"
 import { initSupervisorStatus } from "./api/supervisorStatus.ts"
 import { initFont } from "./lib/font.ts"
@@ -57,6 +58,8 @@ export const queryClient = new QueryClient({
 if (!settingsFixture) {
   initTheme()
   connectSync(queryClient)
+  // The Console's feed writes its projects' transcript pushes into the same cache (api/consoleFeed.ts).
+  initConsoleFeed(queryClient)
   // Observer-driven transcript liveness: any mounted surface observing ["transcript", slug] is kept
   // fresh centrally (socket subscription within budget, activity-edge refetch beyond) — components
   // never manage subscriptions themselves.

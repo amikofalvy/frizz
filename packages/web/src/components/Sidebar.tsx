@@ -4,7 +4,7 @@ import { useVirtualizer } from "@tanstack/react-virtual"
 import { useSnapshot } from "valtio"
 import { AlarmClock, Check, ChevronRight, CircleDashed, Ellipsis, Github, Hourglass, Loader2, Pin, PinOff, RotateCcw, Timer } from "lucide-react"
 import type { BoardSnapshot, ThreadView } from "@frizz/shared"
-import { store, openThread, scrollToQueueCard, queueCardTargetY, pushSubAgentDrawer, showToast, QUEUE_CARD_VIEWPORT_TOP } from "../store.ts"
+import { store, openThread, scrollToQueueCard, queueCardTargetY, pushSubAgentDrawer, showToast, queueCardViewportTop } from "../store.ts"
 import { rpc } from "../api/rpc.ts"
 import { useBoard, asThreads } from "../hooks.ts"
 import { prefs } from "../lib/prefs.ts"
@@ -78,34 +78,16 @@ const ROW_ACTION_CLASS = "flex h-[19px] w-[19px] items-center justify-center rou
 export const SIDEBAR_COLUMN_CLASS =
   "sticky top-0 self-start h-screen w-[clamp(272px,34vw,680px)] shrink-0 flex flex-col justify-center max-[800px]:static max-[800px]:h-auto max-[800px]:w-full max-[800px]:justify-start max-[800px]:pt-16"
 
-export function Sidebar() {
-  const snap = useSnapshot(store)
-  const board = useBoard()
-  // A just-sent steer is folded into the board BEFORE anything is derived from it, so the row's
-  // spinner and its POSITION land together. Consulting the hint further down (in the indicator alone,
-  // as this once did) left the two disagreeing for the whole injection + tailer round-trip: the row
-  // spun while still sitting in the queue-ordered rested band, below the rule, and hopped up to the
-  // running band seconds later — measured at 2.0s here with an instantaneous fixture worker, longer in
-  // production. See lib/steering.ts.
-  // Both optimistic overlays, composed: a just-sent steer pulls a row into Active, a just-clicked
-  // Mark-as-done drops it into Done — each folded in BEFORE any band is derived, so the row's
-  // appearance and its POSITION always land together instead of one waiting on a round-trip the other
-  // already skipped (lib/steering.ts, lib/optimisticArchive.ts).
-  const all = useOptimisticallyArchived(useOptimisticallySteered(asThreads(board?.threads ?? [])))
-  const sections = sectionThreads(all, useSnapshot(prefs).queueOrder)
-  // Its own partition, deliberately NOT a SectionKey: sectionThreads drops external rows entirely, and
-  // that stays true — an external session must never be able to land in Active, Snoozed or Done by
-  // accident. This band is the only place they render, and they leave it by being STEERED, not by
-  // being re-sorted.
-  // Ordered by the SAME key the rest of the rail uses, so the rest-time column reads monotonically down
-  // the band. It cannot be left to discovery order: the tailer returns these ids by file MTIME, while
-  // the label prints the agent's own last output — two clocks that disagree whenever a transcript is
-  // touched without the agent speaking (a resume that writes a header, a copy, a restore).
-  const externalSessions = orderByInteraction(externalThreads(all))
-  const collapsed = snap.sidebarCollapsed
-  const activeThreads = sections.active
-  const heldThreads = sections.snoozed
-  const inactiveThreads = sections.inactive
+/**
+ * Which row's card is under the reading line, and the rail scrolled to keep that row in view — the
+ * sidebar's scroll marker. Shared with the Console's sidebar (ConsoleSidebar.tsx), whose rows sit
+ * opposite cards the same way. `view` and `drawerCount` re-arm the observers when the workpane changes.
+ */
+export function useQueueScrollspy(view: string, drawerCount: number): {
+  railRef: RefObject<HTMLDivElement | null>
+  activeId: string | null
+  navigateToQueueCard: (id: string) => void
+} {
   const railRef = useRef<HTMLDivElement>(null)
   const [activeId, setActiveId] = useState<string | null>(null)
   // A click-to-card navigation in flight: the row that was clicked, plus where its scroll landed. Both
@@ -117,7 +99,7 @@ export function Sidebar() {
     const pending = pendingNavigation.current
     if (pending) {
       const target = items.find((item) => item.id === pending.id)
-      if (queueNavigationSettled(target, window.scrollY, pending.landedY, QUEUE_CARD_VIEWPORT_TOP)) pendingNavigation.current = null
+      if (queueNavigationSettled(target, window.scrollY, pending.landedY, queueCardViewportTop())) pendingNavigation.current = null
       else {
         setActiveId(pending.id)
         return
@@ -155,7 +137,7 @@ export function Sidebar() {
       observer?.disconnect()
       mutations?.disconnect()
     }
-  }, [syncActiveSection, snap.view, snap.drawers.length])
+  }, [syncActiveSection, view, drawerCount])
 
   // Reveal a newly active row inside the rail itself. Direct scrollTop adjustment is intentionally
   // local: Element.scrollIntoView could scroll the main document and steal the reader's position.
@@ -178,6 +160,39 @@ export function Sidebar() {
     pendingNavigation.current = { id, landedY: queueCardTargetY(id) ?? window.scrollY }
     setActiveId(id)
   }, [])
+
+  return { railRef, activeId, navigateToQueueCard }
+}
+
+export function Sidebar() {
+  const snap = useSnapshot(store)
+  const board = useBoard()
+  // A just-sent steer is folded into the board BEFORE anything is derived from it, so the row's
+  // spinner and its POSITION land together. Consulting the hint further down (in the indicator alone,
+  // as this once did) left the two disagreeing for the whole injection + tailer round-trip: the row
+  // spun while still sitting in the queue-ordered rested band, below the rule, and hopped up to the
+  // running band seconds later — measured at 2.0s here with an instantaneous fixture worker, longer in
+  // production. See lib/steering.ts.
+  // Both optimistic overlays, composed: a just-sent steer pulls a row into Active, a just-clicked
+  // Mark-as-done drops it into Done — each folded in BEFORE any band is derived, so the row's
+  // appearance and its POSITION always land together instead of one waiting on a round-trip the other
+  // already skipped (lib/steering.ts, lib/optimisticArchive.ts).
+  const all = useOptimisticallyArchived(useOptimisticallySteered(asThreads(board?.threads ?? [])))
+  const sections = sectionThreads(all, useSnapshot(prefs).queueOrder)
+  // Its own partition, deliberately NOT a SectionKey: sectionThreads drops external rows entirely, and
+  // that stays true — an external session must never be able to land in Active, Snoozed or Done by
+  // accident. This band is the only place they render, and they leave it by being STEERED, not by
+  // being re-sorted.
+  // Ordered by the SAME key the rest of the rail uses, so the rest-time column reads monotonically down
+  // the band. It cannot be left to discovery order: the tailer returns these ids by file MTIME, while
+  // the label prints the agent's own last output — two clocks that disagree whenever a transcript is
+  // touched without the agent speaking (a resume that writes a header, a copy, a restore).
+  const externalSessions = orderByInteraction(externalThreads(all))
+  const collapsed = snap.sidebarCollapsed
+  const activeThreads = sections.active
+  const heldThreads = sections.snoozed
+  const inactiveThreads = sections.inactive
+  const { railRef, activeId, navigateToQueueCard } = useQueueScrollspy(snap.view, snap.drawers.length)
 
   return (
     // HEIGHT MODEL: a sticky, exactly viewport-height wrapper that CENTERS the inner column, which
@@ -543,6 +558,7 @@ export const ThreadRow = memo(function ThreadRow({
   active = false,
   onQueueNavigate,
   restedAge = false,
+  leading,
 }: {
   t: ThreadView
   legacy?: boolean
@@ -550,6 +566,8 @@ export const ThreadRow = memo(function ThreadRow({
   onQueueNavigate?: (id: string) => void
   /** Show the right-justified rest-time column. The CUE's rows only — see RestedAge. */
   restedAge?: boolean
+  /** A mark before the indicator — the Console's project square (ConsoleSidebar.tsx). */
+  leading?: ReactNode
 }) {
   const foreign = !legacy && t.foreign === true
   // Snoozed rows are uniformly grayed as a whole; provisional titles retain their local dim treatment.
@@ -618,6 +636,7 @@ export const ThreadRow = memo(function ThreadRow({
         aria-current={active ? "location" : undefined}
         className="min-w-0 flex-1 flex items-start gap-2 pb-1 pl-5 pr-1.5 pt-1 text-left"
       >
+        {leading}
         {/* h-[19px] so the indicator centers on the title's FIRST line, not the middle of a wrapped row. */}
         <span className="w-4 h-[19px] shrink-0 flex items-center justify-center">
           <ThreadIndicator t={t} legacy={legacy} />
@@ -880,7 +899,7 @@ function RowPinButton({ t, className = "" }: { t: ThreadView; className?: string
 // clear the parent row's indicator column). The liveness policy is the rail's own and is deliberately
 // unchanged: running OR stale, and only children carrying an id (the drill-in drawer's RPC handle —
 // see lib/childOps.ts, which lists all three surfaces' divergent policies in one place).
-function SubAgentRows({ t }: { t: ThreadView }) {
+export function SubAgentRows({ t }: { t: ThreadView }) {
   const subs = visibleChildOps(t.subAgents ?? [], "rail")
   if (subs.length === 0) return null
   return (

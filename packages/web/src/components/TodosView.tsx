@@ -40,6 +40,11 @@ import { ThreadTitle } from "./ThreadTitle.tsx"
 import { DispatchForm } from "./NewThreadModal.tsx"
 import { StatusRow } from "./StatusRow.tsx"
 import { InteractionStack } from "./InteractionCards.tsx"
+import { isConsolePath } from "../lib/base-path.ts"
+import { consoleCardOrder, useConsoleGroup } from "../lib/consoleBoard.ts"
+import { useConsoleProjectList } from "../lib/consoleProjects.ts"
+import { ProjectScope } from "../lib/projectScope.tsx"
+import { keyProject } from "../lib/threadKey.ts"
 import { RegisteredAnsweringProvider, RegisteredQuestionStack, SettledQuestionStack, openQuestionsOf, useSettledQuestions } from "./RegisteredQuestionCards.tsx"
 import { DividerHint, WAKE_DIVIDER_WIDE_ONLY, WakeDivider } from "./WakeDivider.tsx"
 import {
@@ -148,7 +153,13 @@ export function TodosView() {
   // The queue is EXACTLY the server-derived Needs-you session threads (t.needsYou) — legacy .frizz rows
   // never card anymore. One strictly time-ordered list (no priority band): every card orders by
   // last-active alone, FIFO (oldest-first) by default or LIFO per the queueOrder preference.
-  const items = orderQueue(asThreads(board?.threads ?? []).filter(queued), useSnapshot(prefs).queueOrder)
+  // On the Console the cards follow the sidebar's grouping: grouped by project, each project's cards
+  // together in the rail's order (lib/consoleBoard.ts), so the card at the top is the row at the top.
+  const onConsole = isConsolePath()
+  const consoleGroup = useConsoleGroup()
+  const consoleProjects = useConsoleProjectList(onConsole)
+  const queueItems = orderQueue(asThreads(board?.threads ?? []).filter(queued), useSnapshot(prefs).queueOrder)
+  const items = onConsole ? consoleCardOrder(queueItems, consoleGroup, consoleProjects.projects.map((p) => p.slug)) : queueItems
   const itemKey = items.map((i) => i.id).join(",")
 
   // The queue does NO passive/observer-driven scrolling — no on-mount focus, no re-anchor machine
@@ -480,7 +491,9 @@ export function TodosView() {
   // whose only content is your own terminal sessions is not a blank slate, it is the one place that
   // band has something to say. Kept in lockstep with lib/sidebarPresence.ts, which decides whether the
   // rail mounts at all; the two disagreeing would centre the prompt beside a populated sidebar.
-  const nothingAtAll = (board?.threads.length ?? 0) === 0
+  // Never on the Console: its sidebar is always up with its own prompt box, so an empty Console is the
+  // calm inbox-zero below rather than a first-run screen.
+  const nothingAtAll = !onConsole && (board?.threads.length ?? 0) === 0
 
   return (
     // The queue column, top to bottom: queue cards (or the empty-inbox state) → rule → dispatch box.
@@ -499,7 +512,11 @@ export function TodosView() {
           {renderItems.map((item, i) => (
             <Fragment key={item.id}>
               <CardSlot slug={item.id} leaving={isLeaving(item.id)}>
-                <QueueCard thread={item} leaving={isLeaving(item.id)} frozen={isFrozen(item)} onResolve={resolve} onUnresolve={unresolve} />
+                {/* A Console card belongs to its thread's project: everything in it that asks a project
+                    — a file it links, the models its composer offers — asks that one (lib/projectScope). */}
+                <ProjectScope project={keyProject(item.id)}>
+                  <QueueCard thread={item} leaving={isLeaving(item.id)} frozen={isFrozen(item)} onResolve={resolve} onUnresolve={unresolve} />
+                </ProjectScope>
               </CardSlot>
               {/* The inter-card hairline rule, a SIBLING of the slots rather than a child of the card
                   above it: the rule separates two cards, so it belongs between them in the markup, and a
@@ -1358,7 +1375,7 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
           collapsed, the header IS the whole card and takes the full block radius; otherwise it is
           rounded-top-only + a border-b, the dock carrying the bottom corners (a rounded-top + border-b
           would read as squared/doubled edges inside the shell). */}
-      <div ref={headerRef} className={`sticky top-0 z-10 flex items-center gap-2 bg-panel px-5 py-3.5 max-[800px]:top-10 ${collapsed ? BLOCK_RADIUS : `${BLOCK_RADIUS_TOP} border-b border-border/60`}`}>
+      <div ref={headerRef} className={`sticky top-[var(--frizz-sticky-top,0px)] z-10 flex items-center gap-2 bg-panel px-5 py-3.5 max-[800px]:top-10 ${collapsed ? BLOCK_RADIUS : `${BLOCK_RADIUS_TOP} border-b border-border/60`}`}>
         <div className="min-w-0 flex-1">
           {/* The name is the same ThreadTitle the drawer header renders: click it to type a new title,
               hover it for the Claude refresh mark. It was a plain div with only the refresh mark until
