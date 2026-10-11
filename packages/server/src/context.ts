@@ -25,7 +25,7 @@ import { createBoard, resolveSessionTitle, type BoardManager } from "./board.ts"
 import { createSessionPeerResolver, type SessionPeerThread } from "./session-peer.ts"
 import { auditLogPathForStateDir, fileAuditLog, type AuditLog } from "./audit.ts"
 import { createTailer, defaultLogDir, type Tailer } from "./tailer.ts"
-import { createDispatcher, loadWorkerPrompt, scratchpadOrientation, frizzConfigBlock, claudeMcpConfig, resolveFrizzMcp, workerPluginDir, coldResumePermission, type Dispatcher, type FrizzMcpTarget } from "./dispatch.ts"
+import { createDispatcher, loadWorkerPrompt, scratchpadOrientation, frizzConfigBlock, claudeMcpConfig, codexWorkerThreadConfig, resolveFrizzMcp, workerPluginDir, coldResumePermission, type Dispatcher, type FrizzMcpTarget } from "./dispatch.ts"
 import { createScheduler, type Scheduler, probeIssueReadable, probePrReadable, type PrRef, type PrProbe } from "./scheduler.ts"
 import {
 resumeThread,
@@ -704,6 +704,9 @@ function createContextUnchecked(opts: ContextOptions, resources: PartialContextR
         // Codex's MCP servers mount PROCESS-wide on the app-server, not per thread, so the descriptor
         // is resolved once here — the codex twin of the per-dispatch resolveFrizzMcp on the claude side.
         frizzMcp: resolveFrizzMcp(frizzMcpTarget),
+        // The rest of a worker thread's config — hooks and reasoning summaries — sent with the start
+        // and every resume, so a thread that comes back under this server runs on this server's.
+        workerConfig: (_slug, sessionId) => codexWorkerThreadConfig(sessionId),
         db: storage.db,
         interactions: storage.interactions,
         codexBin: opts.codexBin,

@@ -314,11 +314,28 @@ export function codexScratchpadHookConfig(
       // `fork_turns:"none"`. Constrain it structurally at child start: its OWN file, never another
       // agent's.
       SubagentStart: [cmd("--mode=subagent-start")],
-      SessionStart: [cmd("--mode=session-start")],
+      // `--resume-keeps-context`: a Codex thread that is resumed comes back from its rollout with its
+      // whole conversation, so SessionStart(resume) is no loss and the hook must not announce one. It
+      // could not fire at all until the hooks rode every resume (codexWorkerThreadConfig); now it fires
+      // on each one — the first message after a Frizz restart included.
+      SessionStart: [cmd("--mode=session-start --resume-keeps-context")],
       UserPromptSubmit: [cmd("--mode=nudge")],
       PostToolUse: [cmd("--mode=nudge --event=PostToolUse")],
     },
   }
+}
+
+/**
+ * Everything a Frizz worker's Codex thread carries as per-thread config besides its MCP mount: the
+ * reasoning summaries the transcript renders, and the hooks above.
+ *
+ * It is handed to the BRIDGE (context.ts `workerConfig`), not to one `thread/start`, because Codex
+ * rebuilds a thread from the config of whichever request loaded it: sent with the dispatch alone, both
+ * were gone after the thread's first resume. Built by the server that is running now, so a thread that
+ * comes back under a newer Frizz gets that Frizz's registrations.
+ */
+export function codexWorkerThreadConfig(sessionId: string): Record<string, unknown> {
+  return { model_reasoning_summary: "detailed", ...codexScratchpadHookConfig(scratchpadHookScript(), sessionId) }
 }
 
 /** Absolute path to the scratchpad hook inside the discovered worker plugin, when there is one. */
@@ -971,7 +988,8 @@ export function createDispatcher(deps: DispatchDeps): Dispatcher {
             sandbox: codexSandbox(permissionMode) as "read-only" | "workspace-write" | "danger-full-access",
             baseInstructions: [loadWorkerPrompt("codex"), extraSystemPrompt].filter(Boolean).join("\n\n"),
             developerInstructions: CODEX_FIRST_OUTPUT_TITLE_DEVELOPER_INSTRUCTIONS,
-            config: { model_reasoning_summary: "detailed", ...codexScratchpadHookConfig(scratchpadHookScript(), sessionId) },
+            // No `config` here: the hooks and the reasoning summary are the bridge's to send
+            // (codexWorkerThreadConfig), with this start and with every resume after it.
           })
           deps.storage.upsertSession({
             slug,
