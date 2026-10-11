@@ -25,6 +25,7 @@
 // cleanup is exactly the corpse-deletes-successor bug this guards against.
 import net from "node:net"
 import { readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs"
+import { homedir } from "node:os"
 import { join } from "node:path"
 import { randomUUID } from "node:crypto"
 import { fileURLToPath } from "node:url"
@@ -37,8 +38,7 @@ import { frizzRoots } from "../frizz-paths.ts"
 import { claudeCompactionWindowOf } from "./types.ts"
 import { socketPathOwnership } from "./socket-ownership.ts"
 import { createClaudeBrokerDiagnosticWriter, createClaudeBrokerExitWriter, type ClaudeBrokerExitReason } from "./claude-broker-diagnostics.ts"
-import { claudePluginSyncEnabled, createClaudePluginSync } from "./claude-plugin-sync.ts"
-import { pluginFingerprint } from "../stable-plugin-path.ts"
+import { claudeClosureFingerprint, claudePluginSyncEnabled, createClaudePluginSync } from "./claude-plugin-sync.ts"
 import { CLAUDE_BROKER_CAPABILITY_CANCEL_INPUT, CLAUDE_BROKER_CAPABILITY_INPUT_ACK, CLAUDE_BROKER_CAPABILITY_LIST_SKILLS, CLAUDE_BROKER_CAPABILITY_RELOAD_PLUGINS, CLAUDE_BROKER_CAPABILITY_RENAME, CLAUDE_BROKER_CAPABILITY_STOP_TASK, CLAUDE_BROKER_CAPABILITY_SUBAGENT_STEER, CLAUDE_INPUT_DROP_DIAGNOSTIC_PREFIX } from "./claude-agent-sdk-protocol.ts"
 import type {
   ClaudeDiagnostic,
@@ -197,14 +197,20 @@ export function runClaudeBroker(config: ClaudeBrokerConfig, options: RunClaudeBr
   // frizz worker vars it DOES need (FRIZZ_THREAD, FRIZZ_PERM_DIR) ride workerEnv and are merged on
   // top — which is also what gives them THIS thread's values instead of the server's.
   const env = { ...inheritWorkerEnvironment(config.env), ...(config.workerEnv ?? {}) }
-  // Keeps this session on the plugin as it is on disk, re-reading it between turns when it moves (see
-  // claude-plugin-sync.ts). Built BEFORE the session starts, because the fingerprint it takes now is
-  // its record of what the session is about to load. PERSISTED ONLY, like `input received` below: a
-  // reload is forensics, not something the operator's thread should narrate.
-  const pluginDir = config.pluginDir
-  const pluginSync = pluginDir && claudePluginSyncEnabled()
+  // Keeps this session on its plugin closure as it is on disk, re-reading it between turns when it
+  // moves (see claude-plugin-sync.ts): Frizz's plugin, and the project's and the operator's own
+  // skills, agents, commands and installed plugins. Built BEFORE the session starts, because the
+  // fingerprint it takes now is its record of what the session is about to load. PERSISTED ONLY, like
+  // `input received` below: a reload is forensics, not something the operator's thread should narrate.
+  const closure = {
+    pluginDir: config.pluginDir,
+    projectDir: config.cwd,
+    // Where claude itself will look, from the environment it is about to be started with.
+    configDir: env.CLAUDE_CONFIG_DIR?.trim() || join(env.HOME || homedir(), ".claude"),
+  }
+  const pluginSync = claudePluginSyncEnabled()
     ? createClaudePluginSync({
-        fingerprint: () => pluginFingerprint(pluginDir),
+        fingerprint: () => claudeClosureFingerprint(closure),
         reload: () => handle.reloadPlugins(),
         log: (message) => writeDiagnostic?.({ kind: "stderr", message: `[plugin-sync] ${message}`, truncated: false }),
       })

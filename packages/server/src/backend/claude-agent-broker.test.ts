@@ -48,7 +48,11 @@ function startBroker(scenario: string, extra: Partial<Parameters<typeof runClaud
   const exe = join(dir, `fake-claude--${scenario}.mjs`)
   copyFileSync(fakeCli, exe); chmodSync(exe, 0o700)
   const socketPath = shortSocket()
-  const broker = runClaudeBroker({ socketPath, cwd: dir, sessionId: randomUUID(), executablePath: exe, permissionMode: "default", env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" }, ...extra })
+  // CLAUDE_CONFIG_DIR is the fixture's own, not the developer's `~/.claude`: the daemon fingerprints that
+  // directory to notice a plugin closure that moved (claude-plugin-sync.ts), and a skill some live
+  // session installs in the real one mid-test would put a reload request into a control sequence a test
+  // here counts. HOME stays real — the stand-in CLI is started through whatever `node` PATH resolves.
+  const broker = runClaudeBroker({ socketPath, cwd: dir, sessionId: randomUUID(), executablePath: exe, permissionMode: "default", env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", CLAUDE_CONFIG_DIR: join(dir, "claude-config") }, ...extra })
   return { socketPath, close: async () => { await broker.close(); rmSync(dir, { recursive: true, force: true }) }, dir }
 }
 
@@ -438,6 +442,27 @@ test("a plugin that changed while the session was idle is reloaded BEFORE the ne
     assert.equal(reloadsIn(captureRows(b.dir) as CaptureRow[]), 1, "and it is not reloaded again until it changes again")
     c.client.close()
   } finally { await b.close(); plugin.remove() }
+})
+
+// The other half of the closure: what the OPERATOR adds. A live session does not notice a new project
+// skill by itself (measured against real claude), so this reaches it the same way the plugin does.
+test("a skill added to the project while the session was idle is picked up before the next input", { timeout: 20_000 }, async () => {
+  const b = startBroker("basic") // no Frizz plugin at all: the closure is still worth keeping current
+  try {
+    const c = clientWith(b.socketPath)
+    await c.waitEvent((e) => e.kind === "init")
+    await c.client.deliverInput({ id: randomUUID(), text: "first" }, { acknowledged: true, timeoutMs: 5_000 })
+    await waitResults(c, 1)
+    mkdirSync(join(b.dir, ".claude", "skills", "added-by-the-operator"), { recursive: true })
+    writeFileSync(join(b.dir, ".claude", "skills", "added-by-the-operator", "SKILL.md"), "---\nname: added-by-the-operator\n---\n")
+    await c.client.deliverInput({ id: randomUUID(), text: "second" }, { acknowledged: true, timeoutMs: 5_000 })
+    await waitResults(c, 2)
+    const order = (captureRows(b.dir) as CaptureRow[])
+      .filter((row) => row.kind === "user-input" || (row.kind === "host-control" && row.subtype === "reload_plugins"))
+      .map((row) => row.kind === "user-input" ? row.text : "reload")
+    assert.deepEqual(order, ["first", "reload", "second"])
+    c.client.close()
+  } finally { await b.close() }
 })
 
 test("a plugin that changes DURING a turn is not reloaded under it", { timeout: 20_000 }, async () => {

@@ -17,8 +17,14 @@
 //   • a SKILL v1 never had, holding a token the agent can only produce by invoking it — moved only
 //     by a reload, and required as an INVOCATION, since the token also sits in a file on disk.
 //
+// Then the OPERATOR's half of the closure, the same way: with the worker idle again, a skill is written
+// into the project's own `.claude/skills` and a third message is sent. That skill must be invocable
+// too, and — the control again — is not when the sync is off: a live session does not notice a new
+// project skill by itself.
+//
 // The daemon PID is captured on both sides: a restart would also "work", and is exactly the too-blunt
-// thing this replaces.
+// thing this replaces. And because every live worker now does this unasked, what it COSTS is printed:
+// the prompt-cache read of the first request after each reload, beside the same request in the control.
 //
 // `--control` runs the identical sequence with the sync switched off (FRIZZ_PLUGIN_SYNC_OFF=1) and
 // asserts the opposite of the two reload-only results. Without it, "the new skill showed up" could not
@@ -40,6 +46,7 @@ if (control) process.env.FRIZZ_PLUGIN_SYNC_OFF = "1"
 else delete process.env.FRIZZ_PLUGIN_SYNC_OFF
 
 const TOKEN = `SYNC-SENTINEL-${randomUUID().slice(0, 8).toUpperCase()}`
+const OPERATOR_TOKEN = `OPERATOR-SENTINEL-${randomUUID().slice(0, 8).toUpperCase()}`
 const claudeBin = execFileSync("which", ["claude"], { encoding: "utf8" }).trim()
 const stateDir = realpathSync(mkdtempSync(join(tmpdir(), "psync-state-")))
 const cwd = realpathSync(mkdtempSync(join(tmpdir(), "psync-repo-")))
@@ -156,7 +163,7 @@ try {
   const transcript = existsSync(jsonlPath) ? readFileSync(jsonlPath, "utf8") : ""
   const stopped = turnTwo.some((m) => m.event === "Stop")
   const invoked = transcript.includes(`"sync-probe:sync-probe-skill"`)
-  const reloaded = diagnostics().includes("[plugin-sync] plugin changed on disk; reloaded in place")
+  const reloaded = diagnostics().includes("[plugin-sync] plugin closure changed on disk; reloaded in place")
   if (!control) {
     ok("the daemon reloaded by itself, between the turns", reloaded)
     ok("a hook REGISTRATION that exists only in v2 fired", stopped, JSON.stringify(turnTwo))
@@ -167,6 +174,34 @@ try {
     ok("CONTROL: v2's Stop registration never fired — claude does not re-read a plugin by itself", !stopped, JSON.stringify(turnTwo))
     ok("CONTROL: and the agent could not invoke v2's skill", !invoked)
   }
+
+  // THE OPERATOR'S EDIT — a skill added to the project while the worker rests. Again nothing is asked.
+  mkdirSync(join(cwd, ".claude", "skills", "operator-probe-skill"), { recursive: true })
+  writeFileSync(join(cwd, ".claude", "skills", "operator-probe-skill", "SKILL.md"), [
+    "---",
+    "name: operator-probe-skill",
+    "description: A probe skill the operator added to the project after the session started.",
+    "---",
+    "",
+    `The operator probe token is ${OPERATOR_TOKEN}.`,
+  ].join("\n"))
+  await bridge.followUp({
+    threadSlug: slug, sessionId, cwd,
+    text: "Invoke the `operator-probe-skill` skill and reply with ONLY the probe token it contains. If you have no such skill, reply exactly NO-SKILL. Do not read files or search for it.",
+  })
+  ok("the worker ran its third turn", await turnEnds(3, 240_000))
+  const after = existsSync(jsonlPath) ? readFileSync(jsonlPath, "utf8") : ""
+  const operatorInvoked = after.includes(`"operator-probe-skill"`) && after.includes(OPERATOR_TOKEN) && after.slice(transcript.length).includes(`"name":"Skill"`)
+  if (!control) ok("the RUNNING agent INVOKED a skill the operator added to the project mid-session", operatorInvoked)
+  else ok("CONTROL: a live session does not notice a new project skill by itself", !operatorInvoked)
+  ok("still the same daemon", daemonPid() === pidBefore, `${pidBefore} → ${daemonPid()}`)
+
+  // What a reload costs the conversation's prompt cache: the first request of each later turn.
+  const usage = after.split("\n").filter(Boolean).map((line) => { try { return JSON.parse(line) } catch { return null } })
+    .filter((record) => record?.type === "assistant" && record.message?.usage)
+    .map((record) => record.message.usage)
+  console.log(`\nprompt cache, one line per model request (read / written / uncached input tokens):`)
+  for (const [index, u] of usage.entries()) console.log(`  request ${index + 1}: ${u.cache_read_input_tokens ?? 0} / ${u.cache_creation_input_tokens ?? 0} / ${u.input_tokens ?? 0}`)
 
   console.log(`\nstable path ${stablePath}`)
   console.log(`token       ${TOKEN}`)

@@ -1,6 +1,79 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { claudePluginSyncEnabled, createClaudePluginSync } from "./claude-plugin-sync.ts"
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { dirname, join } from "node:path"
+import { claudeClosureFingerprint, claudePluginSyncEnabled, createClaudePluginSync } from "./claude-plugin-sync.ts"
+
+// ---- the closure's fingerprint: what a reload would re-read, and nothing it would not ----------------
+
+/** A project and an operator config dir the test owns, and a way to write a file under either. */
+function closureDirs() {
+  const root = mkdtempSync(join(tmpdir(), "frizz-closure-"))
+  const closure = { projectDir: join(root, "project"), configDir: join(root, "home", ".claude") }
+  mkdirSync(closure.projectDir, { recursive: true })
+  mkdirSync(closure.configDir, { recursive: true })
+  const write = (path: string, content: string): void => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, content) }
+  return {
+    closure, root,
+    project: (rel: string, content: string) => write(join(closure.projectDir, ".claude", rel), content),
+    operator: (rel: string, content: string) => write(join(closure.configDir, rel), content),
+    print: () => claudeClosureFingerprint(closure),
+  }
+}
+
+test("the closure moves when a skill, an agent or a command is added or edited, in the project or the operator's own directory", () => {
+  const d = closureDirs()
+  const seen = new Set([d.print()])
+  const moved = (label: string): void => {
+    const now = d.print()
+    assert.ok(now, label)
+    assert.ok(!seen.has(now), `${label} must move the fingerprint`)
+    seen.add(now)
+  }
+  d.project("skills/review/SKILL.md", "---\nname: review\n---\n"); moved("a project skill")
+  d.project("skills/review/SKILL.md", "---\nname: review\ndescription: now described\n---\n"); moved("an edited skill listing")
+  d.project("agents/critic.md", "---\nname: critic\n---\nYou critique.\n"); moved("a project agent")
+  d.project("commands/team/ship.md", "Ship it.\n"); moved("a namespaced project command")
+  d.operator("skills/global/SKILL.md", "---\nname: global\n---\n"); moved("the operator's own skill")
+  d.operator("agents/helper.md", "---\nname: helper\n---\n"); moved("the operator's own agent")
+  d.operator("plugins/installed_plugins.json", JSON.stringify({ version: 2, plugins: {} })); moved("an installed plugin")
+  assert.equal(d.print(), d.print(), "and asking twice with nothing changed answers the same")
+})
+
+// A skill's listing is its front matter. What sits beside it is read when the skill RUNS, so editing
+// it needs no reload — and reloading every live worker on each save of a helper script would be noise.
+test("a script beside a skill does not move the closure", () => {
+  const d = closureDirs()
+  d.project("skills/review/SKILL.md", "---\nname: review\n---\n")
+  const before = d.print()
+  d.project("skills/review/scripts/check.mjs", "console.log('v1')\n")
+  d.project("skills/review/reference.md", "notes\n")
+  assert.equal(d.print(), before)
+})
+
+// Claude Code rewrites settings.local.json on every permission grant. Read by stat, that would reload
+// every live worker in the project each time one of them was allowed a command.
+test("a settings file moves the closure only when its enabled plugins change", () => {
+  const d = closureDirs()
+  d.project("settings.local.json", JSON.stringify({ permissions: { allow: ["Bash(ls:*)"] } }))
+  const before = d.print()
+  d.project("settings.local.json", JSON.stringify({ permissions: { allow: ["Bash(ls:*)", "Bash(git status:*)"] } }))
+  assert.equal(d.print(), before, "a granted permission is not a plugin change")
+  d.project("settings.local.json", JSON.stringify({ permissions: { allow: [] }, enabledPlugins: { "review@market": true } }))
+  assert.notEqual(d.print(), before, "an enabled plugin is")
+})
+
+test("a closure that cannot be read right now has no fingerprint, so nothing reloads on it", () => {
+  const d = closureDirs()
+  assert.ok(d.print())
+  d.project("settings.json", "{ \"enabledPlugins\": ") // caught mid-write
+  assert.equal(d.print(), undefined)
+  const missingPlugin = closureDirs()
+  assert.equal(claudeClosureFingerprint({ ...missingPlugin.closure, pluginDir: join(missingPlugin.root, "gone") }), undefined)
+})
+
+// ---- the sync itself: when the daemon reloads, and what waits for it --------------------------------
 
 /** A plugin whose fingerprint the test moves by hand, and a reload it settles by hand. */
 function harness(options: { deadlineMs?: number } = {}) {
