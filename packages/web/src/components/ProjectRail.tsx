@@ -679,13 +679,16 @@ export function ProjectRail() {
           mark: this slot is a destination ("all projects"), and the wordmark said whose app you are
           in — which the rail's own presence already says. And `favicon.svg` carries an feDropShadow
           inside a 512 viewBox with 16px of bleed around a 480 tile, so at 26px it cast a soft shadow
-          DOWN onto the first project square. A stroke glyph paints only its own strokes. */}
+          DOWN onto the first project square. A stroke glyph paints only its own strokes.
+          The hover fill is the project squares' own shape — 40px at `rounded-[30%]`, like the add slot
+          at the bottom. It was 36px with an 8px corner (22%) until 2026-10-11, a visibly different
+          rounded rect at the head of a column of identical ones. */}
       <Tooltip side="right" label="All projects">
         <Link
           to="/"
           aria-label="All projects"
           aria-current={current ? undefined : "page"}
-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted-70 outline-none transition-colors hover:bg-elevated hover:text-fg focus-visible:ring-1 focus-visible:ring-focus-ink-60"
+          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[30%] text-muted-70 outline-none transition-colors hover:bg-elevated hover:text-fg focus-visible:ring-1 focus-visible:ring-focus-ink-60"
         >
           <House size={17} />
         </Link>
