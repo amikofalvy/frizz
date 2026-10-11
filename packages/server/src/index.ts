@@ -47,7 +47,8 @@ import { describeRuntime, resolveRuntimes, type ResolvedRuntimes, type ResolveRu
 import { createTenantMap } from "./tenants.ts"
 import { openFrizzDatabase, type FrizzDatabase, type OpenFrizzDatabaseOptions } from "./frizz-db.ts"
 import { startTenantPrime, type TenantPrimeRun } from "./tenant-prime.ts"
-import { findProjectBySegment, listProjects } from "./project-registry.ts"
+import { findProjectBySegment, listProjects, registryPath } from "./project-registry.ts"
+import { announceProjectListChanges } from "./projects-changed.ts"
 import { backfillRegistry } from "./project-registry.ts"
 import { servedByAnotherProcess } from "./project-launch.ts"
 import { deleteProjectState, stopProjectWorkers } from "./project-teardown.ts"
@@ -581,6 +582,9 @@ export async function startServer(opts: StartOptions = {}): Promise<StartedServe
   // their queue badges and their schedulers exist without the operator clicking into each square.
   // Started at the very end of boot; stopped and awaited by the "other projects" shutdown phase.
   let tenantPrime: TenantPrimeRun | undefined
+  // The standing announcement that tells every open tab the project list changed
+  // (projects-changed.ts). Armed at the end of boot; disarmed by the "other projects" shutdown phase.
+  let stopProjectAnnouncements: (() => void) | undefined
   // One process, N projects (tenants.ts). The launching project is adopted below once its own boot
   // phases have built it; anything opened later goes through activate(), which is where the
   // AppContext-seam error boundary lives.
@@ -787,6 +791,7 @@ export async function startServer(opts: StartOptions = {}): Promise<StartedServe
     // projects short, so this costs a boot-time shutdown nothing.
     tenantPrime?.stop()
     await tenantPrime?.done
+    stopProjectAnnouncements?.()
     for (const { project: opened } of tenants.active()) {
       if (opened.id !== project.id) await tenants.deactivate(opened.id)
     }
@@ -1248,6 +1253,13 @@ export async function startServer(opts: StartOptions = {}): Promise<StartedServe
     await runtime.afterPhase?.("signal handlers")
     // The port is listening and /health answers: the launcher no longer needs the progress signal.
     bootProgress.done()
+
+    // From here on, a change to the project list reaches every tab on every open project's stream —
+    // the tab that made it is the only one that would otherwise re-read the list.
+    stopProjectAnnouncements = announceProjectListChanges({
+      registryPath: registryPath(),
+      buses: () => tenants.active().map((open) => open.ctx.bus),
+    })
 
     // …and now open the OTHER registered projects, in the background, so the rail can badge every
     // square with its queue size instead of only the ones the operator has clicked into. Deliberately

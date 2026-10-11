@@ -485,6 +485,16 @@ interface DragState {
   fromIndex: number
   toIndex: number
   deltaY: number
+  /**
+   * The list the drag STARTED on, which the rail draws for as long as the square is held.
+   *
+   * `fromIndex` and `toIndex` are positions in this list and no other. The server now pushes a new
+   * order the moment another tab makes one (api/board-stream.ts `refreshProjectList`), and drawing
+   * that under a live drag would put a different project in the held slot and slide the wrong
+   * neighbours aside. The drop still writes this list with the one move applied — the last
+   * arrangement anyone made wins, which is what a whole-list write already means.
+   */
+  list: readonly ProjectCard[]
 }
 
 /**
@@ -594,7 +604,8 @@ export function ProjectRail() {
     onError: () => setOptimistic(null), // the server order is the truth if we could not write ours
   })
 
-  const projects = optimistic ?? data ?? []
+  // A held square outranks both: its indices are positions in the list it was picked up from.
+  const projects = drag?.list ?? optimistic ?? data ?? []
   const countsFor = useRailCounts(current, projects)
 
   /**
@@ -650,7 +661,7 @@ export function ProjectRail() {
       }
       scrollAccumulated += scrolled
       const deltaY = clientY - startY + scrollAccumulated
-      latest = { id: list[index]!.id, fromIndex: index, toIndex: dropIndex(index, deltaY, list.length), deltaY }
+      latest = { id: list[index]!.id, fromIndex: index, toIndex: dropIndex(index, deltaY, list.length), deltaY, list }
       setDrag(latest)
     }
 

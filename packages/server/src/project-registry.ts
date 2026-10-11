@@ -138,6 +138,25 @@ export function readRegistry(home = homedir()): Registry {
   }
 }
 
+const writeListeners = new Set<(path: string) => void>()
+
+/**
+ * Hear about every registry write THIS PROCESS makes, with the path of the file it replaced.
+ *
+ * Hung on `writeRegistry` rather than on the procedures that call it, because every change to the
+ * project list — a reorder, a rename, an icon, a project added, moved or forgotten — funnels through
+ * that one function, and the server has to tell every open tab about each of them (index.ts). A
+ * listener per call site would cover the ones somebody remembered. The path rides along because the
+ * registry is addressed by `home`: a listener compares it against the file it cares about.
+ *
+ * In-process only. Another process's write (a second `frizz` launch registering its directory) is
+ * not heard; a tab picks that one up at its next load or reconnect.
+ */
+export function onRegistryWrite(listener: (path: string) => void): () => void {
+  writeListeners.add(listener)
+  return () => { writeListeners.delete(listener) }
+}
+
 /** open(wx) → fsync → rename, the same shape project-launch.ts uses: a reader never sees a half file. */
 export function writeRegistry(registry: Registry, home = homedir()): void {
   const path = registryPath(home)
@@ -155,6 +174,13 @@ export function writeRegistry(registry: Registry, home = homedir()): void {
     if (fd !== undefined) { try { closeSync(fd) } catch {} }
     try { rmSync(temp, { force: true }) } catch {}
     throw error
+  }
+  for (const listener of writeListeners) {
+    try {
+      listener(path)
+    } catch {
+      // The write landed. A listener that throws must not turn it into a failed mutation.
+    }
   }
 }
 

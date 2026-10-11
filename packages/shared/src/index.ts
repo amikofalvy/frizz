@@ -5385,6 +5385,14 @@ export const ServerEvent = z.discriminatedUnion("type", [
     lifecycle: InteractionLifecycle,
     recordRevision: InteractionRevision,
   }).strict(),
+  z.object({
+    // The machine's PROJECT LIST changed: a reorder, a rename, an icon, a project added or forgotten.
+    // Payload-free for the same reason as above — the list is one cheap read, and a client that
+    // re-reads it cannot apply a stale copy out of order. It is the one event that is not about this
+    // stream's own project: the server publishes it on EVERY open project's stream, because the rail
+    // and the grid draw the same list in every tab whichever board that tab is on.
+    type: z.literal("projects-changed"),
+  }).strict(),
 ])
 export type ServerEvent = z.infer<typeof ServerEvent>
 export type BoardEvent = Extract<ServerEvent, { type: "board" }>
