@@ -1311,13 +1311,17 @@ a[href] {
    worse: a box offset by a fractional length is painted on the nearest whole pixel, a transform is
    not. Measured in sans on the rendered pixels (scripts/verify-md-blocks-ink.mjs, 2026-10-11), cap
    band centre minus ink centre: under `vertical-align` +0.06px at 14px but +0.44px in an answer chip
-   and −0.69px at 28px; under `translate` see the readings below. All five glyphs are symmetric about
-   their box centre (ink 2..22 or 1..23 of 24 on the vertical axis), so one correction serves them.
+   and −0.69px at 28px; under `translate` 0.00px for all five types at 14px and in a card's 13px,
+   within 0.06px at 28px, and within 0.25px in a chip, whose 11.5px box is not a whole pixel and is
+   painted as 11 or 12 (0.13px at twice that size). All five glyphs are symmetric about their box centre (ink
+   2..22 or 1..23 of 24 on the vertical axis), so one correction serves them.
 
    HORIZONTAL — `margin` spaces BOXES and the eye reads ink. The bulb inks 14 of its 24 units across
    and the circle 22, so on one shared margin the gap to the word drew 7.00px to 9.25px across the
    five types. Each type's trim hangs its box that far outside the column on the left — the ink
-   starts on the body's own left edge — and takes as much off the right. */
+   starts on the body's own left edge — and takes as much off the right. After it: 6.13px to 7.13px
+   at 14px, which is the 5.88px asked for plus the first letter's own side bearing (the W of Warning
+   0.25px, the I of Important 1.25px); 5.88px in a card and 5.63px in a chip. */
 .md-body .md-callout-title::before {
   content: "";
   display: inline-block;
@@ -1414,7 +1418,14 @@ a[href] {
    0.208em open. The glyph turns in place — the label must not move when the section opens — so the box
    is hung 0.208em left of the column: the OPEN chevron's ink starts exactly on the prose's left edge
    and the closed one's 0.125em inside it, never outside. The right margin is whatever is left of
-   --md-summary-inset. */
+   --md-summary-inset.
+
+   Measured in sans on the rendered pixels (scripts/verify-md-blocks-ink.mjs, 2026-10-11). Cap band
+   centre minus ink centre: 0.00px closed and open at 14px, in a card and at 28px; within 0.25px in a
+   chip, for the reason the callout icon gives. Ink gap to the label at 14px: 8.25px closed and 5.88px
+   open, 1.4px of each being the label's own side bearing — the two states stand either side of the
+   6px the transcript's chevron keeps from its label, because the glyph's ink is 3.5px wider open and
+   the label is fixed. */
 .md-body details > summary::before {
   content: "";
   flex: none;
@@ -1441,7 +1452,9 @@ a[href] {
 }
 /* Inside an answer chip the summary is raised above the chip's stretched button, as a link is, so a
    click on it opens the section; the chip's own click handler stands down for it
-   (QuestionBlockCard's Chip). Everything else in the section still picks the option. */
+   (QuestionBlockCard's Chip). Everything else in the section still picks the option. Today the body's
+   `opacity-90` happens to lift all of it above the button anyway; this rule is what the summary's
+   click rests on if that ever goes (lib/mdBlocks.e2e.test.ts hit-tests it on a body with no opacity). */
 [data-question-option] .md-body details > summary {
   position: relative;
   z-index: 1;
@@ -1470,7 +1483,8 @@ a[href] {
   background: var(--color-panel);
   color: var(--color-muted);
   /* Smaller type on a shared baseline has a lower cap band. Lifted by half the difference between
-     the prose's cap height and the cap's own, so the two bands share a centre. */
+     the prose's cap height and the cap's own, so the two bands share a centre: 0.01px apart at every
+     scale it renders at (canvas `H` metrics, sans, 2026-10-11), where unlifted they were 0.6px. */
   vertical-align: calc(0.5cap / var(--md-kbd-size) - 0.5cap);
 }
 /* On a chip's changing fill the cap goes translucent with the rest of the block chrome. */
