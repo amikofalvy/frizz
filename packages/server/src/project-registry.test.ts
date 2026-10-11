@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { test } from "node:test"
@@ -15,11 +15,13 @@ import {
   moveProjectDirectory,
   readRegistry,
   registerProject,
+  registryPath,
   renameProject,
   reorderProjects,
   resolveProjectIcon,
   setProjectIcon,
 } from "./project-registry.ts"
+import { launchHostDir } from "./frizz-paths.ts"
 
 const A = "029a30af-f126-40e3-b04c-d80e74e3e090"
 const B = "50577e5e-802f-4567-bd0e-cf7cbf3d2ed5"
@@ -272,6 +274,33 @@ test("a corrupt registry reads as empty rather than throwing", () => {
     assert.deepEqual(readRegistry(home).projects, [], "an index that cannot be read is rebuilt, not fatal")
     const again = registerProject({ dir: project(home, "p", A), id: A }, home)
     assert.equal(again.action, "created")
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("an entry an older server wrote for Frizz's own launch folder is never listed, and the next write drops it", () => {
+  const home = sandbox()
+  try {
+    const host = launchHostDir(home)
+    mkdirSync(join(host, ".frizz"), { recursive: true })
+    writeFileSync(join(host, ".frizz", ".id"), `${B}\n`)
+    // A project of the operator's own that is merely NAMED host is theirs, and stays.
+    const mine = registerProject({ dir: project(home, "code/host", A), id: A }, home).entry!
+    // What frizz-server 0.15.20 and older left behind: its boot backfill had no refusal for this folder.
+    const file = JSON.parse(readFileSync(registryPath(home), "utf8"))
+    file.projects.push({ ...mine, id: B, path: canonical(host), slug: "frizz-host" })
+    writeFileSync(registryPath(home), JSON.stringify(file))
+
+    assert.deepEqual(listProjects(home).map((entry) => entry.id), [A])
+    assert.equal(findProjectBySegment("frizz-host", home), undefined)
+    assert.equal(findProjectBySegment(B, home), undefined)
+    assert.equal(findByPath(host, home), undefined)
+    assert.equal(findProjectBySegment(mine.slug, home)?.id, A)
+
+    renameProject(A, { name: "Mine" }, home)
+    const written = JSON.parse(readFileSync(registryPath(home), "utf8")) as { projects: { id: string }[] }
+    assert.deepEqual(written.projects.map((entry) => entry.id), [A])
   } finally {
     rmSync(home, { recursive: true, force: true })
   }
