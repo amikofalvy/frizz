@@ -192,8 +192,8 @@ function settingsRoots() {
   mkdirSync(join(cwd, ".claude"), { recursive: true })
   mkdirSync(join(home, ".claude"), { recursive: true })
   mkdirSync(join(root, "managed"), { recursive: true })
-  const gate = { cwd, home, env: {} as NodeJS.ProcessEnv, managedPaths: [managed], platform: "darwin" as const }
-  return { cwd, home, managed, gate }
+  const gate = { cwd, home, env: {} as NodeJS.ProcessEnv, managedPaths: [managed], managedPreferencePaths: [] as string[], platform: "darwin" as const }
+  return { root, cwd, home, managed, gate }
 }
 
 test("gate: a Claude thread in bypassPermissions with no sandbox anywhere may have commands run", () => {
@@ -284,6 +284,21 @@ test("gate: CLAUDE_CONFIG_DIR moves the user scope, as it does for Claude Code",
   const { cwd, home } = settingsRoots()
   const configDir = mkdtempSync(join(tmpdir(), "cmw-config-"))
   writeFileSync(join(configDir, "settings.json"), JSON.stringify({ sandbox: { enabled: true } }))
-  assert.match(claudeSandboxRefusal({ cwd, home, env: { CLAUDE_CONFIG_DIR: configDir }, managedPaths: [] })!, /sandbox is on/)
-  assert.equal(claudeSandboxRefusal({ cwd, home, env: {}, managedPaths: [] }), undefined)
+  assert.match(claudeSandboxRefusal({ cwd, home, env: { CLAUDE_CONFIG_DIR: configDir }, managedPaths: [], managedPreferencePaths: [] })!, /sandbox is on/)
+  assert.equal(claudeSandboxRefusal({ cwd, home, env: {}, managedPaths: [], managedPreferencePaths: [] }), undefined)
+})
+
+// An MDM configuration profile reaches Claude Code as `/Library/Managed Preferences/…/com.anthropic.claudecode.plist`,
+// which it converts with `plutil` and reads as settings — a sandbox turned on there is in no JSON file.
+test("gate: a sandbox an MDM profile turns on refuses, and a profile Frizz cannot convert refuses too", () => {
+  const { root, gate } = settingsRoots()
+  const plist = join(root, "com.anthropic.claudecode.plist")
+  writeFileSync(plist, "<plist/>") // only its existence is read; the conversion is the seam below
+  let converted = JSON.stringify({ sandbox: { enabled: true } })
+  const withProfile = { ...gate, managedPreferencePaths: [plist, join(root, "absent.plist")], readPlistJson: () => converted }
+  assert.match(commandWatchRefusal(BYPASS, withProfile)!, /sandbox is on .*com\.anthropic\.claudecode\.plist/)
+  converted = JSON.stringify({ permissions: { allow: [] } })
+  assert.equal(commandWatchRefusal(BYPASS, withProfile), undefined, "a profile that leaves the sandbox alone is no refusal")
+  assert.match(commandWatchRefusal(BYPASS, { ...withProfile, readPlistJson: () => { throw new Error("plutil failed") } })!, /could not read/)
+  assert.equal(commandWatchRefusal(BYPASS, { ...gate, managedPreferencePaths: [join(root, "absent.plist")], readPlistJson: () => { throw new Error("never asked") } }), undefined, "an absent profile is not read")
 })

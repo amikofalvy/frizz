@@ -28,9 +28,9 @@
 // app-server, and Frizz has no reading of whether a given command would have run inside it; an ACP agent
 // has no such reading at all. Neither can hibernate either (hibernation is Claude-only), so the memory
 // the watch exists to free is not there to free. Refusing is the sound answer until one of those changes.
-import { spawn } from "node:child_process"
-import { readFileSync } from "node:fs"
-import { homedir } from "node:os"
+import { execFileSync, spawn } from "node:child_process"
+import { existsSync, readFileSync } from "node:fs"
+import { homedir, userInfo } from "node:os"
 import { join } from "node:path"
 import { COMMAND_WATCH_OUTPUT_MAX_BYTES, COMMAND_WATCH_RUN_TIMEOUT_MS } from "@frizz/shared"
 import type { SessionRow } from "./storage.ts"
@@ -219,6 +219,48 @@ export interface ClaudeSettingsLocations {
   env?: NodeJS.ProcessEnv
   home?: string
   managedPaths?: readonly string[]
+  /** The MDM-delivered preference files to read (claudeManagedPreferencePaths). Tests pass their own. */
+  managedPreferencePaths?: readonly string[]
+  /** A preference file as JSON — `plutil`, as Claude Code reads it. Tests inject one. */
+  readPlistJson?: (path: string) => string
+}
+
+/** Where Claude Code reads settings a CONFIGURATION PROFILE delivers on macOS: the
+ *  `com.anthropic.claudecode` managed preferences, per user and per device. Claude Code 2.1.296 converts
+ *  each one with `plutil -convert json` and reads the result as a settings object (read from its own
+ *  code, 2026-10-11), so a sandbox an organization turns on through MDM lives here and in no JSON file. */
+export function claudeManagedPreferencePaths(): string[] {
+  let user = ""
+  try { user = userInfo().username } catch {}
+  return [
+    ...(user ? [`/Library/Managed Preferences/${user}/com.anthropic.claudecode.plist`] : []),
+    "/Library/Managed Preferences/com.anthropic.claudecode.plist",
+  ]
+}
+
+function plistAsJson(path: string): string {
+  return execFileSync("/usr/bin/plutil", ["-convert", "json", "-o", "-", "--", path], { encoding: "utf8", timeout: 5_000, stdio: ["ignore", "pipe", "ignore"] })
+}
+
+/** What one settings document says about the sandbox: the refusal when it turns it on, or when it cannot
+ *  be read as JSON at all; undefined when it leaves it off. */
+function sandboxInSettings(raw: string, file: string): string | undefined {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return `\`${file}\` is not valid JSON, so Frizz cannot tell whether it turns Claude Code's sandbox on for this thread`
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined
+  const sandbox = (parsed as Record<string, unknown>).sandbox
+  if (sandbox === undefined || sandbox === null || sandbox === false) return undefined
+  // `sandbox: { enabled: false }` and a sandbox block with no `enabled` are both off (Claude Code's
+  // default). Anything else — `enabled: true`, a non-boolean, `sandbox: true` — is read as on.
+  if (typeof sandbox === "object" && !Array.isArray(sandbox)) {
+    const enabled = (sandbox as Record<string, unknown>).enabled
+    if (enabled === undefined || enabled === false) return undefined
+  }
+  return `Claude Code's sandbox is on for this thread (\`sandbox\` in \`${file}\`), and a command watch would run your command outside it`
 }
 
 /** Every settings file that can turn Claude Code's sandbox on for a thread in `cwd`: managed, local,
@@ -242,7 +284,8 @@ export function claudeSettingsFiles(where: ClaudeSettingsLocations): string[] {
  * Claude Code's to compute, from files that can change under a running session; the cost of reading it
  * wrong in the permissive direction is a command run outside a sandbox the operator asked for, and the
  * cost the other way is a worker using a background shell. A file Frizz cannot read or parse refuses too
- * — it might be the one that says `enabled: true`.
+ * — it might be the one that says `enabled: true`. The macOS managed preferences (an MDM profile) are
+ * read the same way after the JSON files, through `plutil` as Claude Code reads them.
  */
 export function claudeSandboxRefusal(where: ClaudeSettingsLocations): string | undefined {
   for (const file of claudeSettingsFiles(where)) {
@@ -253,22 +296,21 @@ export function claudeSandboxRefusal(where: ClaudeSettingsLocations): string | u
       if ((err as NodeJS.ErrnoException)?.code === "ENOENT" || (err as NodeJS.ErrnoException)?.code === "ENOTDIR") continue
       return `Frizz could not read \`${file}\` to check whether Claude Code's sandbox is on for this thread`
     }
-    let parsed: unknown
+    const refusal = sandboxInSettings(raw, file)
+    if (refusal) return refusal
+  }
+  // The managed preferences are read only where they exist, and only on macOS: elsewhere there are none.
+  const preferences = where.managedPreferencePaths ?? (process.platform === "darwin" ? claudeManagedPreferencePaths() : [])
+  for (const file of preferences) {
+    if (!existsSync(file)) continue
+    let raw: string
     try {
-      parsed = JSON.parse(raw)
+      raw = (where.readPlistJson ?? plistAsJson)(file)
     } catch {
-      return `\`${file}\` is not valid JSON, so Frizz cannot tell whether it turns Claude Code's sandbox on for this thread`
+      return `Frizz could not read \`${file}\` to check whether Claude Code's sandbox is on for this thread`
     }
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue
-    const sandbox = (parsed as Record<string, unknown>).sandbox
-    if (sandbox === undefined || sandbox === null || sandbox === false) continue
-    // `sandbox: { enabled: false }` and a sandbox block with no `enabled` are both off (Claude Code's
-    // default). Anything else — `enabled: true`, a non-boolean, `sandbox: true` — is read as on.
-    if (typeof sandbox === "object" && !Array.isArray(sandbox)) {
-      const enabled = (sandbox as Record<string, unknown>).enabled
-      if (enabled === undefined || enabled === false) continue
-    }
-    return `Claude Code's sandbox is on for this thread (\`sandbox\` in \`${file}\`), and a command watch would run your command outside it`
+    const refusal = sandboxInSettings(raw, file)
+    if (refusal) return refusal
   }
   return undefined
 }
@@ -285,6 +327,8 @@ export interface CommandWatchGateOptions {
   env?: NodeJS.ProcessEnv
   home?: string
   managedPaths?: readonly string[]
+  managedPreferencePaths?: readonly string[]
+  readPlistJson?: (path: string) => string
 }
 
 /**
@@ -316,7 +360,7 @@ export function commandWatchRefusal(
   if (row.permission_pending && row.permission_pending !== "bypassPermissions") {
     return refuse(`this thread's permission mode is being changed to \`${row.permission_pending}\``)
   }
-  const sandbox = claudeSandboxRefusal({ cwd: opts.cwd, env: opts.env, home: opts.home, managedPaths: opts.managedPaths })
+  const sandbox = claudeSandboxRefusal({ cwd: opts.cwd, env: opts.env, home: opts.home, managedPaths: opts.managedPaths, managedPreferencePaths: opts.managedPreferencePaths, readPlistJson: opts.readPlistJson })
   if (sandbox) return refuse(sandbox)
   return undefined
 }
