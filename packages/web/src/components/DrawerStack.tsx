@@ -11,6 +11,8 @@ import { BackgroundShellSheet } from "./BackgroundShellSheet.tsx"
 import { MarkdownDrawer } from "./MarkdownDrawer.tsx"
 import { ThreadDrawer } from "./ThreadDrawer.tsx"
 import { ErrorBoundary, DrawerErrorSheet } from "./ErrorBoundary.tsx"
+import { ProjectScope } from "../lib/projectScope.tsx"
+import { keyProject } from "../lib/threadKey.ts"
 
 // The side-drawer STACK, and the Escape chain that unwinds it. Lives in its own component because
 // BOTH page shells need it: the queue (App) and the standalone `/thread/<slug>/full` page. It used to
@@ -134,7 +136,9 @@ export function DrawerStack({ onEscapeAtRest }: { onEscapeAtRest?: () => void } 
               <DrawerErrorSheet id={d.id} depth={i} widthDepth={widthDepth} error={error} onRetry={retry} />
             )}
           >
-            {layer}
+            {/* A Console drawer belongs to its thread's project (lib/projectScope.tsx); a file drawer
+                is named by its path, not a key, and asks by path (lib/consoleProjects.ts fileRpc). */}
+            <ProjectScope project={d.kind === "markdown" ? undefined : keyProject(d.slug)}>{layer}</ProjectScope>
           </ErrorBoundary>
         )
       })}

@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query"
-import { rpc } from "../api/rpc.ts"
+import { scopedKey, useProjectScope, useRpc } from "../lib/projectScope.tsx"
 import { acpModelGroups } from "../lib/acpModelOptions.ts"
 import { OPAQUE_PORTAL_SURFACE_Z } from "../lib/overlaySurface.ts"
 import { Select } from "./ui/Select.tsx"
@@ -35,9 +35,11 @@ export function AcpModelSelect({
   menuZClass?: string
   className?: string
 }) {
+  const project = useProjectScope()
+  const api = useRpc()
   const models = useQuery({
-    queryKey: ["acpAgentModels", agentId],
-    queryFn: () => rpc.acpAgentModels({ agentId }),
+    queryKey: scopedKey(["acpAgentModels", agentId], project),
+    queryFn: () => api.acpAgentModels({ agentId }),
     // The server caches the probe for ten minutes; a minute here keeps a reopened composer from
     // re-asking on every mount while a fresh sign-in still shows up within the session.
     staleTime: 60_000,

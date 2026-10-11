@@ -501,7 +501,9 @@ export function TodosView() {
     // would be unreachable): the column vertically CENTERS in the viewport while its content is
     // shorter (App's <main> is a min-h-screen flex column), and degrades safely to normal
     // top-anchored flow the moment it grows past — margins collapse to 0, nothing clips.
-    <div className="my-auto w-full min-w-0 flex flex-col py-8">
+    // The Console's column is top-anchored instead (`mb-auto`): its sidebar is anchored under the home
+    // band, and a short queue centred beside it would float away from the rows it answers.
+    <div className={`${onConsole ? "mb-auto" : "my-auto"} w-full min-w-0 flex flex-col py-8`}>
       {/* Source-of-truth failures are LOUD: a board that can't be read renders as this banner, never
           as a silently empty listing (a truncated shell-out once blanked a 700-thread board with the
           error hidden in an unrendered field). */}

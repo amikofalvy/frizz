@@ -2,7 +2,9 @@ import { useMutation, useQuery } from "@tanstack/react-query"
 import type { ReactNode } from "react"
 import { useSnapshot } from "valtio"
 import { acpAgentIdFromModel, acpModelIdFromModel, acpModelSlug, type PermissionMode } from "@frizz/shared"
-import { rpc } from "../api/rpc.ts"
+import { rpc, rpcFor } from "../api/rpc.ts"
+import { scopedKey } from "../lib/projectScope.tsx"
+import { keyProject } from "../lib/threadKey.ts"
 import { threadFollowUpBlocked, threadComposerStatus, threadPermissionBlockedReason, threadPermissionEffectMessage } from "../lib/threadPermissions.ts"
 import { showToast, store } from "../store.ts"
 import { ProfileGridSelector } from "../components/ProfileGridSelector.tsx"
@@ -63,7 +65,9 @@ export function useThreadComposerControls(slug: string): { busy: boolean; footer
   // ends, exactly the moment TodosView holds the card to dissolve it — called one hook fewer than the
   // render before, and React tore the whole queue down ("change in the order of Hooks"). Every card
   // vanished in one frame instead of one card fading; queueSteerDissolve.e2e.test.ts is the pin.
-  const acpAgents = useQuery({ queryKey: ["acpAgents"], queryFn: () => rpc.acpAgents(), enabled: Boolean(thread) && backend === "acp" })
+  // Asked of the thread's own project — named by its key on the Console (lib/threadKey.ts).
+  const agentsProject = thread ? keyProject(thread.id) : undefined
+  const acpAgents = useQuery({ queryKey: scopedKey(["acpAgents"], agentsProject), queryFn: () => rpcFor(agentsProject).acpAgents(), enabled: Boolean(thread) && backend === "acp" })
 
   // Legacy/rowless and foreign transcripts have no Frizz-owned runtime profile to mutate. Keep their
   // existing composer behavior, but never render a misleading disabled control.

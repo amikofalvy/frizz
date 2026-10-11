@@ -1,4 +1,5 @@
 import { rpc } from "../api/rpc.ts"
+import { fileRpc } from "./consoleProjects.ts"
 import { openFilePanel, openLightbox, pushMarkdownDrawer, showToast, store } from "../store.ts"
 import { copyTextToClipboard } from "./clipboard.ts"
 import { lightboxImageFor } from "./lightbox.ts"
@@ -117,7 +118,7 @@ export function openLocalPath(path: string, image = false): void {
 
 async function open(path: string, image: boolean) {
   try {
-    const result = await rpc.openLocalFile({ path, ...(image ? { image: true } : {}) })
+    const result = await fileRpc(path).openLocalFile({ path, ...(image ? { image: true } : {}) })
     if (result.action === "copy") {
       await copyTextToClipboard(result.path)
       showToast("Copied local path")

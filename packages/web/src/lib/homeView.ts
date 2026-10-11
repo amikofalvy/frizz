@@ -18,6 +18,13 @@ export type HomeView = "projects" | "console"
  */
 export const HOME_BAND_PX = 62
 
+/**
+ * Where the Console's content starts: 8px under the band. The sidebar's status row and the first card
+ * both open on this line, and a card the sidebar scrolls to lands on it too, so a landed card sits
+ * exactly where the top card sits at rest.
+ */
+export const CONSOLE_TOP_PX = HOME_BAND_PX + 8
+
 const KEY = "frizz:home-view"
 
 function read(): HomeView {

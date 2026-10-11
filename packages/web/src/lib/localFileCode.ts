@@ -1,5 +1,5 @@
 import { useLayoutEffect, useSyncExternalStore, type RefObject } from "react"
-import { rpc } from "../api/rpc.ts"
+import { fileRpc } from "./consoleProjects.ts"
 
 // Clickable inline-code file paths. Agent prose often mentions files in backticks (`~/.claude/CLAUDE.md`,
 // `packages/web/src/App.tsx`). When the text of an inline `<code>` resolves to a real file on disk under
@@ -79,7 +79,7 @@ async function resolveUnknown(paths: string[]): Promise<void> {
   for (let i = 0; i < wanted.length; i += RESOLVE_BATCH) chunks.push(wanted.slice(i, i + RESOLVE_BATCH))
   const batches = await Promise.all(chunks.map(async (chunk) => {
     try {
-      return (await rpc.resolveLocalPaths({ paths: chunk })).resolved
+      return (await fileRpc(chunk[0]).resolveLocalPaths({ paths: chunk })).resolved
     } catch {
       return chunk.map((input) => ({ input, path: null }))
     }

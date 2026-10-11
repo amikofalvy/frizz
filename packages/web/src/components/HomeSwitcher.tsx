@@ -14,8 +14,8 @@ import { RAIL_WIDTH_PX } from "./ProjectRail.tsx"
 //
 // FIXED to the top of the window, centred over the page beside the rail, with an opaque band behind it
 // so the page scrolls UNDER it: the Console's cards are long and the switch must stay where the operator
-// left it. The band fades out over its last 14px rather than ending on an edge, because what scrolls
-// under it is a column of cards, not a header.
+// left it. The band fades out below its edge rather than ending on one (BAND_FADE_PX), because what
+// scrolls under it is a column of cards, not a header.
 //
 // The Console tab carries the queue's size across every project, drawn as the rail's badge FACE (the
 // rail's badge is this face plus a 1px cut-out in the rail's colour; nothing sits under it here, so the
@@ -29,6 +29,13 @@ function faceWidth(count: number): number {
 }
 
 const TRIM = { textBox: "trim-both cap alphabetic" } as CSSProperties
+
+/**
+ * The band is OPAQUE down to HOME_BAND_PX — the line the Console's card headers stick to — and fades out
+ * over this much below it. Fading above that line let the card behind a stuck header show through in a
+ * dimmed strip over it; below it, the fade lands on the header's own top padding, as a soft edge.
+ */
+const BAND_FADE_PX = 10
 
 /**
  * Every project's queue, summed. On the Console it is counted off the merged board the sidebar is
@@ -92,8 +99,8 @@ export function HomeSwitcher({ railVisible }: { railVisible: boolean }) {
         className="pointer-events-none fixed right-0 top-0 z-40"
         style={{
           left: inset,
-          height: HOME_BAND_PX,
-          background: `linear-gradient(var(--color-bg) 0, var(--color-bg) ${HOME_BAND_PX - 14}px, transparent)`,
+          height: HOME_BAND_PX + BAND_FADE_PX,
+          background: `linear-gradient(var(--color-bg) 0, var(--color-bg) ${HOME_BAND_PX}px, transparent)`,
         }}
       />
       <div

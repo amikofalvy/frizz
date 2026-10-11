@@ -1,4 +1,5 @@
-import { outerPath } from "./base-path.ts"
+import { outerPath, projectHref } from "./base-path.ts"
+import { splitThreadKey } from "./threadKey.ts"
 
 /**
  * The href for a thread's standalone `/full` page — an OUTER path, because it goes straight into an
@@ -12,6 +13,9 @@ import { outerPath } from "./base-path.ts"
  * launching project, which is served at the root.
  */
 export function standaloneThreadHref(slug: string, pathname?: string): string {
+  // A Console thread is named by its key; its full page is its own project's, where the slug is real.
+  const parts = splitThreadKey(slug)
+  if (parts) return `${projectHref(parts.project)}/thread/${encodeURIComponent(parts.slug)}/full`
   return outerPath(`/thread/${encodeURIComponent(slug)}/full`, pathname)
 }
 

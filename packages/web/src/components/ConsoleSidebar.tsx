@@ -25,7 +25,7 @@ import {
 import { keyProject } from "../lib/threadKey.ts"
 import { ProjectScope } from "../lib/projectScope.tsx"
 import { OPAQUE_SURFACE_BASE } from "../lib/overlaySurface.ts"
-import { HOME_BAND_PX } from "../lib/homeView.ts"
+import { CONSOLE_TOP_PX } from "../lib/homeView.ts"
 import { DispatchForm } from "./NewThreadModal.tsx"
 import { ProjectSquare } from "./ProjectRail.tsx"
 import { SectionHeader, SubAgentRows, ThreadRow, useQueueScrollspy } from "./Sidebar.tsx"
@@ -86,7 +86,7 @@ export function ConsoleSidebar() {
   )
 
   return (
-    <aside className={CONSOLE_SIDEBAR_COLUMN_CLASS} style={{ paddingTop: HOME_BAND_PX + 8 }} data-console-sidebar>
+    <aside className={CONSOLE_SIDEBAR_COLUMN_CLASS} style={{ paddingTop: CONSOLE_TOP_PX }} data-console-sidebar>
       <div className="flex min-h-0 min-w-0 w-full flex-1 flex-col max-[800px]:max-h-none">
         <div className="mb-3 shrink-0 px-0.5">
           <StatusRow label="All projects" />

@@ -9,7 +9,7 @@ import { takeScrollAfterUnlock } from "./lib/pageScrollLock.ts"
 import { startRouter } from "./lib/router.ts"
 import { nextSidebarPresence, readSidebarMirror, writeSidebarMirror, type SidebarPresence } from "./lib/sidebarPresence.ts"
 import { isConsolePath, projectSlug } from "./lib/base-path.ts"
-import { HOME_BAND_PX } from "./lib/homeView.ts"
+import { CONSOLE_TOP_PX, HOME_BAND_PX } from "./lib/homeView.ts"
 import { CONSOLE_SIDEBAR_COLUMN_CLASS, ConsoleSidebar } from "./components/ConsoleSidebar.tsx"
 import { rpc } from "./api/rpc.ts"
 import { SIDEBAR_COLUMN_CLASS, Sidebar } from "./components/Sidebar.tsx"
@@ -345,9 +345,11 @@ export function App() {
           // min-h-screen where content is vertically CENTERED: the boot loader and the empty queue's
           // prompt box (TodosView's flex-1 centering needs a full-height parent); populated queues just
           // top-align and grow past. Threads render in DRAWERS, never here.
-          style={onConsole ? { paddingTop: HOME_BAND_PX + 20 } : undefined}
+          // The Console's first card opens on the sidebar's top line (CONSOLE_TOP_PX), less the queue
+          // column's own 32px of top padding. Top-anchored, not centred like a board's: its sidebar is.
+          style={onConsole ? { paddingTop: CONSOLE_TOP_PX - 32 } : undefined}
           className={`w-[720px] max-w-[62vw] min-w-0 flex flex-col py-5 max-[800px]:w-full max-[800px]:max-w-none ${
-            snap.view === "todos" || !board ? "min-h-screen" : ""
+            (snap.view === "todos" && !onConsole) || !board ? "min-h-screen" : ""
           } ${
             // Queue recedes: the CARD carries its own chrome (a sticky header), so the bordered panel
             // frame drops away. Status lists (URL-only views) keep the panel on main.
