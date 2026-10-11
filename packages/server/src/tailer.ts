@@ -2876,7 +2876,8 @@ export interface TailerDeps {
   shellAlive?: (outputFile: string, launch: ShellLaunch) => boolean | undefined
   /** The BATCHED probe itself, injectable so a test can count and script it. Unlike `shellAlive`, which
    *  is answered inline and skips them, this one still sits behind the queue and the flush — the only
-   *  place a mistake about WHEN to ask can live. Defaults to probeShellsAlive. */
+   *  place a mistake about WHEN to ask can live. Defaults to probeShellVerdicts; a map value may be a
+   *  bare boolean/undefined (a verdict with no pids) or `{ alive: true, pids }` (one pinned to them). */
   probeShells?: (shells: readonly ShellLaunch[]) => Promise<Map<string, ShellVerdict>>
   /** Is this pid still a process? Asked of the pids a live shell verdict named, between full probes (see
    *  shellIsGone). Defaults to `process.kill(pid, 0)`, EPERM counting as alive. Injectable for tests. */
