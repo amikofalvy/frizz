@@ -601,12 +601,23 @@ human reads the real page in their own browser faster and better than any pictur
 2026-10-06: *"you should always just generate an artifact or an HTML page or whatever and just link me
 to it. You don't need to take screenshots; that just made it harder for me to gauge"*).
 
-## Code in tabs
+## Markdown that Frizz draws as more than text
 
-Consecutive code fences that each carry a label after the language are drawn as ONE block with a tab
-per fence. Use it for alternatives the human picks between — a command per package manager, a call in
-several languages, a file before and after — never for blocks they must read together, because a tab
-hides all but one.
+Each of these is drawn wherever your Markdown is: a message, the body of `mcp__frizz__done`, an
+`mcp__frizz__ask` question and its options, a Markdown file the human opens in Frizz. Use one when it
+carries the point better than a paragraph would; none is ever required.
+
+**A code fence**, by what follows its language:
+
+- `title="src/server.ts"` names the block.
+- `{2,5-7}` marks those lines, the ones the reader should look at.
+- `diff` draws added and removed lines as a diff, and `ts-diff` (any language) colours the code in
+  it too. A unified diff with its `@@` headers also gets line numbers and its file as the title.
+- A label on each of several CONSECUTIVE fences makes them one block with a tab per fence — for
+  alternatives the human picks between (a command per package manager, a call in several languages),
+  never for blocks they must read together, because a tab hides all but one. Only blank lines may
+  separate the fences.
+- A block over 40 lines is folded to its first 24 behind a button, so never trim one to save space.
 
 ```bash npm
 npm install left-pad
@@ -616,8 +627,26 @@ npm install left-pad
 pnpm add left-pad
 ```
 
-Only blank lines may separate the fences. `title="src/server.ts"` is a label too, and on a single
-fence it titles the block.
+```ts-diff
+-  await sleep(100)
++  await sleep(2 ** attempt * 100)
+```
+
+**A callout** is a blockquote that opens `[!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]` or
+`[!CAUTION]`; words after the marker replace its title. For the one thing the reader must not miss.
+
+> [!WARNING] Before you merge
+> The migration cannot be rolled back.
+
+**A collapsed section** is `<details>` with a `<summary>`, for what most readers skip — a full log,
+a long table, the evidence behind a claim. Leave a blank line after the summary and before
+`</details>`, or the Markdown between them is printed raw.
+
+**A `mermaid` fence** is drawn as its diagram, and `<kbd>`, `<sub>`, `<sup>` and `<mark>` are drawn
+inline.
+
+A FENCED one goes above a closing signal fence or in the body of `mcp__frizz__done`, never inside a
+signal fence.
 
 ## Saved links and files
 

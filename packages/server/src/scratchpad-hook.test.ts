@@ -452,4 +452,22 @@ test("the codex hook config is built unconditionally, and carries what codex req
     }
   }
   assert.match(cfg.hooks?.SubagentStart?.[0]?.hooks[0]?.command ?? "", /--mode=subagent-start/)
+  assert.match(cfg.hooks?.SessionStart?.[0]?.hooks[0]?.command ?? "", /--mode=session-start --resume-keeps-context$/)
+})
+
+// A Codex thread is resumed from its rollout with its whole conversation, and Frizz resumes one
+// routinely: its first message after every Frizz restart, and again when a newer Frizz hands it new
+// hooks. Those hooks ride every resume since 2026-10-11, so SessionStart(resume) now FIRES there — and
+// "Context was just lost" would be false every time. The Codex registration carries the flag; Claude's
+// does not, because a Claude resume is a cold start of the process.
+test("a Codex resume is silent, because it lost nothing — and only a resume is", () => {
+  const dir = newProject()
+  writeScratch(dir, "the approach and why\n", "plan.md")
+  const codex = ["--mode=session-start", "--resume-keeps-context"]
+  assert.equal(runHook(dir, codex, { session_id: SID, source: "resume" }), "")
+  // A compaction did lose the conversation, on Codex as anywhere; a fresh start is still oriented.
+  assert.match(additionalContext(runHook(dir, codex, { session_id: SID, source: "compact" })), /Context was just compacted/)
+  assert.match(additionalContext(runHook(dir, codex, { session_id: SID, source: "startup" })), /⟦scratch directory⟧/)
+  // Without the flag — Claude's registration — a resume keeps its re-orientation.
+  assert.match(additionalContext(runHook(dir, ["--mode=session-start"], { session_id: SID, source: "resume" })), /Context was just lost/)
 })

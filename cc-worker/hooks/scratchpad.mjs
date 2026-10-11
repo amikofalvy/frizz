@@ -212,6 +212,12 @@ function emitJson(additionalContext, hookEventName) {
 
 // ── mode: session-start ──────────────────────────────────────────────────────────────────────────
 if (mode === 'session-start') {
+  // A CODEX resume loses nothing: the thread is rebuilt from its rollout with the whole conversation in
+  // it, and Frizz resumes a thread routinely — its first message after every Frizz restart, and again
+  // when a newer Frizz hands it new hooks. Telling that worker "Context was just lost" would be false
+  // every time, so the Codex registration says so with a flag and this stays silent. (On Claude a
+  // resume is a cold start of the process and keeps the wording below.)
+  if (input.source === 'resume' && argv.includes('--resume-keeps-context')) process.exit(0);
   const files = listScratch();
   const written = files.length > 0;
 

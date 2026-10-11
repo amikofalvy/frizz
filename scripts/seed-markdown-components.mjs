@@ -2,9 +2,9 @@
 // COMPONENT Frizz draws beyond plain CommonMark, in the two places a worker's Markdown is drawn in the
 // transcript:
 //
-//   • plain prose — a callout of each kind, a `<details>` section, `<kbd>` / `<sub>` / `<sup>` /
-//     `<mark>`, a `mermaid` fence, a fence with marked lines, a `ts-diff`, a git diff with hunk
-//     headers, and a fence long enough to fold;
+//   • plain prose — a callout of each kind, a `<details>` section, a second one holding a gallery, a
+//     picture and a diagram, `<kbd>` / `<sub>` / `<sup>` / `<mark>`, a `mermaid` fence, a fence with
+//     marked lines, a `ts-diff`, a git diff with hunk headers, and a fence long enough to fold;
 //   • a registered done card, whose body goes through a different component (LinkedHtml) than the
 //     prose does, at the card's own 13px scale.
 //
@@ -42,7 +42,8 @@ let uuidN = 0
 const uuid = () => `0000000${(++uuidN).toString().padStart(4, "0")}-0000-4000-8000-000000000000`.slice(-36)
 
 const slug = flags.slug ?? "markdown-components"
-const sessionId = "c0de7ab5-0000-4000-8000-000000000002"
+// `--session` seeds a second copy beside the first (the tailer keeps its place in a file by id).
+const sessionId = flags.session ?? "c0de7ab5-0000-4000-8000-000000000002"
 
 const record = (type, message) => ({
   parentUuid: null,
@@ -135,12 +136,13 @@ const records = [
     "",
     "How a call moves through it:",
     "",
+    // `call` and `end` are words of Mermaid's own grammar, so no node is named either.
     fence("mermaid",
       "flowchart LR",
-      "  call[run] --> ok{succeeded?}",
-      "  ok -- yes --> done[return]",
+      "  attempt[run] --> ok{succeeded?}",
+      "  ok -- yes --> finish[return]",
       "  ok -- no --> wait[sleep 2^n × 100ms]",
-      "  wait --> call"),
+      "  wait --> attempt"),
     "",
     "<details>",
     "<summary>The full test output</summary>",
@@ -148,6 +150,19 @@ const records = [
     "All 63 tests pass, including the three new ones:",
     "",
     fence("text", "ℹ tests 63", "ℹ pass 63", "ℹ fail 0"),
+    "",
+    "</details>",
+    "",
+    // A section holding the three things the transcript otherwise lifts OUT of prose into blocks of
+    // their own (lib/imagePaths.ts): closed, it must hide all of them.
+    "<details>",
+    "<summary>The screenshots, and the flow again</summary>",
+    "",
+    fence("lightbox", `${join(cwd, "assets/board.png")}  The board`, `${join(cwd, "assets/question.png")}  A question card`),
+    "",
+    join(cwd, "assets/snooze.png"),
+    "",
+    fence("mermaid", "flowchart LR", "  attempt[run] --> ok{succeeded?}", "  ok -- no --> wait[back off] --> attempt"),
     "",
     "</details>",
     "",
@@ -174,7 +189,7 @@ const doneBody = [
   "",
   "</details>",
   "",
-  fence("mermaid", "flowchart LR", "  call[run] --> ok{succeeded?}", "  ok -- no --> wait[back off] --> call"),
+  fence("mermaid", "flowchart LR", "  attempt[run] --> ok{succeeded?}", "  ok -- no --> wait[back off] --> attempt"),
 ].join("\n")
 
 writeFileSync(join(jsonlDir, `${sessionId}.jsonl`), records.map((r) => JSON.stringify(r)).join("\n") + "\n")
