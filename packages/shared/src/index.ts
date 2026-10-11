@@ -618,9 +618,9 @@ export function retiredAwaitingKindsIn(body: string): RetiredAwaitingKind[] {
 /** What each retired kind became, so the bump can say it in one line rather than restating the grammar. */
 export const RETIRED_AWAITING_REPLACEMENT: Record<RetiredAwaitingKind, string> = {
   "watch": "`shells: [<the id your runtime gave you>]` (or `agents: [<id>]`) — the same id, in the current sequence",
-  "pr-watch": "register the PR with `mcp__frizz__watch_pr`, then name it `prs: [owner/repo#123]`",
-  "human": "there is no human gate any more — steps only the human can perform go under `steps:`, one `- ` item per line; a decision you need from them is a question, registered with `mcp__frizz__ask`",
-  "ci": "CI is not a wait of its own: register the PR with `mcp__frizz__watch_pr` and you are woken when its checks settle",
+  "pr-watch": "register the PR with `frizzctl watch-pr add`, then name it `prs: [owner/repo#123]`",
+  "human": "there is no human gate any more — steps only the human can perform go under `steps:`, one `- ` item per line; a decision you need from them is a question, registered with `frizzctl ask`",
+  "ci": "CI is not a wait of its own: register the PR with `frizzctl watch-pr add` and you are woken when its checks settle",
   "session": "there is no cross-session wait — name the sub-agent you dispatched with `agents: [<id>]`",
   // THE 2026-08-24 CUTOVER. The frontmatter is YAML now, and YAML has no repeated keys — so the four
   // one-per-line item kinds became plural sequences, and `reason:` (the prose that made YAML impossible)
@@ -673,9 +673,9 @@ const AWAITING_SEQUENCE_KEYS: { [key: string]: AwaitingItemKind | undefined } = 
   agents: "agent",
   timers: "timer",
   prs: "pr",
-  // `issues:` (2026-09-14) names a GitHub ISSUE registered with `mcp__frizz__watch_issue`. Its own key
+  // `issues:` (2026-09-14) names a GitHub ISSUE registered with `frizzctl watch-issue`. Its own key
   // rather than a second spelling under `prs:`, because the two are different registrations: an issue
-  // has no CI and no merge, and the correction for an unregistered one names a different tool.
+  // has no CI and no merge, and the correction for an unregistered one names a different command.
   issues: "issue",
 }
 
@@ -1417,12 +1417,22 @@ export const TimerPromptText = z.string().trim().min(1).max(TIMER_PROMPT_MAX)
 // The WORKER's copy is untouched — the projection narrows what is shown, never what was delivered.
 export const PR_WATCH_SPENT_TRAILER = "(This watcher is spent — there is nothing further to report on a finished PR.)"
 export const PR_WATCH_ARMED_TRAILER = "(Registered PR watcher — STILL ARMED. It reports again on the next CI change, review,"
-  + " comment, label, conflict or review request. Drop it with `mcp__frizz__watch_pr` when it stops"
+  + " comment, label, conflict or review request. Drop it with `frizzctl watch-pr drop <id>` when it stops"
   + " mattering.)"
 export const SHELL_DONE_TRAILER = "(Frizz sends this because it finished after you came to rest, where your runtime's own completion"
   + " notification does not reach you. Read its output if you still need it.)"
 export const ISSUE_WATCH_SPENT_TRAILER = "(This watcher is spent — there is nothing further to report on a closed issue.)"
 export const ISSUE_WATCH_ARMED_TRAILER = "(Registered issue watcher — STILL ARMED. It reports again on the next comment, label or"
+  + " assignee change, and once more when the issue closes. Drop it with `frizzctl watch-issue drop <id>` when"
+  + " it stops mattering.)"
+// THE TWO ARMED TRAILERS AS THEY WERE WRITTEN UNTIL 2026-10-11, when the drop verb they name was an MCP
+// tool. Nothing composes them any more, but every transcript written before that date ends its watcher
+// wakes with these exact bytes, and `stripWakeTrailer` matches exact strings — so they stay in its list,
+// or a wake delivered last week would start printing its boilerplate at the operator again.
+const LEGACY_PR_WATCH_ARMED_TRAILER = "(Registered PR watcher — STILL ARMED. It reports again on the next CI change, review,"
+  + " comment, label, conflict or review request. Drop it with `mcp__frizz__watch_pr` when it stops"
+  + " mattering.)"
+const LEGACY_ISSUE_WATCH_ARMED_TRAILER = "(Registered issue watcher — STILL ARMED. It reports again on the next comment, label or"
   + " assignee change, and once more when the issue closes. Drop it with `mcp__frizz__watch_issue` when"
   + " it stops mattering.)"
 
@@ -1675,7 +1685,7 @@ export interface SignoffLiveOps {
 // The awaiting grammar references live things BY ID, so a worker that has lost them (a compaction, a long
 // turn) cannot write a correct fence and will be bumped for naming something wrong. Giving it the exact
 // lines here closes that loop at the one moment it is provably needed: it just rested without a fence.
-// `mcp__frizz__activity` returns the same list on demand, from the same source.
+// `frizzctl activity` returns the same list on demand, from the same source.
 /** The registries as one `kinds: [id, …]` line per kind a fence can copy verbatim, each above the ids it
  *  holds and what they are, or `[]` when nothing is running.
  *
@@ -1796,14 +1806,14 @@ function signoffNudgeText(needsInput: boolean): string {
   "the write-up.",
   "",
   "**DECIDE RATHER THAN ASK.** Stop only for a decision that is genuinely the human's AND that blocks you",
-  "right now: register that one with `mcp__frizz__ask`. Every other open choice INSIDE the task — a name, a",
+  "right now: register that one with `frizzctl ask`. Every other open choice INSIDE the task — a name, a",
   "default, a reversible design call — is yours to make: decide it, say in one line which way you went and",
   "what would reverse it, and carry on. A choice that would ENLARGE the task is not one of those: an",
   "unanswered question is not permission to go build the answer.",
   "",
   "Otherwise, sign off — a registration, or a fence at the END of your next message:",
   "",
-  "- `mcp__frizz__ask` — you need the human. NOT a fence: the ```question fence is retired, and a fence",
+  "- `frizzctl ask` — you need the human. NOT a fence: the ```question fence is retired, and a fence",
   "  with a question in its body is plain prose. Register it (options with one-line trade-offs, the",
   "  recommended one first), then rest normally — an open registered question is the sign-off.",
   "- `` ```done `` — genuinely FINISHED. A DISMISSAL: the card is filed away and nobody looks again, so",
@@ -1813,8 +1823,8 @@ function signoffNudgeText(needsInput: boolean): string {
   "",
   "  Frizz CHECKS every line: name something that is not running and you are bumped rather than parked.",
   "  A fence that names NOTHING is not a park at all — if you are not waiting on anything, you are not",
-  "  awaiting, you are done. Register a PR with `mcp__frizz__watch_pr` and a timer with",
-  "  `mcp__frizz__timer`; `mcp__frizz__activity` reads back everything you have running, with its id.",
+  "  awaiting, you are done. Register a PR with `frizzctl watch-pr add` and a timer with",
+  "  `frizzctl timer set`; `frizzctl activity` reads back everything you have running, with its id.",
   "- `` ```awaiting `` with `steps:` — the human must PERFORM something you cannot: sign in, approve,",
   "  merge, press a button you may not. List each step as a `- ` line under `steps:`, written to be",
   "  followed cold: a real Markdown link to every page and file it names, every command in a code span,",
@@ -1823,14 +1833,14 @@ function signoffNudgeText(needsInput: boolean): string {
   "  comes back to you as their reply; anything else they need to say comes as a message of their own.",
   "- `` ```awaiting `` with `questions:` — a question you registered at an EARLIER rest is still open and",
   "  you still need its answer. Name every such question (`questions: [qst_…]`) and withdraw the rest with",
-  "  `mcp__frizz__unask`: a fence that leaves an open question out is refused. A named card is drawn at",
+  "  `frizzctl unask <id>`: a fence that leaves an open question out is refused. A named card is drawn at",
   "  this rest; an unnamed one stays where you asked it.",
   "",
   "**STILL OWED counts things you are not going to do yourself.** A decision you are RECOMMENDING, a",
   "draft you wrote but did not send, follow-up work you discovered — all of it dies with the card, even",
   "the part that is someone else's to do. Each ends on a question with your recommendation as option 1,",
   "or you DO it first — a sub-agent's result comes BACK to you, so it lands on your card; a new card via",
-  "`mcp__frizz__spawn_thread` is the LAST resort, since nothing it learns returns to you or its siblings.",
+  "`frizzctl spawn-thread` is the LAST resort, since nothing it learns returns to you or its siblings.",
   "None of them is a `done`. And what is not",
   "worth a card is not worth a SENTENCE: delete the dangling \"one thing to carry forward\", never park it",
   "in the handoff.",
@@ -1874,7 +1884,7 @@ export function carriedQuestionsNudgeMessage(questions: readonly { id: string; q
     "  questions needs no other name and no `for:`, and the thread stays in the human's queue. The card is",
     "  drawn at this rest, under the reasoning you write below the `---` — what changed since you asked,",
     "  if anything did.",
-    "- NO LONGER NEED IT → withdraw it with `mcp__frizz__unask`, then sign off as you otherwise would.",
+    "- NO LONGER NEED IT → withdraw it with `frizzctl unask <id>`, then sign off as you otherwise would.",
     ...liveOpsLines(ops, needsInput),
   ]
   return lines.join("\n")
@@ -2029,7 +2039,7 @@ export function parkExpiredWakeMessage(status: readonly string[]): string {
     "",
     "Re-park if they are genuinely still going — there is no limit on that, and a long job is not a",
     "failure. If something is finished, read its result. If nothing is left, end in ```done or register",
-    "a question with `mcp__frizz__ask`.",
+    "a question with `frizzctl ask`.",
   ].join("\n")
 }
 
@@ -2043,20 +2053,20 @@ export function parkFinishedWakeMessage(status: readonly string[], several: bool
     "READ ITS OUTPUT AND CARRY ON. This is not a broken fence and there is nothing to fix: the wait",
     "you declared simply ended. Do NOT relaunch the same work — its result is already on disk.",
     "",
-    "Then park on whatever comes next, or end in ```done or a registered question (`mcp__frizz__ask`) if nothing is left.",
+    "Then park on whatever comes next, or end in ```done or a registered question (`frizzctl ask`) if nothing is left.",
   ].join("\n")
 }
 
 /** Scheduler SOURCE 11: a registered PR watcher whose own `for:` ran out. */
 export function prWatchExpiredWakeMessage(ref: string, kind: "pull" | "issue" = "pull"): string {
   // The head keeps its exact wording for either subject — `PR_WATCH_EXPIRED_HEAD` reads it — and only
-  // the noun and the tool it points back at change.
+  // the noun and the command it points back at change.
   const noun = kind === "issue" ? "issue" : "PR"
-  const tool = kind === "issue" ? "mcp__frizz__watch_issue" : "mcp__frizz__watch_pr"
+  const command = kind === "issue" ? "frizzctl watch-issue add" : "frizzctl watch-pr add"
   return (
     `⏰ Your watcher on ${ref} has expired and is no longer armed — nothing on that ${noun} will wake ` +
-    `you now.\n\nIf you still care about it, register it again with \`${tool}\` and a ` +
-    `fresh \`for:\`. If you do not, and it was the only thing you were waiting on, end in a proper ` +
+    `you now.\n\nIf you still care about it, register it again with \`${command}\` and a ` +
+    `fresh \`--for\`. If you do not, and it was the only thing you were waiting on, end in a proper ` +
     `terminal state instead of parking on it again.`
   )
 }
@@ -2072,7 +2082,7 @@ export function ownWatchExpiredWakeMessage(kind: "shell" | "agent", target: stri
   return (
     `⏰ Your watch on the ${what} \`${target}\` has expired and is no longer armed — nothing about it ` +
     `will wake you now, and it is no longer holding your thread out of the queue.\n\nIf you are still ` +
-    `waiting on it, register it again with \`mcp__frizz__watch\` and a fresh \`for:\`. If you are not, ` +
+    `waiting on it, register it again with \`frizzctl watch\` and a fresh \`--for\`. If you are not, ` +
     `and it was the only thing you were waiting on, end in a proper terminal state instead of parking ` +
     `on it again.`
   )
@@ -2112,9 +2122,9 @@ export function parsePrWatchExpiredWake(text: string): { ref: string } | null {
 
 const OWN_WATCH_EXPIRED_HEAD = /^⏰ Your watch on the (sub-agent|background shell) `([^`]+)` has expired and is no longer armed\b/
 
-/** A lapsed `mcp__frizz__watch` on one of the worker's own shells or sub-agents, or null. The twin of
+/** A lapsed `frizzctl watch` on one of the worker's own shells or sub-agents, or null. The twin of
  *  the PR one above, and it had no parser from the day `ownWatchExpiredWakeMessage` shipped — so the one
- *  frizz-composed wake left printing its "register it again with `mcp__frizz__watch`" body at the human
+ *  frizz-composed wake left printing its "register it again with `frizzctl watch`" body at the human
  *  was this (measured 2026-10-11: 1 of the 4 deliveries on this machine still drawing the verbatim card). */
 export function parseOwnWatchExpiredWake(text: string): { kind: "shell" | "agent"; target: string } | null {
   const m = OWN_WATCH_EXPIRED_HEAD.exec(text.trim())
@@ -2311,7 +2321,7 @@ export const AddOwnPrWatchInput = z.object({
    *  still BOUNDS the poll; the point of the field is that a worker chooses, and one that cannot choose
    *  is better bounded than broken. */
   for: z.string().trim().min(1).max(16).optional(),
-  /** What `target` names. `issue` (from `mcp__frizz__watch_issue`, 2026-09-14) registers a watcher on a
+  /** What `target` names. `issue` (from `frizzctl watch-issue`, 2026-09-14) registers a watcher on a
    *  GitHub issue — same registry, same poll cadence, same drop verb, but a different probe (`gh issue
    *  view`), a different GraphQL fragment and a report with no CI in it. ABSENT MEANS A PULL REQUEST,
    *  for the same reason `for` is optional on the wire: every `watch_pr` binary dispatched before this
@@ -2349,7 +2359,7 @@ export const DropOwnPrWatchResult = z.object({
 export type DropOwnPrWatchResult = z.infer<typeof DropOwnPrWatchResult>
 
 // ---- THE WORKER'S OWN WATCHES on its own running work (2026-08-26) -----------------------------------
-// `mcp__frizz__watch` / `mcp__frizz__unwatch`. See plans/rest-by-registration.md: a wait stops being a
+// `frizzctl watch` / `frizzctl unwatch`. See plans/rest-by-registration.md: a wait stops being a
 // line the worker restates at every rest and becomes a row it creates once.
 //
 // ONE VERB ACROSS KINDS, unlike the four narrow item kinds the fence grammar has. A shell and a sub-agent
@@ -2433,7 +2443,7 @@ export type DropOwnWatchResult = z.infer<typeof DropOwnWatchResult>
 export const OWN_WATCH_MAX_ARMED = 24
 
 // ---- THE WORKER'S REGISTERED QUESTIONS (2026-08-26) ------------------------------------------------
-// `mcp__frizz__ask` / `mcp__frizz__unask`. See plans/rest-by-registration.md.
+// `frizzctl ask` / `frizzctl unask`. See plans/rest-by-registration.md.
 //
 // THE FREE-FORM ```question FENCE IS RETIRED (2026-09-11). A fence with a question in its body was the
 // original way a worker asked, and the `ask` tool landed beside it on 2026-08-26 as the "better" form
@@ -2554,7 +2564,7 @@ export interface AskedQuestion {
    *  things: the card wears the `risk` tone, and the human's × cannot reach it. A generic close icon is
    *  not consent for something irreversible; declining is an OPTION inside the question. */
   danger?: boolean
-  /** A SECRET request (`mcp__frizz__secret`): a free-text question whose answer is a credential — a
+  /** A SECRET request (`frizzctl secret`): a free-text question whose answer is a credential — a
    *  one-time code, a token, a password. The card masks the box and keeps the typed value out of every
    *  draft cache; the server serves the value once, from memory, through a named pipe
    *  (`secret-files.ts`) and stores and delivers only `secretAnswerText`, so the value never reaches
@@ -2651,8 +2661,8 @@ export function askedQuestionFaults(q: AskedQuestion): string[] {
 
 export const AskInput = z.object({
   slug: ThreadSlug,
-  // No cap on the count (four until 2026-09-03): the tool's own text says "several at once is one
-  // call — register them together", and a cap here told a worker with six to batch and then refused it.
+  // No cap on the count (four until 2026-09-03): the command's own help says several at once is one
+  // run — register them together — and a cap here told a worker with six to batch and then refused it.
   questions: z.array(AskedQuestionSchema).min(1),
 }).strict()
 export type AskInput = z.infer<typeof AskInput>
@@ -2985,7 +2995,7 @@ export const ThreadFence = z.object({
   kind: z.enum(["done", "awaiting"]),
   body: z.string(), // fence body minus hint lines, capped server-side; may be ""
   hints: z.array(AwaitingHint).default([]),
-  // Present only on a completion the worker REGISTERED (`mcp__frizz__done`, board.registeredDoneFence)
+  // Present only on a completion the worker REGISTERED (`frizzctl done`, board.registeredDoneFence)
   // rather than wrote as a ```done fence in its final message. The two are one fence to every predicate,
   // but the TRANSCRIPT draws a fence card from the message text it parses — so a registered done, which
   // is in no message, needs the client to know it must draw the card itself at the bottom of the thread
@@ -4062,8 +4072,8 @@ export const FollowUpInput = z.object({
 })
 export type FollowUpInput = z.infer<typeof FollowUpInput>
 
-// One worker messaging ANOTHER thread of its project — `mcp__frizz__steer`. `from` is the calling
-// worker's own slug, which the MCP shim reads from its env and never from the model; the server stamps
+// One worker messaging ANOTHER thread of its project — `frizzctl steer`. `from` is the calling
+// worker's own slug, which the command reads from its env and never from the model; the server stamps
 // the sender's title from its own row. `to` is the target's slug. Delivered through the same path as
 // the operator's follow-up (wakes a resting thread, queues into a running one, reopens a done one),
 // wrapped by formatThreadMessage so the receiver and the chat both know it is not the human's.
@@ -4215,7 +4225,7 @@ export const SetThreadRecurringPromptInput = z.object({
 // z.input. Inferring the output here is what made the drift gate fire.
 export type SetThreadRecurringPromptInput = z.input<typeof SetThreadRecurringPromptInput>
 
-// The WORKER half, through `mcp__frizz__goal` (which POSTs the same `/rpc/*` surface the
+// The WORKER half, through `frizzctl goal` (which POSTs the same `/rpc/*` surface the
 // board uses). A worker has no other way to keep a long effort moving — Claude Code's own in-session
 // schedulers cannot fire in the runtime frizz spawns — so this is the counterpart to the operator's
 // control above, writing the same row.
@@ -4256,14 +4266,14 @@ export type SetOwnThreadRecurringPromptInput = z.input<typeof SetOwnThreadRecurr
 
 // What the write ANSWERS with: the row it just overwrote. A `start` REPLACES whatever the thread held —
 // including text the HUMAN edited in the Goal panel — and the writer could not previously see what it
-// destroyed. Returning the superseded row lets the tool say so in the same breath, so a blind overwrite
+// destroyed. Returning the superseded row lets the command say so in the same breath, so a blind overwrite
 // is at least a REPORTED one. `null` when the thread held nothing.
 export const SetOwnThreadRecurringPromptResult = z.object({
   replaced: ThreadRecurringPrompt.nullable(),
 }).strict()
 export type SetOwnThreadRecurringPromptResult = z.infer<typeof SetOwnThreadRecurringPromptResult>
 
-// The READ half, from `mcp__frizz__goal` with `action: "get"`. Without it a worker can only
+// The READ half, from `frizzctl goal get`. Without it a worker can only
 // write: it cannot tell whether it is armed at all, what text it armed before its context was compacted
 // away, or whether the human has since edited it in the Goal panel. Same caller rules as the write above —
 // keyed on the slug alone, and no thread parameter a model could aim at anyone else's row.
@@ -4417,7 +4427,7 @@ export type AiRenameThreadInput = z.infer<typeof AiRenameThreadInput>
 export const AiRenameThreadResult = z.object({ title: z.string().min(1).max(200) })
 export type AiRenameThreadResult = z.infer<typeof AiRenameThreadResult>
 
-// THE WORKER NAMING ITS OWN THREAD, from `mcp__frizz__title`. Both backends get a name automatically at
+// THE WORKER NAMING ITS OWN THREAD, from `frizzctl title`. Both backends get a name automatically at
 // spawn — Claude from the provider's own titler, Codex from the first-line `<!-- frizz title="…" -->`
 // marker — and both are minted from the raw dispatch prompt before the worker has read a single line of
 // the repo, so they can only ever paraphrase what the operator typed. That is how a zod thread came out
@@ -4437,7 +4447,7 @@ export const SetOwnThreadTitleInput = z.object({
 export type SetOwnThreadTitleInput = z.infer<typeof SetOwnThreadTitleInput>
 
 // What the write answers with: whether it landed, and the name the thread carries NOW. A refusal is not
-// an error — a human who has renamed the thread owns its name — so it comes back as a flag the tool can
+// an error — a human who has renamed the thread owns its name — so it comes back as a flag the command can
 // explain rather than a throw the model will retry.
 export const SetOwnThreadTitleResult = z.object({
   accepted: z.boolean(),
@@ -4615,13 +4625,13 @@ export function stripWakeTimeHeader(text: string): string {
 
 // The trailers frizz writes for the WORKER at the end of a wake it composed, declared with their
 // producers above. Every one of them is a sentence about a registration the reader does not hold and a
-// tool the reader cannot call.
+// command the reader cannot run.
 //
 // THE TIMER'S TRAILER IS DELIBERATELY NOT HERE. `parseTimerWake` matches ON it — a fired one-off is the
 // worker's own arbitrary prose, and that parenthetical is the only anchor saying which timer this was —
 // so stripping it upstream would cost the divider it is there to draw. It comes off in the parser
 // instead, which is the same outcome by the other route.
-const WAKE_TRAILERS = [PR_WATCH_ARMED_TRAILER, PR_WATCH_SPENT_TRAILER, ISSUE_WATCH_ARMED_TRAILER, ISSUE_WATCH_SPENT_TRAILER, SHELL_DONE_TRAILER]
+const WAKE_TRAILERS = [PR_WATCH_ARMED_TRAILER, PR_WATCH_SPENT_TRAILER, ISSUE_WATCH_ARMED_TRAILER, ISSUE_WATCH_SPENT_TRAILER, SHELL_DONE_TRAILER, LEGACY_PR_WATCH_ARMED_TRAILER, LEGACY_ISSUE_WATCH_ARMED_TRAILER]
 
 /** Display projection: a frizz wake without the agent-facing trailer frizz appended for the worker.
  *
@@ -4930,8 +4940,8 @@ export function parseCrossSessionMessage(text: string): { name?: string; socket?
   return { ...(name ? { name } : {}), ...(socket ? { socket } : {}), body }
 }
 
-// ---- A MESSAGE FROM ANOTHER FRIZZ THREAD (`mcp__frizz__steer`) -----------------------------------
-// What one worker's `steer` tool delivers into another thread of the same project. Claude Code's own
+// ---- A MESSAGE FROM ANOTHER FRIZZ THREAD (`frizzctl steer`) --------------------------------------
+// What one worker's `frizzctl steer` delivers into another thread of the same project. Claude Code's own
 // cross-session channel (above) reaches only a session whose process is LIVE, so a worker asked to hand
 // its results to a resting thread had to reverse-engineer the board's `followUp` RPC with curl
 // (2026-10-09: sixteen tool calls to find the route, the slug and the session id). `steer` rides that

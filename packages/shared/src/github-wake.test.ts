@@ -670,7 +670,7 @@ test("every trailer frizz appends comes off the display projection", () => {
     assert.ok(text.includes(trailer), `${name}: the producer no longer writes the constant it is pinned by`)
     const shown = stripWakeTrailer(text)
     assert.ok(!shown.includes(trailer), `${name}: the trailer survived the projection`)
-    assert.ok(!shown.includes("mcp__frizz__"), `${name}: a raw tool name reached the operator`)
+    assert.doesNotMatch(shown, /frizzctl|mcp__frizz__/, `${name}: a raw command name reached the operator`)
     assert.ok(shown.trim().length > 0, `${name}: the projection ate the news with the boilerplate`)
   }
 })
@@ -707,6 +707,24 @@ test("prose that merely quotes a trailer keeps it, and a trailer mid-message is 
   assert.equal(stripWakeTrailer(PR_WATCH_ARMED_TRAILER), PR_WATCH_ARMED_TRAILER)
 })
 
+// THE TRAILERS NAMED AN MCP TOOL UNTIL 2026-10-11, and every watcher wake delivered before that date
+// ends with those bytes. The strip matches exact strings, so rewording the constants would have put the
+// old boilerplate back on the operator's screen for every wake already in a transcript.
+test("a watcher wake written before the command line still loses its trailer", () => {
+  const armedPr = "(Registered PR watcher — STILL ARMED. It reports again on the next CI change, review, comment, label, conflict or review request. Drop it with `mcp__frizz__watch_pr` when it stops mattering.)"
+  const armedIssue = "(Registered issue watcher — STILL ARMED. It reports again on the next comment, label or assignee change, and once more when the issue closes. Drop it with `mcp__frizz__watch_issue` when it stops mattering.)"
+  assert.notEqual(armedPr, PR_WATCH_ARMED_TRAILER, "the trailer a worker gets today names the command")
+  assert.match(PR_WATCH_ARMED_TRAILER, /Drop it with `frizzctl watch-pr drop <id>`/)
+  assert.match(ISSUE_WATCH_ARMED_TRAILER, /Drop it with `frizzctl watch-issue drop <id>`/)
+  for (const [now, then] of [[PR_WATCH_ARMED_TRAILER, armedPr], [ISSUE_WATCH_ARMED_TRAILER, armedIssue]]) {
+    const wake = prWatchWakeMessage({ target: "nubjs/nub#879", changes: ["labels +blocked"] }).replace(PR_WATCH_ARMED_TRAILER, now)
+    const old = wake.replace(now, then)
+    assert.ok(old.endsWith(then))
+    assert.equal(stripWakeTrailer(old), stripWakeTrailer(wake), "the old trailer comes off exactly as the new one does")
+    assert.doesNotMatch(stripWakeTrailer(old), /STILL ARMED|mcp__frizz__/)
+  }
+})
+
 // ---- ISSUE WATCHER WAKES (2026-09-14) -----------------------------------------------------------------
 // The lines keep the PR shapes on purpose, so a tab built before issues existed still draws the divider.
 test("issueWatchWakeMessage: the close line parses as a closed PR-watch wake, with the reason on its own line", () => {
@@ -724,15 +742,15 @@ test("issueWatchWakeMessage: state changes and a comment steer share one deliver
   assert.equal(parsePrWatchWake(text), null, "no CI line, ever")
   assert.ok(parseGithubWakeSteer(text.split("\n\n")[1]), "the steer is the second paragraph")
   assert.ok(text.endsWith(ISSUE_WATCH_ARMED_TRAILER))
-  assert.doesNotMatch(stripWakeTrailer(text), /watch_issue/)
+  assert.doesNotMatch(stripWakeTrailer(text), /watch[-_]issue/)
 })
 
-test("prWatchExpiredWakeMessage: an issue's expiry parses through the same head and points at watch_issue", () => {
+test("prWatchExpiredWakeMessage: an issue's expiry parses through the same head and points at watch-issue", () => {
   const text = prWatchExpiredWakeMessage("acme/app#7", "issue")
   assert.deepEqual(parsePrWatchExpiredWake(text), { ref: "acme/app#7" })
   assert.match(text, /nothing on that issue will wake/)
-  assert.match(text, /mcp__frizz__watch_issue/)
-  assert.match(prWatchExpiredWakeMessage("acme/app#7"), /mcp__frizz__watch_pr/, "the default is still a PR")
+  assert.match(text, /register it again with `frizzctl watch-issue add` and a fresh `--for`/)
+  assert.match(prWatchExpiredWakeMessage("acme/app#7"), /register it again with `frizzctl watch-pr add` and a fresh `--for`/, "the default is still a PR")
 })
 
 test("splitAwaitingFrontmatter: `issues:` is a structural key producing `issue` hints", () => {

@@ -2454,7 +2454,7 @@ export function createRouter(ctx: AppContext) {
         detail: { from: input.from, message: textDigest(input.message) },
       }, async () => {
         if (input.from === input.to) {
-          throw new Error("That is your own thread. `steer` messages ANOTHER thread; to keep a note for yourself, write it to your scratch directory")
+          throw new Error("That is your own thread. `frizzctl steer` messages ANOTHER thread; to keep a note for yourself, write it to your scratch directory")
         }
         const sender = ctx.storage.getSession(input.from)
         if (!sender) throw new Error(`the calling thread ${input.from} is not registered in this project`)
@@ -3359,7 +3359,7 @@ export function createRouter(ctx: AppContext) {
         if (!live) {
           throw new Error(
             `nothing running on this thread answers to \`${target}\` — a watch only ever names work that is ` +
-            "already live, and work that has already finished needs no watch at all. Call `activity` for the " +
+            "already live, and work that has already finished needs no watch at all. Run `frizzctl activity` for the " +
             "exact ids of everything you have running.",
           )
         }
@@ -3369,7 +3369,7 @@ export function createRouter(ctx: AppContext) {
         if (live.kind !== input.kind) {
           const said = input.kind === "agent" ? "sub-agent" : "background shell"
           const is = live.kind === "agent" ? "sub-agent" : "background shell"
-          throw new Error(`\`${target}\` is a ${is}, not a ${said} — register it with \`kind: "${live.kind}"\`.`)
+          throw new Error(`\`${target}\` is a ${is}, not a ${said} — register it with \`frizzctl watch ${live.kind}\`.`)
         }
         const armed = ctx.storage.listThreadWatches(input.slug, { armedOnly: true })
         if (armed.length >= OWN_WATCH_MAX_ARMED) {
