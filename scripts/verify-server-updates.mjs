@@ -58,6 +58,8 @@ ensureProjectIdFile(repo, home)
 const events = [], failures = [], consoleErrors = [], processes = []
 const probes = new Set()
 const workerPids = new Set()
+// The launcher and server of a published release, which carries none of the fixtures' reporting.
+const publishedPids = new Set()
 const packages = new Map()
 let browser, page, registry, base, shellPid, listenerMonitor, monitorEnabled = false
 let downloadGate
@@ -159,10 +161,10 @@ async function healthy(version) {
   })
 }
 /** Everything every launcher has logged so far, whichever root this platform keeps a project's logs under. */
-function launcherLogs() {
+function launcherLogs(from = home) {
   let text = ""
   for (const base of ["data", "state"]) {
-    const projects = join(home, base, "frizz/projects")
+    const projects = join(from, base, "frizz/projects")
     if (!existsSync(projects)) continue
     for (const project of readdirSync(projects)) {
       const logs = join(projects, project, "logs")
@@ -172,8 +174,8 @@ function launcherLogs() {
   }
   return text
 }
-function selected() {
-  const directory = join(home, "state/frizz/server-releases")
+function selected(from = home) {
+  const directory = join(from, "state/frizz/server-releases")
   const key = readdirSync(directory).find((name) => /^[0-9a-f]{16}$/.test(name))
   return JSON.parse(readFileSync(join(directory, key, "active.json"), "utf8"))
 }
@@ -234,6 +236,8 @@ try {
   // These are local fixture coordinates, independent of either package's current release version.
   manifest.version = "0.13.0"
   manifest.frizzServer.version = "0.13.0"
+  // A minimum is its own scenario, at the end; every shell before it declares none.
+  delete manifest.frizzServer.minimum
   delete manifest.devDependencies; delete manifest.scripts; delete manifest.pnpm
   const shellRelease = pack(shellDir, manifest)
   const legacyTarball = argument("legacy-tarball")
@@ -556,6 +560,71 @@ try {
   assert.equal(alive(restarted), false)
   await api.query("board")
   record("outside-launch-survives-a-deleted-project", { launcher: cwdOf(shellPid), host: cwdOf(children().filter((event) => event.event === "ready").at(-1).pid) })
+  // A shell newer than the installed server is the ordinary pairing, not a rare one: npx fetches the
+  // newest shell on every run and the server moves only on Update. So a shell that depends on what a
+  // server release learned says so (`frizzServer.minimum`), and starts an older machine on its
+  // pinned release. The older server here is the REAL frizz-server 0.15.20 from npm — the last one
+  // that lists Frizz's own launch folder as a project, which is where a shell from 0.13.13 hosts
+  // every launch outside one. A new machine, so nothing above bears on it.
+  await stopShell()
+  const OLD_SERVER = "0.15.20"
+  const published = async (path) => {
+    const response = await fetch(`https://registry.npmjs.org/${path}`)
+    assert.equal(response.status, 200, `npm did not serve ${path}`)
+    return response
+  }
+  const oldTarball = Buffer.from(await (await published(`frizz-server/-/frizz-server-${OLD_SERVER}.tgz`)).arrayBuffer())
+  packages.get("frizz-server").releases.set(OLD_SERVER, {
+    manifest: await (await published(`frizz-server/${OLD_SERVER}`)).json(),
+    tarball: oldTarball,
+    integrity: `sha512-${createHash("sha512").update(oldTarball).digest("base64")}`,
+  })
+  serverFixture("0.15.99")
+  const shellFixture = (version, server, minimum) => {
+    const next = structuredClone(manifest)
+    next.version = version; next.frizzServer.version = server
+    if (minimum) next.frizzServer.minimum = minimum
+    pack(shellDir, next)
+  }
+  shellFixture("0.13.20", OLD_SERVER) // what put the old server on the machine
+  shellFixture("0.13.21", "0.15.99") // a newer shell that declares no minimum
+  shellFixture("0.13.22", "0.15.99", "0.15.21") // the same shell, declaring one
+  const newHome = join(root, "home-minimum"), nowhere = join(root, "outside-minimum")
+  mkdirSync(newHome); mkdirSync(nowhere)
+  Object.assign(env, {
+    HOME: newHome, USERPROFILE: newHome, XDG_CONFIG_HOME: join(newHome, "config"), XDG_DATA_HOME: join(newHome, "data"),
+    XDG_STATE_HOME: join(newHome, "state"), XDG_CACHE_HOME: join(newHome, "cache"),
+  })
+  base = `http://127.0.0.1:${await freePort()}`
+  const launchFolder = () => realpathSync(join(newHome, "data/frizz/host"))
+  const listed = async () => (await createRpcClient(base).query("projectsList")).map((project) => project.path)
+  // A published server reports nothing to the fixtures' event file, so the launcher is found by the
+  // record it publishes and readiness by the supervisor's own status.
+  const launchPublished = async (shell, server) => {
+    start(`launcher-${processes.length}`, [npmCli, "exec", "--yes", `--package=frizz@${shell}`, "--", "frizz", "--no-app", "--port", new URL(base).port], nowhere)
+    await until(`server ${server} under shell ${shell}`, async () => { const value = await status(); return value.state === "ready" && value.version === server }, 300_000)
+    const projects = join(newHome, "data/frizz/projects")
+    const pidIn = (name) => readdirSync(projects).map((project) => {
+      try { return JSON.parse(readFileSync(join(projects, project, name), "utf8")).pid } catch { return undefined }
+    }).find((pid) => Number.isInteger(pid) && alive(pid))
+    shellPid = await until("the launcher's owner record", () => pidIn("project-launch.owner"), 10_000)
+    for (const pid of [shellPid, pidIn("server.lock")]) if (pid) publishedPids.add(pid)
+  }
+  await launchPublished("0.13.20", OLD_SERVER)
+  assert.equal(selected(newHome).version, OLD_SERVER)
+  await stopShell()
+  // The pairing as it ships without a minimum: the installed server stands, whatever the shell pins,
+  // and the dashboard has a project the operator never added and cannot open usefully.
+  await launchPublished("0.13.21", OLD_SERVER)
+  assert.equal(selected(newHome).version, OLD_SERVER, "a shell without a minimum never moves the installed server")
+  await until("the older server lists Frizz's own launch folder", async () => (await listed()).includes(launchFolder()), 30_000)
+  record("older-server-lists-the-launch-folder", { server: OLD_SERVER, listed: await listed() })
+  await stopShell()
+  await launch("0.13.22", nowhere); await healthy("0.15.99")
+  await until("the pinned release is selected once it is up", () => selected(newHome).version === "0.15.99", 30_000)
+  assert.match(launcherLogs(newHome), new RegExp(`the installed Frizz server ${OLD_SERVER.replaceAll(".", "\\.")} is older than this launcher works with \\(0\\.15\\.21\\); starting on 0\\.15\\.99`))
+  assert.deepEqual(await listed(), [], "the entry the older server wrote is gone from the dashboard")
+  record("minimum-starts-an-older-machine-on-the-pinned-server", { from: OLD_SERVER, to: selected(newHome).version, listed: await listed() })
   assert.equal(children().some((event) => event.event === "overlapping-server"), false, "no server process may overlap its predecessor")
   assert.ok(children().every((event) => event.node === runtimeVersion), "npm bin shebang and all server forks must use the requested Node version")
   assert.equal(existsSync(`${eventFile}.postinstall`), false, "dependency postinstall must never run")
@@ -582,7 +651,7 @@ try {
     }
   }
   await stopShell().catch((error) => record("stop-error", { error: String(error) }))
-  const owned = new Set([...children().map((event) => event.pid), ...processes.map((child) => child.pid), ...workerPids, shellPid].filter(Boolean))
+  const owned = new Set([...children().map((event) => event.pid), ...processes.map((child) => child.pid), ...workerPids, ...publishedPids, shellPid].filter(Boolean))
   for (const pid of owned) if (alive(pid)) { try { process.kill(pid, "SIGKILL") } catch {} }
   if (registry) { registry.closeAllConnections(); await new Promise((done) => registry.close(done)) }
   await delay(500)

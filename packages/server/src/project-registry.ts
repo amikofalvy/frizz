@@ -126,10 +126,15 @@ export function readRegistry(home = homedir()): Registry {
     // A malformed entry is dropped rather than poisoning the whole list — this is an index, and the
     // cost of forgetting one card is that opening that project re-registers it.
     const forgotten = Array.isArray(parsed.forgotten) ? parsed.forgotten.filter((id) => typeof id === "string") : []
+    // Frizz's own launch folder is never a project (registerProject refuses it), but a server older
+    // than 0.15.21 had no such refusal and its boot backfill registered the folder as "host" whenever
+    // a newer launcher hosted it there. Dropped HERE so no reader ever sees that entry — the list, the
+    // slug lookup, the rail — and the next write of any kind takes it out of the file.
+    const host = canonicalPath(launchHostDir(home))
     return {
       version: 1,
       projects: parsed.projects.filter(
-        (p) => p && typeof p.id === "string" && typeof p.path === "string" && typeof p.slug === "string",
+        (p) => p && typeof p.id === "string" && typeof p.path === "string" && typeof p.slug === "string" && p.path !== host,
       ),
       ...(forgotten.length > 0 ? { forgotten } : {}),
     }

@@ -64,7 +64,7 @@ import {
 } from "@frizz/server/project-launch";
 import { createSupervisorShutdownHandler, startDevSupervisor } from "@frizz/server/dev-supervisor";
 import { planRegistryUpdate, PRODUCTION_PRINT_LAUNCHER_FLAG, PRODUCTION_REEXEC_FLAG, reexecArgv } from "./production-update.ts";
-import { npmServerPackageInstaller, serverGenerationLaunch, serverReleaseSpec, ServerReleaseStore, type ServerGeneration } from "./server-release.ts";
+import { npmServerPackageInstaller, serverGenerationLaunch, serverReleaseMinimum, serverReleaseSpec, ServerReleaseStore, type ServerGeneration } from "./server-release.ts";
 import { acquireStableServerOwner, publishStableServerAddress, releaseStableServerOwner, type ServerOwnerLease } from "./server-owner.ts";
 import { GLOBAL_INSTALL_ENV, isGlobalInstall, keepUpdateHint } from "./production-update.ts";
 import {
@@ -479,13 +479,22 @@ async function runSupervisor(port: number, token: string, onPrepared: () => void
     target,
     owner.token,
   );
-  const spec = serverReleaseSpec(
-    JSON.parse(readFileSync(join(import.meta.dirname, "..", "package.json"), "utf8")),
-    process.env.FRIZZ_SERVER_PACKAGE,
-  );
+  const manifest: unknown = JSON.parse(readFileSync(join(import.meta.dirname, "..", "package.json"), "utf8"));
+  const spec = serverReleaseSpec(manifest, process.env.FRIZZ_SERVER_PACKAGE);
   const installer = npmServerPackageInstaller(env);
-  const store = new ServerReleaseStore(spec, installer);
-  activityReadout?.notice("progress", "Starting", "loading the selected Frizz server release");
+  const store = new ServerReleaseStore(spec, installer, undefined, undefined, serverReleaseMinimum(manifest));
+  // The one time starting Frizz replaces the server without a click on Update, so it is said out
+  // loud and written down: the selection moves, and the log is where someone asks why it did.
+  const raise = store.belowMinimum();
+  if (raise)
+    logger.info("launcher", `the installed Frizz server ${raise.selected} is older than this launcher works with (${raise.minimum}); starting on ${raise.pinned}`);
+  activityReadout?.notice(
+    "progress",
+    "Starting",
+    raise
+      ? `installing Frizz server ${raise.pinned}: ${raise.selected} is older than this launcher works with`
+      : "loading the selected Frizz server release",
+  );
   let active = await store.load();
   let pending: ServerGeneration | undefined;
   let previous = active;
