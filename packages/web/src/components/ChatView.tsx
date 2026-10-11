@@ -33,7 +33,7 @@ import { FrizzWake } from "./FrizzWake.tsx"
 import { LinkifiedText } from "./LinkifiedText.tsx"
 import { parseSentContext, splitProseByTokens, tokenLabel, type SentContextItem } from "../lib/composerContext.ts"
 import { AnswersCard } from "./AnswersCard.tsx"
-import { WakeDivider } from "./WakeDivider.tsx"
+import { DividerQuotedTitle, WAKE_DIVIDER_WIDE_ONLY, WakeDivider } from "./WakeDivider.tsx"
 import { useLiveAnswering, type LiveAnswering } from "../lib/answering.ts"
 import { SendScopeContext, useComposerSendHandle, usePromptBoxSends, useSendScope } from "../lib/sendScope.tsx"
 import { useIsMobile } from "../lib/mobile.ts"
@@ -4481,13 +4481,18 @@ export function PendingAskCard({ ask }: { ask: PendingAsk }) {
 function AgentCompletionLine({ call, sourceId, at }: { call: TranscriptToolCall; sourceId?: string; at?: string }) {
   const slug = useChildDrillSlug()
   const title = call.detail ?? "sub-agent"
-  const { tail } = subAgentCompletionOutcome(call)
+  const { outcome, tail } = subAgentCompletionOutcome(call)
+  // The run's own duration, as `tail` writes it after the outcome word (`· 35m`), or nothing.
+  const ran = tail.slice(outcome.length).trim()
   const canDrill = !!(slug && call.agentId)
   // `at` is the instant the completion LANDED, and it sits after the run's own duration in `tail`
   // ("finished · 35 min · 2h ago"): how long it ran, then how long ago it came back.
   return (
     <WakeDivider icon={Bot} sourceId={sourceId} marker="agent" ariaLabel={canDrill ? undefined : `Sub-agent ${title} ${tail}`} at={at}>
-      <span className="shrink-0">Sub-agent</span>
+      {/* WIDE ONLY, with the run's duration below (see WAKE_DIVIDER_WIDE_ONLY): on a narrow row the bot
+          glyph says "sub-agent" and the room goes to the title, which is the only thing here that says
+          WHICH one. The outcome word is the news and stays at every width. */}
+      <span className={`shrink-0 ${WAKE_DIVIDER_WIDE_ONLY}`}>Sub-agent</span>
       {/* The guillemets sit OUTSIDE the truncating element (and inside a gap-less nested flex) so a
           title clipped at a narrow width still closes its quote — `«a long title…` reads as broken
           punctuation, not as a truncation. It also scopes the link underline to the title itself. */}
@@ -4510,7 +4515,8 @@ function AgentCompletionLine({ call, sourceId, at }: { call: TranscriptToolCall;
         )}
         <span className="shrink-0">»</span>
       </span>
-      <span className="shrink-0">{tail}</span>
+      <span className="shrink-0">{outcome}</span>
+      {ran && <span className={`shrink-0 ${WAKE_DIVIDER_WIDE_ONLY}`}>{ran}</span>}
     </WakeDivider>
   )
 }
@@ -4577,7 +4583,7 @@ function SubAgentReportLine({ from, unnamed, dispatchId, sourceId, at }: { from:
   }
   return (
     <WakeDivider icon={Bot} sourceId={sourceId} marker="agent-report" ariaLabel={canDrill ? undefined : `Sub-agent ${label} reported`} at={at}>
-      <span className="shrink-0">Sub-agent</span>
+      <span className={`shrink-0 ${WAKE_DIVIDER_WIDE_ONLY}`}>Sub-agent</span>
       {/* Guillemets OUTSIDE the truncating element, per the completion line: a title clipped at a narrow
           width still closes its quote. The TITLE is the only part allowed to shrink (`min-w-0 truncate`
           on it and on its flex host) — a `shrink-0` wrapper here let a long name push the whole divider
@@ -4687,6 +4693,9 @@ function EventLine({ text, boundary, sourceId, at }: { text: string; boundary?: 
   // still right: what survives sits directly above the human's own next message, where a glyph would
   // compete with the bubble rather than quietly close the turn under it.
   if (boundary) {
+    // `Lead «title» outcome (note)`, the shape `backgroundWakeLabel` writes. Greedy on the title, so a
+    // description that itself contains a guillemet still ends at the LAST one.
+    const quoted = boundary === "wake" ? /^([^«]+?) «(.+)» ([^»(]+?)(?: (\([^»]*\)))?$/.exec(text) : null
     return (
       <WakeDivider
         icon={boundary === "wake" ? TerminalSquare : undefined}
@@ -4701,8 +4710,13 @@ function EventLine({ text, boundary, sourceId, at }: { text: string; boundary?: 
         {/* TRUNCATES, like every sibling: as a bare text node the label was a wrapping flex item, and
             once the age joined it the runtime-reported shell line broke onto two lines at 420px while
             the frizz-reported twin beside it (ShellDoneDivider) clipped to one — the pair that must be
-            pixel-identical. The age stays outside this span so it survives the clip. */}
-        <span className="min-w-0 truncate">{text}</span>
+            pixel-identical. The age stays outside this span so it survives the clip.
+            A line that QUOTES a title — `Background task «…» finished`, which is every shell and
+            monitor the server labels — gives up the title and keeps its outcome, cut exactly as that
+            twin cuts its own. */}
+        {quoted
+          ? <DividerQuotedTitle lead={quoted[1]} title={quoted[2]} tail={quoted[3]} note={quoted[4]} />
+          : <span className="min-w-0 truncate">{text}</span>}
       </WakeDivider>
     )
   }

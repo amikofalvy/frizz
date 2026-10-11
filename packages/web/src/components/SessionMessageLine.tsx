@@ -23,7 +23,7 @@ import type { ThreadView, TranscriptMessage } from "@frizz/shared"
 import { useMermaidIslands } from "./CodexRichOutput.tsx"
 import { DIVIDER_LINK } from "./FrizzWake.tsx"
 import { QUEUE_WRAP } from "./TranscriptCard.tsx"
-import { WakeDivider } from "./WakeDivider.tsx"
+import { WAKE_DIVIDER_WIDE_ONLY, WakeDivider } from "./WakeDivider.tsx"
 import { displayTitle } from "../groups.ts"
 import { outerPath, projectHref } from "../lib/base-path.ts"
 import { useInnerHtml } from "../lib/innerHtml.ts"
@@ -55,7 +55,9 @@ export function SessionMessageLine({ peer, text, queued, sourceId, at, wrap }: {
       <WakeDivider icon={MessagesSquare} marker="session-message" at={at}>
         {sender ? (
           <>
-            <span className="shrink-0">Message from</span>
+            {/* WIDE ONLY (see WAKE_DIVIDER_WIDE_ONLY): on a narrow row the glyph says a thread wrote in,
+                and the room goes to which one. */}
+            <span className={`shrink-0 ${WAKE_DIVIDER_WIDE_ONLY}`}>Message from</span>
             {/* Guillemets OUTSIDE the truncating element, as on the sub-agent line: a title clipped at
                 a narrow width still closes its quote, and only the title shrinks. */}
             <span className="flex min-w-0 items-center">
@@ -81,7 +83,10 @@ export function SessionMessageLine({ peer, text, queued, sourceId, at, wrap }: {
           aria-controls={bodyId}
           className="shrink-0 rounded-sm outline-none transition-colors hover:text-fg focus-visible:text-fg focus-visible:ring-1 focus-visible:ring-focus-ink-60"
         >
-          {open ? "Click to collapse" : "Click to expand"}
+          {/* The toggle cannot drop out the way the other dividers' hint does — here it is the control,
+              because a row holding a link cannot itself be the button. So it shortens to the verb. */}
+          <span className={WAKE_DIVIDER_WIDE_ONLY}>Click to </span>
+          {open ? "collapse" : "expand"}
         </button>
       </WakeDivider>
       {open && (

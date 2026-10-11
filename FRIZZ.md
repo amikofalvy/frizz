@@ -12,7 +12,7 @@ real blocker.
 
 When the task names a SET of independent things — "check Andrew's PRs", "triage these issues", "audit each package", "review the open branches" — dispatch one background sub-agent per item as your FIRST move, and spend your own turn on what only you can do: the cross-item picture (conflicts between items, overlaps, ordering) and the final synthesis. Do not read, test and verify the items serially in your own context, and do not wait to be told to parallelize (maintainer 2026-10-08, after a worker reviewed six PRs one by one: *"for a request like this you should obviously defaulted using sub agents"*).
 
-- **Each child gets a self-contained brief:** the item, what you already know about it, the rules it must hold (read-only on GitHub, its own worktree, no commits to `main`), what to actually exercise, and a report file of its own in your scratch directory. A child sees none of your context — see the base contract's Sub-agents section.
+- **Each child gets a self-contained brief:** the item, what you already know about it, the rules it must hold (read-only on GitHub, its own worktree under `.frizz/worktrees/`, no commits to `main`), what to actually exercise, and a report file of its own in your scratch directory. A child sees none of your context — see the base contract's Sub-agents section.
 - **Each child verifies, not just reads.** Merging the item onto current `main` in its own worktree and running the gates and the real runtime check is the part that parallelizes best and costs most when done serially.
 - **Re-check what a child reports before it reaches the maintainer.** Its verdict is a lead; a blocker or an "it works" gets confirmed against the code or a reproduction by you.
 - **A single item, or items that are not independent, stay yours.** Fan-out is for breadth, not for splitting one change into pieces that must agree.
@@ -162,15 +162,27 @@ touches GitHub as a PR.
   that is always the wrong move. This is the single most-violated rule here — treat any impulse to
   "open a PR for review" as a bug in your own plan and correct it before acting.
 - **Don't push a branch to the remote to stage a review either.** The remote plays no part in landing work. Reading GitHub (issues, PRs, CI) is fine; creating or pushing a PR is not. The one push that is not staging a review is a RELEASE: `release` is a fast-forward pointer into `main`, and pushing it selects the commit that ships — a maintainer then dispatches the workflow against it. When asked to cut one, follow `AGENTS.md` § Cutting a release, which is the whole procedure.
+- **Releases are the dedicated releaser thread's job, never yours unless you were asked to cut one.** Your work is finished when it is on local `main`; the releaser ships it with everything else. Do not bump a package version, move `release`, or dispatch the workflow on your own, and never offer to — no "want me to cut a patch?", no release option in a question, no "needs a release" follow-up in the handoff (maintainer 2026-10-11). See `AGENTS.md` § Cutting a release.
 - **The default is to work directly on `main` and commit there.** A small, self-contained change needs
   no branch and no worktree — edit, verify, commit on `main`, done.
 - **Use a git worktree freely whenever you want isolation** — messy in-progress work, isolated and
   end-to-end testing, spinning up a disposable dev server, anything you'd rather keep off the shared
-  tree. Create it on a local branch (`git worktree add <dir> -b <slug>`), do the work and the testing
-  there, and commit as you go.
+  tree. Create it on a local branch, do the work and the testing there, and commit as you go.
+- **Every worktree lives in `.frizz/worktrees/<slug>/`, and nowhere else.** From the repo root:
+  `git worktree add .frizz/worktrees/<slug> -b <slug>`. Never `/tmp`, never a sibling folder beside
+  the checkout, never `.claude/worktrees/` (so not `EnterWorktree`, and not the Agent tool's
+  `isolation: "worktree"` — make the checkout yourself and name its path in the child's prompt).
+  `.frizz/` is ignored already, and the test runner's globs, `tsc -b`, the dev server's watcher and
+  ripgrep all stay out of it (checked 2026-10-11). **Run `nub install` in it before anything else:**
+  until you do, an `@frizz/*` import there resolves through the parent `node_modules` to the SHARED
+  tree's packages, and the worktree quietly tests `main`'s code instead of its own. A worktree you
+  find anywhere else predates this rule (2026-10-11) and belongs to someone: leave it where it is.
+  Its owner moves it, once nothing is running in it, with
+  `git worktree move <old-path> .frizz/worktrees/<slug>`.
 - **A worktree branch is scratch space, not a destination — YOU own landing it.** At the END of the
   development effort, once the work is done and you hold HIGH CONFIDENCE, merge that branch straight
-  back into local `main` yourself (`git switch main && git merge <slug>`) and remove the worktree.
+  back into local `main` yourself (`git switch main && git merge <slug>`) and remove the worktree
+  (`git worktree remove .frizz/worktrees/<slug>`).
   Getting the work onto `main` is your responsibility, not the human's — never leave a branch
   stranded, and never hand back a branch for the human to merge.
 - Commit as you go: small, frequent commits at each coherent checkpoint, not one big commit at the

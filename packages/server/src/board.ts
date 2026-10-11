@@ -219,7 +219,12 @@ function registeredLegacyFileIsTerminal(projectDir: string, slug: string): boole
 // no watch descriptor is ever spent on those 715 directories and on fs-events the event never reaches
 // JS at all. The predicate is the CORRECTNESS half: it is an allow-list of what the board reads, so a
 // tree nobody has thought of yet costs one string test rather than a rebuild.
-const FRIZZ_WATCH_IGNORED_DIRS = ["threads", ".session-state"]
+//
+// `worktrees` is the largest of them by far: the worker contract puts every git worktree at
+// `.frizz/worktrees/<slug>/` (workerPrompt.ts § Git worktrees), and each one is a whole checkout with
+// its own `node_modules` and build output. Nothing the board reads is in there, and on inotify an
+// unpruned checkout costs a watch descriptor per directory.
+const FRIZZ_WATCH_IGNORED_DIRS = ["threads", ".session-state", "worktrees"]
 
 // True when a watcher event names a file the board would actually re-read. `roots` holds every spelling
 // the watched `.frizz` may be reported under — see watchFrizzDir for why there is more than one.

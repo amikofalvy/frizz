@@ -29,14 +29,14 @@
 // and a right-pinned ref; a p-4 inset wrapped around a SINGLE 20px line, when every other card in that
 // shell has a body; and three marks on one row that all looked clickable (an underlined title, an
 // accent ref, the corner glyph) with no hierarchy between them.
-import { Fragment, useId, useRef, useState } from "react"
+import { Fragment, useId, useRef, useState, type ReactNode } from "react"
 import { AlarmClock, Bell, Bot, Github, Hourglass, MessageCircleOff, TerminalSquare } from "lucide-react"
 import { isGithubWakeBacklog, isInjectedNoise, isParkCorrection, parseGithubWakeSteer, parseLimitModelSwitchWake, parseLimitResumeWake, parseMergedWake, parseOwnWatchExpiredWake, parseParkWake, parsePrWatchExpiredWake, parsePrWatchStateWake, parsePrWatchWake, parseQuestionsCancelledWake, parseRecurringPrompt, parseShellDoneWake, parseTimerWake, stripWakeTrailer, type GithubWakeSteer, type LimitWindow, type MergedWakePart, type ParkWake, type PrWatchStateWake, type PrWatchWake, type ShellDoneWake, type TimerWake } from "@frizz/shared"
 import { useMermaidIslands } from "./CodexRichOutput.tsx"
 import { QUEUE_WRAP, TranscriptCard } from "./TranscriptCard.tsx"
 import { RecurringPromptLine } from "./RecurringPromptLine.tsx"
 import { VSpace } from "./rhythm.tsx"
-import { WakeDivider } from "./WakeDivider.tsx"
+import { DividerHint, DividerQuotedTitle, WAKE_DIVIDER_NARROW_ONLY, WAKE_DIVIDER_WIDE_ONLY, WakeDivider } from "./WakeDivider.tsx"
 import { githubRefUrl } from "../lib/githubRef.ts"
 import { wakeCardTitle } from "../lib/githubWakeCard.ts"
 import { useMarkdownHtml } from "../lib/useMarkdown.ts"
@@ -268,8 +268,7 @@ function TimerDivider({ wake, sourceId }: { wake: TimerWake; sourceId?: string }
         ariaLabel={`${open ? "Collapse" : "Expand"} the text this timer handed back`}
       >
         <span className="shrink-0">Timer</span>
-        <span aria-hidden="true" className="shrink-0 opacity-50">·</span>
-        <span className="shrink-0">{open ? "Click to collapse" : "Click to expand"}</span>
+        <DividerHint open={open} />
       </WakeDivider>
       {open && (
         // The same ruled aside the reasoning disclosure uses, and PLAIN pre-wrapped text rather than
@@ -303,10 +302,14 @@ function TimerDivider({ wake, sourceId }: { wake: TimerWake; sourceId?: string }
 // they were cancelled wholesale and nobody is coming. One line, because that is the whole of the news and
 // the instruction that rides with it to the worker ("decide it yourself") is not addressed to the reader.
 function QuestionsCancelledDivider({ count, sourceId, at }: { count: number; sourceId?: string; at?: string }) {
-  const label = `${count} question${count === 1 ? "" : "s"} cancelled — the worker decides ${count === 1 ? "it" : "them"} itself`
+  const news = `${count} question${count === 1 ? "" : "s"} cancelled`
+  const why = ` — the worker decides ${count === 1 ? "it" : "them"} itself`
   return (
-    <WakeDivider icon={MessageCircleOff} sourceId={sourceId} marker="event" ariaLabel={label} at={at}>
-      <span className="min-w-0 truncate">{label}</span>
+    <WakeDivider icon={MessageCircleOff} sourceId={sourceId} marker="event" ariaLabel={`${news}${why}`} at={at}>
+      <span className="min-w-0 truncate">
+        {news}
+        <span className={WAKE_DIVIDER_WIDE_ONLY}>{why}</span>
+      </span>
     </WakeDivider>
   )
 }
@@ -317,12 +320,20 @@ function ParkDivider({ wake, sourceId, at }: { wake: ParkWake; sourceId?: string
   // Terse, because every sibling on this rule is ("PR merged on …", "Background task «…» finished"). The
   // first draft read "The declared wait is over — its work finished" and was the longest line on the
   // page by half again.
-  const label = wake.kind === "expired" ? "Wait expired — nothing resolved" : "Wait over — its work finished"
+  const news = wake.kind === "expired" ? "Wait expired" : "Wait over"
+  const why = wake.kind === "expired" ? " — nothing resolved" : " — its work finished"
+  // The clause explains the news and is the first thing a narrow row gives up (WAKE_DIVIDER_WIDE_ONLY).
+  const sentence = (
+    <span className="min-w-0 truncate">
+      {news}
+      <span className={WAKE_DIVIDER_WIDE_ONLY}>{why}</span>
+    </span>
+  )
   // No disclosure without items: an empty aside is a control that opens onto nothing.
   if (!wake.items.length) {
     return (
-      <WakeDivider icon={Hourglass} sourceId={sourceId} marker="event" ariaLabel={label} at={at}>
-        <span className="min-w-0 truncate">{label}</span>
+      <WakeDivider icon={Hourglass} sourceId={sourceId} marker="event" ariaLabel={`${news}${why}`} at={at}>
+        {sentence}
       </WakeDivider>
     )
   }
@@ -337,9 +348,8 @@ function ParkDivider({ wake, sourceId, at }: { wake: ParkWake; sourceId?: string
         ariaControls={bodyId}
         ariaLabel={`${open ? "Collapse" : "Expand"} what this wait named`}
       >
-        <span className="min-w-0 truncate">{label}</span>
-        <span aria-hidden="true" className="shrink-0 opacity-50">·</span>
-        <span className="shrink-0">{open ? "Click to collapse" : "Click to expand"}</span>
+        {sentence}
+        <DividerHint open={open} />
       </WakeDivider>
       {open && (
         <div id={bodyId} className="mt-1.5 whitespace-pre-wrap border-l border-border/70 pl-3 text-[13px] text-muted [overflow-wrap:anywhere]">
@@ -352,19 +362,56 @@ function ParkDivider({ wake, sourceId, at }: { wake: ParkWake; sourceId?: string
 
 // A registered watcher whose own `for:` ran out. One line, and the ref is the only thing on it a reader
 // can act on — so it is the link, the same muted underline every other divider's link wears.
+//
+// STATE FIRST, ref second, like the status line below ("PR merged on …"). It read "Watcher on
+// nubjs/nub#777 expired" until 2026-10-11, which put the one word of news at the end of a label that
+// clips from the right: on a narrow row it said a watcher existed and stopped before saying it had lapsed.
 function PrWatchExpiredDivider({ watchRef, sourceId, at }: { watchRef: string; sourceId?: string; at?: string }) {
   const url = githubRefUrl(watchRef)
-  const label = `Watcher on ${watchRef} expired`
+  const label = `Watcher expired on ${watchRef}`
   return (
     <WakeDivider icon={Github} sourceId={sourceId} marker="event" ariaLabel={label} at={at}>
-      <span className="min-w-0 truncate">
-        Watcher on{" "}
+      <DividerSentenceOnRef sentence="Watcher expired">
         {url
-          ? <a href={url} target="_blank" rel="noreferrer" className={DIVIDER_LINK}>{watchRef}</a>
-          : watchRef}
-        {" "}expired
-      </span>
+          ? <a href={url} target="_blank" rel="noreferrer" className={DIVIDER_LINK}><RefText value={watchRef} /></a>
+          : <RefText value={watchRef} />}
+      </DividerSentenceOnRef>
     </WakeDivider>
+  )
+}
+
+// `{sentence} on {ref}` with the REF rigid and the sentence the part that clips. As one truncating span
+// the label lost its tail first, and the tail is the ref: `New comment from @co…`, `Watcher expired on
+// #…` — the one link on the line, and the only thing saying which PR. A gap-less nested flex, with the
+// space before `on` kept as a real word space (`whitespace-pre`; a flex item drops a leading one), so the
+// unclipped line is the sentence it always was, to the pixel.
+function DividerSentenceOnRef({ sentence, children }: { sentence: ReactNode; children: ReactNode }) {
+  return (
+    <span className="flex min-w-0 items-center">
+      <span className="min-w-0 truncate">{sentence}</span>
+      <span className="shrink-0 whitespace-pre"><On /> {children}</span>
+    </span>
+  )
+}
+
+// The ` on` between a PR line's news and its ref, which a narrow row drops: `CI failed #761`, `Review
+// comment #587`. The kind and the number are the line; on a row with 20 characters to spend, the
+// preposition is three of them.
+function On() {
+  return <span className={WAKE_DIVIDER_WIDE_ONLY}> on</span>
+}
+
+// `owner/repo#N` as a divider draws it: whole where there is room, and `#N` on a narrow row. The number
+// is what a reader matches by eye and the link under it still goes to the full ref; `nubjs/nub` is half
+// the label's width on a row that has 20 characters to spend, and what it would push out is the number.
+function RefText({ value }: { value: string }) {
+  const hash = value.lastIndexOf("#")
+  if (hash <= 0) return <>{value}</>
+  return (
+    <>
+      <span className={WAKE_DIVIDER_WIDE_ONLY}>{value.slice(0, hash)}</span>
+      {value.slice(hash)}
+    </>
   )
 }
 
@@ -374,10 +421,14 @@ function PrWatchExpiredDivider({ watchRef, sourceId, at }: { watchRef: string; s
 // the reason the shell-finished line below never draws one either. The glyph is the subject's own, as
 // it is on the PR line above — the terminal every shell divider wears, the bot every sub-agent one does.
 function OwnWatchExpiredDivider({ kind, sourceId, at }: { kind: "shell" | "agent"; sourceId?: string; at?: string }) {
-  const label = `Watch on a ${kind === "agent" ? "sub-agent" : "background shell"} expired`
+  // State first, like the PR one above — and on a narrow row the glyph alone says which kind of wait.
+  const what = ` on a ${kind === "agent" ? "sub-agent" : "background shell"}`
   return (
-    <WakeDivider icon={kind === "agent" ? Bot : TerminalSquare} sourceId={sourceId} marker="event" ariaLabel={label} at={at}>
-      <span className="min-w-0 truncate">{label}</span>
+    <WakeDivider icon={kind === "agent" ? Bot : TerminalSquare} sourceId={sourceId} marker="event" ariaLabel={`Watch expired${what}`} at={at}>
+      <span className="min-w-0 truncate">
+        Watch expired
+        <span className={WAKE_DIVIDER_WIDE_ONLY}>{what}</span>
+      </span>
     </WakeDivider>
   )
 }
@@ -392,9 +443,15 @@ function OwnWatchExpiredDivider({ kind, sourceId, at }: { kind: "shell" | "agent
 function LimitResumeDivider({ window, sourceId, at }: { window: LimitWindow; sourceId?: string; at?: string }) {
   const which = window === "weekly" ? "Weekly usage limit" : window === "session" ? "Session usage limit" : "Usage limit"
   const label = `${which} reset — resuming`
+  // Narrow: `Weekly limit reset`. Which window is the news; that it is a USAGE limit, and that the
+  // thread resumes, are what the hourglass and the next line of the transcript already say.
+  const named = window === "weekly" ? "Weekly" : window === "session" ? "Session" : null
   return (
     <WakeDivider icon={Hourglass} sourceId={sourceId} marker="limit-resume" ariaLabel={label} at={at}>
-      <span className="min-w-0 truncate">{label}</span>
+      <span className="min-w-0 truncate">
+        {named ? <>{named}<span className={WAKE_DIVIDER_WIDE_ONLY}> usage</span> limit</> : which} reset
+        <span className={WAKE_DIVIDER_WIDE_ONLY}> — resuming</span>
+      </span>
     </WakeDivider>
   )
 }
@@ -412,7 +469,15 @@ function LimitModelSwitchDivider({ capped, to, sourceId, at }: { capped: string;
   const label = `${capped} limit — switched to ${to}`
   return (
     <WakeDivider icon={Hourglass} sourceId={sourceId} marker="limit-model-switch" ariaLabel={label} at={at}>
-      <span className="min-w-0 truncate">{label}</span>
+      {/* BOTH names at every width, which is the rule this line was written to (see above). Between two
+          50px rules on a phone the sentence clips before its second model, so the narrow reading keeps
+          the names and trades the words between them for an arrow: `Fable 5 → Opus`. */}
+      <span className="min-w-0 truncate">
+        {capped}
+        <span className={WAKE_DIVIDER_WIDE_ONLY}> limit — switched to </span>
+        <span className={WAKE_DIVIDER_NARROW_ONLY}> → </span>
+        {to}
+      </span>
     </WakeDivider>
   )
 }
@@ -433,7 +498,11 @@ function ShellDoneDivider({ wake, sourceId, at }: { wake: ShellDoneWake; sourceI
   const label = `Background task «${desc}» ${wake.outcome}`
   return (
     <WakeDivider icon={TerminalSquare} sourceId={sourceId} marker="event" ariaLabel={label} at={at}>
-      <span className="min-w-0 truncate">{label}</span>
+      {/* The TITLE is the elastic part, not the sentence. As one truncating span this clipped from the
+          right, so a long description cost the line its outcome — "Background task «Running the update
+          harness against the bui…" — and the outcome is the news. ChatView's EventLine cuts the
+          runtime's own line the same way, which is what keeps the two identical. */}
+      <DividerQuotedTitle lead="Background task" title={desc} tail={wake.outcome} />
     </WakeDivider>
   )
 }
@@ -456,10 +525,10 @@ function PrWatchStatusDivider({ wake, sourceId, at }: { wake: PrWatchWake; sourc
   const href = githubRefUrl(wake.ref)
   const ref = href ? (
     <a href={href} target="_blank" rel="noreferrer noopener" className={DIVIDER_LINK}>
-      {wake.ref}
+      <RefText value={wake.ref} />
     </a>
   ) : (
-    <span>{wake.ref}</span>
+    <span><RefText value={wake.ref} /></span>
   )
   // ONE CASE TREATMENT ON THE LINE — petite caps end to end, ref included (see the note on the review
   // divider's label). `PR` and `CI` are already uppercase, so they render as full caps and stay legible
@@ -469,7 +538,7 @@ function PrWatchStatusDivider({ wake, sourceId, at }: { wake: PrWatchWake; sourc
   const ciLead = wake.kind === "ci"
     ? wake.verdict === "passing" ? "passed" : wake.verdict === "failing" ? "failed" : "awaiting approval"
     : ""
-  const lead = wake.kind === "ci" ? `CI ${ciLead} on ` : `PR ${wake.kind} on `
+  const lead = wake.kind === "ci" ? `CI ${ciLead}` : `PR ${wake.kind}`
   // The failing jobs — and the held workflows, which are the same thing said about a gate — ride INSIDE
   // the truncating span: naming them is the most useful thing either line can do, and losing the tail of
   // a long list costs nothing the verdict has not already said.
@@ -492,20 +561,22 @@ function PrWatchStatusDivider({ wake, sourceId, at }: { wake: PrWatchWake; sourc
       marker="github"
       at={at}
       // Only the inert form takes the separator role — a divider carrying a focusable link may not.
-      ariaLabel={href ? undefined : `${lead}${wake.ref}${jobs}${checks ? ` · ${checks}` : ""}`}
+      ariaLabel={href ? undefined : `${lead} on ${wake.ref}${jobs}${checks ? ` · ${checks}` : ""}`}
     >
       <span className="min-w-0 truncate">
         {lead}
+        <On />{" "}
         {ref}
         {jobs}
       </span>
       {checks && (
-        // Outside the truncating span, like the age on the tail: when the sentence clips, the tally is
-        // the one field small enough to always survive it. Dot and tally are two flex items on the
-        // label's gap, the same rhythm the age behind them takes (see DividerAge).
+        // Outside the truncating span, like the age on the tail, so a clipped sentence does not take it
+        // with it. Dot and tally are two flex items on the label's gap, the same rhythm the age behind
+        // them takes (see DividerAge). WIDE ONLY since the rule got its floor: on a narrow row the tally
+        // is 110px of the 150 the label has, and what it would push out is the PR the verdict is about.
         <>
-          <span aria-hidden="true" className="shrink-0 opacity-50">·</span>
-          <span className="shrink-0 tabular-nums">{checks}</span>
+          <span aria-hidden="true" className={`shrink-0 opacity-50 ${WAKE_DIVIDER_WIDE_ONLY}`}>·</span>
+          <span className={`shrink-0 tabular-nums ${WAKE_DIVIDER_WIDE_ONLY}`}>{checks}</span>
         </>
       )}
     </WakeDivider>
@@ -524,9 +595,9 @@ function PrWatchStatusDivider({ wake, sourceId, at }: { wake: PrWatchWake; sourc
 function PrWatchStateDivider({ wake, sourceId, at }: { wake: PrWatchStateWake; sourceId?: string; at?: string }) {
   const href = githubRefUrl(wake.ref)
   const ref = href ? (
-    <a href={href} target="_blank" rel="noreferrer noopener" className={DIVIDER_LINK}>{wake.ref}</a>
+    <a href={href} target="_blank" rel="noreferrer noopener" className={DIVIDER_LINK}><RefText value={wake.ref} /></a>
   ) : (
-    <span>{wake.ref}</span>
+    <span><RefText value={wake.ref} /></span>
   )
   return (
     <WakeDivider
@@ -537,7 +608,8 @@ function PrWatchStateDivider({ wake, sourceId, at }: { wake: PrWatchStateWake; s
       ariaLabel={href ? undefined : `PR updated on ${wake.ref}: ${wake.detail}`}
     >
       <span className="min-w-0 truncate">
-        {"PR updated on "}
+        PR updated
+        <On />{" "}
         {ref}
         {`: ${wake.detail}`}
       </span>
@@ -573,6 +645,11 @@ function GithubSteerDivider({ steer, text, sourceId, at }: { steer: GithubWakeSt
   const title = backlog
     ? `${total} ${total === 1 ? "item" : "items"} already`
     : wakeCardTitle(total, steer.items[0]?.label ?? "item", only?.actor)
+  // WHO FILED IT is the first thing a narrow row gives up (WAKE_DIVIDER_WIDE_ONLY): the kind and the PR
+  // are what say whether to open it, and the author is one click behind the ref. `New` goes with it —
+  // a wake is news by definition — which leaves `Review comment #587`, the kind and the PR.
+  const from = !backlog && only?.actor && title.endsWith(` from @${only.actor}`) ? ` from @${only.actor}` : ""
+  const fresh = !backlog && title.startsWith("New ") ? "New " : ""
   // ONE CASE TREATMENT ON THE LINE, and that is the whole fix (maintainer 2026-08-13: "the rendering on
   // '2 new items …' Looks fucking insane because it's mixing small caps with regular font").
   //
@@ -587,10 +664,10 @@ function GithubSteerDivider({ steer, text, sourceId, at }: { steer: GithubWakeSt
   // a different alphabet. `WAKE_DIVIDER_IDENT` survives for callers with a genuinely mixed line.
   const ref = href ? (
     <a href={href} target="_blank" rel="noreferrer noopener" className={DIVIDER_LINK}>
-      {steer.ref}
+      <RefText value={steer.ref} />
     </a>
   ) : (
-    <span>{steer.ref}</span>
+    <span><RefText value={steer.ref} /></span>
   )
   return (
     <WakeDivider
@@ -609,9 +686,17 @@ function GithubSteerDivider({ steer, text, sourceId, at }: { steer: GithubWakeSt
       {/* The label TRUNCATES rather than wrapping. At queue-rail width the full sentence does not fit,
           and a divider whose label wraps to four lines stops being a hairline at all — it was the first
           thing that broke when this shape was tried. */}
-      <span className="min-w-0 truncate">
-        {title} on {ref}
-      </span>
+      <DividerSentenceOnRef
+        sentence={
+          <>
+            {fresh && <span className={WAKE_DIVIDER_WIDE_ONLY}>{fresh}</span>}
+            {title.slice(fresh.length, title.length - from.length)}
+            {from && <span className={WAKE_DIVIDER_WIDE_ONLY}>{from}</span>}
+          </>
+        }
+      >
+        {ref}
+      </DividerSentenceOnRef>
     </WakeDivider>
   )
 }

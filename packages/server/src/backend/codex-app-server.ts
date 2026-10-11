@@ -2771,10 +2771,16 @@ export class CodexAppServerBridge {
     }
   }
 
+  // Compiled once. This is the bridge's hottest read by a wide margin — every per-thread question the
+  // board and the tailer ask comes through it — and compiling the SELECT cost about three times what
+  // running it does.
+  private bindingForScopeStatement: ReturnType<ProjectScope["prepare"]> | undefined
+
   private bindingForScope(threadSlug: string, sessionId: string): BindingRow | undefined {
-    const row = this.scope.prepare<BindingRow>(`
+    this.bindingForScopeStatement ??= this.scope.prepare<BindingRow>(`
       SELECT * FROM codex_app_server_session WHERE project_id = @project_id AND thread_slug = ? AND frizz_session_id = ?
-    `).get(threadSlug, sessionId)
+    `)
+    const row = this.bindingForScopeStatement.get(threadSlug, sessionId) as BindingRow | undefined
     return row ? checkedBindingRow(row) : undefined
   }
 
@@ -3488,6 +3494,12 @@ export class CodexAppServerBridge {
    */
   backgroundExecs(threadSlug: string, sessionId: string): readonly LiveBackgroundExec[] {
     if (this.closed || this.dbReleased) return []
+    // NO EXEC IS LIVE ANYWHERE ⇒ none on this thread, and the binding is not worth looking up to say
+    // so. The tailer asks this for EVERY row on EVERY tick — a Claude row included, which can never
+    // hold one — so the lookup below was a SQL statement compiled and run per thread per second on a
+    // board with no codex shell on it at all (2026-10-11, a live profile of a 64-thread server: 14% of
+    // the tailer's time).
+    if (this.liveExecs.size === 0) return []
     const binding = this.bindingForScope(threadSlug, sessionId)
     if (!binding) return []
     const byProcess = this.liveExecs.get(binding.codex_thread_id)

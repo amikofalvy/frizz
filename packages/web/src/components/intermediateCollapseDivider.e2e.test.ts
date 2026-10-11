@@ -265,8 +265,10 @@ test("the collapsed intermediate run is a hairline divider that names its tool c
     // and that stopped being true when launches were folded into the count — so a run began with nothing
     // saying what began it. A completion MID-run still folds; only position distinguishes them.
     // Read in order: the marker must sit under the rested message and ABOVE its run's fold, never after.
+    // (The guillemets are elements of their own, so a clipped title still closes its quote, and
+    // `innerText` breaks a line at each: a ladder that quotes one reads them back against its title.)
     const restedLadder = await page.$$eval("[data-wake-divider]", (ns) =>
-      ns.map((n) => (n as HTMLElement).innerText.replace(/\s+/g, " ").trim()),
+      ns.map((n) => (n as HTMLElement).innerText.replace(/\s+/g, " ").replace(/« | »/g, (m) => m.trim()).trim()),
     )
     assert.deepEqual(
       restedLadder,
@@ -395,7 +397,7 @@ test("the collapsed intermediate run is a hairline divider that names its tool c
     await page.goto(variant("loneanswer"), { waitUntil: "networkidle0" })
     await page.waitForSelector('[data-wake-divider="middle-runs-summary"]', { timeout: 10_000 })
     const loneLadder = await page.$$eval("[data-wake-divider]", (ns) =>
-      ns.map((n) => `${n.getAttribute("data-wake-divider")}: ${(n as HTMLElement).innerText.replace(/\s+/g, " ").trim()}`),
+      ns.map((n) => `${n.getAttribute("data-wake-divider")}: ${(n as HTMLElement).innerText.replace(/\s+/g, " ").replace(/« | »/g, (m) => m.trim()).trim()}`),
     )
     assert.deepEqual(
       loneLadder.map((row) => row.replace(/ · \d+m ago$/, "")),
@@ -488,7 +490,7 @@ test("a pinned background op after the final rest does not push the sign-off int
     await page.goto(variant("pinnedtail"), { waitUntil: "networkidle0" })
     await page.waitForSelector(SEL, { timeout: 10_000 })
     const ladder = await page.$$eval("[data-wake-divider]", (ns) =>
-      ns.map((n) => `${n.getAttribute("data-wake-divider")}: ${(n as HTMLElement).innerText.replace(/\s+/g, " ").trim()}`),
+      ns.map((n) => `${n.getAttribute("data-wake-divider")}: ${(n as HTMLElement).innerText.replace(/\s+/g, " ").replace(/« | »/g, (m) => m.trim()).trim()}`),
     )
     // Two real runs, two folds, and the completion that woke the second between them. No middle.
     assert.deepEqual(

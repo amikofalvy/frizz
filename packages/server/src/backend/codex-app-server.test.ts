@@ -2655,6 +2655,20 @@ test("a rejoin whose app-server lists nothing leaves the level empty", async () 
   } finally { h.close() }
 })
 
+// The tailer asks this about EVERY thread on EVERY tick — a Claude thread included, which can never
+// hold a codex exec. With none live anywhere the answer needs no binding, so it must not cost a query:
+// on a 64-thread board with no codex shell on it, that lookup was 14% of the tailer's time (2026-10-11).
+test("backgroundExecs answers a board with no live exec without touching the database", () => {
+  const h = harness()
+  try {
+    let prepared = 0
+    const prepare = h.db.prepare.bind(h.db)
+    h.db.prepare = ((sql: string) => { prepared++; return prepare(sql) }) as typeof h.db.prepare
+    assert.deepEqual(h.bridge.backgroundExecs("any-thread", "any-session"), [])
+    assert.equal(prepared, 0, "no exec is live, so there is no binding worth looking up")
+  } finally { h.close() }
+})
+
 test("a rejoin against a codex without the list method still connects, with an empty level", async () => {
   let plan = { generation: "gen-A", reattached: false, droppedWhileDetached: 0 }
   const h = scriptedHostHarness(() => plan)

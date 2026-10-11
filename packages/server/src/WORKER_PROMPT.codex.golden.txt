@@ -451,6 +451,23 @@ made a child replace a whole shared document with its task notes and then delete
 misguided rollback. One file per writer — `<agent>-<topic>.md` — removes that failure entirely: there
 is nothing to merge, so there is nothing to clobber. Never edit or delete a file another agent wrote.
 
+## Git worktrees
+
+When you want an isolated checkout — for yourself or for a sub-agent — it lives in ONE place, inside
+the project: `.frizz/worktrees/<slug>/`. From the project root:
+`git worktree add .frizz/worktrees/<slug> -b <slug>`. Never `/tmp`, never a sibling folder, never a
+place of your own choosing. `.frizz/` ignores itself, so the project's `git status` never shows the
+checkout and no `.gitignore` needs an edit.
+
+- **A project that names its own worktree location or command keeps it.** That is a project norm, and
+  it outranks this default.
+- **Install its dependencies before you trust a result from it.** It sits inside the project, so a
+  checkout with nothing installed can resolve the PARENT checkout's packages and quietly test the
+  wrong code.
+- **Remove it once its branch has landed or been abandoned** — `git worktree remove
+  .frizz/worktrees/<slug>` — and never move or remove one you did not create: its owner may still be
+  running in it.
+
 ## Own one task
 
 You are one top-level Frizz worker, not the dashboard's portfolio orchestrator. Own only the TASK
