@@ -11,7 +11,7 @@ import type { CodexModel, ServerEvent } from "@frizz/shared"
 import { AwaitingHint, QUESTION_FENCE_RETIRED_AT } from "@frizz/shared"
 import { permMarkerPath, type Project } from "./project.ts"
 import { degradeIfAwaitingAnswer, deriveNeedsYou } from "./board.ts"
-import { parseLine, applyRecord, applyEvent, computeTurn, newTailState, createTailer, defaultBrokerDaemonAlive, hasQuestionBlock, isClaudeAuthErrorText, isRealUserMessage, parseSignalFence, markerDecision, pendingCallDeadline, unwrapShellCommand, FOREIGN_FRESH_MS, parseWindowsShellHolderReport, probeShellsAlive, findShellProcesses, windowsShellHolderCommand, type ShellLaunch } from "./tailer.ts"
+import { parseLine, applyRecord, applyEvent, computeTurn, newTailState, createTailer, shellProbeTtlMs, defaultBrokerDaemonAlive, hasQuestionBlock, isClaudeAuthErrorText, isRealUserMessage, parseSignalFence, markerDecision, pendingCallDeadline, unwrapShellCommand, FOREIGN_FRESH_MS, parseWindowsShellHolderReport, probeShellsAlive, findShellProcesses, windowsShellHolderCommand, type ShellLaunch } from "./tailer.ts"
 import { claudeBrokerRecordPath } from "./backend/claude-broker-host.ts"
 import { buildClaudePermissionInteraction } from "./backend/claude-permission-interactions.ts"
 import type { AgentBackend, NormalizedEvent } from "./backend/types.ts"
@@ -4670,7 +4670,9 @@ test("tailer: a shell probe that cannot tell is remembered for a TTL — it does
     // `board.refresh()` is `cached = assemble(); publish(cached)`, and assemble reads every thread.
     const assemble = (): string | undefined => t.get("t")?.bgShells[0]?.state
     const t = makeTailer(h, { onChange: () => { h.changes.n++; assemble() }, ...over })
-    h.clock.ms = Date.parse("2026-07-01T00:00:01.000Z") + 10 * 60_000
+    // Past the grace window, and YOUNG: a verdict stands for a tenth of the shell's age with 30s as the
+    // floor (shellProbeTtlMs), so under five minutes old the TTL below is exactly the constant.
+    h.clock.ms = Date.parse("2026-07-01T00:00:01.000Z") + 2 * 60_000
     t.tick()
     h.changes.n = 0 // the fold's own nudge; from here on only a probe can add one
     return { h, assemble }
@@ -4734,6 +4736,51 @@ test("tailer: a shell probe that cannot tell is remembered for a TTL — it does
   h.clock.ms += 10 * TTL
   assert.equal(await pass(), "stale")
   assert.equal(asked.length, 4, "and a dead verdict stays terminal: never asked about again")
+})
+
+// HOW OFTEN is the other half of what the probe costs. `lsof` walks every process on the machine
+// whatever it is asked, so a shell probed every 30s for as long as it lives makes a thread parked on a
+// day-long watcher the most expensive idle thing frizz does: 13 runs in 65 seconds on the maintainer's
+// machine (2026-10-11), about 8% of a core for six watchers. A verdict therefore stands for a tenth of
+// the shell's age — 30s at the least, ten minutes at the most.
+test("shellProbeTtlMs: a verdict stands for a tenth of the shell's age, between 30s and ten minutes", () => {
+  assert.equal(shellProbeTtlMs(90_000), 30_000, "a young shell is asked about as often as it ever was")
+  assert.equal(shellProbeTtlMs(5 * 60_000), 30_000)
+  assert.equal(shellProbeTtlMs(60 * 60_000), 6 * 60_000, "an hour in, every six minutes")
+  assert.equal(shellProbeTtlMs(20 * 60 * 60_000), 10 * 60_000, "and a day-long watcher every ten")
+})
+
+test("tailer: a long-running shell is asked about on its age, not every 30s", async () => {
+  const output = join(tmp("frizz-shell-probe-age-"), "bWatch.output")
+  writeFileSync(output, "")
+  const h = harness()
+  h.storage.upsertSession(row())
+  fixture(h.logDir, "sid", [
+    IN_FLIGHT,
+    JSON.stringify(bashBg("toolu_sh", "Watching npm for a release", "until npm view pkg@beta; do sleep 300; done")),
+    JSON.stringify(resultText("toolu_sh", `Command running in background with ID: bWatch. Output is being written to: ${output}.`)),
+  ])
+  const asked: number[] = []
+  const t = makeTailer(h, { probeShells: async (batch) => { asked.push(h.clock.ms); return new Map(batch.map((s) => [typeof s === "string" ? s : s.outputFile, true])) } })
+  const pass = async () => {
+    const state = t.get("t")?.bgShells[0]?.state
+    await new Promise((r) => setTimeout(r, 20))
+    return state
+  }
+  h.clock.ms = Date.parse("2026-07-01T00:00:01.000Z") + 60 * 60_000 // an hour in: the verdict stands for six minutes
+  t.tick()
+  assert.equal(await pass(), "running")
+  assert.equal(asked.length, 1)
+
+  for (const step of [30_000, 60_000, 4 * 60_000]) {
+    h.clock.ms += step
+    assert.equal(await pass(), "running")
+  }
+  assert.equal(asked.length, 1, "five and a half minutes of ticks, and nothing was asked again")
+
+  h.clock.ms += 60_000
+  assert.equal(await pass(), "running")
+  assert.equal(asked.length, 2, "past a tenth of its age it is asked about again")
 })
 
 // The real probe is SLOW (lsof: ~300 ms, 8 s when it times out), so assemblies happen while one is in
@@ -5023,7 +5070,7 @@ test("tailer: an exec'd background shell with redirected output reads running wh
       await new Promise((r) => setTimeout(r, 2500))
       return t.get("t")?.bgShells[0]?.state
     }
-    h.clock.ms = shell.launch.ackedAtMs! + 10 * 60_000 // past the grace window
+    h.clock.ms = shell.launch.ackedAtMs! + 2 * 60_000 // past the grace window, young enough for the 30s TTL
     t.tick()
     assert.equal(await settle(), "running", "nobody holds its output file, and it is running")
 

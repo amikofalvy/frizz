@@ -303,6 +303,24 @@ function readTranscriptTail(path: string, size: number, window: number): string 
 // cannot run at all, the first one's answer stands, which is exactly the behaviour before it existed.
 const SHELL_PROBE_TTL_MS = 30_000
 const SHELL_PROBE_GRACE_MS = 60_000 // a just-launched shell is alive by construction; do not pay for it
+// A VERDICT STANDS FOR A TENTH OF THE SHELL'S AGE, between the floor above and this ceiling. The probe
+// is the backstop for a shell that ended WITHOUT its completion notice — the notice is how every
+// ordinary ending is learned, at once — and what it costs does not depend on the shell: `lsof` walks
+// every process on the machine. Asked every 30s for as long as a shell lived, that made a thread
+// parked on a watcher the most expensive idle thing frizz did. Measured 2026-10-11 on the maintainer's
+// machine (1,641 processes, six projects each holding one watcher, the oldest 20 hours in): 13 `lsof`
+// runs in 65 seconds at 0.28-0.47 CPU-seconds apiece, about 8% of a core — more than the server
+// process itself was using.
+//
+// A shell five minutes old is still asked about every 30s, so a build that dies is noticed as quickly
+// as before. One that has run for an hour is asked about every six minutes, and a day-long watcher
+// every ten: a silent death is noticed within a tenth of the time the shell had already been running
+// when it was last asked about.
+const SHELL_PROBE_TTL_MAX_MS = 10 * 60_000
+const SHELL_PROBE_TTL_AGE_SHARE = 0.1
+export function shellProbeTtlMs(ageMs: number): number {
+  return Math.min(SHELL_PROBE_TTL_MAX_MS, Math.max(SHELL_PROBE_TTL_MS, ageMs * SHELL_PROBE_TTL_AGE_SHARE))
+}
 
 const execFileAsync = promisify(execFile)
 
@@ -4019,7 +4037,9 @@ export function createTailer(deps: TailerDeps): Tailer {
     // A DEAD verdict is terminal — a process cannot come back — so it is never re-probed. A live one and
     // a remembered unknown both read "running" and are both asked about again once the TTL has passed;
     // hence `=== false` rather than `!alive`, which would read an unknown as dead.
-    if (cached && (cached.alive === false || now() - cached.at < SHELL_PROBE_TTL_MS)) return cached.alive === false
+    // The TTL is taken from the age the shell had WHEN THE VERDICT WAS GIVEN, so one verdict has one
+    // expiry rather than one that recedes as the shell goes on ageing.
+    if (cached && (cached.alive === false || now() - cached.at < shellProbeTtlMs(cached.at - started))) return cached.alive === false
     // What the probe needs to recognise the shell's PROCESS when nobody holds its file — see
     // findShellProcesses. The ack bounds the fork from above; without one the window stays open.
     const acked = e.ackAt ? Date.parse(e.ackAt) : NaN
@@ -5015,13 +5035,21 @@ export function createTailer(deps: TailerDeps): Tailer {
   //
   // SETTLED: nothing here advances on its own. Every arm is something a tick would otherwise have to
   // notice by the clock — a turn still running (and the 5s backstop that ends an unlabelled one), a
-  // permission block, a background op whose running→stale flip is purely time-based, a transcript that
-  // has not appeared yet, a send still being aged toward its timeout. A thread with none of them
-  // changes only when something is DONE to it, and each such thing announces itself: frizz's own
-  // writes move the registry row, a provider event nudges, and a codex exec is asked for by name.
+  // permission block, a sub-agent at work, a transcript that has not appeared yet, a send still being
+  // aged toward its timeout. A thread with none of them changes only when something is DONE to it, and
+  // each such thing announces itself: frizz's own writes move the registry row, a provider event
+  // nudges, and a codex exec is asked for by name.
+  //
+  // A BACKGROUND SHELL DOES NOT UNSETTLE A THREAD AT REST, and that is most of what this buys: a thread
+  // parked on a watcher is the commonest thing an idle board holds, for hours at a time. Nothing about
+  // the shell is the tick's to notice. Its ending is a record in the transcript, which starts a turn
+  // and nudges; its liveness is asked on its own clock (shellIsGone), by board assembly as much as by
+  // the tick. A sub-agent is different — it is the daemon working, and a codex child's rollout is read
+  // on the tick itself.
   function settled(row: SessionRow, state: TailState): boolean {
     if (!state.primed || state.turn !== "idle" || state.permPrompt) return false
-    if (state.subAgents.size > 0 || (state.pendingShells?.size ?? 0) > 0) return false
+    for (const op of state.subAgents.values()) if (op.kind === "agent") return false
+    if ((state.pendingShells?.size ?? 0) > 0) return false
     // Bound, or known to have no transcript at all. Unbound inside its grace window is a worker still
     // booting, whose first bytes are due at any moment.
     if (state.offset === 0 && !state.noTranscript) return false
