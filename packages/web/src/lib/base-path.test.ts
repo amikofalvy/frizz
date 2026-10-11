@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { apiBase, basePath, innerPath, outerPath, prefixedAppRoute, projectHref, projectSlug } from "./base-path.ts"
+import { apiBase, basePath, innerPath, isConsolePath, outerPath, prefixedAppRoute, projectApiBase, projectHref, projectSlug } from "./base-path.ts"
 
 // The launching project is still served unprefixed, so an empty base is a supported state.
 test("an unprefixed page has no base and addresses the unprefixed API", () => {
@@ -66,4 +66,19 @@ test("an agent's unprefixed in-app link is re-pointed at the project the page is
   assert.equal(prefixedAppRoute(null, page), null)
   // On the launching project there is nothing to add, so the href is left alone rather than churned.
   assert.equal(prefixedAppRoute("/thread/other", "/thread/fix-auth"), null)
+})
+
+// The Console is a base of its own: the router's inner paths work under it, and it names no project.
+test("the Console is a base that names no project", () => {
+  assert.equal(isConsolePath("/console"), true)
+  assert.equal(isConsolePath("/console/thread/nub~fix"), true)
+  assert.equal(isConsolePath("/project/console"), false, "a project called console is a project")
+  assert.equal(isConsolePath("/"), false)
+  assert.equal(basePath("/console/thread/nub~fix"), "/console")
+  assert.equal(projectSlug("/console/thread/nub~fix"), undefined)
+  assert.equal(innerPath("/console/thread/nub~fix"), "/thread/nub~fix")
+  assert.equal(innerPath("/console"), "/")
+  assert.equal(outerPath("/thread/nub~fix", "/console"), "/console/thread/nub~fix")
+  assert.equal(outerPath("/", "/console/thread/nub~fix"), "/console")
+  assert.equal(projectApiBase("nub"), "/_frizz/nub")
 })

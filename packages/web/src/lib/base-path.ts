@@ -56,13 +56,32 @@ export function projectSlug(pathname?: string): string | undefined {
   return first === PROJECT_SEGMENT && second ? second : undefined
 }
 
+/**
+ * THE CONSOLE — every project's board as one, at `/console`.
+ *
+ * It names NO project, and that is the one way it differs from the unprefixed launching project, which
+ * also names none: the launching project's page talks to `/_frizz` and means it, while a Console page
+ * that reaches `/_frizz` for a thread or a project has forgotten to say which one. So the Console is a
+ * base of its own — the router's inner paths (`/thread/<key>`) work under it exactly as under a project
+ * — and api/rpc.ts refuses, on this page, any call that would fall back to the launching project.
+ * Its threads are named by key (lib/threadKey.ts).
+ */
+const CONSOLE_SEGMENT = "console"
+export const CONSOLE_PATH = `/${CONSOLE_SEGMENT}`
+
+/** Is this page the Console? */
+export function isConsolePath(pathname?: string): boolean {
+  return here(pathname).split("/")[1] === CONSOLE_SEGMENT
+}
+
 /** The page URL for a project — the one place that knows the shape. */
 export function projectHref(slug: string): string {
   return `${PROJECT_PREFIX}/${slug}`
 }
 
-/** `/project/nub`, or `""` when this page is the unprefixed launching project. */
+/** `/project/nub`, `/console` on the Console, or `""` when this page is the unprefixed launching project. */
 export function basePath(pathname?: string): string {
+  if (isConsolePath(pathname)) return CONSOLE_PATH
   const slug = projectSlug(pathname)
   return slug ? projectHref(slug) : ""
 }
@@ -114,5 +133,10 @@ export function apiBase(pathname?: string): string {
   const slug = projectSlug(pathname)
   // The API keeps the FLAT `/_frizz/<slug>/…` shape. It already sits inside a reserved namespace, so
   // it has no root to protect, and the server's split stays a two-part one.
-  return slug ? `${FRIZZ_ROUTE_PREFIX}/${slug}` : FRIZZ_ROUTE_PREFIX
+  return slug ? projectApiBase(slug) : FRIZZ_ROUTE_PREFIX
+}
+
+/** Where a NAMED project's API lives, whatever page is asking — the Console's way to address one. */
+export function projectApiBase(slug: string): string {
+  return `${FRIZZ_ROUTE_PREFIX}/${slug}`
 }
