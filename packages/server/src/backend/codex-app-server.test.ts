@@ -2359,7 +2359,7 @@ test("bridge persistence refuses malformed or future authority schemas before sp
  *  fields are the entire input to the bridge's "did my turns survive?" decision. */
 function scriptedHostHarness(
   script: () => { generation: string; reattached: boolean; droppedWhileDetached: number; serviceExitCode?: number },
-  worker: Pick<import("./codex-app-server.ts").CodexAppServerBridgeOptions, "frizzMcp" | "frizzCli" | "workerConfig"> = {},
+  worker: Pick<import("./codex-app-server.ts").CodexAppServerBridgeOptions, "frizzMcp" | "mountsMcp" | "frizzCli" | "workerConfig"> = {},
 ) {
   const dir = mkdtempSync(join(tmpdir(), "frizz-codex-attachment-"))
   const dbPath = join(dir, "ui.db")
@@ -2371,6 +2371,8 @@ function scriptedHostHarness(
   const interactions = createInteractionStore(db, { now: () => now, id: () => `interaction-${++clientId}` })
   const processes: FakeAppServerProcess[] = []
   const bridges: CodexAppServerBridge[] = []
+  /** What each app-server was STARTED with — its process-wide config, as opposed to a thread's bag. */
+  const hostCalls: Array<{ frizzMcp?: unknown }> = []
   let nextResumeThreadStatus: { type: string; activeFlags?: string[] } | undefined
   let nextBackgroundTerminals: Record<string, Array<Record<string, unknown>>> | undefined
   const newBridge = () => {
@@ -2381,6 +2383,7 @@ function scriptedHostHarness(
       interactions,
       codexBin: "/opt/codex",
       host: async (options) => {
+        hostCalls.push({ frizzMcp: options.frizzMcp })
         const process_ = new FakeAppServerProcess()
         // Applied at CREATION: the reconnect's process does not exist until the bridge connects, which
         // is the same call whose reconciliation the status has to steer.
@@ -2405,6 +2408,7 @@ function scriptedHostHarness(
   return {
     dir,
     processes,
+    hostCalls,
     diagnostics,
     interactions,
     newBridge,
@@ -2755,6 +2759,33 @@ test("each thread's shell is told which thread it is, at thread/start and again 
     const restarted = h.newBridge()
     await restarted.resumeOwnedSession(one.threadSlug, one.sessionId)
     assert.deepEqual(bagOf(requestsOf(h.processes[1]!, "thread/resume")[0]!), first)
+  } finally { h.close() }
+})
+
+// A codex thread keeps the contract it was started with. One started under the command-line contract
+// was never told about the tools and is not given them; one that predates it still is, at every resume.
+test("the MCP mount rides only the threads whose contract taught it", async () => {
+  let plan = { generation: "gen-A", reattached: false, droppedWhileDetached: 0 }
+  const h = scriptedHostHarness(() => plan, { frizzMcp: WORKER_MCP, mountsMcp: (slug) => slug === "taught-mcp" })
+  try {
+    const bridge = h.newBridge()
+    const legacy = await bridge.startDisposableSession({ threadSlug: "taught-mcp", sessionId: "session-legacy", cwd: h.dir, ephemeral: false })
+    const cli = await bridge.startDisposableSession({ threadSlug: "taught-cli", sessionId: "session-cli", cwd: h.dir, ephemeral: false })
+    const [legacyBag, cliBag] = requestsOf(h.processes[0]!, "thread/start").map(bagOf)
+    assert.ok((legacyBag!.mcp_servers as Record<string, unknown>)[FRIZZ_MCP.name])
+    assert.equal(cliBag?.mcp_servers, undefined)
+    // …and nothing mounts it process-wide behind the bag's back: the app-server's own argv carries
+    // no `mcp_servers` override, or every thread in the project would have the tools again.
+    assert.ok(!h.hostCalls.some((call) => call.frizzMcp), "the app-server was started with a process-wide MCP mount")
+    bridge.close()
+
+    plan = { generation: "gen-B", reattached: false, droppedWhileDetached: 0 }
+    const restarted = h.newBridge()
+    await restarted.resumeOwnedSession(legacy.threadSlug, legacy.sessionId)
+    await restarted.resumeOwnedSession(cli.threadSlug, cli.sessionId)
+    const [legacyResume, cliResume] = requestsOf(h.processes[1]!, "thread/resume").map(bagOf)
+    assert.ok((legacyResume!.mcp_servers as Record<string, unknown>)[FRIZZ_MCP.name])
+    assert.equal(cliResume?.mcp_servers, undefined)
   } finally { h.close() }
 })
 

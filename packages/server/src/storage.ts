@@ -202,6 +202,20 @@ export interface SessionRow {
   // Which ACP agent (backend/acp-agents.ts catalogue id — "opencode", "gemini" …) an `acp` row runs on.
   // The ACP session id lives in `agent_session_id` like codex's. NULL on every other backend.
   acp_agent?: string | null
+  // Which worker surface this thread's CONTRACT taught it: 'cli' = the `frizzctl` command line, written
+  // by every dispatch since 2026-10-11. NULL = a thread started before that, whose contract tells it
+  // to call `mcp__frizz__*` tools. It matters on the two backends whose contract is fixed when the
+  // thread starts — codex (baseInstructions) and ACP (the first prompt) — because such a thread is told
+  // about tools for the rest of its life, so it must go on being given them (workerTaughtMcp). A Claude
+  // thread is handed the current contract at every fork and never reads this.
+  worker_surface?: string | null
+}
+
+/** Whether `row`'s worker was taught the MCP tools rather than the command line, and so still needs
+ *  the `frizz` MCP server mounted. No row at all is a thread being started right now, or a session
+ *  that is not a worker: neither was taught anything, so neither is given the mount. */
+export function workerTaughtMcp(row: Pick<SessionRow, "worker_surface"> | undefined | null): boolean {
+  return row != null && row.worker_surface !== "cli"
 }
 
 /**
@@ -877,6 +891,8 @@ export interface Storage {
   setCodexRuntime(slug: string, runtime: string): void
   setClaudeRuntime(slug: string, runtime: string): void
   setAcpAgent(slug: string, agentId: string): void
+  /** Record which worker surface this thread's contract taught it — see SessionRow.worker_surface. */
+  setWorkerSurface(slug: string, surface: "cli"): void
   setProfile(slug: string, model: string, effort: string): void
   setPermissionMode(slug: string, permissionMode: string): void
   setPermissionPending(slug: string, permissionMode: string | null): void
@@ -1003,6 +1019,9 @@ export const STORAGE_SCHEMA = `
       claude_runtime TEXT,
       -- ACP agent id (backend/acp-agents.ts) for backend='acp' rows; also in the ALTER list below.
       acp_agent TEXT,
+      -- 'cli' = this thread's contract taught the frizzctl command line; NULL = it predates that and
+      -- was taught the MCP tools (SessionRow.worker_surface). Also in the ALTER list below.
+      worker_surface TEXT,
       -- THE RECURRING PROMPT (scheduler.ts SOURCES 4, 5 and 7): one text, three independent triggers —
       -- every time the thread rests, every N ms on a clock, and/or every time its context is compacted.
       -- All flags 0 = off; there is no separate enable column, because another flag could only ever
@@ -1284,7 +1303,7 @@ export function ensureStorageSchema(db: Database): void {
   // a file that already exists, and every live install predates any column below — so each rides one
   // additive ALTER here, exactly the stack the schema comment above says the unified file was born
   // without. Keep the list append-only; the try/catch is the "already there" case.
-  for (const column of ["pinned_at TEXT", "acp_agent TEXT"]) {
+  for (const column of ["pinned_at TEXT", "acp_agent TEXT", "worker_surface TEXT"]) {
     try {
       db.exec(`ALTER TABLE session ADD COLUMN ${column}`)
     } catch {
@@ -2025,6 +2044,7 @@ export function createStorage(source: string | Database, projectId: string): Sto
   const codexRuntimeStmt = scope.prepare("UPDATE session SET codex_runtime = ? WHERE project_id = @project_id AND slug = ?")
   const claudeRuntimeStmt = scope.prepare("UPDATE session SET claude_runtime = ? WHERE project_id = @project_id AND slug = ?")
   const acpAgentStmt = scope.prepare("UPDATE session SET acp_agent = ? WHERE project_id = @project_id AND slug = ?")
+  const workerSurfaceStmt = scope.prepare("UPDATE session SET worker_surface = ? WHERE project_id = @project_id AND slug = ?")
   // Stamps profile_set_at alongside model/effort: the OPERATOR's set-time. Both backends' setThreadProfile
   // paths write through here, and the stamp is what marks the pair as CHOSEN rather than observed — the
   // board reads it to keep the composer selector on the pick (resolveSessionProfile), and the observed
@@ -2190,6 +2210,7 @@ export function createStorage(source: string | Database, projectId: string): Sto
     codex_runtime: row.codex_runtime ?? null,
     claude_runtime: row.claude_runtime ?? null,
     acp_agent: row.acp_agent ?? null,
+    worker_surface: row.worker_surface ?? null,
   })
 
   const getAdoptionRuntimeSnapshot = db.transaction((slug: string) => ({
@@ -2679,6 +2700,7 @@ export function createStorage(source: string | Database, projectId: string): Sto
     setCodexRuntime: (slug, runtime) => void codexRuntimeStmt.run(runtime, slug),
     setClaudeRuntime: (slug, runtime) => void claudeRuntimeStmt.run(runtime, slug),
     setAcpAgent: (slug, agentId) => void acpAgentStmt.run(agentId, slug),
+    setWorkerSurface: (slug, surface) => void workerSurfaceStmt.run(surface, slug),
     setProfile: (slug, model, effort) => void profileStmt.run(model, effort, new Date().toISOString(), slug),
     setPermissionMode: (slug, permissionMode) => void permissionModeStmt.run(permissionMode, new Date().toISOString(), slug),
     setPermissionPending: (slug, permissionMode) => void permissionPendingStmt.run(permissionMode, slug),

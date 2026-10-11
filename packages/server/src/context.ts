@@ -14,7 +14,7 @@ import { Bus, Emitter } from "./bus.ts"
 import { frizzRoots } from "./frizz-paths.ts"
 import { findById as findProjectById } from "./project-registry.ts"
 import { resolveProject, permRequestDir, type Project } from "./project.ts"
-import { createStorage, isBrokerClaudeRow, isHeadlessRow, type Storage } from "./storage.ts"
+import { createStorage, isBrokerClaudeRow, isHeadlessRow, workerTaughtMcp, type Storage } from "./storage.ts"
 import { clearSecrets } from "./secret-files.ts"
 import type Database from "./sqlite.ts"
 import { getSettings, setSettings, resetSettings } from "./settings.ts"
@@ -25,7 +25,7 @@ import { createBoard, resolveSessionTitle, type BoardManager } from "./board.ts"
 import { createSessionPeerResolver, type SessionPeerThread } from "./session-peer.ts"
 import { auditLogPathForStateDir, fileAuditLog, type AuditLog } from "./audit.ts"
 import { createTailer, defaultLogDir, type Tailer } from "./tailer.ts"
-import { createDispatcher, loadWorkerPrompt, scratchpadOrientation, frizzConfigBlock, claudeMcpConfig, codexWorkerThreadConfig, resolveFrizzCli, resolveFrizzMcp, workerPluginDir, coldResumePermission, type Dispatcher, type FrizzMcpTarget } from "./dispatch.ts"
+import { createDispatcher, loadWorkerPrompt, scratchpadOrientation, frizzConfigBlock, claudeCliConfig, codexWorkerThreadConfig, resolveFrizzCli, resolveFrizzMcp, workerPluginDir, coldResumePermission, type Dispatcher, type FrizzMcpTarget } from "./dispatch.ts"
 import { createScheduler, type Scheduler, probeIssueReadable, probePrReadable, type PrRef, type PrProbe } from "./scheduler.ts"
 import {
 resumeThread,
@@ -704,6 +704,9 @@ function createContextUnchecked(opts: ContextOptions, resources: PartialContextR
         // Codex's MCP servers mount PROCESS-wide on the app-server, not per thread, so the descriptor
         // is resolved once here — the codex twin of the per-dispatch resolveFrizzMcp on the claude side.
         frizzMcp: resolveFrizzMcp(frizzMcpTarget),
+        // …and only for a thread whose contract taught it the MCP tools: a codex thread keeps the
+        // contract it was started with, so one that predates `frizzctl` keeps its mount.
+        mountsMcp: (slug) => workerTaughtMcp(storage.getSession(slug)),
         frizzCli: resolveFrizzCli(frizzMcpTarget),
         // The rest of a worker thread's config — hooks and reasoning summaries — sent with the start
         // and every resume, so a thread that comes back under this server runs on this server's.
@@ -765,6 +768,7 @@ function createContextUnchecked(opts: ContextOptions, resources: PartialContextR
     projectId: project.id,
     stateDir: project.stateDir,
     frizzMcp: resolveFrizzMcp(frizzMcpTarget),
+    mountsMcp: (slug) => workerTaughtMcp(storage.getSession(slug)),
     frizzCli: resolveFrizzCli(frizzMcpTarget),
     interactions: storage.interactions,
     env: process.env,
@@ -826,7 +830,7 @@ function createContextUnchecked(opts: ContextOptions, resources: PartialContextR
         // fork (project-mcp-servers.ts): under `--strict-mcp-config` nothing mounts that frizz did not hand over.
         workerEnv: {
           pluginDir: workerPluginDir(),
-          ...claudeMcpConfig(resolveFrizzMcp(frizzMcpTarget)),
+          ...claudeCliConfig(resolveFrizzCli(frizzMcpTarget)),
           permDir: permRequestDir(project),
           cli: resolveFrizzCli(frizzMcpTarget),
         },
