@@ -37,6 +37,7 @@ import {
 } from "./tail-cache.ts"
 import { log as frizzLog } from "./logging.ts"
 import { frizzTempDir } from "./frizz-paths.ts"
+import { pidIsAlive } from "./project-identity.ts"
 import { redactToolPayload } from "./credential-redaction.ts"
 
 // The JSONL tailer: incrementally reads each registered session's Claude Code transcript
@@ -283,7 +284,9 @@ function readTranscriptTail(path: string, size: number, window: number): string 
 // the only spawnable thing present on every supported Windows (see process-generation.ts for the
 // measurements); one process answers the whole batch. A pid probe (`process.kill(pid, 0)`) would be
 // cheaper, but nothing records a shell's pid anywhere frizz can read — the launch result carries a
-// task id and an output path and nothing else — so there is no pid to ask about.
+// task id and an output path and nothing else — and the exclusive open names no holder, so on Windows
+// there is no pid to ask about. (On POSIX lsof names its holders, and those pids ARE asked about
+// between probes — see shellProbeTtlMs.)
 //
 // The failure directions are the same as lsof's. A sharing violation is "held" (alive) — a Frizz
 // reader with the file open for the drawer momentarily reads as alive, which costs a TTL, never a
@@ -314,8 +317,23 @@ const SHELL_PROBE_GRACE_MS = 60_000 // a just-launched shell is alive by constru
 //
 // A shell five minutes old is still asked about every 30s, so a build that dies is noticed as quickly
 // as before. One that has run for an hour is asked about every six minutes, and a day-long watcher
-// every ten: a silent death is noticed within a tenth of the time the shell had already been running
-// when it was last asked about.
+// every ten.
+//
+// THE LONG TTL DOES NOT MEAN A LONG WAIT FOR A DEATH, because a live verdict is PINNED TO ITS PIDS
+// (2026-10-11). lsof's `-F pn` names the process holding each file, and the process-table instrument
+// names the one it found, so a live verdict records who gave it. Between full probes those pids are
+// asked, every SHELL_PROBE_TTL_MS, whether they still exist — `process.kill(pid, 0)`, one syscall each,
+// no walk of anything — and the moment none of them does, the shell is put to the real probe at once
+// rather than at the end of its TTL. So a watcher that dies silently twenty hours in is noticed on the
+// next 30s pid check, not up to ten minutes later, while lsof still runs only on the age schedule above.
+//
+// The pids only ever SEND a shell to the probe; they never decide it. Every pid gone is "ask again",
+// not "dead": a child that outlived its shell may still hold the file, or the table may find a sibling,
+// and only the probe's own dead verdict demotes (and nudges the board). The other direction is what the
+// TTL is still for: a pid the OS has handed to some new process reads alive here, so a recycled pid
+// keeps a dead shell "running" until its full re-probe — the bound this pinning replaced, never worse.
+// A verdict that named no pid (win32's exclusive open, an unknown, a held file whose only holder is
+// Frizz itself) has nothing to pin, and stands for its whole TTL exactly as before.
 const SHELL_PROBE_TTL_MAX_MS = 10 * 60_000
 const SHELL_PROBE_TTL_AGE_SHARE = 0.1
 export function shellProbeTtlMs(ageMs: number): number {
@@ -350,15 +368,37 @@ export interface ShellLaunch {
   ackedAtMs?: number
 }
 
+/** One shell's verdict. `true`/`false`/`undefined` are alive/gone/cannot-tell; the object form is a live
+ *  verdict that also names the PIDS that answered it — the holders lsof listed, or the process the table
+ *  found — so the tailer can ask those pids, for free, whether the verdict still stands. */
+export type ShellVerdict = boolean | undefined | { alive: true; pids: readonly number[] }
+
+/** The verdicts without their pids: the plain alive/gone/unknown map the probe returned before pids. */
 export async function probeShellsAlive(
   shells: readonly (string | ShellLaunch)[],
-  opts: { platform?: NodeJS.Platform; exec?: typeof execFileAsync; env?: NodeJS.ProcessEnv; nowMs?: number } = {},
+  opts: Parameters<typeof probeShellVerdicts>[1] = {},
 ): Promise<Map<string, boolean | undefined>> {
+  const verdicts = await probeShellVerdicts(shells, opts)
+  return new Map([...verdicts].map(([file, v]) => [file, typeof v === "object" ? true : v]))
+}
+
+/** A live verdict, carrying its pids when there are any. A process probing itself is never one of them:
+ *  Frizz holding a file open for the drawer proves nothing about the shell, so it may keep the file
+ *  "held" but cannot pin the verdict. */
+function liveVerdict(pids: Iterable<number>): ShellVerdict {
+  const own = [...new Set(pids)].filter((pid) => Number.isInteger(pid) && pid > 0 && pid !== process.pid)
+  return own.length > 0 ? { alive: true, pids: own } : true
+}
+
+export async function probeShellVerdicts(
+  shells: readonly (string | ShellLaunch)[],
+  opts: { platform?: NodeJS.Platform; exec?: typeof execFileAsync; env?: NodeJS.ProcessEnv; nowMs?: number } = {},
+): Promise<Map<string, ShellVerdict>> {
   const platform = opts.platform ?? process.platform
   const exec = opts.exec ?? execFileAsync
   const launches = shells.map((s) => (typeof s === "string" ? { outputFile: s } : s))
   const outputFiles = launches.map((l) => l.outputFile)
-  const verdicts = new Map<string, boolean | undefined>()
+  const verdicts = new Map<string, ShellVerdict>()
   if (platform === "win32") {
     // No realpath dance: the exclusive open is by path, and Windows resolves it. Only existence is
     // checked first, for the same reason as below — an absent file is no verdict at all.
@@ -422,15 +462,30 @@ export async function probeShellsAlive(
     // lsof ran: nobody holds any of them.
     stdout = e.stdout ?? ""
   }
-  const held = new Set<string>()
-  for (const line of stdout.split("\n")) if (line.startsWith("n")) held.add(line.slice(1))
-  for (const f of live) verdicts.set(f.requested, held.has(f.real))
+  // Each `n<path>` line belongs to the `p<pid>` line above it, so the walk keeps the current pid and files
+  // it under every path that pid holds: the holders ARE the shell, and their pids are what the tailer
+  // asks between probes (see shellIsGone).
+  const holders = new Map<string, number[]>()
+  let pid: number | undefined
+  for (const line of stdout.split("\n")) {
+    if (line.startsWith("p")) pid = Number(line.slice(1))
+    else if (line.startsWith("n")) {
+      const path = line.slice(1)
+      const pids = holders.get(path) ?? []
+      if (pid !== undefined) pids.push(pid)
+      holders.set(path, pids)
+    }
+  }
+  for (const f of live) {
+    const pids = holders.get(f.real)
+    verdicts.set(f.requested, pids ? liveVerdict(pids) : false)
+  }
   // The second instrument, for the unheld only — a held file already proved its shell alive, and the
   // common case (every shell held) never pays for a process listing.
   const unheld = launches.filter((l) => verdicts.get(l.outputFile) === false && l.sessionId && l.launchedAtMs !== undefined)
   if (unheld.length === 0) return verdicts
-  const running = await findShellProcesses(unheld, { exec, nowMs: opts.nowMs ?? Date.now(), env: opts.env })
-  for (const [file, alive] of running) if (alive !== undefined) verdicts.set(file, alive)
+  const running = await findShellProcessPids(unheld, { exec, nowMs: opts.nowMs ?? Date.now(), env: opts.env })
+  for (const [file, pids] of running) if (pids !== undefined) verdicts.set(file, pids.length > 0 ? liveVerdict(pids) : false)
   return verdicts
 }
 
@@ -462,11 +517,21 @@ export async function probeShellsAlive(
 // (BusyBox `ps` has no `lstart`, for one), which the caller reads as "keep the holder verdict".
 export async function findShellProcesses(
   shells: readonly ShellLaunch[],
-  opts: { exec?: typeof execFileAsync; nowMs?: number; env?: NodeJS.ProcessEnv } = {},
+  opts: Parameters<typeof findShellProcessPids>[1] = {},
 ): Promise<Map<string, boolean | undefined>> {
+  const found = await findShellProcessPids(shells, opts)
+  return new Map([...found].map(([file, pids]) => [file, pids === undefined ? undefined : pids.length > 0]))
+}
+
+/** findShellProcesses with the processes NAMED: per path, the pids of every live process that could be
+ *  the shell (empty = none), or undefined when `ps` could not answer. */
+async function findShellProcessPids(
+  shells: readonly ShellLaunch[],
+  opts: { exec?: typeof execFileAsync; nowMs?: number; env?: NodeJS.ProcessEnv } = {},
+): Promise<Map<string, number[] | undefined>> {
   const exec = opts.exec ?? execFileAsync
   const nowMs = opts.nowMs ?? Date.now()
-  const verdicts = new Map<string, boolean | undefined>()
+  const verdicts = new Map<string, number[] | undefined>()
   // C locale, so `lstart` is the fixed English `Mon Oct  5 15:42:11 2026` the parser below reads, and the
   // inherited TZ, so it is the same local time `Date.parse` will assume.
   const env = { ...(opts.env ?? process.env), LC_ALL: "C" }
@@ -507,7 +572,7 @@ export async function findShellProcesses(
   if (parents.length > 0) {
     const listing = await run(["-ww", "-o", "pid=,command=", "-p", parents.join(",")])
     if (listing === undefined) {
-      for (const s of shells) verdicts.set(s.outputFile, candidates.get(s.outputFile)!.length === 0 ? false : undefined)
+      for (const s of shells) verdicts.set(s.outputFile, candidates.get(s.outputFile)!.length === 0 ? [] : undefined)
       return verdicts
     }
     argvOf = new Map(
@@ -518,7 +583,7 @@ export async function findShellProcesses(
     )
   }
   for (const s of shells) {
-    verdicts.set(s.outputFile, candidates.get(s.outputFile)!.some((c) => argvOf.get(c.ppid)?.includes(s.sessionId!) ?? false))
+    verdicts.set(s.outputFile, candidates.get(s.outputFile)!.filter((c) => argvOf.get(c.ppid)?.includes(s.sessionId!) ?? false).map((c) => c.pid))
   }
   return verdicts
 }
@@ -2811,8 +2876,12 @@ export interface TailerDeps {
   shellAlive?: (outputFile: string, launch: ShellLaunch) => boolean | undefined
   /** The BATCHED probe itself, injectable so a test can count and script it. Unlike `shellAlive`, which
    *  is answered inline and skips them, this one still sits behind the queue and the flush — the only
-   *  place a mistake about WHEN to ask can live. Defaults to probeShellsAlive. */
-  probeShells?: (shells: readonly ShellLaunch[]) => Promise<Map<string, boolean | undefined>>
+   *  place a mistake about WHEN to ask can live. Defaults to probeShellVerdicts; a map value may be a
+   *  bare boolean/undefined (a verdict with no pids) or `{ alive: true, pids }` (one pinned to them). */
+  probeShells?: (shells: readonly ShellLaunch[]) => Promise<Map<string, ShellVerdict>>
+  /** Is this pid still a process? Asked of the pids a live shell verdict named, between full probes (see
+   *  shellIsGone). Defaults to `process.kill(pid, 0)`, EPERM counting as alive. Injectable for tests. */
+  pidAlive?: (pid: number) => boolean
   // The agent backend that locates + folds a session's transcript (Codex-support epic). Injected by
   // the composition layer as a ClaudeBackend; when absent (tests) the tailer folds with its own
   // corpus-verified applyRecord + deterministic Claude path — a byte-identical default.
@@ -3961,7 +4030,11 @@ export function createTailer(deps: TailerDeps): Tailer {
   // that nobody remembers: whatever noticed the gap re-runs the expensive thing at once, forever. Here
   // the thing that notices is board assembly, and the flush below nudged the board after every probe —
   // see there for what that cost.
-  const shellAliveCache = new Map<string, { at: number; alive: boolean | undefined }>()
+  //
+  // `pids` are the processes a LIVE verdict was given on, and `pidsAskedAt` when they were last asked
+  // whether they still exist (see shellIsGone). An entry without them is a verdict with nothing to pin it
+  // to — win32, an unknown, an injected `shellAlive` — and stands for its whole TTL, as every verdict did.
+  const shellAliveCache = new Map<string, { at: number; alive: boolean | undefined; pids?: readonly number[]; pidsAskedAt?: number }>()
   // Paths this tick wanted a verdict for and the cache could not answer. Assembly is synchronous, so
   // every shellIsGone call of one tick has landed here by the time the flush below runs — which is what
   // makes ONE lsof per tick enough for all of them, rather than one per shell.
@@ -3985,9 +4058,9 @@ export function createTailer(deps: TailerDeps): Tailer {
     const batch = [...shellProbeWanted.values()]
     shellProbeWanted.clear()
     shellProbeInFlight = true
-    void (deps.probeShells ?? probeShellsAlive)(batch)
+    void (deps.probeShells ?? probeShellVerdicts)(batch)
       // A probe that THREW answered for nobody: every path it was asked about is an unknown.
-      .catch(() => new Map<string, boolean | undefined>())
+      .catch(() => new Map<string, ShellVerdict>())
       .then((verdicts) => {
         // EVERY path that was asked about is recorded, the unknowns included (see shellAliveCache), and
         // the walk is over the BATCH rather than the verdicts so that a path the probe never mentioned
@@ -3995,8 +4068,13 @@ export function createTailer(deps: TailerDeps): Tailer {
         const at = now()
         let demoted = false
         for (const { outputFile } of batch) {
-          const alive = verdicts.get(outputFile)
-          shellAliveCache.set(outputFile, { at, alive })
+          const verdict = verdicts.get(outputFile)
+          // An injected probe can hand back anything, so the pids are vetted here as well as in the real
+          // one: `kill(0, 0)` asks about this process's whole GROUP and a negative pid about another
+          // group, and either would pin a verdict to processes that have nothing to do with the shell.
+          const pids = typeof verdict === "object" && verdict ? verdict.pids.filter((pid) => Number.isInteger(pid) && pid > 0) : []
+          const alive = typeof verdict === "object" && verdict ? true : verdict
+          shellAliveCache.set(outputFile, { at, alive, ...(pids.length > 0 ? { pids, pidsAskedAt: at } : {}) })
           // An assembly that ran while this probe was in flight found nothing cached and queued the
           // path again. It has just been answered, so it leaves the queue — otherwise a SLOW unknown (an
           // lsof killed on its 8 s timeout, with eight ticks behind it) is asked again the moment it
@@ -4029,6 +4107,15 @@ export function createTailer(deps: TailerDeps): Tailer {
         if (shellProbeWanted.size > 0) armShellProbeFlush()
       })
   }
+  /** Have the pids a live verdict was given on all exited? Asked at most every SHELL_PROBE_TTL_MS, and
+   *  only of a verdict that named some; one without pids is never stale by this test. */
+  function shellPidsGone(entry: { pids?: readonly number[]; pidsAskedAt?: number }): boolean {
+    if (!entry.pids || entry.pids.length === 0) return false
+    if (now() - (entry.pidsAskedAt ?? 0) < SHELL_PROBE_TTL_MS) return false
+    entry.pidsAskedAt = now()
+    const alive = deps.pidAlive ?? pidIsAlive
+    return !entry.pids.some((pid) => alive(pid))
+  }
   function shellIsGone(e: { outputFile?: string; startedAt: string; ackAt?: string }, sessionId: string): boolean {
     if (!e.outputFile) return false
     const started = Date.parse(e.startedAt)
@@ -4039,7 +4126,12 @@ export function createTailer(deps: TailerDeps): Tailer {
     // hence `=== false` rather than `!alive`, which would read an unknown as dead.
     // The TTL is taken from the age the shell had WHEN THE VERDICT WAS GIVEN, so one verdict has one
     // expiry rather than one that recedes as the shell goes on ageing.
-    if (cached && (cached.alive === false || now() - cached.at < shellProbeTtlMs(cached.at - started))) return cached.alive === false
+    if (cached?.alive === false) return true
+    // Inside the TTL a live verdict stands only while the pids it was given on do (shellProbeTtlMs).
+    // When every one of them is gone, the verdict has nothing left under it and the shell is asked about
+    // AGAIN, now, by the real probe — never declared dead from here: an orphaned child still holding the
+    // file, or a sibling the probe will find, is the probe's to see.
+    if (cached && now() - cached.at < shellProbeTtlMs(cached.at - started) && !shellPidsGone(cached)) return false
     // What the probe needs to recognise the shell's PROCESS when nobody holds its file — see
     // findShellProcesses. The ack bounds the fork from above; without one the window stays open.
     const acked = e.ackAt ? Date.parse(e.ackAt) : NaN

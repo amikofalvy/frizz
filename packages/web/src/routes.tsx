@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useState } from "react"
 import { useSnapshot } from "valtio"
-import { Outlet, createBrowserRouter, useLocation, useNavigate, useParams } from "react-router"
+import { Navigate, Outlet, createBrowserRouter, useLocation, useNavigate, useParams } from "react-router"
 import { App } from "./App.tsx"
 import { ProjectGrid } from "./components/ProjectGrid.tsx"
 import { ProjectRail, RAIL_INSET_CLASS } from "./components/ProjectRail.tsx"
@@ -10,11 +10,15 @@ import { GithubHovercards } from "./components/GithubHovercards.tsx"
 import { Toaster } from "./components/Toaster.tsx"
 import { LightboxHost } from "./components/Lightbox.tsx"
 import { applyPath, registerNavigate } from "./lib/router.ts"
-import { innerPath } from "./lib/base-path.ts"
-import { feedIsBoundTo, rebindProject } from "./api/socket.ts"
+import { CONSOLE_PATH, innerPath, isConsolePath } from "./lib/base-path.ts"
+import { bindConsole, feedIsBoundTo, feedIsConsole, rebindProject } from "./api/socket.ts"
 import { noteStandaloneThreadRender, primeFullscreenReturn, resetProjectState, store } from "./store.ts"
 import { useProjectRailVisible } from "./lib/projectRail.ts"
 import { ownedByThisPage } from "./lib/projectOwnership.ts"
+import { setHomeView, useHomeView } from "./lib/homeView.ts"
+import { useConsoleFeedProjects } from "./lib/consoleProjects.ts"
+import { HomeSwitcher } from "./components/HomeSwitcher.tsx"
+import { useIsMobile } from "./lib/mobile.ts"
 
 // THE ROUTE TREE — and, more to the point, the LAYOUT that outlives a navigation.
 //
@@ -51,6 +55,11 @@ function RootLayout() {
   // 57px lane of nothing down the left of every board. A hidden rail has to be gone from the layout,
   // not merely invisible in it.
   const railVisible = useProjectRailVisible()
+  // The two homes — the grid and the Console — wear the switcher between them. It is the LAYOUT's, so the
+  // switch from one to the other keeps the same switcher on screen rather than remounting it.
+  const { pathname } = useLocation()
+  const atHome = pathname === "/" || isConsolePath(pathname)
+  const isMobile = useIsMobile()
   return (
     <TooltipProvider>
       {/* Outside the <Outlet/> on purpose: this is the element that must survive the navigation.
@@ -61,6 +70,7 @@ function RootLayout() {
       <div className={railVisible ? RAIL_INSET_CLASS : undefined}>
         <Outlet />
       </div>
+      {atHome && !isMobile ? <HomeSwitcher railVisible={railVisible} /> : null}
       {/* HOSTED BY THE LAYOUT, not by the board. It lived inside <App/>, so `showToast` from anywhere
           else raised a toast with nowhere to render — silently, since the store field is set either
           way. The grid is the page that needed one (it is where a bad project URL now lands), and it
@@ -166,7 +176,46 @@ function BoardRoute() {
  * was a no-op in every case, so removing it changes nothing that ever ran.)
  */
 function GridRoute() {
+  // `/` is the home the operator KEEPS: while that is the Console, the grid forwards to it. The switcher
+  // records "Projects" before it navigates here, so the grid is always one click away. Not on a phone:
+  // it has no switcher, and its board's back arrow comes HERE for the projects list — forwarding would
+  // send that arrow straight back to the Console it was leaving.
+  const homeView = useHomeView()
+  const isMobile = useIsMobile()
+  if (homeView === "console" && !isMobile) return <Navigate to={CONSOLE_PATH} replace />
   return <ProjectGrid />
+}
+
+/**
+ * Hand the live feed to the Console — one connection per open project (api/consoleFeed.ts) — and say
+ * whether the tree below may render yet. The Console's counterpart of `useProjectBinding`, gated the same
+ * way and for the same reason: a page that renders before the reset reads the previous project's board
+ * under the Console's URL. `feedIsConsole` asks the module holding the connections, so a remount has
+ * nothing to remember.
+ */
+function useConsoleBinding(): boolean {
+  const [, setBound] = useState(0)
+  const ready = feedIsConsole()
+  useLayoutEffect(() => {
+    if (ready) return
+    resetProjectState()
+    bindConsole()
+    setBound((n) => n + 1)
+  }, [ready])
+  return ready
+}
+
+/** The Console: every open project's board as one, at `/console`. */
+function ConsoleRoute() {
+  const ready = useConsoleBinding()
+  // Which projects the feed connects to: the server's open ones, in rail order (lib/consoleProjects.ts).
+  useConsoleFeedProjects()
+  useRouteToStore()
+  // Arriving here by any door makes the Console the home that is kept — the switcher's own click, a
+  // bookmark, a link — so the house in the rail and the status row comes back to it.
+  useEffect(() => setHomeView("console"), [])
+  if (!ready) return null
+  return <App key="@console" />
 }
 
 /**
@@ -249,6 +298,15 @@ export const router = createBrowserRouter([
       { path: "/thread/:thread", element: <BoardRoute /> },
       { path: "/status/:status", element: <BoardRoute /> },
       { path: PROJECT_PATH, children: boardChildren },
+      // The Console's own base (lib/base-path.ts): its threads are named by key, `/console/thread/<key>`.
+      {
+        path: CONSOLE_PATH,
+        children: [
+          { index: true, element: <ConsoleRoute /> },
+          { path: "thread/:thread", element: <ConsoleRoute /> },
+          { path: "status/:status", element: <ConsoleRoute /> },
+        ],
+      },
       // Anything else is a board for the launching project, which is what the old shell did with an
       // unknown path: applyPath falls through to the queue.
       { path: "*", element: <BoardRoute /> },

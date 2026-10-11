@@ -11,10 +11,12 @@ import { queued } from "../groups.ts"
 import { asThreads } from "../hooks.ts"
 import { showToast, store } from "../store.ts"
 import { projectHref, projectSlug } from "../lib/base-path.ts"
+import { homeHref, useHomeView } from "../lib/homeView.ts"
 import { useOptimisticallyArchived } from "../lib/optimisticArchive.ts"
 import { useOptimisticallySteered } from "../lib/steering.ts"
 import { dropIndex, edgeScrollVelocity, moveItem, shiftFor } from "../lib/railReorder.ts"
 import { Tooltip } from "./Tooltip.tsx"
+import { useQueueTotal } from "./HomeSwitcher.tsx"
 
 // THE PROJECT RAIL — every project on this machine as one icon square, always on screen.
 //
@@ -98,8 +100,16 @@ export function ProjectSquare({ project, size }: { project: ProjectCard; size: n
   // no request means no scan means never any icon. `iconVersion` cannot decide this on its own: it is
   // stamped whenever a scan RAN, found or not. See ProjectCard.iconStatus.
   const hasIcon = project.iconStatus !== "none"
-  const [failed, setFailed] = useState(false)
+  const src = projectIconSrc(project)
+  // The URL that failed, not a flag. A flag outlived the failure: once one request 404'd, the square
+  // rendered no image for the rest of the page's life, so a later rescan, an upload or a found icon
+  // never showed until a reload. A new `iconVersion` is a new URL, and gets its own request.
+  const [failedSrc, setFailedSrc] = useState<string>()
+  const failed = failedSrc === src
   const showMonogram = !hasIcon || failed
+  // Below ~22px two letters at 0.4em are 6–8px type, which is noise, not a monogram. A small square —
+  // the Console's 16px row mark — carries the first letter alone, larger, the way Slack's do.
+  const small = size < 22
   return (
     <span
       className="relative block overflow-hidden rounded-[30%] bg-elevated"
@@ -118,7 +128,7 @@ export function ProjectSquare({ project, size }: { project: ProjectCard; size: n
           className="absolute inset-0 flex items-center justify-center font-semibold leading-none"
           // 0.4em of the square: the same proportion Slack's initials use, and small enough that two
           // letters still clear the rounded corners.
-          style={{ fontSize: size * 0.4, color: `hsl(${hue} 55% 78%)` }}
+          style={{ fontSize: size * (small ? 0.56 : 0.4), color: `hsl(${hue} 55% 78%)` }}
         >
           {/*
             `items-center` centres the LINE BOX, and a line box is half-leading plus a descender the
@@ -133,13 +143,13 @@ export function ProjectSquare({ project, size }: { project: ProjectCard; size: n
             box is used as before, which is the ≤1px placement this replaced rather than a broken one.
           */}
           <span style={{ textBox: "trim-both cap alphabetic" } as CSSProperties}>
-            {monogram(project.name)}
+            {small ? monogram(project.name).slice(0, 1) : monogram(project.name)}
           </span>
         </span>
       )}
       {hasIcon && !failed && (
       <img
-        src={projectIconSrc(project)}
+        src={src}
         alt=""
         width={size}
         height={size}
@@ -154,7 +164,7 @@ export function ProjectSquare({ project, size }: { project: ProjectCard; size: n
           }
           setLoaded(true)
         }}
-        onError={() => setFailed(true)}
+        onError={() => setFailedSrc(src)}
         // object-contain, never cover: a logo cropped to fill its square is a mangled logo, and the
         // scan admits some non-square marks (a 300×331 `.github/logo.webp` is a real case). The
         // padding keeps a full-bleed icon off the rounded corners without shrinking a letterboxed one
@@ -193,6 +203,36 @@ function railCountsLabel(queued: number, running: number): string {
  */
 function badgeWidth(count: number): string {
   return count < 10 ? "w-[16px]" : count < 100 ? "w-[22px]" : "w-[28px]"
+}
+
+/**
+ * A queue count on the rail's bottom-right corner of a square — a project's, and the house's while the
+ * Console is the home kept (ProjectRail).
+ *
+ * Proportional figures, not tabular: a badge centres ONE number, it aligns no column, and a tabular "1"
+ * carries a fixed cell's worth of side-bearing that put the ink of "12" 1.02px left of the pill's centre.
+ * Measured 2026-08-24 at 10px/600 in the sans UI font. The width is fixed per digit count (badgeWidth),
+ * so the pill centres the digits itself.
+ *
+ * The cut-out is a WHOLE 1px. It was `border-[1.5px]`, and Chrome floors a fractional border to whole
+ * CSS pixels at every scale (computed `1px` at dsf 1, 2 and 3, 2026-09-24), so the face painted 14px
+ * where the numbers said 13. 1px is what Chrome was already drawing, so nothing moved there; it makes
+ * every browser draw the same.
+ */
+function QueueBadge({ count, className, ...data }: { count: number; className: string; "data-rail-queue-count"?: number; "data-rail-home-count"?: number }) {
+  return (
+    <span
+      aria-label={`${count} in the queue`}
+      {...data}
+      className={`pointer-events-none absolute flex h-[16px] ${badgeWidth(count)} items-center justify-center rounded-full border border-bg bg-accent-fill text-[10px] font-semibold leading-none proportional-nums text-on-accent ${className}`}
+    >
+      {/* The cap band, not the line box — the same fix the monogram above uses, for the same reason:
+          `items-center` centred the digits' LINE BOX and their ink rode 0.4–0.5px low in the sans
+          UI font (measured 2026-08-24). Trimming the box to baseline→cap height makes the box the
+          ink, so the browser centres it with nothing to re-measure when the type scale moves. */}
+      <span style={{ textBox: "trim-both cap alphabetic" } as CSSProperties}>{count}</span>
+    </span>
+  )
 }
 
 /**
@@ -301,26 +341,7 @@ export function RailLink({
           // centred in it), so `right-[3px]` puts the badge 5px past the square's right edge and
           // `-bottom-[5px]` 5px past its bottom — into the 8px gap, clear of the next square, and
           // inside the band's bottom padding for the last one.
-          <span
-            aria-label={`${queued} in the queue`}
-            data-rail-queue-count={queued}
-            // Proportional figures, not tabular: a badge centres ONE number, it aligns no column, and a
-            // tabular "1" carries a fixed cell's worth of side-bearing that put the ink of "12" 1.02px
-            // left of the pill's centre. Measured 2026-08-24 at 10px/600 in the sans UI font. The
-            // width is fixed per digit count (badgeWidth), so the pill centres the digits itself.
-            //
-            // The cut-out is a WHOLE 1px. It was `border-[1.5px]`, and Chrome floors a fractional border
-            // to whole CSS pixels at every scale (computed `1px` at dsf 1, 2 and 3, 2026-09-24), so the
-            // face painted 14px where the numbers said 13. 1px is what Chrome was already drawing, so
-            // nothing moved there; it makes every browser draw the same.
-            className={`pointer-events-none absolute -bottom-[5px] right-[3px] flex h-[16px] ${badgeWidth(queued)} items-center justify-center rounded-full border border-bg bg-accent-fill text-[10px] font-semibold leading-none proportional-nums text-on-accent`}
-          >
-            {/* The cap band, not the line box — the same fix the monogram above uses, for the same reason:
-                `items-center` centred the digits' LINE BOX and their ink rode 0.4–0.5px low in the sans
-                UI font (measured 2026-08-24). Trimming the box to baseline→cap height makes the box the
-                ink, so the browser centres it with nothing to re-measure when the type scale moves. */}
-            <span style={{ textBox: "trim-both cap alphabetic" } as CSSProperties}>{queued}</span>
-          </span>
+          <QueueBadge count={queued} className="-bottom-[5px] right-[3px]" data-rail-queue-count={queued} />
         ) : null}
       </Link>
     </Tooltip>
@@ -552,6 +573,11 @@ export function ProjectRail() {
   // A held square outranks both: its indices are positions in the list it was picked up from.
   const projects = drag?.list ?? optimistic ?? data ?? []
   const countsFor = useRailCounts(current, projects)
+  // The house goes to the home the operator keeps (lib/homeView.ts), and while that is the Console it
+  // wears the Console's number — every project's queue — the way a square wears its own. On the grid it
+  // wears nothing: the grid is not a queue, and the squares under the house already say where work is.
+  const homeView = useHomeView()
+  const queueTotal = useQueueTotal()
 
   /**
    * Fade the band's bottom edge ONLY while something is actually below it.
@@ -683,14 +709,20 @@ export function ProjectRail() {
           The hover fill is the project squares' own shape — 40px at `rounded-[30%]`, like the add slot
           at the bottom. It was 36px with an 8px corner (22%) until 2026-10-11, a visibly different
           rounded rect at the head of a column of identical ones. */}
-      <Tooltip side="right" label="All projects">
+      <Tooltip side="right" label={homeView === "console" ? "Console" : "All projects"}>
         <Link
-          to="/"
-          aria-label="All projects"
+          to={homeHref(homeView)}
+          aria-label={homeView === "console" ? "Console" : "All projects"}
           aria-current={current ? undefined : "page"}
-          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[30%] text-muted-70 outline-none transition-colors hover:bg-elevated hover:text-fg focus-visible:ring-1 focus-visible:ring-focus-ink-60"
+          data-rail-home
+          className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-[30%] text-muted-70 outline-none transition-colors hover:bg-elevated hover:text-fg focus-visible:ring-1 focus-visible:ring-focus-ink-60"
         >
           <House size={17} />
+          {/* The squares' badge, on the house's corner: the link is the 40px square itself here rather
+              than a 56px row around one, so the 5px overhang is measured from its own edges. */}
+          {homeView === "console" && queueTotal ? (
+            <QueueBadge count={queueTotal} className="-bottom-[5px] -right-[5px]" data-rail-home-count={queueTotal} />
+          ) : null}
         </Link>
       </Tooltip>
       <hr className="my-2.5 w-6 shrink-0 border-0 border-t border-border" />

@@ -1,8 +1,9 @@
-import { openThread } from "../store.ts"
-import { innerPath, projectSlug } from "./base-path.ts"
+import { openThread, store, topThreadSlug } from "../store.ts"
+import { innerPath, isConsolePath, projectSlug } from "./base-path.ts"
+import { keyProject, threadKey } from "./threadKey.ts"
 
 // A worker can emit a markdown link to another frizz thread — `[label](/thread/<slug>)` — e.g. after
-// spawning one via the mcp__frizz__spawn_thread tool. `/thread/<slug>` is a RESERVED SPA route
+// spawning one via the frizzctl spawn-thread command. `/thread/<slug>` is a RESERVED SPA route
 // (markdownTargets.ts isFrizzRoute), so markdown.ts leaves it a normal anchor rather than a local-file
 // button. This one delegated listener intercepts a plain left-click on any such anchor and opens the
 // thread IN THE DRAWER (openThread — dedupes/raises if already open) instead of letting the browser
@@ -25,12 +26,25 @@ export function installThreadLinkInterceptor(): () => void {
     const href = anchor?.getAttribute("href")
     if (!anchor || !href || !href.startsWith("/")) return
     const linked = projectSlug(href)
-    if (linked && linked !== projectSlug()) return // another project's board — let the browser go there
+    const onConsole = isConsolePath()
+    // On the Console every project is on the page, so a link to another project's thread opens here when
+    // the merged board has it. Anywhere else, another project's board — let the browser go there.
+    if (linked && linked !== projectSlug() && !onConsole) return
     const match = THREAD_HREF.exec(innerPath(href))
     if (!match) return
+    let target = match[1]
+    if (onConsole) {
+      // A worker's `/thread/<slug>` names a thread of ITS project: the card or drawer the link is in.
+      const from = linked ?? keyProject(anchor.closest("[data-queue-card]")?.getAttribute("data-queue-card") ?? topThreadSlug() ?? "")
+      if (from) {
+        const key = threadKey(from, target)
+        if (!store.board?.threads.some((t) => t.id === key)) return // not on the Console — let the browser go
+        target = key
+      }
+    }
     event.preventDefault()
     event.stopPropagation()
-    openThread(match[1])
+    openThread(target)
   }
   document.addEventListener("click", handler)
   return () => document.removeEventListener("click", handler)

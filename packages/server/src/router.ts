@@ -98,6 +98,19 @@ import {
   parseAwaitingDurationRaw,
   AWAITING_FOR_MAX_MS,
   AddOwnPrWatchInput,
+  AddOwnCommandWatchInput,
+  AddOwnCommandWatchResult,
+  DropOwnCommandWatchInput,
+  DropOwnCommandWatchResult,
+  ListOwnCommandWatchesInput,
+  OwnCommandWatchesResult,
+  type CommandWatchView,
+  type CommandWatchRun,
+  COMMAND_WATCH_EVERY_MIN_MS,
+  COMMAND_WATCH_EVERY_MAX_MS,
+  COMMAND_WATCH_FOR_MAX_MS,
+  COMMAND_WATCH_MAX_ARMED,
+  formatElapsed as formatCommandWatchDuration,
   AddOwnPrWatchResult,
   DropOwnPrWatchInput,
   DropOwnPrWatchResult,
@@ -179,11 +192,12 @@ import { liveThreadsForBackend, runProviderLogout } from "./backend/account-acti
 import { threadProfileOptions, validateThreadProfile } from "./backend/thread-profiles.ts"
 import { adoptionRuntimeBinding, type AdoptionPaneLookup, type ExpectedAdoptionPane } from "./adoption-recovery.ts"
 import { parseIssueRef, parsePrRef, readGithubIssueStatusBook, readGithubStatusBook, GITHUB_ISSUE_STATUS_SETTING, GITHUB_STATUS_SETTING } from "./awaiting.ts"
-import { isBrokerClaudeRow, type SessionRow, type Storage, type SubAgentSteerRow } from "./storage.ts"
+import { isBrokerClaudeRow, type CommandWatchRow, type SessionRow, type Storage, type SubAgentSteerRow } from "./storage.ts"
+import { COMMAND_WATCH_FALLBACK } from "./command-watch.ts"
 import type { SessionTelemetry } from "./tailer.ts"
 import { backgroundShellLineCount, readBackgroundShellOutput } from "./background-shell-output.ts"
 import { projectRetiredBackgroundOps, retiredOpsFor } from "./transcript.ts"
-import { clearProjectIcon, customIconPath, findById, forgetProject, ICON_SCAN_VERSION, listProjects, moveProjectDirectory, renameProject, reorderProjects, setProjectIcon, type RegistryEntry } from "./project-registry.ts"
+import { clearProjectIcon, customIconPath, findById, forgetProject, listProjects, moveProjectDirectory, projectIconStatus, renameProject, reorderProjects, resolveProjectIcon, setProjectIcon, type RegistryEntry } from "./project-registry.ts"
 import { basename, dirname } from "node:path"
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { activeBandThread, boardAskThread, ProjectCard, ProjectRailCounts, PROJECT_ICON_EXTENSIONS, PROJECT_ICON_MAX_BASE64_CHARS, queuedThread } from "@frizz/shared"
@@ -192,6 +206,7 @@ import { homedir } from "node:os"
 import { chosenProjectRoot, ensureProjectIdFile, existingProjectId, isHomeDirectory, writeProjectIdFile } from "./project-root.ts"
 import { resolveProjectLabel } from "./project-identity.ts"
 import { registerProject } from "./project-registry.ts"
+import { detectProjectIcon } from "./project-icon.ts"
 import { pickDirectory, pickImageFile, warmDirectoryPicker, warmImagePicker } from "./directory-picker.ts"
 import Database from "./sqlite.ts"
 import { projectStateDir } from "./frizz-paths.ts"
@@ -656,17 +671,13 @@ function projectCard(entry: RegistryEntry, stale: boolean): ProjectCard {
     // `iconScannedAt` alone cannot answer this: it is stamped whenever a scan RAN, found or not. See
     // ProjectCard.iconStatus for why the never-scanned case has to stay distinguishable.
     //
-    // AND a miss is only `none` while the scanner that recorded it is the CURRENT one. This pairs with
-    // ICON_SCAN_VERSION and without it the two halves of that mechanism cancel out: the client
-    // suppresses the icon request for a `none`, and the server's rescan-on-version-bump can only run
-    // when a request arrives — so a widened scan would never be asked about the very projects it was
-    // widened for. Measured on the real registry (2026-08-08): nub's `site/public/icon.svg` resolves
-    // correctly on demand, but the grid never demanded it because a pre-versioning miss read as `none`.
-    iconStatus: entry.icon
-      ? "icon"
-      : entry.iconScannedAt && (entry.iconScanVersion ?? 0) === ICON_SCAN_VERSION
-        ? "none"
-        : "unknown",
+    // AND a miss is only `none` while the server would itself still trust it — from the CURRENT
+    // scanner, and recent. The client suppresses the icon request for a `none`, and the server can only
+    // rescan when a request arrives, so a `none` the server no longer trusts is a miss that is never
+    // re-asked. Twice measured on the real registry: nub's `site/public/icon.svg` behind a
+    // pre-versioning miss (2026-08-08), and three projects' new `logo.svg` behind a miss from that
+    // morning (2026-10-11). `projectIconStatus` shares its predicate with the route's for that reason.
+    iconStatus: projectIconStatus(entry),
     iconIsCustom: entry.iconSource === "custom" ? true : undefined,
   }
 }
@@ -1460,6 +1471,26 @@ export function createRouter(ctx: AppContext) {
   // A thread's ARMED PR watchers, in the shape the worker's tool and the board both read. Each carries
   // the PR's last-polled checks/mergeability, so the tool's read-back and the resting card's row cannot
   // disagree about the same PR — they are one projection of one book.
+  /** One command watch as the worker reads it back. Its last check rides along, because "armed, 14 checks,
+   *  last one exited 127" is the difference between a wait that is healthy and one that never will pass. */
+  function commandWatchView(w: CommandWatchRow): CommandWatchView {
+    return {
+      id: w.id,
+      command: w.command,
+      every: formatCommandWatchDuration(w.every_ms),
+      state: w.state,
+      createdAt: new Date(w.created_at).toISOString(),
+      expiresAt: new Date(w.expires_at).toISOString(),
+      runs: w.runs,
+      ...(w.last_run_at !== null && w.last_outcome
+        ? { lastRun: { at: new Date(w.last_run_at).toISOString(), outcome: w.last_outcome, exitCode: w.last_exit, output: w.last_output ?? "" } }
+        : {}),
+    }
+  }
+  function armedCommandWatchViews(slug: string): CommandWatchView[] {
+    return ctx.storage.listCommandWatches(slug, { armedOnly: true }).map(commandWatchView)
+  }
+
   function armedPrWatchViews(slug: string): PrWatchView[] {
     const github = readGithubStatusBook(ctx.storage.getSetting(GITHUB_STATUS_SETTING))
     const issues = readGithubIssueStatusBook(ctx.storage.getSetting(GITHUB_ISSUE_STATUS_SETTING))
@@ -2432,7 +2463,7 @@ export function createRouter(ctx: AppContext) {
       }, () => sendFollowUp(input)),
     }),
 
-    // ONE WORKER MESSAGING ANOTHER THREAD — `mcp__frizz__steer`. Claude Code's own cross-session
+    // ONE WORKER MESSAGING ANOTHER THREAD — `frizzctl steer`. Claude Code's own cross-session
     // `SendMessage` reaches only a session whose process is live, so before this a worker told to hand its
     // results to a resting thread went looking for the board's `followUp` route and curled it by hand.
     // This is that delivery, with the board's own bookkeeping: the target's CURRENT session is read here
@@ -2454,7 +2485,7 @@ export function createRouter(ctx: AppContext) {
         detail: { from: input.from, message: textDigest(input.message) },
       }, async () => {
         if (input.from === input.to) {
-          throw new Error("That is your own thread. `steer` messages ANOTHER thread; to keep a note for yourself, write it to your scratch directory")
+          throw new Error("That is your own thread. `frizzctl steer` messages ANOTHER thread; to keep a note for yourself, write it to your scratch directory")
         }
         const sender = ctx.storage.getSession(input.from)
         if (!sender) throw new Error(`the calling thread ${input.from} is not registered in this project`)
@@ -3018,7 +3049,7 @@ export function createRouter(ctx: AppContext) {
       },
     }),
 
-    // The WORKER arming its own, from `mcp__frizz__goal`. Same row the Goal panel writes;
+    // The WORKER arming its own, from `frizzctl goal`. Same row the Goal panel writes;
     // different caller, and therefore a different guard.
     //
     // Unguarded on session/generation ON PURPOSE — see SetOwnThreadRecurringPromptInput. The MCP server
@@ -3078,7 +3109,7 @@ export function createRouter(ctx: AppContext) {
     }),
 
     // ---- THE WORKER'S ONE-OFF TIMERS (scheduler SOURCE 6) ----------------------------------------
-    // Three mutations, from `mcp__frizz__timer`. Same caller as the recurring prompt above and therefore
+    // Three mutations, from `frizzctl timer`. Same caller as the recurring prompt above and therefore
     // the same guard: keyed on the slug alone, because the MCP server keeps its slug across every resume
     // while the session id underneath it bumps.
     //
@@ -3193,6 +3224,12 @@ export function createRouter(ctx: AppContext) {
             ...(w.expires_at ? { until: new Date(w.expires_at).toISOString() } : {}),
           })
         }
+        for (const w of ctx.storage.listCommandWatches(input.slug, { armedOnly: true })) {
+          activity.push({
+            kind: "command", id: w.id, label: w.command.trim().replace(/\s+/g, " ").slice(0, 120),
+            since: new Date(w.created_at).toISOString(), until: new Date(w.expires_at).toISOString(),
+          })
+        }
         // The WATCHES are already readable: each armed one rides its live item as `watchId`, and the
         // scheduler settles a watch the tick its target stops being live, so an armed row always has an
         // item to ride. The QUESTIONS had nowhere at all — hence their own list.
@@ -3240,7 +3277,7 @@ export function createRouter(ctx: AppContext) {
     }),
 
     // ---- REGISTERED PR WATCHERS (add / drop / list) ---------------------------------------------
-    // The worker's own PR watchers, from `mcp__frizz__watch_pr`. Same caller and therefore the same rules
+    // The worker's own PR watchers, from `frizzctl watch-pr`. Same caller and therefore the same rules
     // as the timers above: slug-only (the MCP server outlives the session ids underneath it), and no
     // thread parameter a model could aim elsewhere.
     addOwnPrWatch: mutation({
@@ -3252,7 +3289,7 @@ export function createRouter(ctx: AppContext) {
         if (row.state === "archived" || row.archived === 1) {
           throw new Error("Reopen this thread before registering a watcher on it")
         }
-        // A PULL REQUEST unless the caller says `issue` (2026-09-14, `mcp__frizz__watch_issue`). Same
+        // A PULL REQUEST unless the caller says `issue` (2026-09-14, `frizzctl watch-issue`). Same
         // registry and same rules below; the ref grammar, the probe and the refusal wording branch.
         const kind = input.kind ?? "pull"
         const noun = kind === "issue" ? "issue" : "pull request"
@@ -3331,8 +3368,114 @@ export function createRouter(ctx: AppContext) {
       },
     }),
 
+    // ---- REGISTERED COMMAND WATCHES (add / drop / list) -------------------------------------------
+    // `frizzctl watch-command`: a shell command the SERVER re-runs on a cadence until it exits 0 (scheduler
+    // SOURCE 13, command-watch.ts). Slug-only like every worker registry. The GATE runs before anything
+    // else, the idempotent short-circuit included: whether Frizz may run commands for this thread at all
+    // is the first question, and a thread that has lost the right must not be told its old watch stands.
+    addOwnCommandWatch: mutation({
+      input: AddOwnCommandWatchInput,
+      output: AddOwnCommandWatchResult,
+      handler: async ({ input }) => {
+        const row = ctx.storage.getSession(input.slug)
+        if (!row) throw new Error(`thread ${input.slug} is not registered`)
+        if (row.state === "archived" || row.archived === 1) {
+          throw new Error("Reopen this thread before registering a command watch on it")
+        }
+        const service = ctx.commandWatches
+        const refusal = service ? service.refusal(row) : `this server cannot run command watches. ${COMMAND_WATCH_FALLBACK}`
+        if (refusal) {
+          return { refused: `Frizz will not run a command watch for this thread: ${refusal}`, alreadyArmed: false, passed: false, watches: armedCommandWatchViews(input.slug) }
+        }
+        const command = input.command.trim()
+        const armed = ctx.storage.listCommandWatches(input.slug, { armedOnly: true })
+        // IDEMPOTENT ON THE COMMAND TEXT, for the PR watcher's reason: re-registering after a compaction
+        // is the careful case, and a second row would run the same check twice and wake twice.
+        const existing = armed.find((w) => w.command === command)
+        if (existing) {
+          return {
+            id: existing.id, alreadyArmed: true, passed: false,
+            expiresAt: new Date(existing.expires_at).toISOString(), every: formatCommandWatchDuration(existing.every_ms),
+            watches: armedCommandWatchViews(input.slug),
+          }
+        }
+        if (armed.length >= COMMAND_WATCH_MAX_ARMED) {
+          throw new Error(`this thread already has ${armed.length} command watches armed (the limit is ${COMMAND_WATCH_MAX_ARMED}) — drop one first`)
+        }
+        const everyAsked = parseAwaitingDurationRaw(input.every)
+        if (everyAsked === null) throw new Error(`\`--every ${input.every}\` is not a duration — give one like \`5m\` or \`1h\` (min 1m, max 24h)`)
+        const forAsked = parseAwaitingDurationRaw(input.for)
+        if (forAsked === null) throw new Error(`\`--for ${input.for}\` is not a duration — give one like \`2h\` or \`3d\` (max 7d)`)
+        // CLAMPED, NOT REFUSED, and REPORTED — every `for` in the product follows that rule.
+        const everyMs = Math.min(COMMAND_WATCH_EVERY_MAX_MS, Math.max(COMMAND_WATCH_EVERY_MIN_MS, everyAsked))
+        const forMs = Math.min(forAsked, COMMAND_WATCH_FOR_MAX_MS)
+        const clamped = {
+          ...(everyMs !== everyAsked ? { every: input.every } : {}),
+          ...(forMs !== forAsked ? { for: input.for } : {}),
+        }
+        // THE FIRST CHECK, before anything is stored. Exit 0 means the condition already holds: nothing
+        // is armed, and the worker carries on now instead of resting a whole cadence to be told so.
+        const first = await service!.probe(input.slug, command)
+        const firstRun: CommandWatchRun | undefined = first
+          ? { at: new Date(first.finishedAtMs).toISOString(), outcome: first.outcome, exitCode: first.exitCode, output: first.output }
+          : undefined
+        if (first?.outcome === "exit" && first.exitCode === 0) {
+          return { alreadyArmed: false, passed: true, firstRun, watches: armedCommandWatchViews(input.slug) }
+        }
+        // A COMMAND THAT CANNOT RUN HERE is refused, not armed: it would fail every check for a week while
+        // the worker rests believing it waits on the condition. 127 and 126 are the shell's own "not
+        // found" and "not executable" — almost always a binary on the worker's PATH and not the
+        // server's. An `error` is a shell that never started.
+        if (first && (first.outcome === "error" || (first.outcome === "exit" && (first.exitCode === 126 || first.exitCode === 127)))) {
+          return {
+            refused:
+              `Frizz ran your command once to check it, and it could not run here (${first.outcome === "error" ? "the shell did not start" : `\`/bin/sh\` exited ${first.exitCode}`}). ` +
+              `The server runs it with \`/bin/sh -c\` in ${ctx.project.dir}, with the server's own PATH, not your shell's: ` +
+              `use absolute paths, or ${COMMAND_WATCH_FALLBACK.charAt(0).toLowerCase()}${COMMAND_WATCH_FALLBACK.slice(1)}`,
+            alreadyArmed: false, passed: false, firstRun, watches: armedCommandWatchViews(input.slug),
+          }
+        }
+        const now = Date.now()
+        const id = `cmw_${randomUUID().replace(/-/g, "").slice(0, 12)}`
+        // A registration trumps a done — see setOwnThreadTimer.
+        ctx.storage.clearThreadDone(input.slug)
+        ctx.storage.armCommandWatch({
+          id, slug: input.slug, command, everyMs, createdAtMs: now, expiresAtMs: now + forMs,
+          // A first check cut short by the registration's own short timeout is NOT recorded: the
+          // scheduler runs it again at once with the full timeout, rather than a cadence from now.
+          ...(first && first.outcome !== "timeout"
+            ? { firstRun: { atMs: first.finishedAtMs, outcome: first.outcome, exitCode: first.exitCode, output: first.output } }
+            : {}),
+        })
+        ctx.board.refresh()
+        return {
+          id, alreadyArmed: false, passed: false, ...(firstRun ? { firstRun } : {}),
+          expiresAt: new Date(now + forMs).toISOString(), every: formatCommandWatchDuration(everyMs),
+          ...(Object.keys(clamped).length ? { clamped } : {}),
+          watches: armedCommandWatchViews(input.slug),
+        }
+      },
+    }),
+
+    dropOwnCommandWatch: mutation({
+      input: DropOwnCommandWatchInput,
+      output: DropOwnCommandWatchResult,
+      handler: async ({ input }) => {
+        // Scoped to the caller's own slug in storage, like every drop.
+        const dropped = ctx.storage.dropCommandWatch(input.slug, input.id, Date.now())
+        if (dropped) ctx.board.refresh()
+        return { dropped, watches: armedCommandWatchViews(input.slug) }
+      },
+    }),
+
+    listOwnCommandWatches: mutation({
+      input: ListOwnCommandWatchesInput,
+      output: OwnCommandWatchesResult,
+      handler: async ({ input }) => ({ watches: armedCommandWatchViews(input.slug) }),
+    }),
+
     // ---- THE WORKER'S OWN WATCHES on its own running work (add / drop) --------------------------
-    // `mcp__frizz__watch` and `mcp__frizz__unwatch`. A wait stops being a line the worker restates in a
+    // `frizzctl watch` and `frizzctl unwatch`. A wait stops being a line the worker restates in a
     // fence at every rest and becomes a row it creates once — see plans/rest-by-registration.md. Same
     // caller and therefore the same rules as the PR watchers above: slug-only, no thread parameter.
     addOwnWatch: mutation({
@@ -3359,7 +3502,7 @@ export function createRouter(ctx: AppContext) {
         if (!live) {
           throw new Error(
             `nothing running on this thread answers to \`${target}\` — a watch only ever names work that is ` +
-            "already live, and work that has already finished needs no watch at all. Call `activity` for the " +
+            "already live, and work that has already finished needs no watch at all. Run `frizzctl activity` for the " +
             "exact ids of everything you have running.",
           )
         }
@@ -3369,7 +3512,7 @@ export function createRouter(ctx: AppContext) {
         if (live.kind !== input.kind) {
           const said = input.kind === "agent" ? "sub-agent" : "background shell"
           const is = live.kind === "agent" ? "sub-agent" : "background shell"
-          throw new Error(`\`${target}\` is a ${is}, not a ${said} — register it with \`kind: "${live.kind}"\`.`)
+          throw new Error(`\`${target}\` is a ${is}, not a ${said} — register it with \`frizzctl watch ${live.kind}\`.`)
         }
         const armed = ctx.storage.listThreadWatches(input.slug, { armedOnly: true })
         if (armed.length >= OWN_WATCH_MAX_ARMED) {
@@ -3408,7 +3551,7 @@ export function createRouter(ctx: AppContext) {
     }),
 
     // ---- THE WORKER'S REGISTERED QUESTIONS (ask / unask) + the human's answer -------------------
-    // `mcp__frizz__ask` and `mcp__frizz__unask`, plus the two the CARD calls. See
+    // `frizzctl ask` and `frizzctl unask`, plus the two the CARD calls. See
     // plans/rest-by-registration.md: a question stops being a fenced block with the lifetime of the
     // message carrying it and becomes a row that survives the worker saying anything else.
     //
@@ -3557,6 +3700,9 @@ export function createRouter(ctx: AppContext) {
           ...ctx.storage
             .listThreadTimers(input.slug, { armedOnly: true })
             .map((t) => ({ id: t.id, what: `timer, fires ${new Date(t.fire_at).toISOString()}` })),
+          ...ctx.storage
+            .listCommandWatches(input.slug, { armedOnly: true })
+            .map((w) => ({ id: w.id, what: `command watch: ${w.command.trim().replace(/\s+/g, " ").slice(0, 120)}` })),
         ]
         if (blockingQuestions.length > 0 || blockingWatches.length > 0) {
           return { done: false, blockingQuestions, blockingWatches }
@@ -3788,7 +3934,7 @@ export function createRouter(ctx: AppContext) {
       },
     }),
 
-    // The WORKER naming its own thread, from `mcp__frizz__title`. Same row `renameThread` writes;
+    // The WORKER naming its own thread, from `frizzctl title`. Same row `renameThread` writes;
     // different caller, and therefore a weaker claim: this name is machine-authored, so it does NOT
     // lock, and a human rename outranks it both before and after.
     //
@@ -4145,6 +4291,11 @@ export function createRouter(ctx: AppContext) {
      *
      * One action, not two: "remove this picture" and "go and look for one" are the same wish, because
      * a project with no icon at all falls back to its monogram either way.
+     *
+     * The scan runs HERE, and the card carries its answer. Clearing alone left the looking to the
+     * square's image request, and the square makes none once its last request failed — so "Look for an
+     * icon again" did nothing at all after a miss earlier in the same page (2026-10-11). A fresh
+     * `iconVersion` is also a fresh URL, which no earlier failure or browser cache entry answers for.
      */
     projectIconClear: mutation({
       input: z.object({ id: z.string().min(1) }),
@@ -4153,7 +4304,9 @@ export function createRouter(ctx: AppContext) {
         for (const extension of PROJECT_ICON_EXTENSIONS) {
           rmSync(customIconPath(input.id, `.${extension}`), { force: true })
         }
-        const updated = clearProjectIcon(input.id)
+        if (!clearProjectIcon(input.id)) throw new Error("No such project.")
+        resolveProjectIcon(input.id, (root) => detectProjectIcon(root)?.path)
+        const updated = findById(input.id)
         if (!updated) throw new Error("No such project.")
         return projectCard(updated, !existsSync(updated.path))
       },

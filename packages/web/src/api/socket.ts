@@ -3,11 +3,21 @@ import type { SocketClientMsg, SocketServerMsg } from "@frizz/shared"
 import { store } from "../store.ts"
 import { BoardStream, refreshProjectList } from "./board-stream.ts"
 import { connectSSE, rebindSSEProject } from "./sse.ts"
-import { mergeOptimistic, preserveMessageIdentity, type QueuedMessage } from "../lib/transcript-sync.ts"
-import { reconcileLatestPage, reconcileLiveMessages, type PaginatedTranscriptData } from "../lib/transcriptPagination.ts"
+import { writeTranscriptPush } from "./transcript-push.ts"
 import { invalidateInteractionQueries } from "./interaction-cache.ts"
 import { FRIZZ_ROUTE_PREFIX } from "@frizz/shared"
-import { apiBase, projectSlug } from "../lib/base-path.ts"
+import { apiBase, isConsolePath, projectSlug } from "../lib/base-path.ts"
+import { splitThreadKey } from "../lib/threadKey.ts"
+import {
+  consoleFeedActive,
+  consoleRetryTranscript,
+  consoleSubscribeFile,
+  consoleSubscribeTranscript,
+  consoleUnsubscribeFile,
+  consoleUnsubscribeTranscript,
+  startConsoleFeed,
+  stopConsoleFeed,
+} from "./consoleFeed.ts"
 import { localFileQueryKey } from "../lib/localFileQuery.ts"
 
 // The stage-2 multiplexed client: ONE WebSocket("/ws") carrying the board channel (keyframe + deltas +
@@ -78,6 +88,9 @@ function wsUrl(): string {
 // that holds the socket is the only thing that says what the socket is for.
 let feedProject: string | undefined
 let feedBound = false
+// What `feedProject` says while the Console holds the feed. Not a slug: project slugs are slugify output
+// and never contain `@`, so no project can be mistaken for it.
+const CONSOLE_FEED = "@console"
 
 function noteFeedProject(): void {
   feedProject = projectSlug()
@@ -90,7 +103,9 @@ export function feedIsBoundTo(slug: string | undefined): boolean {
 }
 
 function connect(): void {
-  if (ws || fellBack) return
+  // The Console has no project of its own to connect to — its feed is one connection per project
+  // (consoleFeed.ts). A timer or a wake armed before the switch must not open the launching project's.
+  if (ws || fellBack || isConsolePath()) return
   if (store.connection !== "open") store.connection = "connecting"
   noteFeedProject()
   const sock = new WebSocket(wsUrl())
@@ -119,7 +134,7 @@ function connect(): void {
     // A frame for the project we have left goes nowhere. `ws !== sock` catches a socket already
     // superseded here; the project check catches the window before that, where this IS the current
     // socket and the address bar has already moved on.
-    if (ws !== sock || socketProject !== projectSlug()) return
+    if (ws !== sock || socketProject !== projectSlug() || isConsolePath()) return
     lastMsg = Date.now()
     try {
       const msg = JSON.parse(e.data) as SocketServerMsg
@@ -227,7 +242,7 @@ function installHealth(): void {
 // Watchdog/wake-triggered reconnect. A socket that never confirmed and has now gone stale is treated like
 // an unconfirmed drop (fall back to SSE); a confirmed one reconnects with backoff.
 function forceReconnect(immediate = false): void {
-  if (fellBack) return
+  if (fellBack || isConsolePath()) return
   dropWs()
   stream.reset()
   if (!confirmed) {
@@ -261,30 +276,8 @@ function handle(msg: SocketServerMsg): boolean {
       if (msg.event.type === "board") store.socketBoardFallback = null
       return true
     case "transcript":
-      // Write server truth into the SAME cache useTranscript reads — components are unchanged. PRESERVE any
-      // optimistic `queued` bubble the incoming truth doesn't yet carry (mergeOptimistic), so a just-sent
-      // follow-up never vanishes in the window before the server's own copy lands (the S1 sync-audit fix).
-      qc?.setQueryData<PaginatedTranscriptData | { messages: QueuedMessage[] }>(["transcript", msg.slug], (prev) => {
-        const previous = prev as PaginatedTranscriptData | undefined
-        // A push that carries its page envelope is the SAME bounded latest window the HTTP page read
-        // returns, so it reconciles through the same function the queryFn uses — the envelope (cursor,
-        // hasEarlier, transcriptKey) stays as fresh as the messages, and a long thread whose window slid
-        // under a push cannot page "earlier" from a cursor that no longer names its head. `editedFiles`
-        // never rides a push (see TranscriptPushPage); the rail keeps its last HTTP copy. A server that
-        // predates the envelope pushes messages only, and those take the messages-only reconcile.
-        const reconciled = msg.page
-          ? reconcileLatestPage(previous, { ...msg.page, messages: msg.messages, editedFiles: previous?.editedFiles })
-          : reconcileLiveMessages(previous, msg.messages)
-        return {
-          ...reconciled,
-          // preserveMessageIdentity: unchanged messages keep the previous render's object so the
-          // memoized rows bail out — a push re-renders only what actually changed.
-          messages: preserveMessageIdentity(
-            prev?.messages,
-            mergeOptimistic(prev?.messages, reconciled.messages as QueuedMessage[]),
-          ),
-        }
-      })
+      // Server truth into the SAME cache useTranscript reads — components are unchanged (transcript-push.ts).
+      writeTranscriptPush(qc, msg.slug, msg)
       delete store.socketTranscriptFallbacks[msg.slug]
       return true
     case "file-changed":
@@ -387,6 +380,11 @@ function resubscribe(): void {
 // Register interest in a thread's transcript. Ref-counted: the first interested surface sends `sub`;
 // later ones just bump the count. A no-op before the socket opens — resubscribe() replays on open.
 export function subscribeTranscript(slug: string): void {
+  // A KEY names its project, so it belongs to the Console's connection for that project whatever page
+  // is asking — and must never reach this one, whose server would refuse `~` and close the socket. A
+  // bare slug on the Console names no project at all.
+  if (splitThreadKey(slug)) return consoleSubscribeTranscript(slug)
+  if (isConsolePath()) return
   const n = (subs.get(slug) ?? 0) + 1
   subs.set(slug, n)
   if (n === 1 && !store.socketTranscriptFallbacks[slug]) send({ t: "sub", topic: "transcript", slug })
@@ -394,6 +392,8 @@ export function subscribeTranscript(slug: string): void {
 
 // Drop one surface's interest. The LAST one sends `unsub` and forgets the slug (no leak); others decrement.
 export function unsubscribeTranscript(slug: string): void {
+  if (splitThreadKey(slug)) return consoleUnsubscribeTranscript(slug)
+  if (isConsolePath()) return
   const n = (subs.get(slug) ?? 0) - 1
   if (n <= 0) {
     subs.delete(slug)
@@ -406,6 +406,7 @@ export function unsubscribeTranscript(slug: string): void {
 // A reader opened a local file: the first reader on a path sends `sub`; later ones bump the count.
 // Before the socket opens it is a no-op that resubscribe() replays, exactly as a transcript is.
 export function subscribeFile(path: string): void {
+  if (isConsolePath()) return consoleSubscribeFile(path)
   const n = (fileSubs.get(path) ?? 0) + 1
   fileSubs.set(path, n)
   if (n === 1) send({ t: "sub", topic: "file", path })
@@ -413,6 +414,7 @@ export function subscribeFile(path: string): void {
 
 // The last reader on a path sends `unsub` and forgets it; the others decrement.
 export function unsubscribeFile(path: string): void {
+  if (isConsolePath()) return consoleUnsubscribeFile(path)
   const n = (fileSubs.get(path) ?? 0) - 1
   if (n <= 0) {
     fileSubs.delete(path)
@@ -426,6 +428,7 @@ export function unsubscribeFile(path: string): void {
 // the failed subscription, so one explicit retry is at most one budgeted read + serialization. Success
 // resumes push; another typed rejection restores the stable warning without reconnecting the board socket.
 export function retryTranscriptSocket(slug: string): void {
+  if (splitThreadKey(slug)) return consoleRetryTranscript(slug)
   if (!store.socketTranscriptFallbacks[slug]) return
   cancelBudgetRetry(slug)
   delete store.socketTranscriptFallbacks[slug]
@@ -481,6 +484,7 @@ function cancelBudgetRetry(slug: string): void {
  * which is a property of the process, not of the project it happens to be serving.
  */
 export function rebindProject(): void {
+  stopConsoleFeed()
   subs.clear()
   // Absolute paths do not collide across projects the way slugs do, but the file gate is the NEW
   // project's, and the readers holding these are unmounting with the page they were on.
@@ -496,6 +500,29 @@ export function rebindProject(): void {
   // `0fb8574`, second instance, found while auditing the first.
   if (fellBack) rebindSSEProject()
   else connect()
+}
+
+/**
+ * Hand the live feed to the CONSOLE: drop this page's connection and start the Console's, which opens
+ * one connection per project (consoleFeed.ts). The mirror of `rebindProject`, which takes it back.
+ */
+export function bindConsole(): void {
+  subs.clear()
+  fileSubs.clear()
+  stream.reset()
+  dropWs()
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer)
+    reconnectTimer = null
+  }
+  feedProject = CONSOLE_FEED
+  feedBound = true
+  startConsoleFeed()
+}
+
+/** Is the live feed the Console's? What `feedIsBoundTo` is for a project page. */
+export function feedIsConsole(): boolean {
+  return feedBound && feedProject === CONSOLE_FEED && consoleFeedActive()
 }
 
 // Entry point (replaces connectSSE in main.tsx). Deferred to `load` so the socket doesn't consume one of

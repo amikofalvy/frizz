@@ -17,6 +17,7 @@ import { resolveLocalVisualization } from "./local-visualization.ts"
 import { CALLER_HEADER, requestOriginFrom, withRequestOrigin } from "./audit.ts"
 import { LAUNCH_ROUTE_PATH, LAUNCH_ROUTE_PROTOCOL, LAUNCH_TOKEN_HEADER, parseLaunchRouteRequest, routeLaunch } from "./launch-routing.ts"
 import { resolveProject } from "./project.ts"
+import { ProjectServedElsewhereError, projectServedElsewhere } from "./project-serving.ts"
 
 export { resolveLocalImage } from "./local-image.ts"
 export { resolveLocalVisualization } from "./local-visualization.ts"
@@ -164,7 +165,14 @@ export function createApp(ctx: AppContext, options: AppOptions = {}) {
     const request = parseLaunchRouteRequest(await c.req.json().catch(() => undefined))
     if ("error" in request) return c.json({ error: request.error }, 400)
     const home = options.launchRouting?.home
-    const open = options.launchRouting?.open ?? ((dir: string) => resolveProject(dir, home))
+    // A project another server has open would not open here either, so the launch lands on the
+    // dashboard and its notice names that server, rather than on a board that fails to load.
+    const open = options.launchRouting?.open ?? ((dir: string) => {
+      const project = resolveProject(dir, home)
+      const other = projectServedElsewhere(project.stateDir, project.id)
+      if (other !== undefined) throw new ProjectServedElsewhereError(project.name, other)
+      return project
+    })
     try {
       return c.json({ protocol: LAUNCH_ROUTE_PROTOCOL, ...routeLaunch(request.dir, open, home) })
     } catch (error) {

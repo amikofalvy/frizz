@@ -12,7 +12,7 @@ import { AskedQuestionSchema, BoardDiffer, PermissionMode, SnoozeUntil, ThreadSl
 import type { Bus } from "./bus.ts"
 import type { Project } from "./project.ts"
 import { isHeadlessRow, isBrokerClaudeRow, sessionTitleLocked, type ThreadQuestionRow } from "./storage.ts"
-import type { Storage, SessionRow, PrWatchRow, ThreadTimerRow, ThreadWatchRow, ThreadLinkRow } from "./storage.ts"
+import type { Storage, SessionRow, PrWatchRow, ThreadTimerRow, ThreadWatchRow, ThreadLinkRow, CommandWatchRow } from "./storage.ts"
 import { threadLinkView } from "./thread-links.ts"
 import { normalizeObservedThreadModel } from "./backend/thread-profiles.ts"
 import { claudeModelStanding } from "./backend/claude-model-upgrade.ts"
@@ -408,7 +408,7 @@ function liveWaitHandles(tele: SessionTelemetry | undefined): Set<string> {
 }
 
 /** The same live handles as `liveWaitHandles`, but resolved rather than merely tested — for
- *  `mcp__frizz__watch`, which has to answer three questions the fence's integrity check never asks:
+ *  `frizzctl watch`, which has to answer three questions the fence's integrity check never asks:
  *  does this handle name anything live, WHICH KIND is it, and what is the work called.
  *
  *  THE KIND IS RESOLVED, NOT TRUSTED. A shell handle and a sub-agent handle are both opaque runtime
@@ -589,10 +589,22 @@ export function hasRegisteredBackgroundPark(
   })
 }
 
-/** Is the fence parked on a TIMER that is actually armed? The declaration alone is not the wait — a
- *  `timers:` line naming a fired or cancelled row describes a wake that will never come, exactly the
- *  shell-that-died case one branch up — so the hint is checked against the registry, which is the same
- *  set the scheduler's own integrity pass reads (armedTimerIdsOf). */
+/** COMMAND WATCHES RIDE THE TIMERS' SET (2026-10-11). A `cmw_…` row is the same kind of wait as a
+ *  `tmr_…` one for every reading below: a registration the SCHEDULER fires, with no process of the
+ *  thread's behind it, that wakes the thread fence or no fence. So the board carries both in one set of
+ *  armed ids (sessionThreadView), and splits them back by this prefix only where a fence line's KIND has
+ *  to match the row it names — a `timers:` line naming a command watch is a wrong fence, and the
+ *  scheduler bumps it, so the board must not honour it either. Ids are minted by the router alone. */
+const COMMAND_WATCH_ID_PREFIX = "cmw_"
+function isCommandWatchId(id: string): boolean {
+  return id.startsWith(COMMAND_WATCH_ID_PREFIX)
+}
+
+/** Is the fence parked on a TIMER — or a COMMAND WATCH — that is actually armed? The declaration alone
+ *  is not the wait — a `timers:` line naming a fired or cancelled row describes a wake that will never
+ *  come, exactly the shell-that-died case one branch up — so the hint is checked against the registry,
+ *  which is the same set the scheduler's own integrity pass reads (armedTimerIdsOf, and
+ *  armedCommandWatchIdsOf for `commands:`). */
 export function hasParkedTimerWatch(
   tele: SessionTelemetry | undefined,
   armedTimerIds: ReadonlySet<string>,
@@ -602,7 +614,12 @@ export function hasParkedTimerWatch(
   // card at all while the fence was required (the thread fell through to the bare rest). With a fence,
   // the fence is the worker's statement and it has to name an armed one, as before.
   if (tele?.lastFence?.kind !== "awaiting") return armedTimerIds.size > 0
-  return tele.lastFence.hints.some((hint) => hint.kind === "timer" && armedTimerIds.has(hint.value.trim()))
+  return tele.lastFence.hints.some((hint) => {
+    const id = hint.value.trim()
+    if (hint.kind === "timer") return !isCommandWatchId(id) && armedTimerIds.has(id)
+    if (hint.kind === "command") return isCommandWatchId(id) && armedTimerIds.has(id)
+    return false
+  })
 }
 
 /** Is the thread's last word a fence handing the HUMAN steps to perform (`steps:`, 2026-10-03)? That
@@ -667,7 +684,7 @@ export function hasDeclaredWait(
 // is still open.
 //
 // THE REGISTERED WATCH IS THE SIGNAL, NOT THE FENCE (2026-09-20). Until then this read `prs:` hints only
-// and required each to be registered too, so a worker that called `mcp__frizz__watch_pr` and rested
+// and required each to be registered too, so a worker that called `frizzctl watch-pr` and rested
 // WITHOUT a fence — the shape the worker contract steers toward ("Register FIRST: this line states the
 // wait, it does not create one") — was queued while its checks ran, while the rail's own mark
 // (groups.prChecksRunning) read the registered rows and called the same thread live. One thread, two
@@ -713,7 +730,7 @@ function hasLiveOwnWork(tele: SessionTelemetry | undefined, registeredPrWatches:
 /** A standing PR park the scheduler will actually fire. DECLARED AND REGISTERED, both — the rule
  *  heldByRunningChecks and hasParkedTimerWatch already spell out: the declaration says the thread is
  *  waiting, the registration is what will actually wake it. Until 2026-08-26 this read the declaration
- *  alone, so a `prs:` line naming a PR the worker never registered with `mcp__frizz__watch_pr`
+ *  alone, so a `prs:` line naming a PR the worker never registered with `frizzctl watch-pr`
  *  counted as a wait: the resting card showed with NOTHING in it (a `prs:` entry adds no watch row of
  *  its own — see fenceWatchViews), the fence card hid itself behind it, and the ref — the one thing the
  *  wait was about — rendered on no surface at all. Membership is by githubStatusKey, so a fence naming
@@ -1166,7 +1183,19 @@ function needsInputQueues(
     runtime !== "exited" &&
     fence?.kind === "awaiting" &&
     // `registeredPrWatches` carries both kinds' refs (see hasParkedPrWatch), so it answers for `issues:` too.
-    needsInputParkHolds(fence.hints, liveActivityOf(tele, registeredPrWatches, armedTimerIds, registeredPrWatches), Date.parse(tele?.lastAssistantAt ?? ""), nowMs)
+    // `armedTimerIds` carries the command watches too, split back by kind here (isCommandWatchId).
+    needsInputParkHolds(
+      fence.hints,
+      liveActivityOf(
+        tele,
+        registeredPrWatches,
+        new Set([...armedTimerIds].filter((id) => !isCommandWatchId(id))),
+        registeredPrWatches,
+        new Set([...armedTimerIds].filter(isCommandWatchId)),
+      ),
+      Date.parse(tele?.lastAssistantAt ?? ""),
+      nowMs,
+    )
   ) return false
   if (runtime !== "exited" && fence?.kind !== "done" && (hasLiveOwnWork(tele, registeredPrWatches) || hasParkedTimerWatch(tele, armedTimerIds))) return !bgSnoozeArmed(row)
   return true
@@ -1406,7 +1435,7 @@ export function resolvePendingPermission(row: Pick<SessionRow, "permission_pendi
 }
 
 // The recurring prompt as BOTH readers see it: the board's Goal panel (through the thread view below)
-// and the worker's own `mcp__frizz__goal` with `action: "get"` (through the router). One
+// and the worker's own `frizzctl goal get` (through the router). One
 // projection because they must agree — a worker reading back a different row than the human is editing
 // is exactly the confusion the read action exists to end.
 //
@@ -1488,7 +1517,7 @@ export function resolveLimitPause(
 // aiTitle on the wire the display side cannot tell a persisted worker title from the dispatch chop,
 // so it must assume the chop.
 //
-// THE REGISTRY COPY OUTRANKS TELEMETRY, which is the reverse of the rule here until `mcp__frizz__title`
+// THE REGISTRY COPY OUTRANKS TELEMETRY, which is the reverse of the rule here until `frizzctl title`
 // existed ("telemetry wins while present — it is the fresher of the two"). Freshness was the right
 // tiebreak only while the two could not disagree: both halves were the same codex marker, so the CAS
 // either matched telemetry exactly or had not run. A worker registering its own name breaks that tie
@@ -1553,6 +1582,7 @@ interface ThreadRegistries {
   links: Map<string, ThreadLinkRow[]>
   prWatches: Map<string, PrWatchRow[]>
   timers: Map<string, ThreadTimerRow[]>
+  commandWatches: Map<string, CommandWatchRow[]>
   questions: Map<string, ThreadQuestionRow[]>
   watches: Map<string, ThreadWatchRow[]>
   done: Map<string, { body: string; doneAt: number }>
@@ -1563,6 +1593,7 @@ function readThreadRegistries(storage: Storage): ThreadRegistries {
     links: storage.threadLinksBySlug(),
     prWatches: storage.armedPrWatchesBySlug(),
     timers: storage.armedThreadTimersBySlug(),
+    commandWatches: storage.armedCommandWatchesBySlug(),
     questions: storage.threadQuestionsBySlug(),
     watches: storage.armedThreadWatchesBySlug(),
     done: storage.threadDoneBySlug(),
@@ -1627,8 +1658,11 @@ function sessionThreadView(
     fireAt: new Date(t.fire_at).toISOString(),
     createdAt: new Date(t.created_at).toISOString(),
   }))
-  const armedTimerIds = new Set(armedTimers.map((t) => t.id))
-  // This thread's ARMED WATCHES on its own running work — the `thread_watch` rows `mcp__frizz__watch`
+  // …and its ARMED COMMAND WATCHES (`frizzctl watch-command`), in the same set: see isCommandWatchId for
+  // why one set serves both, and where it is split back by kind.
+  const armedCommandWatches = registries.commandWatches.get(row.slug) ?? []
+  const armedTimerIds = new Set([...armedTimers.map((t) => t.id), ...armedCommandWatches.map((w) => w.id)])
+  // This thread's ARMED WATCHES on its own running work — the `thread_watch` rows `frizzctl watch`
   // creates. Same per-thread lookup as the two registries above, and the same ms→ISO mapping as the
   // worker's own read-back (router.armedOwnWatchViews), so the row, the strip and the tool cannot
   // disagree about one wait.
@@ -1662,7 +1696,7 @@ function sessionThreadView(
   // addOwnPrWatch, setOwnThreadTimer) and `done` refuses while any is live, so this is the belt to
   // those braces: whatever path leaves a done row beside an open question or an armed wait, the board
   // presents the wait, never a finished thread that is also asking or waiting.
-  const supersededDone = questions.length > 0 || armedWatches.length > 0 || armedPrWatches.length > 0 || armedTimers.length > 0
+  const supersededDone = questions.length > 0 || armedWatches.length > 0 || armedPrWatches.length > 0 || armedTimers.length > 0 || armedCommandWatches.length > 0
   const codexLive = row.codex_runtime === "app-server" ? codexTurnLiveness(row.slug, row.session_id) : undefined
   const nativeError = codexLive?.providerError
   // A witnessed failed turn can arrive before the tailer's next read. Do not keep spinning on the

@@ -113,7 +113,7 @@ const prose = [
 
 const records = [user("TASK:\nIs the branch ready to merge?"), assistant(prose)]
 
-// The card's body is REGISTERED (`mcp__frizz__done`), not written as a ```done fence: a signal fence
+// The card's body is REGISTERED (`frizzctl done`), not written as a ```done fence: a signal fence
 // ends at the first bare ``` line, so a code fence cannot be written inside one at all.
 const doneBody = [
   "Ready to merge. Press <kbd>⏎</kbd> to confirm.",

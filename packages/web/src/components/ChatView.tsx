@@ -14,7 +14,8 @@ import { useMarkdownHtml, useInlineMarkdownHtml } from "../lib/useMarkdown.ts"
 import { splitComposerValue, splitProseAttachments } from "../lib/imagePaths.ts"
 import { localImageUrl } from "../lib/markdownTargets.ts"
 import { basename } from "../lib/paths.ts"
-import { apiBase } from "../lib/base-path.ts"
+import { apiBase, projectApiBase } from "../lib/base-path.ts"
+import { splitThreadKey } from "../lib/threadKey.ts"
 import { DiffBlock, PathLink } from "./DiffBlock.tsx"
 import { LinkedHtml } from "./LinkedHtml.tsx"
 import { CodeBody } from "./CodeBody.tsx"
@@ -3928,7 +3929,9 @@ export function InlineVisualization({ file }: { file: string }) {
   const requestId = useRef(0)
   const loadedSrc = useRef<string | null>(null)
   const { resolved } = useSyncExternalStore(subscribeTheme, getThemeSnapshot, getThemeSnapshot)
-  const src = slug ? `${apiBase()}/local-visualization?slug=${encodeURIComponent(slug)}&file=${encodeURIComponent(file)}` : null
+  // A Console key names its project; the route is that project's, with the real slug.
+  const keyed = slug ? splitThreadKey(slug) : null
+  const src = slug ? `${keyed ? projectApiBase(keyed.project) : apiBase()}/local-visualization?slug=${encodeURIComponent(keyed?.slug ?? slug)}&file=${encodeURIComponent(file)}` : null
 
   useEffect(() => {
     if (!src) { setAvailable(false); return }

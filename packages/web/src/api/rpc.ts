@@ -2,7 +2,8 @@ import { noteServerBootId } from "./boot.ts"
 import { store } from "../store.ts"
 import { PROCEDURES, type Api, type ProcType, type RpcCallOpts } from "./contract.ts"
 import { FRIZZ_ROUTE_PREFIX } from "@frizz/shared"
-import { apiBase } from "../lib/base-path.ts"
+import { apiBase, isConsolePath, projectApiBase } from "../lib/base-path.ts"
+import { splitThreadKey, threadKey } from "../lib/threadKey.ts"
 
 export type { Api, ProcType, RpcCallOpts } from "./contract.ts"
 export { PROCEDURES } from "./contract.ts"
@@ -69,31 +70,150 @@ export async function parseRpcResponse(res: Response, name: string): Promise<unk
   return json.result
 }
 
-async function call(name: string, type: ProcType, input?: unknown, opts?: RpcCallOpts): Promise<unknown> {
+// WHICH PROJECT A CALL IS FOR, and the one place that decides it.
+//
+// On a project's page the page says (`apiBase()`), as it always has. On the Console the page names no
+// project, so the CALL must: a thread procedure names its thread by key (lib/threadKey.ts), and the key
+// carries the project; a project procedure is made through `rpcFor(project)`. What the Console must never
+// do is fall through to `apiBase()`, which there answers `/_frizz` — the project that LAUNCHED the server
+// — so a call that forgot its project would read or write a stranger's state and look like it worked.
+// Here that call throws instead.
+
+/**
+ * Procedures that read ONE project's state but name no thread in their input, so nothing in the call
+ * says which project they are for (packages/server/src/router.ts reads `ctx.project`, its storage, its
+ * settings or its roots for each). The Console must make them through `rpcFor`.
+ *
+ * `settingsGet`/`settingsSet`/`settingsReset` are deliberately NOT here: the keys the Console itself
+ * reads (`notifications`, `projectRail`, the file opener) are machine-level (server/settings.ts), and any
+ * project answers them the same way.
+ */
+export const PROJECT_SCOPED_PROCEDURES: ReadonlySet<string> = new Set([
+  "board",
+  "dispatch",
+  "repairThread",
+  "openLocalFile",
+  "localMarkdown",
+  "localFile",
+  "resolveLocalPaths",
+  "githubStatus",
+  "githubList",
+  "githubDispatchBatch",
+  "claudeModels",
+  "acpAgents",
+  "acpAgentModels",
+])
+
+/** Machine-wide procedures whose input carries a REAL slug that is not this page's thread. */
+const MACHINE_SLUG_PROCEDURES: ReadonlySet<string> = new Set(["threadLocate"])
+
+export interface RoutedCall {
+  base: string
+  input: unknown
+  /** The project the call was sent to by name — set on the Console's calls, and only there. */
+  project?: string
+}
+
+/** Where `name` goes and with what input. Pure apart from reading the page's path; unit-tested. */
+export function routeCall(name: string, input: unknown, project?: string, pathname?: string): RoutedCall {
+  const onConsole = isConsolePath(pathname)
+  const slug = input && typeof input === "object" ? (input as { slug?: unknown }).slug : undefined
+  const parts = typeof slug === "string" ? splitThreadKey(slug) : null
+  if (parts) {
+    if (project && parts.project !== project) throw new Error(`RPC ${name}: ${slug} is not a thread of ${project}`)
+    return { base: projectApiBase(parts.project), input: { ...(input as object), slug: parts.slug }, project: parts.project }
+  }
+  if (project) return { base: projectApiBase(project), input, project }
+  if (onConsole) {
+    if (typeof slug === "string" && !MACHINE_SLUG_PROCEDURES.has(name)) {
+      throw new Error(`RPC ${name}: "${slug}" names no project, and the Console has none of its own`)
+    }
+    if (PROJECT_SCOPED_PROCEDURES.has(name)) throw new Error(`RPC ${name} needs a project on the Console`)
+  }
+  return { base: apiBase(pathname), input }
+}
+
+// A slug the server hands BACK names a thread in the project the call went to. On the Console it goes
+// back out as a key, so whatever the caller does with it next — open a drawer, call again, key a cache —
+// stays addressed to that project. Outputs are not validated by the server's RPC layer, so the shapes
+// are named here one by one, beside the procedures that return them.
+function rekeyOutput(name: string, result: unknown, project: string): unknown {
+  if (!result || typeof result !== "object") return result
+  const key = (slug: unknown) => (typeof slug === "string" && !splitThreadKey(slug) ? threadKey(project, slug) : slug)
+  switch (name) {
+    case "dispatch":
+    case "adoptThread":
+    case "repairThread": {
+      const r = result as { slug?: unknown }
+      return { ...r, slug: key(r.slug) }
+    }
+    case "githubDispatchBatch": {
+      const r = result as { dispatched?: { slug?: unknown }[] }
+      return { ...r, dispatched: r.dispatched?.map((d) => ({ ...d, slug: key(d.slug) })) }
+    }
+    case "pendingInteractions":
+    case "interactionGet":
+    case "interactionResolve":
+    case "interactionCancel": {
+      const rekeyRecord = (record: { owner?: { threadSlug?: unknown } }) =>
+        record?.owner ? { ...record, owner: { ...record.owner, threadSlug: key(record.owner.threadSlug) } } : record
+      const r = result as { interactions?: { owner?: { threadSlug?: unknown } }[]; interaction?: { owner?: { threadSlug?: unknown } } }
+      return {
+        ...r,
+        ...(r.interactions ? { interactions: r.interactions.map(rekeyRecord) } : {}),
+        ...(r.interaction ? { interaction: rekeyRecord(r.interaction) } : {}),
+      }
+    }
+    default:
+      return result
+  }
+}
+
+async function call(name: string, type: ProcType, rawInput?: unknown, opts?: RpcCallOpts, project?: string): Promise<unknown> {
   // The old child may remain healthy while its durable owner is building a replacement. Do not let
   // a mutation race that handoff; local draft state remains editable and every query stays available.
   assertMutationAllowedDuringControlPlaneTransition(type)
+  const routed = routeCall(name, rawInput, project)
+  const { base, input } = routed
+  const finish = (result: unknown) => (routed.project && isConsolePath() ? rekeyOutput(name, result, routed.project) : result)
   if (type === "query") {
-    const url = new URL(`${apiBase()}/rpc/${name}`, location.origin)
+    const url = new URL(`${base}/rpc/${name}`, location.origin)
     if (input !== undefined) url.searchParams.set("input", JSON.stringify(input))
     const res = await fetch(url.toString(), { signal: opts?.signal })
     noteServerBootId(res.headers.get("x-frizz-boot")) // notice a server restart on any RPC roundtrip
-    return parseRpcResponse(res, name)
+    return finish(await parseRpcResponse(res, name))
   }
-  const res = await fetch(`${apiBase()}/rpc/${name}`, {
+  const res = await fetch(`${base}/rpc/${name}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input ?? {}),
     signal: opts?.signal,
   })
   noteServerBootId(res.headers.get("x-frizz-boot"))
-  return parseRpcResponse(res, name)
+  return finish(await parseRpcResponse(res, name))
 }
 
-export const rpc = new Proxy({} as Api, {
-  get(_target, name: string) {
-    const type = (PROCEDURES as Record<string, ProcType | undefined>)[name]
-    if (!type) return undefined
-    return (input?: unknown, opts?: RpcCallOpts) => call(name, type, input, opts)
-  },
-})
+function rpcProxy(project?: string): Api {
+  return new Proxy({} as Api, {
+    get(_target, name: string) {
+      const type = (PROCEDURES as Record<string, ProcType | undefined>)[name]
+      if (!type) return undefined
+      return (input?: unknown, opts?: RpcCallOpts) => call(name, type, input, opts, project)
+    },
+  })
+}
+
+export const rpc = rpcProxy()
+
+const projectRpcs = new Map<string, Api>()
+
+/**
+ * The API of ONE named project, from any page — how the Console makes a project procedure (the prompt
+ * box's dispatch, a card's file reads). Undefined means "this page's project", which is plain `rpc`.
+ */
+export function rpcFor(project: string | undefined): Api {
+  if (!project) return rpc
+  let api = projectRpcs.get(project)
+  if (!api) projectRpcs.set(project, (api = rpcProxy(project)))
+  return api
+}

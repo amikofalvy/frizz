@@ -87,7 +87,7 @@ test("a fresh startup offers the directory and names the goal capability without
   assert.match(ctx, /nothing in it is read automatically/)
   // The capability stays NAMED — the worker can arm it — but it is offered, never prescribed
   // (maintainer 2026-08-28: stop pushing the notes-plus-arming arrangement).
-  assert.match(ctx, /post_compaction: true/)
+  assert.match(ctx, /`frizzctl goal start --post-compaction`/)
   assert.match(ctx, /Use it if you want it/)
   assert.doesNotMatch(ctx, /then arm|write the doc/, "the arrangement is offered, never pushed")
 })
@@ -109,7 +109,7 @@ test("after a compaction the hook NAMES the scratch files and never injects thei
   assert.doesNotMatch(ctx, /UNMISTAKABLE-BODY-TEXT/, "a listing, never the content")
   assert.doesNotMatch(ctx, /scratchpad-state/, "frizz's own bookkeeping is not the worker's notes")
   // And it still names the post-compaction goal as an available capability.
-  assert.match(ctx, /post_compaction: true/)
+  assert.match(ctx, /`frizzctl goal start --post-compaction`/)
 })
 
 test("a fresh startup does not pay for the listing — only the context-losing sources get it", () => {
@@ -372,7 +372,7 @@ test("an EMPTY directory still re-orients after compaction, and says so plainly"
   assert.match(ctx, /Do not search other `\.frizz\/threads\/\*\/` directories/)
   assert.match(ctx, /retained compaction summary/)
   // …and it says how to not be here again.
-  assert.match(ctx, /post_compaction: true/)
+  assert.match(ctx, /`frizzctl goal start --post-compaction`/)
 })
 
 test("--session overrides the reported id, so a codex worker finds FRIZZ's directory not its own", () => {

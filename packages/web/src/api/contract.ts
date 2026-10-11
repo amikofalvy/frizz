@@ -97,6 +97,12 @@ import type {
   ThreadLocation,
   DirectoryPickResult,
   AddOwnPrWatchInput,
+  AddOwnCommandWatchInput,
+  AddOwnCommandWatchResult,
+  DropOwnCommandWatchInput,
+  DropOwnCommandWatchResult,
+  ListOwnCommandWatchesInput,
+  OwnCommandWatchesResult,
   AddOwnWatchInput,
   AddOwnWatchResult,
   DropOwnWatchInput,
@@ -202,26 +208,31 @@ export interface Api {
   // THE RECURRING PROMPT, armed entirely from the Goal panel: one text, and up to two triggers
   // (every rest, and/or every N minutes). Text, triggers and cadence travel together — they are one row.
   setThreadRecurringPrompt(input: SetThreadRecurringPromptInput): Promise<void>
-  // The WORKER-facing counterpart, called by `mcp__frizz__goal` rather than by this client.
+  // The WORKER-facing counterpart, called by `frizzctl goal` rather than by this client.
   // Declared here because rpc-contract.ts proves the two procedure NAME SETS are equal — an RPC the
   // client cannot name is one nothing checks the shape of. No browser call site uses it.
   setOwnThreadRecurringPrompt(input: SetOwnThreadRecurringPromptInput): Promise<SetOwnThreadRecurringPromptResult>
   // The READ half of the same tool (`action: "get"`), so a worker can see the row before it overwrites
   // it — after a compaction, or after the human edited the text in the Goal panel.
   getOwnThreadRecurringPrompt(input: GetOwnThreadRecurringPromptInput): Promise<OwnThreadRecurringPromptResult>
-  // THE WORKER NAMING ITS OWN THREAD, called by `mcp__frizz__title`. Declared here for the drift gate
+  // THE WORKER NAMING ITS OWN THREAD, called by `frizzctl title`. Declared here for the drift gate
   // alone — the browser's rename verbs are `renameThread` / `aiRenameThread`, which lock the name.
   setOwnThreadTitle(input: SetOwnThreadTitleInput): Promise<SetOwnThreadTitleResult>
-  // ONE WORKER MESSAGING ANOTHER THREAD, called by `mcp__frizz__steer`. Declared here for the drift gate
+  // ONE WORKER MESSAGING ANOTHER THREAD, called by `frizzctl steer`. Declared here for the drift gate
   // alone — the browser's own message into a thread is `followUp`.
   steerThread(input: SteerThreadInput): Promise<SteerThreadResult>
-  // THE PR WATCHER REGISTRY, called by `mcp__frizz__watch_pr` rather than by this client. Declared here
+  // THE PR WATCHER REGISTRY, called by `frizzctl watch-pr` rather than by this client. Declared here
   // for the same reason as its neighbours: rpc-contract.ts proves the two procedure NAME SETS are equal,
   // so an RPC the client cannot name is one nothing checks the shape of. No browser call site uses these.
   addOwnPrWatch(input: AddOwnPrWatchInput): Promise<AddOwnPrWatchResult>
   dropOwnPrWatch(input: DropOwnPrWatchInput): Promise<DropOwnPrWatchResult>
   listOwnPrWatches(input: ListOwnPrWatchesInput): Promise<OwnPrWatchesResult>
-  // THE WORKER'S OWN WATCHES on its own running work, called by `mcp__frizz__watch` / `unwatch`. Same
+  // THE COMMAND WATCHES, called by `frizzctl watch-command`. Declared for the drift gate, like the PR
+  // watchers above; no browser call site uses them.
+  addOwnCommandWatch(input: AddOwnCommandWatchInput): Promise<AddOwnCommandWatchResult>
+  dropOwnCommandWatch(input: DropOwnCommandWatchInput): Promise<DropOwnCommandWatchResult>
+  listOwnCommandWatches(input: ListOwnCommandWatchesInput): Promise<OwnCommandWatchesResult>
+  // THE WORKER'S OWN WATCHES on its own running work, called by `frizzctl watch` / `unwatch`. Same
   // story as the PR watchers above: declared for the drift gate, never called from the browser.
   addOwnWatch(input: AddOwnWatchInput): Promise<AddOwnWatchResult>
   upsertOwnLink(input: UpsertOwnLinkInput): Promise<UpsertOwnLinkResult>
@@ -250,7 +261,7 @@ export interface Api {
   setOwnThreadStopHook(input: SetOwnThreadStopHookInput): Promise<void>
   setOwnThreadHeartbeat(input: SetOwnThreadHeartbeatInput): Promise<void>
   setThreadHeartbeat(input: SetOwnThreadHeartbeatInput): Promise<void>
-  // THE ONE-OFF TIMERS, called by `mcp__frizz__timer` rather than by this client. Declared here for the
+  // THE ONE-OFF TIMERS, called by `frizzctl timer` rather than by this client. Declared here for the
   // same reason as the worker procedures above — the drift gate proves the two procedure NAME SETS are
   // equal, so an RPC the client cannot name is one nothing checks the shape of. All three are mutations
   // because the worker's MCP server POSTs every call; `listOwnThreadTimers` reads nothing and is one
@@ -413,6 +424,9 @@ export const PROCEDURES = {
   addOwnPrWatch: "mutation",
   dropOwnPrWatch: "mutation",
   listOwnPrWatches: "mutation",
+  addOwnCommandWatch: "mutation",
+  dropOwnCommandWatch: "mutation",
+  listOwnCommandWatches: "mutation",
   addOwnWatch: "mutation",
   upsertOwnLink: "mutation",
   dropOwnLink: "mutation",

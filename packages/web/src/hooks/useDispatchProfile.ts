@@ -1,8 +1,9 @@
 import { useMemo } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import type { AcpAgent, ClaudeModel, CodexModel, SetDispatchPreferenceInput } from "@frizz/shared"
-import { rpc } from "../api/rpc.ts"
+import { rpc, rpcFor } from "../api/rpc.ts"
 import { showToast } from "../store.ts"
+import { scopedKey, useProjectScope } from "../lib/projectScope.tsx"
 import {
   applyDispatchPreferenceUpdate,
   resolveDispatchPreferences,
@@ -34,9 +35,13 @@ export function useDispatchProfile(): {
   // hand-maintained list).
   const codexModels = useQuery({ queryKey: ["codexModels"], queryFn: () => rpc.codexModels() })
   const codexList = codexModels.data ?? []
-  const claudeModels = useQuery({ queryKey: ["claudeModels"], queryFn: () => rpc.claudeModels(), retry: false })
+  // These two are answered by a PROJECT (its runtime, its PATH), so on the Console they are asked of the
+  // project the prompt box is pointed at (lib/projectScope.tsx).
+  const project = useProjectScope()
+  const api = rpcFor(project)
+  const claudeModels = useQuery({ queryKey: scopedKey(["claudeModels"], project), queryFn: () => api.claudeModels(), retry: false })
   const claudeList = claudeModels.data ?? []
-  const acpAgents = useQuery({ queryKey: ["acpAgents"], queryFn: () => rpc.acpAgents() })
+  const acpAgents = useQuery({ queryKey: scopedKey(["acpAgents"], project), queryFn: () => api.acpAgents() })
   const acpList = acpAgents.data ?? []
 
   const preference = useMutation({

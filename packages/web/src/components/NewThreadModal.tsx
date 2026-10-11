@@ -2,7 +2,7 @@ import * as RadixDialog from "@radix-ui/react-dialog"
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { useIsMutating, useMutation, useQuery } from "@tanstack/react-query"
 import { acpModelSlug, type AccountBackend, type DispatchInput } from "@frizz/shared"
-import { rpc } from "../api/rpc.ts"
+import { rpc, rpcFor } from "../api/rpc.ts"
 import { showToast, store } from "../store.ts"
 import { Composer } from "./Composer.tsx"
 import { GithubTrigger, useGithubTriggerVisible } from "./GithubTrigger.tsx"
@@ -20,6 +20,8 @@ import { useIsMobile } from "../lib/mobile.ts"
 import { useBoard } from "../hooks.ts"
 import { projectIdentity } from "./Sidebar.tsx"
 import { X } from "lucide-react"
+import { isConsolePath } from "../lib/base-path.ts"
+import { useProjectScope } from "../lib/projectScope.tsx"
 
 // THE dispatch prompt box — composer + quiet selects row — shared by every surface that can start a
 // thread: the queue's inline section and the anywhere-modal. There is no title field — the server
@@ -28,7 +30,7 @@ import { X } from "lucide-react"
 // The form's STATE and its dispatch live in useDispatchForm, so the phone's full-screen new-thread page
 // (PhoneNewThreadPage, below) runs the identical drafts, profile, sign-in gate, errors and pending
 // preview — only the layout around them differs.
-function useDispatchForm(onDispatched?: () => void) {
+function useDispatchForm(onDispatched?: () => void, projectPicker?: ReactNode) {
   // The one durable new-thread profile, shared with the GitHub picker's own selector.
   const { resolved, codexList, claudeList, acpList, loadError: profileLoadError, saveProfile } = useDispatchProfile()
   // A settings write still in flight — a compaction window picked in the model picker a moment ago —
@@ -37,10 +39,13 @@ function useDispatchForm(onDispatched?: () => void) {
   // Gate the leftAction slot itself, not just the icon: Composer reserves rail space whenever the
   // prop is set, so a hidden GithubTrigger must mean NO prop — not a null-rendering element.
   const githubTriggerVisible = useGithubTriggerVisible()
+  // On the Console the prompt box is pointed at a project by its chip (ConsoleSidebar.tsx), and the
+  // dispatch goes to that project. Its draft is the Console's own: the words stay put while the chip moves.
+  const project = useProjectScope()
   const projectDir = useProjectDir()
+  const promptKey = draftKey.dispatch(isConsolePath() ? "@console" : projectDir)
   // Queue and modal are the same semantic new-thread composer.
-  const [prompt, setPrompt, clearPrompt] = useDraft(draftKey.dispatch(projectDir))
-  const promptKey = draftKey.dispatch(projectDir)
+  const [prompt, setPrompt, clearPrompt] = useDraft(promptKey)
   const submittedDraftRef = useRef("")
   const [pendingDispatch, setPendingDispatch] = useState<string | null>(null)
 
@@ -58,7 +63,7 @@ function useDispatchForm(onDispatched?: () => void) {
   // sidebar, and the toast walks through the lifecycle — an immediate spinner while the server
   // waits out session startup, then a link that opens the thread in the side drawer.
   const dispatch = useMutation({
-    mutationFn: (input: DispatchInput) => rpc.dispatch(input),
+    mutationFn: (input: DispatchInput) => rpcFor(project).dispatch(input),
     onMutate: () => showToast("Starting thread…", { spinner: true, sticky: true }),
     onSuccess: (res) => {
       // The board stream now owns the durable thread row. Drop our local bridge as soon as the
@@ -174,6 +179,7 @@ function useDispatchForm(onDispatched?: () => void) {
       // gap-x-1.5 between the two pills, the same measured gap the thread composer's strip uses
       // (useThreadComposerControls): two bordered pills on `gap-x-1` read as one segmented control.
       <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-1.5 gap-y-0.5">
+        {projectPicker}
         <ProfileGridSelector
           groups={profileGroups}
           agentSettings
@@ -206,7 +212,7 @@ function useDispatchForm(onDispatched?: () => void) {
         )}
       </div>
     )
-  }, [resolved, codexList, claudeList, acpList, profileLoadError, saveProfile])
+  }, [resolved, codexList, claudeList, acpList, profileLoadError, saveProfile, projectPicker])
 
   const accountModals = (
     <>
@@ -242,11 +248,14 @@ function useDispatchForm(onDispatched?: () => void) {
 export function DispatchForm({
   autoFocus,
   onDispatched,
+  projectPicker,
 }: {
   autoFocus?: boolean
   onDispatched?: () => void
+  /** The Console's project chip, first in the footer. The dispatch goes to the enclosing ProjectScope. */
+  projectPicker?: ReactNode
 }) {
-  const form = useDispatchForm(onDispatched)
+  const form = useDispatchForm(onDispatched, projectPicker)
   return (
     <div className="w-full flex flex-col gap-3">
       <Composer

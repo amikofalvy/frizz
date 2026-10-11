@@ -14,7 +14,8 @@ import { SendSplitButton } from "./SendSplitButton.tsx"
 import { useDictation } from "../lib/dictation.ts"
 import { prefs } from "../lib/prefs.ts"
 import { DictationLevel } from "./DictationLevel.tsx"
-import { apiBase } from "../lib/base-path.ts"
+import { apiBase, projectApiBase } from "../lib/base-path.ts"
+import { useProjectScope } from "../lib/projectScope.tsx"
 import { localImageUrl } from "../lib/markdownTargets.ts"
 import { basename } from "../lib/paths.ts"
 import { useKeyboardInset } from "../lib/keyboardInset.ts"
@@ -33,13 +34,14 @@ import { useKeyboardInset } from "../lib/keyboardInset.ts"
 // message text: workers open it with their Read/file tool; the chat renders images via /local-image and
 // non-image files as an openable chip. The shared extension allowlist (images, docs/text/code, office,
 // data and archive formats) is enforced server-side too — the /attach route is the trust gate.
-async function uploadAttachment(file: File, name: string): Promise<string | null> {
+async function uploadAttachment(file: File, name: string, project: string | undefined): Promise<string | null> {
   // The project this upload is FOR, resolved before the file is read rather than after. `apiBase()`
   // answers for whatever the address bar says at the instant it is called, and reading a large file is
   // long enough for the operator to switch projects: the attachment then landed in the state directory
   // of a project the message was never going to, while the message itself went to the thread they
   // started from. Anything read across an await has to be captured on THIS side of it.
-  const base = apiBase()
+  // On the Console the page names no project, so the composer's own scope does (lib/projectScope.tsx).
+  const base = project ? projectApiBase(project) : apiBase()
   const buf = await file.arrayBuffer()
   let bin = ""
   const bytes = new Uint8Array(buf)
@@ -222,6 +224,8 @@ export function Composer({
   const fileRef = useRef<HTMLInputElement>(null)
   const [dragging, setDragging] = useState(false)
   const [uploading, setUploading] = useState(false)
+  // The project an attachment is uploaded to, on the Console (undefined on a project's page).
+  const project = useProjectScope()
 
   // Attachment paths live INSIDE the draft `value` (trailing lines) so submit, draft persistence, and
   // the worker/transcript pipeline stay untouched — but the box PRESENTS them as chips, not raw path
@@ -293,7 +297,7 @@ export function Composer({
     const paths: string[] = []
     try {
       for (const { file, name } of allowed) {
-        const path = await uploadAttachment(file, name)
+        const path = await uploadAttachment(file, name, project)
         // A null means /attach rejected it (decode/write failure — the type allowlist already ran
         // client-side above). Don't leave the user guessing why nothing appeared.
         if (path) paths.push(path)

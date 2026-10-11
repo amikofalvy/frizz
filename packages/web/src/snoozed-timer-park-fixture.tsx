@@ -31,7 +31,7 @@ import "./styles.css"
 // (board.deriveNeedsYou keeps it a visible handoff), so it sits in the cue with a card behind it, and
 // there it wore the pulsing dot — groups.restingOnLiveBackgroundWork counted an armed timer as motion
 // ("an item in the queue that's awaiting a timer should show up with the hourglass icon in the sidebar,
-// not with the flashing blue dot"). No fence on D, deliberately: `mcp__frizz__timer` then a bare rest
+// not with the flashing blue dot"). No fence on D, deliberately: `frizzctl timer` then a bare rest
 // is the shape the worker contract steers toward, and the one with nothing but the registered row to read.
 
 // The timer's own instant is computed at load so the wake always sits in the future.

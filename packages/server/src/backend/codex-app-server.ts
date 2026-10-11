@@ -37,10 +37,11 @@ import {
 } from "./codex-app-server-host.ts"
 import { nativeListenCodexAppServerHost } from "./codex-app-server-native.ts"
 import { readCodexAccountId } from "./auth-status.ts"
-import { codexThreadMcpConfig } from "./codex-mcp.ts"
+import { codexThreadMcpConfig, codexThreadMcpOff } from "./codex-mcp.ts"
+import { codexThreadShellConfig } from "./codex-shell-env.ts"
 import { codexProviderError } from "./codex-error.ts"
 import { CodexExecutionHealth } from "./codex-execution-health.ts"
-import { codexContextWindowConfig, type FrizzMcp } from "./types.ts"
+import { codexContextWindowConfig, type FrizzCli, type FrizzMcp } from "./types.ts"
 import { log as frizzLog } from "../logging.ts"
 
 // Foundation-only bridge. It is deliberately not an AgentBackend: no current/default Codex TUI
@@ -1030,6 +1031,12 @@ export interface CodexAppServerBridgeOptions {
    *  nothing, and a worker sees only what the operator's own codex config configured. MCP servers are
    *  PROCESS-level, so this is resolved once here rather than per thread. */
   frizzMcp?: FrizzMcp
+  /** Which threads get that mount. Absent ⇒ every thread, as before the command line. A thread started
+   *  under the `frizzctl` contract is given none: its registry stays free of sixteen tools it was
+   *  never told about. Asked at every start and resume, so the answer follows the thread's own row. */
+  mountsMcp?: (threadSlug: string) => boolean
+  /** Present ⇒ every thread's shell can run `frizzctl` as that thread — see codexThreadShellConfig. */
+  frizzCli?: FrizzCli
   now?: () => Date
   id?: () => string
   requestTimeoutMs?: number
@@ -2931,7 +2938,10 @@ export class CodexAppServerBridge {
       env: codexAppServerEnvironment(),
       clientInfo: CLIENT_INFO,
       capabilities: CLIENT_CAPABILITIES,
-      frizzMcp: this.options.frizzMcp,
+      // NO process-wide MCP mount on the app-server's argv any more (2026-10-11). It gave every thread
+      // in the project the `frizz` tools, and a thread started under the `frizzctl` contract must not
+      // have them. A thread that still needs the mount gets it from its own config bag, which every
+      // start and resume carries (threadConfig) — the only channel that ever gave it an identity.
       authAccountId,
     })
     const child = attachment.process
@@ -3399,7 +3409,10 @@ export class CodexAppServerBridge {
     callerConfig?: Record<string, unknown>,
   ): { config?: Record<string, unknown> } {
     const config = {
-      ...codexThreadMcpConfig(this.options.frizzMcp, threadSlug),
+      // A thread taught `frizzctl` is given no frizz MCP server, and one an app-server from before the
+      // update still mounts process-wide is switched off for it (codexThreadMcpOff).
+      ...(this.options.mountsMcp?.(threadSlug) === false ? codexThreadMcpOff() : codexThreadMcpConfig(this.options.frizzMcp, threadSlug)),
+      ...codexThreadShellConfig(this.options.frizzCli, threadSlug, codexAppServerEnvironment()),
       ...codexContextWindowConfig(this.options.getSettings?.()),
       ...(sessionId ? this.options.workerConfig?.(threadSlug, sessionId) : undefined),
       ...callerConfig,

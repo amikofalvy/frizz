@@ -10,6 +10,9 @@ import { holdQueueCardLanding } from "./lib/queueLandingHold.ts"
 import { resolveThreadRoute } from "./lib/threadRouteState.ts"
 import { standaloneThreadHref } from "./lib/standaloneThreadRoute.ts"
 import { ownedByThisPage } from "./lib/projectOwnership.ts"
+import { isConsolePath } from "./lib/base-path.ts"
+import { CONSOLE_TOP_PX } from "./lib/homeView.ts"
+import { bareSlug, splitThreadKey } from "./lib/threadKey.ts"
 import { setGithubRepo } from "./lib/githubAutolink.ts"
 import { resetGithubCards } from "./lib/githubHovercards.ts"
 import { setLocalPathBase } from "./lib/localPathBase.ts"
@@ -24,6 +27,15 @@ import type { RestartAttempt } from "./api/restart.ts"
 // predecessor's rule. It was 12px until 2026-08-25, which read as the card being pressed against the
 // top of the window (maintainer: "we should leave the full 40 px").
 export const QUEUE_CARD_VIEWPORT_TOP = 40
+
+/**
+ * The landing, measured from the window's top. On the Console's wide layout it is the line its content
+ * opens on under the home band (lib/homeView.ts CONSOLE_TOP_PX), the same line the top card rests on.
+ */
+export function queueCardViewportTop(): number {
+  const wide = typeof window === "undefined" || typeof window.matchMedia !== "function" || !window.matchMedia("(max-width: 800px)").matches
+  return isConsolePath() && wide ? CONSOLE_TOP_PX : QUEUE_CARD_VIEWPORT_TOP
+}
 
 // The BORDERED CARD ROOT inside a queue slot. The outer `[data-queue-card]` slot is the fade wrapper:
 // it also spans the root's own bottom scroll-reserve margin, and it is not the element that draws the
@@ -69,7 +81,7 @@ export function queueCardTargetY(slug: string): number | null {
   if (isFirstQueueCard(slug)) return 0
   // matchMedia guarded: unit tests stub a minimal window without it (store.queue-navigation.test.ts).
   const navOffset = typeof window.matchMedia === "function" && window.matchMedia("(max-width: 800px)").matches ? 40 : 0
-  return Math.max(0, pageScrollY() + root.getBoundingClientRect().top - QUEUE_CARD_VIEWPORT_TOP - navOffset)
+  return Math.max(0, pageScrollY() + root.getBoundingClientRect().top - queueCardViewportTop() - navOffset)
 }
 
 export type ConnectionState = "connecting" | "open" | "closed"
@@ -323,7 +335,25 @@ export function pushBackgroundShellDrawer(slug: string, id: string, opts: { labe
 // would be an empty placeholder) opens its frizz DOCUMENT drawer instead — there
 // the doc IS the substance. Anything with a session (live or exited — exited transcripts are worth
 // seeing) opens the chat drawer. The doc drawer carries the adopt ("Start a session") affordance.
-export function openThread(slug: string): void {
+/**
+ * On the Console, the KEY a bare slug names — the one thread on the merged board with that slug — or
+ * null when no thread or several have it. A bare slug reaches the Console from a link a worker wrote
+ * (`/thread/<slug>`, the shape its prompt teaches) and from an old bookmark; everywhere else, and for a
+ * key, the answer is the slug itself.
+ */
+export function consoleThreadKey(slug: string): string | null {
+  if (!isConsolePath() || splitThreadKey(slug)) return slug
+  const hits = store.board?.threads.filter((t) => bareSlug(t.id) === slug) ?? []
+  return hits.length === 1 ? hits[0]!.id : null
+}
+
+export function openThread(slugOrKey: string): void {
+  const slug = consoleThreadKey(slugOrKey)
+  // A bare slug the Console cannot place: its own project's full page finds it (MissingThread).
+  if (slug === null) {
+    if (typeof location !== "undefined") location.assign(`/thread/${encodeURIComponent(slugOrKey)}/full`)
+    return
+  }
   const t = store.board?.threads.find((x) => x.id === slug)
   if (t?.needsYou && scrollToQueueCard(slug)) return
   pushDrawer(t && t.runtime === "none" ? "doc" : "thread", slug)
@@ -336,9 +366,16 @@ export function openThread(slug: string): void {
 // opening the routed drawer over it painted that panel TWICE, one half-occluding the other.
 // `routed` so a cold page paints the sheet already open instead of animating a phantom backdrop in.
 export function resolveRoutedThread(): void {
-  const slug = store.routeThreadSlug
-  if (!slug || !store.board) return
+  const routed = store.routeThreadSlug
+  if (!routed || !store.board) return
   store.routeThreadSlug = null
+  // The Console's URL names a thread by key; a bare one is placed by the merged board, or handed to the
+  // unprefixed full page, whose MissingThread asks the server which project owns it.
+  const slug = consoleThreadKey(routed)
+  if (slug === null) {
+    if (typeof location !== "undefined") location.replace(`/thread/${encodeURIComponent(routed)}/full`)
+    return
+  }
   const route = resolveThreadRoute(store.board, slug)
   // A slug THIS project does not have. Since one server started serving every project that is usually
   // a thread another project has — and `/thread/<slug>` is the exact shape every pre-singleton
@@ -609,7 +646,9 @@ export function topThreadSlug(): string | null {
 // every surface derives its own view of the thread list per render (there is no selection state to
 // reconcile — the focus machine that needed one is gone).
 export function setBoard(board: BoardSnapshot) {
-  if (!ownedByThisPage(board.projectSlug)) return
+  // The Console's board is EVERY project's, merged by its own feed (api/consoleFeed.ts). One project's
+  // board arriving through this door on the Console is a page connection that has not finished closing.
+  if (isConsolePath() || !ownedByThisPage(board.projectSlug)) return
   setGithubRepo(board.githubRepo)
   setLocalPathBase(board.projectDir, board.homeDir)
   store.board = board
@@ -655,7 +694,7 @@ export function resetProjectState() {
 // previous project's in-flight seed lands into the emptied store and paints its threads under the new
 // project's URL. The guard is the only thing standing between that race and the operator.
 export function seedBoard(board: BoardSnapshot) {
-  if (!ownedByThisPage(board.projectSlug)) return
+  if (isConsolePath() || !ownedByThisPage(board.projectSlug)) return
   if (store.board !== null) return
   setGithubRepo(board.githubRepo)
   setLocalPathBase(board.projectDir, board.homeDir)
@@ -666,6 +705,8 @@ export function seedBoard(board: BoardSnapshot) {
 // fine-grained reactivity means only the changed rows re-render (the audit's S2 fix), vs. setBoard's
 // wholesale replace. Returns false when there's no base board to apply onto (caller must resync).
 export function applyDelta(delta: BoardDelta): boolean {
+  // Consumed, not applied: the Console's merged board takes deltas only from its own feed, keyed.
+  if (isConsolePath()) return true
   if (store.board === null) return false
   applyBoardDelta(store.board, delta)
   return true

@@ -1,5 +1,5 @@
 import type { QueryClient } from "@tanstack/react-query"
-import { rpc } from "../api/rpc.ts"
+import { fileRpc } from "./consoleProjects.ts"
 import { renderCodeBody } from "./codeBody.ts"
 import { isLocalMarkdownFile } from "./markdownTargets.ts"
 import { resolveFileLanguage } from "./syntaxHighlight.ts"
@@ -25,8 +25,8 @@ export function localFileQuery(path: string) {
   return {
     queryKey: localFileQueryKey(path),
     queryFn: async () => {
-      if (markdown) return rpc.localMarkdown({ path })
-      const read = await rpc.localFile({ path })
+      if (markdown) return fileRpc(path).localMarkdown({ path })
+      const read = await fileRpc(path).localFile({ path })
       return { path: read.path, markdown: read.text, truncated: read.truncated }
     },
     // Long enough that a hover followed by a click is ONE read. Freshness while the file is OPEN is

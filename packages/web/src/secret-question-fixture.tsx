@@ -9,7 +9,7 @@ import type { ParsedQuestion } from "./lib/questionBlocks.ts"
 import { TooltipProvider } from "./components/Tooltip.tsx"
 import "./styles.css"
 
-// A SECRET question (`mcp__frizz__secret`) in its three readings: open with the caption under its
+// A SECRET question (`frizzctl secret`) in its three readings: open with the caption under its
 // password field, settled after the send, and the human's Answers card. The settled card and the
 // Answers card must draw a mask, never the delivery note the worker reads (where the value went).
 const question: ParsedQuestion = {

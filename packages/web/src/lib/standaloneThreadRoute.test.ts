@@ -25,3 +25,9 @@ test("standalone parsing rejects drawer, extra-segment, and malformed routes", (
   assert.equal(parseStandaloneThreadPath("/thread/example/full/more"), null)
   assert.equal(parseStandaloneThreadPath("/thread/%/full"), null)
 })
+
+test("a Console thread's full page is its own project's, under its real slug", () => {
+  // The Console names a thread by key (lib/threadKey.ts); `/console/thread/<key>/full` is no route.
+  assert.equal(standaloneThreadHref("billing~retry-webhooks", "/console"), "/project/billing/thread/retry-webhooks/full")
+  assert.equal(standaloneThreadHref("billing~retry-webhooks", "/project/nub"), "/project/billing/thread/retry-webhooks/full")
+})
