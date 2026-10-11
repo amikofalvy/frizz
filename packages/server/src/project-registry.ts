@@ -457,8 +457,11 @@ export function findProjectBySegment(segment: string, home = homedir()): Registr
  * 3 — a colourless SVG is demoted below any coloured sibling, so a Simple-Icons-style glyph stops
  *     winning and rendering as a solid black tile. A cached PICK is as stale as a cached miss here:
  *     bun had already stored the black one.
+ * 4 — a brand kit (`logos/`, `branding/`, under `public/` and friends too) is searched, and its
+ *     `-square` cut counts as an app icon. Pullfrog had stored a 180px disc from `app/` while a 600px
+ *     square sat unread in `public/logos/`.
  */
-export const ICON_SCAN_VERSION = 3
+export const ICON_SCAN_VERSION = 4
 
 /** Where an uploaded icon lands: the project's own state dir, never inside the repository. */
 export function customIconPath(id: string, extension: string, home = homedir()): string {
