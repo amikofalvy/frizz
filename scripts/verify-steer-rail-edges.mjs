@@ -14,7 +14,7 @@
 //   node scripts/verify-steer-rail-edges.mjs <url> [outDir]
 import { mkdirSync } from "node:fs"
 import { join } from "node:path"
-import puppeteer from "puppeteer"
+import { launchHeadless } from "./lib/headless-browser.mjs"
 import { createRpcClient } from "./lib/rpc-client.mjs"
 
 const [url, outDir = "/tmp/steer-rail/edges"] = process.argv.slice(2)
@@ -46,7 +46,7 @@ await api.waitForHealth()
 const board = await api.query("board")
 const sid = (slug) => board.threads.find((t) => t.id === slug)?.sessionId
 
-const browser = await puppeteer.launch({ headless: "new", args: ["--no-sandbox", "--force-color-profile=srgb"] })
+const browser = await launchHeadless()
 const errors = []
 const results = {}
 try {

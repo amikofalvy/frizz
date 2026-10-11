@@ -15,7 +15,7 @@
 //
 // Usage: node scripts/verify-ghost-floor.mjs --url=http://127.0.0.1:4933 --slug=… --jsonl=/abs/path.jsonl
 import { appendFileSync, readFileSync } from "node:fs"
-import puppeteer from "puppeteer"
+import { launchHeadless } from "./lib/headless-browser.mjs"
 
 const flags = Object.fromEntries(
   process.argv.slice(2).filter((a) => a.startsWith("--")).map((a) => a.replace(/^--/, "").split("=")),
@@ -68,7 +68,7 @@ const BUBBLES = `[...document.querySelectorAll('[class*="bg-user-bubble"]')].map
     : el.closest("[data-standalone-thread]") ? "standalone" : "chat",
 }))`
 
-const browser = await puppeteer.launch({ headless: "new", args: ["--no-sandbox", "--force-color-profile=srgb"] })
+const browser = await launchHeadless()
 try {
   const page = await browser.newPage()
   await page.setViewport({ width: 1200, height: 900, deviceScaleFactor: 2 })

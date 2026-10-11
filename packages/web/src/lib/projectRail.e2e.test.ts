@@ -29,8 +29,8 @@ test("flipping 'Project sidebar' on a board reached from the grid shows the rail
   const reset = await fetch(`${rpc}/settingsSet`, { method: "POST", headers, body: JSON.stringify({ ...current.result, projectRail: false }) })
   assert.equal(reset.status, 200, `settingsSet must succeed: ${await reset.text()}`)
 
-  const { default: puppeteer } = await import("puppeteer")
-  const browser = await puppeteer.launch({ headless: "new", args: ["--no-sandbox"] })
+  const { launchHeadless } = await import("../../../../scripts/lib/headless-browser.mjs")
+  const browser = await launchHeadless()
   try {
     const page = await browser.newPage()
     const errors: string[] = []
@@ -92,8 +92,8 @@ test("reloading with the rail on renders it before settingsGet answers, from the
   }
   await set(true)
 
-  const { default: puppeteer } = await import("puppeteer")
-  const browser = await puppeteer.launch({ headless: "new", args: ["--no-sandbox"] })
+  const { launchHeadless } = await import("../../../../scripts/lib/headless-browser.mjs")
+  const browser = await launchHeadless()
   try {
     const page = await browser.newPage()
     const errors: string[] = []

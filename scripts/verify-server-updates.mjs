@@ -12,7 +12,7 @@ import { createServer as createNetServer } from "node:net"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
-import puppeteer from "puppeteer"
+import { launchHeadless } from "./lib/headless-browser.mjs"
 import { resolveNpmCli } from "../src/server-release.ts"
 import { frizzPaths } from "../packages/server/src/frizz-paths.ts"
 import { ensureProjectIdFile } from "../packages/server/src/project-root.ts"
@@ -289,7 +289,7 @@ try {
   if (legacyTarball) {
     start("legacy-launcher", [npmCli, "exec", "--yes", "--package=frizz@0.12.10", "--", "frizz", "--no-app", "--port", new URL(base).port])
     await healthy("0.12.10")
-    browser = await puppeteer.launch({ headless: true, args: ["--no-sandbox"] })
+    browser = await launchHeadless()
     page = await browser.newPage()
     const project = JSON.parse(readFileSync(join(home, "data/frizz/registry.json"), "utf8")).projects[0]
     await page.goto(`${base}/project/${project.slug}/`, { waitUntil: "networkidle2" })
@@ -336,7 +336,7 @@ try {
     }
   }, 200)
   monitorEnabled = true
-  browser ??= await puppeteer.launch({ headless: true, args: ["--no-sandbox"] })
+  browser ??= await launchHeadless()
   page ??= await browser.newPage()
   page.on("pageerror", (error) => failures.push({ page: String(error) }))
   page.on("console", (message) => { if (message.type() === "error") consoleErrors.push(message.text()) })

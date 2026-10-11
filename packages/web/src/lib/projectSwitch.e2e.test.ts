@@ -30,8 +30,8 @@ test("switching projects from the grid re-points the live feed at the project th
   skip: !baseUrl,
   timeout: 90_000,
 }, async () => {
-  const { default: puppeteer } = await import("puppeteer")
-  const browser = await puppeteer.launch({ headless: "new", args: ["--no-sandbox"] })
+  const { launchHeadless } = await import("../../../../scripts/lib/headless-browser.mjs")
+  const browser = await launchHeadless()
   try {
     const page = await browser.newPage()
     await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 })
@@ -136,8 +136,8 @@ test("a project switch sends none of the old project's thread slugs to the new p
   const settings = await get("/_frizz/rpc/settingsGet")
   await fetch(`${baseUrl}/_frizz/rpc/settingsSet`, { method: "POST", headers, body: JSON.stringify({ ...(settings as object), projectRail: true }) })
 
-  const { default: puppeteer } = await import("puppeteer")
-  const browser = await puppeteer.launch({ headless: "new", args: ["--no-sandbox"] })
+  const { launchHeadless } = await import("../../../../scripts/lib/headless-browser.mjs")
+  const browser = await launchHeadless()
   try {
     const page = await browser.newPage()
     const errors: string[] = []

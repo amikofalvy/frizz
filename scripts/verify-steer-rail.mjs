@@ -14,7 +14,7 @@
 //   node scripts/verify-steer-rail.mjs <url> <tempHome> [slug] [sessionId] [outDir]
 import { appendFileSync, mkdirSync, readdirSync } from "node:fs"
 import { join } from "node:path"
-import puppeteer from "puppeteer"
+import { launchHeadless } from "./lib/headless-browser.mjs"
 
 const [url, home, slug = "worker-5", sessionId = "00000005-2222-3333-4444-555555555555", outDir = "/tmp/steer-rail"] =
   process.argv.slice(2)
@@ -55,7 +55,7 @@ const PROBE = `(() => {
 const jsonlDir = join(home, ".claude", "projects", readdirSync(join(home, ".claude", "projects"))[0])
 const jsonl = join(jsonlDir, `${sessionId}.jsonl`)
 
-const browser = await puppeteer.launch({ headless: "new", args: ["--no-sandbox", "--force-color-profile=srgb"] })
+const browser = await launchHeadless()
 const errors = []
 try {
   const page = await browser.newPage()

@@ -16,7 +16,7 @@
 //   node scripts/verify-open-ask-composer.mjs --url=http://127.0.0.1:5399 --slug=… [--shots=/tmp/…]
 // The run CONSUMES its seed — step 4's steer is a newer user message, which is exactly what retires the
 // ```question fence — so re-seed a fresh slug for every run rather than re-pointing it at a spent one.
-import puppeteer from "puppeteer"
+import { launchHeadless } from "./lib/headless-browser.mjs"
 
 const flags = Object.fromEntries(
   process.argv.slice(2).filter((a) => a.startsWith("--")).map((a) => a.replace(/^--/, "").split("=")),
@@ -73,7 +73,7 @@ const CARD = `(() => {
   }
 })()`
 
-const browser = await puppeteer.launch({ headless: "new", args: ["--no-sandbox", "--force-color-profile=srgb"] })
+const browser = await launchHeadless()
 try {
   const page = await browser.newPage()
   await page.setViewport({ width: 1440, height: 1000, deviceScaleFactor: 2 })

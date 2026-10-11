@@ -10,8 +10,8 @@ test("fallback wake cards render safe Markdown through the real message componen
   skip: !baseUrl,
   timeout: 120_000,
 }, async () => {
-  const { default: puppeteer } = await import("puppeteer")
-  const browser = await puppeteer.launch({ headless: "new", args: ["--no-sandbox", "--force-color-profile=srgb"] })
+  const { launchHeadless } = await import("../../../scripts/lib/headless-browser.mjs")
+  const browser = await launchHeadless()
   const errors: string[] = []
   const shots = process.env.FRIZZ_WAKE_SHOTS
   if (shots) mkdirSync(shots, { recursive: true })

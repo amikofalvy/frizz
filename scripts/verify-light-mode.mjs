@@ -6,7 +6,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "nod
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import puppeteer from "puppeteer"
+import { launchHeadless } from "./lib/headless-browser.mjs"
 import { createRpcClient } from "./lib/rpc-client.mjs"
 import { seedLightModeFixture } from "./lib/light-mode-fixture.mjs"
 import { RestartSupervisorProxy } from "../packages/server/src/restart-supervisor.ts"
@@ -62,7 +62,7 @@ try {
   await seedLightModeFixture(stack, api)
   const settings = await api.query("settingsGet")
   await api.mutate("settingsSet", { ...settings, projectRail: true })
-  browser = await puppeteer.launch({ headless: true, executablePath: process.env.CHROME_PATH ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", args: ["--no-sandbox", "--force-color-profile=srgb"], protocolTimeout: 120_000 })
+  browser = await launchHeadless({ protocolTimeout: 120_000 })
   console.log("BROWSER", browser.process().pid)
   page = await browser.newPage()
   page.on("pageerror", error => errors.push(String(error)))
