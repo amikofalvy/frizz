@@ -1413,8 +1413,10 @@ export function createRouter(ctx: AppContext) {
     heldSweep.unref?.()
   }
   // createRouter reads its context lazily everywhere else, and a focused test harness builds a partial
-  // one; this is its only eager read, so it tolerates these two pieces being absent.
-  for (const row of typeof ctx.storage?.allSessions === "function" ? ctx.storage.allSessions() : []) {
+  // one; this is its only eager read, so it tolerates these two pieces being absent or inert (app.test.ts
+  // hands in a stub whose every method answers nothing).
+  const bootRows: unknown = typeof ctx.storage?.allSessions === "function" ? ctx.storage.allSessions() : null
+  for (const row of Array.isArray(bootRows) ? (bootRows as ReturnType<typeof ctx.storage.allSessions>) : []) {
     if (row.delivery_ledger?.includes('"held"') && heldDeliveries(ctx.storage, row.slug).length > 0) watchHeld(row.slug)
   }
   ctx.bus?.subscribe((event) => {

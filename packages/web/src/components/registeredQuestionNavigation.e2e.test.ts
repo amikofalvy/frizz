@@ -56,7 +56,7 @@ test("registered picks survive fullscreen, project switches and reload, then cle
       // are the app's normal fallback, unrelated to answering. The one 500 below is deliberate.
       const url = m.location().url ?? ""
       if (m.type() === "error" && !/\/_frizz\/(control\/status|project-icon)/.test(url)
-        && !(/\/rpc\/answerQuestions$/.test(url) && /status of 500/.test(m.text()))) errors.push(`${m.text()} ${url}`)
+        && !(/\/rpc\/followUp$/.test(url) && /status of 500/.test(m.text()))) errors.push(`${m.text()} ${url}`)
     })
     await page.goto(`${baseUrl}/project/${a.slug}`, { waitUntil: "networkidle2" })
     await page.waitForSelector(tree)
@@ -106,17 +106,22 @@ test("registered picks survive fullscreen, project switches and reload, then cle
     await check()
     await page.reload({ waitUntil: "networkidle2" })
     await check()
-    // A rejected send keeps staged picks. A successful real answerQuestions clears the cache.
+    // The answers leave through the prompt box's Send, on the follow-up path (2026-10-11): the cards
+    // draw no "Send answers" of their own beside a prompt box. A rejected send keeps the staged picks
+    // and says so in a toast. A successful real one settles the questions and clears the cache.
+    assert.equal(await page.$("[data-send-answers]"), null)
+    const send = "[data-send-split] [data-send]"
+    assert.equal(await page.$eval(send, (el) => (el as HTMLButtonElement).disabled), false, "staged answers arm the Send with nothing typed")
     let reject = true
     await page.setRequestInterception(true)
     page.on("request", (r) => {
-      if (reject && /\/rpc\/answerQuestions$/.test(r.url())) {
+      if (reject && /\/rpc\/followUp$/.test(r.url())) {
         reject = false
         void r.respond({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "Test rejection" }) })
       } else void r.continue()
     })
-    await page.$eval("[data-send-answers]", (el) => (el as HTMLButtonElement).click())
-    await page.waitForSelector("[role='alert']")
+    await page.$eval(send, (el) => (el as HTMLButtonElement).click())
+    await page.waitForFunction(() => [...document.querySelectorAll("[data-toast]")].some((el) => /Test rejection/.test(el.textContent ?? "")))
     await check()
     // Both shapes are staged before the send: the picks and the follow-up's typed text.
     const ids = asked.registered.map((q) => q.id)
@@ -126,7 +131,7 @@ test("registered picks survive fullscreen, project switches and reload, then cle
     }, ids)
     const before = await draftKeys()
     assert.ok(before.some((k) => k.endsWith(":picks")) && before.some((k) => !k.endsWith(":picks")), before.join(" "))
-    await page.$eval("[data-send-answers]", (el) => (el as HTMLButtonElement).click())
+    await page.$eval(send, (el) => (el as HTMLButtonElement).click())
     // The board push can drop the registration before the reply lands, so only the keys captured at send
     // can clear the text draft. Wait for the answer to settle, then require that every key is gone.
     await page.waitForFunction(() => {

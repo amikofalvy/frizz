@@ -6,7 +6,7 @@ import test from "node:test"
 // eight had ever reached the card. Options were lettered until 2026-10-07, which ran past `Z.` into `AA.`;
 // they are numbered now, and only 1–9 are keys, so rows 10 and on carry a plain `10.` rather than a
 // keycap. The fixture's `?wide=1` is thirty options; this drives the real card end
-// to end — every chip toggled, Send answers, the payload the worker would receive — so the answer that
+// to end — every chip toggled, the prompt box's Send, the payload the worker would receive — so the answer that
 // picks the whole list is OBSERVED rather than inferred from the schema alone. Skipped unless a Vite
 // URL serving the fixtures is provided (same pattern as the other *.e2e.test.ts here): start `vite` in
 // packages/web and set FRIZZ_REGISTERED_QUESTION_WIDE_E2E_URL to its origin.
@@ -53,12 +53,17 @@ test("a registered multi over thirty options numbers every row past the 1–9 ke
     const selected = await page.$$eval(OPTION, (ns) => ns.flatMap((n, i) => (n.classList.contains("border-selection-border") ? [i] : [])))
     assert.deepEqual(selected, Array.from({ length: 30 }, (_, i) => i), "every one of the thirty rows wears the selection border")
 
-    await page.click("[data-send-answers]")
+    // The answers leave through the prompt box's own Send (the card has no "Send answers" of its own
+    // since 2026-10-11): white because something is staged, although nothing is typed.
+    assert.equal(await page.$("[data-send-answers]"), null, "the card draws no send of its own beside a prompt box")
+    assert.equal(await page.$eval("[data-send]", (el) => (el as HTMLButtonElement).disabled), false)
+    await page.click("[data-send]")
     await page.waitForFunction(() => (window as unknown as { __rpc: unknown[] }).__rpc.length === 1, { timeout: 10_000 })
     const calls = await page.evaluate(() => (window as unknown as {
-      __rpc: Array<{ rpc: string; body: { answers?: Array<{ questionId: string; question: string; chosen: string[] }> } }>
+      __rpc: Array<{ rpc: string; body: { message?: string; answers?: Array<{ questionId: string; question: string; chosen: string[] }> } }>
     }).__rpc)
-    assert.equal(calls[0].rpc, "answerQuestions")
+    assert.equal(calls[0].rpc, "followUp")
+    assert.equal(calls[0].body.message, "", "nothing was typed, so the answers travel alone")
     const answer = calls[0].body.answers?.[0]
     assert.equal(answer?.questionId, "qst_0006ffff")
     // The payload carries the worker's OWN labels — thirty of them, in option order — not the numbered

@@ -254,9 +254,16 @@ window.fetch = async (input, init) => {
   if (url.pathname === "/_frizz/rpc/threadTranscript" || url.pathname === "/_frizz/rpc/threadTranscriptEarlier") {
     return new Response(JSON.stringify({ result: transcriptPage }), { headers: { "content-type": "application/json" } })
   }
-  // The two writes the card makes, echoed onto the window so a probe can assert the exact payload the
+  // The writes the card makes, echoed onto the window so a probe can assert the exact payload the
   // worker would receive — above all that an answer RESTATES the question and carries the option's own
-  // label rather than the numbered chip text.
+  // label rather than the numbered chip text. Since 2026-10-11 the answers leave through the prompt
+  // box's Send, on `followUp` (with whatever was typed there); `answerQuestions` is the send of a
+  // surface with no prompt box, and stays stubbed for it.
+  if (url.pathname === "/_frizz/rpc/followUp") {
+    const body = JSON.parse(String(init?.body ?? "{}"))
+    window.dispatchEvent(new CustomEvent("fixture-rpc", { detail: { rpc: "followUp", body } }))
+    return new Response(JSON.stringify({ result: {} }), { headers: { "content-type": "application/json" } })
+  }
   if (url.pathname === "/_frizz/rpc/answerQuestions" || url.pathname === "/_frizz/rpc/dismissQuestions") {
     const body = JSON.parse(String(init?.body ?? "{}"))
     window.dispatchEvent(new CustomEvent("fixture-rpc", { detail: { rpc: url.pathname.split("/").pop(), body } }))
