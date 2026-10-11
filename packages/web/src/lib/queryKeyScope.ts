@@ -1,5 +1,5 @@
 import { hashKey } from "@tanstack/react-query"
-import { projectSlug } from "./base-path.ts"
+import { isConsolePath, projectSlug } from "./base-path.ts"
 
 // THE CACHE IS PER PROJECT, AND NOBODY HAS TO REMEMBER THAT.
 //
@@ -43,6 +43,8 @@ export function projectScopedQueryKeyHash(key: readonly unknown[]): string {
   const head = key[0]
   if (typeof head === "string" && MACHINE_WIDE.has(head)) return hashKey(key)
   // The page's own project, or "" for the unprefixed launching project — which is a REAL project and
-  // must therefore be a stable scope of its own, not an absence of one.
-  return hashKey([`project:${projectSlug() ?? ""}`, ...key])
+  // must therefore be a stable scope of its own, not an absence of one. The Console names no project and
+  // is not the launching one either, so it is a scope of its own: its thread entries are keyed by
+  // project already (lib/threadKey.ts), and a project-level read it makes says its project in the key.
+  return hashKey([`project:${isConsolePath() ? "@console" : (projectSlug() ?? "")}`, ...key])
 }

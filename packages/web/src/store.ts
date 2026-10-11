@@ -10,6 +10,7 @@ import { holdQueueCardLanding } from "./lib/queueLandingHold.ts"
 import { resolveThreadRoute } from "./lib/threadRouteState.ts"
 import { standaloneThreadHref } from "./lib/standaloneThreadRoute.ts"
 import { ownedByThisPage } from "./lib/projectOwnership.ts"
+import { isConsolePath } from "./lib/base-path.ts"
 import { setGithubRepo } from "./lib/githubAutolink.ts"
 import { resetGithubCards } from "./lib/githubHovercards.ts"
 import { setLocalPathBase } from "./lib/localPathBase.ts"
@@ -609,7 +610,9 @@ export function topThreadSlug(): string | null {
 // every surface derives its own view of the thread list per render (there is no selection state to
 // reconcile — the focus machine that needed one is gone).
 export function setBoard(board: BoardSnapshot) {
-  if (!ownedByThisPage(board.projectSlug)) return
+  // The Console's board is EVERY project's, merged by its own feed (api/consoleFeed.ts). One project's
+  // board arriving through this door on the Console is a page connection that has not finished closing.
+  if (isConsolePath() || !ownedByThisPage(board.projectSlug)) return
   setGithubRepo(board.githubRepo)
   setLocalPathBase(board.projectDir, board.homeDir)
   store.board = board
@@ -655,7 +658,7 @@ export function resetProjectState() {
 // previous project's in-flight seed lands into the emptied store and paints its threads under the new
 // project's URL. The guard is the only thing standing between that race and the operator.
 export function seedBoard(board: BoardSnapshot) {
-  if (!ownedByThisPage(board.projectSlug)) return
+  if (isConsolePath() || !ownedByThisPage(board.projectSlug)) return
   if (store.board !== null) return
   setGithubRepo(board.githubRepo)
   setLocalPathBase(board.projectDir, board.homeDir)
@@ -666,6 +669,8 @@ export function seedBoard(board: BoardSnapshot) {
 // fine-grained reactivity means only the changed rows re-render (the audit's S2 fix), vs. setBoard's
 // wholesale replace. Returns false when there's no base board to apply onto (caller must resync).
 export function applyDelta(delta: BoardDelta): boolean {
+  // Consumed, not applied: the Console's merged board takes deltas only from its own feed, keyed.
+  if (isConsolePath()) return true
   if (store.board === null) return false
   applyBoardDelta(store.board, delta)
   return true
