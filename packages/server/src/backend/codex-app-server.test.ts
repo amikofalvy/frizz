@@ -2359,7 +2359,7 @@ test("bridge persistence refuses malformed or future authority schemas before sp
  *  fields are the entire input to the bridge's "did my turns survive?" decision. */
 function scriptedHostHarness(
   script: () => { generation: string; reattached: boolean; droppedWhileDetached: number; serviceExitCode?: number },
-  worker: Pick<import("./codex-app-server.ts").CodexAppServerBridgeOptions, "frizzMcp" | "workerConfig"> = {},
+  worker: Pick<import("./codex-app-server.ts").CodexAppServerBridgeOptions, "frizzMcp" | "frizzCli" | "workerConfig"> = {},
 ) {
   const dir = mkdtempSync(join(tmpdir(), "frizz-codex-attachment-"))
   const dbPath = join(dir, "ui.db")
@@ -2728,6 +2728,33 @@ test("a worker's hooks ride thread/start and every thread/resume, and a resume s
     const restarted = h.newBridge()
     await restarted.resumeOwnedSession(binding.threadSlug, binding.sessionId)
     assert.deepEqual(bagOf(requestsOf(h.processes[1]!, "thread/resume")[0]!), started)
+  } finally { h.close() }
+})
+
+// The app-server serves every thread in the project, so its environment cannot say which one a shell
+// command belongs to. The thread's own bag can, and a resume has to say it again: the shell environment
+// is not stored in the rollout (`_live_codex_shell_identity.mts`).
+test("each thread's shell is told which thread it is, at thread/start and again at thread/resume", async () => {
+  let plan = { generation: "gen-A", reattached: false, droppedWhileDetached: 0 }
+  const cli = { binDir: "/gen-b/cc-worker/bin", stateDir: "/state/project-1", projectId: "project-1" }
+  const h = scriptedHostHarness(() => plan, { frizzCli: cli })
+  const who = (bag: Record<string, unknown> | undefined) => bag?.["shell_environment_policy.set.FRIZZ_THREAD"]
+  try {
+    const bridge = h.newBridge()
+    const one = await bridge.startDisposableSession({ threadSlug: "thread-one", sessionId: "session-one", cwd: h.dir, ephemeral: false })
+    await bridge.startDisposableSession({ threadSlug: "thread-two", sessionId: "session-two", cwd: h.dir, ephemeral: false })
+    const [first, second] = requestsOf(h.processes[0]!, "thread/start").map(bagOf)
+    assert.equal(who(first), "thread-one")
+    assert.equal(who(second), "thread-two")
+    assert.equal(first!["shell_environment_policy.set.FRIZZ_STATE_DIR"], "/state/project-1")
+    assert.equal(first!["shell_environment_policy.set.FRIZZ_PROJECT_ID"], "project-1")
+    assert.match(String(first!["shell_environment_policy.set.PATH"]), /^\/gen-b\/cc-worker\/bin[:;]/)
+    bridge.close()
+
+    plan = { generation: "gen-B", reattached: false, droppedWhileDetached: 0 }
+    const restarted = h.newBridge()
+    await restarted.resumeOwnedSession(one.threadSlug, one.sessionId)
+    assert.deepEqual(bagOf(requestsOf(h.processes[1]!, "thread/resume")[0]!), first)
   } finally { h.close() }
 })
 

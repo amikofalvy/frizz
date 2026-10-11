@@ -12,6 +12,7 @@ import { spawnAcpChild } from "./acp-rpc.ts"
 import { acpTranscriptPath, parseAcpRecord, projectAcpTranscript, type AcpRecord } from "./acp-transcript.ts"
 import { newTailState } from "../tailer.ts"
 import { createAcpBackend } from "./acp-transcript.ts"
+import type { FrizzCli } from "./types.ts"
 
 // The bridge against the REAL fake agent over REAL stdio and a REAL InteractionStore: what the tailer
 // will fold and the drawer will project is read back from the transcript file the bridge wrote.
@@ -20,7 +21,7 @@ const FAKE = fileURLToPath(new URL("./acp.fixtures/fake-acp-agent.mjs", import.m
 
 interface Rig { bridge: AcpBridge; stateDir: string; store: InteractionStore; status: number; diagnostics: string[] }
 
-function rig(mode = "", opts: { customCommand?: string; stateDir?: string; direct?: boolean; host?: AcpHost; agentLog?: string } = {}): Rig {
+function rig(mode = "", opts: { customCommand?: string; stateDir?: string; direct?: boolean; host?: AcpHost; agentLog?: string; frizzCli?: FrizzCli } = {}): Rig {
   const stateDir = opts.stateDir ?? mkdtempSync(join(tmpdir(), "acp-bridge-"))
   const store = createInteractionStore(new Database(":memory:"))
   const r: Rig = { stateDir, store, status: 0, diagnostics: [], bridge: undefined as unknown as AcpBridge }
@@ -32,6 +33,7 @@ function rig(mode = "", opts: { customCommand?: string; stateDir?: string; direc
     // The fake is "installed" as an operator-configured agent whose command is node itself.
     customAgents: () => [{ id: "fake", label: "Fake agent", command: opts.customCommand ?? process.execPath, args: opts.customCommand ? [] : [FAKE] }],
     frizzMcp: { scriptPath: "/opt/frizz/frizz-mcp.mjs", stateDir: "/opt/state", projectId: "proj-1" },
+    ...(opts.frizzCli ? { frizzCli: opts.frizzCli } : {}),
     onStatusChange: () => { r.status++ },
     onDiagnostic: (d) => { if (d.kind !== "stderr") r.diagnostics.push(`${d.kind}: ${d.message}`) },
     flushMs: 20,
@@ -92,6 +94,26 @@ test("acp-bridge: a dispatch opens a session with the frizz MCP server, runs the
     assert.equal(msgs[2]!.tools[0]!.name, "write")
     assert.equal(msgs[2]!.tools[0]!.status, "completed")
     assert.ok(r.status >= 2, "status changed at turn start and end")
+  } finally { await teardown(r) }
+})
+
+// An ACP agent is one daemon per thread, so the environment it is forked with can say who is calling.
+// That, and the command's directory on PATH, is everything `frizzctl` needs from the agent's own shell.
+test("acp-bridge: the agent is forked with the worker command on its PATH and this thread's identity", async () => {
+  const cli = { binDir: "/plugin/bin", stateDir: "/data/projects/proj-1", serverLock: "/data/server.lock", projectId: "proj-1" }
+  const forked: Array<Record<string, string | undefined>> = []
+  const r = rig("", { frizzCli: cli, host: async (o) => { forked.push({ ...o.env }); return daemonAcpHost(o) } })
+  try {
+    await r.bridge.spawnDispatch({ threadSlug: "t1", sessionId: "s1", cwd: r.stateDir, agentId: "fake", prompt: "CONTRACT…\n\nhi", userText: "hi" })
+    await untilIdle(r, "s1")
+    assert.equal(forked.length, 1)
+    const env = forked[0]!
+    assert.equal(env.FRIZZ_THREAD, "t1")
+    assert.equal(env.FRIZZ_STATE_DIR, "/data/projects/proj-1")
+    assert.equal(env.FRIZZ_PROJECT_ID, "proj-1")
+    assert.equal(env.FRIZZ_SERVER_LOCK, "/data/server.lock")
+    assert.equal(env.FRIZZ_NODE, process.execPath)
+    assert.equal((env.PATH ?? env.Path)!.split(process.platform === "win32" ? ";" : ":")[0], "/plugin/bin")
   } finally { await teardown(r) }
 })
 

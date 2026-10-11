@@ -2,9 +2,9 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { spawn } from "node:child_process"
 import { createServer, type Server } from "node:http"
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { delimiter, dirname, join } from "node:path"
+import { delimiter, join } from "node:path"
 import { fileURLToPath } from "node:url"
 // @ts-expect-error — the worker plugin is plain .mjs shipped loose beside the server; it has no types.
 import { CLI, TOOLS } from "../../../cc-worker/lib/frizz-tools.mjs"
@@ -13,7 +13,10 @@ import { CLI, TOOLS } from "../../../cc-worker/lib/frizz-tools.mjs"
 // — against a REAL http server standing in for Frizz's RPC surface. Nothing is imported from the command
 // line itself: a worker reaches it through a shell, so that is the only honest way to test it.
 
-const FRIZZCTL = fileURLToPath(new URL("../../../cc-worker/bin/frizzctl", import.meta.url))
+// The module is run directly where a test only needs an answer; the tests that go through a real shell
+// put the plugin's own bin/ on PATH and call `frizzctl`, which is the launcher a worker actually runs.
+const BIN = fileURLToPath(new URL("../../../cc-worker/bin", import.meta.url))
+const FRIZZCTL = join(BIN, "frizzctl.mjs")
 
 interface Seen { url: string; body: any }
 interface Fake { port: number; seen: Seen[]; close(): void; stateDir: string }
@@ -230,14 +233,12 @@ test("`ask` takes its questions as the object, as a bare list, or as one questio
 test("a body through a quoted heredoc reaches Frizz byte for byte — backticks, `$( )` and quotes unrun", async () => {
   const fake = await fakeFrizz()
   try {
-    const bin = mkdtempSync(join(tmpdir(), "frizzctl-bin-"))
-    symlinkSync(FRIZZCTL, join(bin, "frizzctl"))
-    const marker = join(bin, "ran")
+    const marker = join(mkdtempSync(join(tmpdir(), "frizzctl-marker-")), "ran")
     const body = `- **Fixed the lookup** in \`src/resolver.ts\`; \`touch ${marker}\` and $(touch ${marker}) stayed text.\n- It's "done", $HOME and all.`
     const script = `frizzctl done --body-file - <<'EOF'\n${body}\nEOF`
     const ran = await new Promise<Ran>((resolve) => {
       const child = spawn("sh", ["-c", script], {
-        env: { ...process.env, ...worker(fake), FRIZZ_THREAD_SLUG: "", PATH: `${bin}${delimiter}${dirname(process.execPath)}${delimiter}${process.env.PATH}` },
+        env: { ...process.env, ...worker(fake), FRIZZ_THREAD_SLUG: "", FRIZZ_NODE: process.execPath, PATH: `${BIN}${delimiter}${process.env.PATH}` },
         stdio: ["ignore", "pipe", "pipe"],
       })
       let stdout = ""
@@ -249,6 +250,7 @@ test("a body through a quoted heredoc reaches Frizz byte for byte — backticks,
     assert.equal(ran.code, 0, ran.stderr)
     assert.deepEqual(fake.seen, [{ url: "/_frizz/proj-1/rpc/markOwnDone", body: { slug: "the-caller", body } }])
     assert.match(ran.stdout, /^Marked done\./)
+    assert.equal(existsSync(marker), false, "the shell ran a command out of the body")
   } finally {
     fake.close()
   }
@@ -346,8 +348,6 @@ test("stdin is never read unless `-` asks for it", async () => {
 test("every example in every command's help runs as written", async () => {
   const fake = await fakeFrizz()
   try {
-    const bin = mkdtempSync(join(tmpdir(), "frizzctl-bin-"))
-    symlinkSync(FRIZZCTL, join(bin, "frizzctl"))
     const cwd = mkdtempSync(join(tmpdir(), "frizzctl-examples-"))
     writeFileSync(join(cwd, "questions.json"), JSON.stringify({ questions: [{ question: "Ship it?", kind: "question", options: [{ label: "Yes" }, { label: "No" }] }] }))
     for (const file of ["handoff.md", "prompt.md", "resume-prompt.md"]) writeFileSync(join(cwd, file), "Some text with `backticks`.\n")
@@ -357,7 +357,7 @@ test("every example in every command's help runs as written", async () => {
         const ran = await new Promise<Ran>((resolve) => {
           const child = spawn("sh", ["-c", example], {
             cwd,
-            env: { ...process.env, ...worker(fake), FRIZZ_THREAD_SLUG: "", PATH: `${bin}${delimiter}${dirname(process.execPath)}${delimiter}${process.env.PATH}` },
+            env: { ...process.env, ...worker(fake), FRIZZ_THREAD_SLUG: "", FRIZZ_NODE: process.execPath, PATH: `${BIN}${delimiter}${process.env.PATH}` },
             stdio: ["ignore", "pipe", "pipe"],
           })
           let stdout = ""

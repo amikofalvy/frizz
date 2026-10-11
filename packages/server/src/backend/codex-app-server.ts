@@ -38,9 +38,10 @@ import {
 import { nativeListenCodexAppServerHost } from "./codex-app-server-native.ts"
 import { readCodexAccountId } from "./auth-status.ts"
 import { codexThreadMcpConfig } from "./codex-mcp.ts"
+import { codexThreadShellConfig } from "./codex-shell-env.ts"
 import { codexProviderError } from "./codex-error.ts"
 import { CodexExecutionHealth } from "./codex-execution-health.ts"
-import { codexContextWindowConfig, type FrizzMcp } from "./types.ts"
+import { codexContextWindowConfig, type FrizzCli, type FrizzMcp } from "./types.ts"
 import { log as frizzLog } from "../logging.ts"
 
 // Foundation-only bridge. It is deliberately not an AgentBackend: no current/default Codex TUI
@@ -1030,6 +1031,8 @@ export interface CodexAppServerBridgeOptions {
    *  nothing, and a worker sees only what the operator's own codex config configured. MCP servers are
    *  PROCESS-level, so this is resolved once here rather than per thread. */
   frizzMcp?: FrizzMcp
+  /** Present ⇒ every thread's shell can run `frizzctl` as that thread — see codexThreadShellConfig. */
+  frizzCli?: FrizzCli
   now?: () => Date
   id?: () => string
   requestTimeoutMs?: number
@@ -3394,6 +3397,7 @@ export class CodexAppServerBridge {
   ): { config?: Record<string, unknown> } {
     const config = {
       ...codexThreadMcpConfig(this.options.frizzMcp, threadSlug),
+      ...codexThreadShellConfig(this.options.frizzCli, threadSlug, codexAppServerEnvironment()),
       ...codexContextWindowConfig(this.options.getSettings?.()),
       ...(sessionId ? this.options.workerConfig?.(threadSlug, sessionId) : undefined),
       ...callerConfig,

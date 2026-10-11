@@ -19,9 +19,9 @@ import { log as frizzLog } from "./logging.ts"
 import { PERM_DIR_ENV, permRequestDir, type Project } from "./project.ts"
 import type { SessionRow, Storage } from "./storage.ts"
 import type { BoardManager } from "./board.ts"
-import type { AgentBackend, BackendKind, BuiltCommand, FrizzMcp } from "./backend/types.ts"
+import type { AgentBackend, BackendKind, BuiltCommand, FrizzCli, FrizzMcp } from "./backend/types.ts"
 import { workerMcpServers, type WorkerMcpServers } from "./backend/project-mcp-servers.ts"
-import { FRIZZ_MCP, WORKER_DISALLOWED_TOOLS, claudeWorkerEnv, frizzMcpEnv } from "./backend/types.ts"
+import { FRIZZ_CLI, FRIZZ_MCP, WORKER_DISALLOWED_TOOLS, claudeWorkerEnv, frizzMcpEnv } from "./backend/types.ts"
 // The lifted worker caps live beside the shared worker environment they belong to (backend/types.ts).
 // Re-exported here because this is where callers have always reached for them.
 export { WORKER_MAX_WEB_SEARCHES, WORKER_MAX_SUBAGENTS, WORKER_MAX_CONCURRENT_SUBAGENTS } from "./backend/types.ts"
@@ -513,6 +513,32 @@ export interface FrizzMcpTarget {
   serverLock?: string
   /** THIS project's registry id, so the script addresses `/_frizz/<id>/rpc/…` and not the launcher's. */
   projectId?: string
+}
+
+/**
+ * The descriptor for the worker command line (`frizzctl`): the directory that goes on a worker's PATH,
+ * and where the command finds the running server and which project it addresses.
+ *
+ * The directory is the one a worker is LAUNCHED against (workerPluginDir — the stable path where one
+ * is staged), not the immutable one the plugin was found in. That is the opposite choice from
+ * resolveFrizzMcp below, for the same fact: an MCP server is spawned once per session and never
+ * re-read, so a path that moves bought it nothing; a shell resolves a command on every call, so a
+ * worker that outlives an update runs the updated command the moment the stable path is repointed.
+ *
+ * Undefined when the plugin or the command cannot be found — the worker's shell then simply has no
+ * `frizzctl`, and workerPluginDir has already said so in the log.
+ */
+export function resolveFrizzCli(target: string | FrizzMcpTarget, pluginDir: string | undefined = workerPluginDir()): FrizzCli | undefined {
+  const { stateDir, serverLock, projectId } = typeof target === "string" ? { stateDir: target } : target
+  if (!pluginDir) return undefined
+  const binDir = join(pluginDir, "bin")
+  if (!existsSync(join(binDir, FRIZZ_CLI.name))) return undefined
+  return {
+    binDir,
+    stateDir,
+    ...(serverLock ? { serverLock } : {}),
+    ...(projectId ? { projectId } : {}),
+  }
 }
 
 // Resolve the descriptor for the unified frizz MCP server: the abs path to the stdio server script
