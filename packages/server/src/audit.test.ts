@@ -1,7 +1,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { createHash } from "node:crypto"
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createApp } from "./app.ts"
@@ -152,7 +152,7 @@ test("an audit log that cannot be written never fails the action", async () => {
   assert.equal(sink.records[0]!.detail?.auditError, "registry unreadable")
 })
 
-test("projectAdd through the app: a world-writable folder is refused and recorded, a private one is added", async (t) => {
+test("projectAdd through the app: a refused folder is recorded as refused, an accepted one as added", async (t) => {
   // projectAdd reaches the registry through homedir(); this file runs in its own process, so a sandbox
   // HOME is contained to it (see project-teardown.test.ts homeSandbox).
   const home = mkdtempSync(join(tmpdir(), "frizz-audit-home-"))
@@ -164,25 +164,24 @@ test("projectAdd through the app: a world-writable folder is refused and recorde
     process.env.USERPROFILE = previous.USERPROFILE
     rmSync(home, { recursive: true, force: true })
   })
-  const shared = join(home, "shared")
-  mkdirSync(shared)
-  chmodSync(shared, 0o1777)
+  const folder = join(home, "repo")
+  mkdirSync(folder)
   const sink = capture()
   const app = auditApp(sink, async () => ({ slug: "unused", sessionId: "unused" }))
   const stamp = encodeCallerStamp({ via: "public", remote: "127.0.0.1", host: "colin.frizz.sh", session: "Ab3dE9xY" })
 
-  const refused = await rpc(app, "projectAdd", { path: shared }, { [CALLER_HEADER]: stamp })
+  // The home folder is the one folder the add refuses.
+  const refused = await rpc(app, "projectAdd", { path: home }, { [CALLER_HEADER]: stamp })
   assert.equal(refused.status, 500)
-  const message = `A folder every account can write to cannot be a project: ${shared}`
+  const message = "The home folder cannot be a project — choose a folder inside it."
   assert.equal(((await refused.json()) as { error: string }).error, message)
   assert.equal(sink.records[0]!.action, "projectAdd")
   assert.equal(sink.records[0]!.outcome, "refused")
   assert.equal(sink.records[0]!.error, message)
-  assert.deepEqual(sink.records[0]!.project, { id: null, dir: shared })
+  assert.deepEqual(sink.records[0]!.project, { id: null, dir: home })
   assert.equal(sink.records[0]!.origin.via, "public")
 
-  chmodSync(shared, 0o755)
-  const added = await rpc(app, "projectAdd", { path: shared })
+  const added = await rpc(app, "projectAdd", { path: folder })
   assert.equal(added.status, 200)
   const card = ((await added.json()) as { result: { id: string; path: string } }).result
   assert.equal(sink.records[1]!.outcome, "ok")

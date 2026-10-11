@@ -8,7 +8,7 @@ import {
   type GitProjectIdentityScope,
 } from "./project-identity.ts"
 import type { ProjectLaunchTarget } from "./project-launch.ts"
-import { discoverProjectRoot, ensureProjectIdFile, refuseWorldWritableProject, writeProjectIdFile } from "./project-root.ts"
+import { discoverProjectRoot, ensureProjectIdFile, writeProjectIdFile } from "./project-root.ts"
 import { registerProject } from "./project-registry.ts"
 import { projectStateDir } from "./frizz-paths.ts"
 import { originRemoteUrl, parseRepoLabel, resolveProjectLabel } from "./project-identity.ts"
@@ -249,11 +249,7 @@ export function resolveProject(
   home = homedir(),
   env: NodeJS.ProcessEnv = process.env,
 ): Project {
-  const root = resolveProjectDir(cwd)
-  // Before identity is resolved, because resolving it can mint `.frizz/.id` into the folder. The
-  // launcher refuses these first (resolveLaunchIntent); this is a server started without it.
-  refuseWorldWritableProject(root)
-  const identity = resolveProjectIdentity(root, home)
+  const identity = resolveProjectIdentity(resolveProjectDir(cwd), home)
   const dir = identity.root
   const id = registerAndReconcile(dir, identity.id, home)
   const stateDir = projectStateDir(id, home)
