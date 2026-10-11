@@ -102,6 +102,26 @@ test("the message carrying a successful done registration survives the collapse"
   assert.equal(survivesQueueCollapse(m, 2, none), true)
 })
 
+// The same registration as a worker writes it since 2026-10-11: a shell call. Every backend's shell
+// call is projected as `Bash`; a long or multi-line one carries its raw text in `command`.
+test("a successful `frizzctl done` is the same registration, however the command was composed", () => {
+  const none = new Set<number>()
+  const signedOff = (tool: { name: string; status: string; detail?: string; command?: string }) => carriesDoneRegistration({ text: "The write-up.", tools: [tool] })
+  const heredoc = "frizzctl done --body-file - <<'EOF'\n- **Fixed the lookup** in `src/resolver.ts`.\nEOF"
+  assert.equal(signedOff({ name: "Bash", status: "completed", detail: "frizzctl done --body-file - <<'EOF' …", command: heredoc }), true)
+  assert.equal(signedOff({ name: "Bash", status: "completed", detail: "frizzctl done --body-file handoff.md" }), true)
+  assert.equal(signedOff({ name: "Bash", status: "completed", detail: "nub run test && frizzctl done --body-file handoff.md" }), true)
+  assert.equal(survivesQueueCollapse({ text: "The write-up.", tools: [{ name: "Bash", status: "completed", command: heredoc }] }, 2, none), true)
+  // Exit 2 — the gate held — is a failed shell call, and a failed registration did not stand.
+  assert.equal(signedOff({ name: "Bash", status: "failed", command: heredoc }), false)
+  // Another command of the same program, the words inside something else's argument, and the same
+  // text under a tool that is not a shell are none of them a sign-off.
+  assert.equal(signedOff({ name: "Bash", status: "completed", detail: "frizzctl done-something" }), false)
+  assert.equal(signedOff({ name: "Bash", status: "completed", detail: "frizzctl activity" }), false)
+  assert.equal(signedOff({ name: "Bash", status: "completed", detail: "grep -rn 'frizzctl done' packages/" }), false)
+  assert.equal(signedOff({ name: "Grep", status: "completed", detail: "frizzctl done" }), false)
+})
+
 test("a REFUSED done registration does not — the sign-off did not stand", () => {
   const none = new Set<number>()
   const m = { text: "The report is written. I sign off with the finding summary.", tools: [{ name: "mcp__frizz__done", status: "failed" }] }

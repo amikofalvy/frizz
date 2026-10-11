@@ -172,7 +172,7 @@ export interface AppContext {
   // the poll could never read is refused with the reason instead of armed in silence. Production wires
   // `probePrReadable` (one `gh pr view`); a test context injects its own answer.
   probePr: (ref: PrRef) => Promise<PrProbe>
-  /** The issue twin, for `mcp__frizz__watch_issue` — `probeIssueReadable` (one `gh issue view`). */
+  /** The issue twin, for `frizzctl watch-issue` — `probeIssueReadable` (one `gh issue view`). */
   probeIssue: (ref: PrRef) => Promise<PrProbe>
   // Per-thread permission changes. Idle standalone TUIs are reopened on the same persisted
   // conversation with backend-native launch flags; busy/ambiguous states fail explicitly.

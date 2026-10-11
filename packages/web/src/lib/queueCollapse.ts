@@ -24,14 +24,22 @@ export interface CollapseMsgLike {
   wake?: boolean
   boundary?: "wake" | "compaction" | "rest"
   sourceId?: string
-  /** The message's tool calls, reduced to the two facts the sign-off check reads. Callers pass whole
-   *  transcript messages, whose TranscriptToolCall entries satisfy this structurally. */
-  tools?: readonly { name?: string; status?: string }[]
+  /** The message's tool calls, reduced to the facts the sign-off check reads. Callers pass whole
+   *  transcript messages, whose TranscriptToolCall entries satisfy this structurally. `command` is a
+   *  shell call's raw text when it ran long or over several lines, `detail` its one-line summary. */
+  tools?: readonly { name?: string; status?: string; detail?: string; command?: string }[]
   /** Set on the transcript's provider-failure row (a Codex request that failed). */
   providerError?: unknown
 }
 
-// The message that REGISTERED the thread's completion — a successful `mcp__frizz__done` call. Its prose
+// A shell command that runs `frizzctl done`, at its start or after anything that begins a new command
+// (a newline, `;`, `&&`, `||`, `|`, a subshell). The transcript projects every backend's shell call as
+// `Bash`, so one pattern reads Claude, Codex and ACP alike. Not a parse and not meant to be: it answers
+// "did this message sign off", where a false positive keeps one extra message unfolded.
+const RUNS_FRIZZCTL_DONE = /(?:^|[\n;&|(])\s*frizzctl\s+done(?=\s|$)/
+
+// The message that REGISTERED the thread's completion — a successful `frizzctl done`, or, on a thread
+// started before the command line (2026-10-11), a successful `mcp__frizz__done` tool call. Its prose
 // IS the handoff: a worker writes the conclusive write-up and calls the verb in the same breath, so the
 // projection coalesces both into one message. That message used to fold whenever ANY prose followed it,
 // because the run's closing anchor is simply the last prose in the run — and workers routinely append a
@@ -39,13 +47,17 @@ export interface CollapseMsgLike {
 // and buried the write-up it points at (maintainer 2026-09-02, pullfrog `if-you-were-going-to-migrate`:
 // a 340-char afterword anchored the run while the 2,329-char conclusion collapsed by default).
 //
-// Completed only. A REFUSED registration (`status: "failed"`) did not stand — the worker re-signs-off,
-// and that later message is the one carrying the handoff. `mcp__frizz__ask`/`watch` deliberately do NOT
+// Completed only. A REFUSED registration (`status: "failed"` — the command exits 2 when the gate holds,
+// which a shell call reports as a failure) did not stand — the worker re-signs-off,
+// and that later message is the one carrying the handoff. `ask`/`watch` deliberately do NOT
 // count: neither ends the turn (a worker keeps working past both), and the ask already renders its own
 // answerable card at the rest it was asked at (questionAnchors), so the prose around them is mid-run
 // narration the fold is right to carry.
 export function carriesDoneRegistration(m: CollapseMsgLike): boolean {
-  return (m.tools ?? []).some((t) => t.name === "mcp__frizz__done" && t.status === "completed")
+  return (m.tools ?? []).some((t) =>
+    t.status === "completed" &&
+    (t.name === "mcp__frizz__done" || (t.name === "Bash" && RUNS_FRIZZCTL_DONE.test(t.command ?? t.detail ?? ""))),
+  )
 }
 
 // A message's ```question fences, normalized — its identity as an ASK. The surrounding prose is

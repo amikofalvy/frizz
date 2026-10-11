@@ -328,6 +328,28 @@ test("exit 0 is done, 1 is a failure, and 2 is a gate that held", async () => {
   }
 })
 
+// A codex thread a human narrowed to `workspace-write` or `read-only` cannot open a socket, loopback
+// included, and codex says so in the shell's environment. "fetch failed" there reads as Frizz being
+// down, which a worker answers by retrying; the message has to say that no retry can work.
+test("a shell sandboxed off the network is told so, and told not to retry", async () => {
+  const fake = await fakeFrizz()
+  fake.close()
+  await new Promise((resolve) => setTimeout(resolve, 50))
+
+  const sandboxed = await run(["title", "Fix queue focus"], { env: { ...worker(fake), CODEX_SANDBOX_NETWORK_DISABLED: "1" } })
+  assert.equal(sandboxed.code, 1)
+  assert.equal(sandboxed.stdout, "")
+  assert.match(sandboxed.stderr, /sandboxed with network access off/)
+  assert.match(sandboxed.stderr, /NOTHING WAS SAVED/)
+  assert.match(sandboxed.stderr, /do not retry/)
+
+  // The same dead port from an ordinary shell is an ordinary failure, which IS worth a retry.
+  const down = await run(["title", "Fix queue focus"], { env: { ...worker(fake), CODEX_SANDBOX_NETWORK_DISABLED: "" } })
+  assert.equal(down.code, 1)
+  assert.match(down.stderr, /setOwnThreadTitle request failed/)
+  assert.doesNotMatch(down.stderr, /sandboxed/)
+})
+
 // An agent's shell hands a command an OPEN PIPE for stdin more often than a terminal. A command that
 // reads it uninvited never returns, and that reads as the command being broken.
 test("stdin is never read unless `-` asks for it", async () => {

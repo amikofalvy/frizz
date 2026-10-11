@@ -1233,7 +1233,7 @@ async function spawnThread(args) {
       signal: controller.signal,
     })
   } catch (err) {
-    throw new Error(`dispatch request failed: ${err instanceof Error ? err.message : err}`)
+    throw unreachable("dispatch", err)
   } finally {
     clearTimeout(timer)
   }
@@ -1299,7 +1299,7 @@ async function callRpc(procedure, body) {
       signal: controller.signal,
     })
   } catch (err) {
-    throw new Error(`${procedure} request failed: ${err instanceof Error ? err.message : err}`)
+    throw unreachable(procedure, err)
   } finally {
     clearTimeout(timer)
   }
@@ -1308,6 +1308,30 @@ async function callRpc(procedure, body) {
     throw new Error(`${procedure} returned HTTP ${res.status}${detail ? `: ${detail.slice(0, 500)}` : ""}`)
   }
   return await res.json().catch(() => null)
+}
+
+/**
+ * A request that never reached the server, as the error the caller reads.
+ *
+ * ONE CAUSE GETS ITS OWN WORDS: a shell sandboxed off the network. A codex thread narrowed to
+ * `workspace-write` or `read-only` cannot open a socket at all, loopback included (measured on codex
+ * 0.161.0, `_live_codex_shell_identity.mts`: curl exit 7 against a TCP listener and a unix socket
+ * alike), and codex says so in the shell's own environment. "fetch failed" there reads as Frizz being
+ * down, and a worker told that retries — forever, since nothing it can do from inside changes it.
+ * Every thread Frizz creates runs with full access, so this is a thread a human narrowed on purpose.
+ * @param {string} procedure @param {unknown} err
+ */
+function unreachable(procedure, err) {
+  if (process.env.CODEX_SANDBOX_NETWORK_DISABLED === "1") {
+    return new Error(
+      `${procedure} could not reach Frizz: this shell is sandboxed with network access off ` +
+      "(CODEX_SANDBOX_NETWORK_DISABLED=1), and that includes the Frizz server on this machine. NOTHING " +
+      "WAS SAVED, and no Frizz command can work from this thread while it stays sandboxed — do not " +
+      "retry. Say what you needed in your final message, and say there that this thread needs full " +
+      "access before a Frizz command can run.",
+    )
+  }
+  return new Error(`${procedure} request failed: ${err instanceof Error ? err.message : err}`)
 }
 
 /** Which thread is calling. Read from the environment the worker was started with, because nothing
