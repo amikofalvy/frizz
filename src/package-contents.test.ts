@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
+import { serverReleaseMinimum, serverReleaseSpec } from "./server-release.ts";
 import { WORKER_PLUGIN_REQUIRED_FILES } from "./worker-plugin-closure.ts";
 
 /**
@@ -79,6 +80,10 @@ test("the shell bootstraps the versioned public server contract", () => {
   });
   assert.equal(serverManifest.name, "frizz-server");
   assert.deepEqual(serverManifest.frizzServer, { protocol: 1, dataEpoch: 1 });
+  // The launcher parses both at every start and refuses a minimum its own pin does not meet, so a
+  // manifest that would stop every launch has to fail here, before it is published.
+  assert.equal(serverReleaseSpec(manifest).version, "0.15.22");
+  assert.equal(serverReleaseMinimum(manifest), "0.15.21");
 });
 
 test("native server dependencies do not leak back into the stable shell", () => {

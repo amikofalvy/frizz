@@ -106,12 +106,12 @@ What it fixes beyond release cadence:
 
 This is normal, not an edge case. `npx frizz` fetches the newest shell on every run, and the server only moves when someone clicks Update: `ServerReleaseStore.load()` boots the selected server and never looks at the shell's pin unless the data epoch changed. The maintainer's own board was shell 0.13.11 on server 0.15.18 this morning.
 
-**It already bites.** Shell 0.13.13 runs every launch outside a project on `<data>/host`. The server learned to keep that folder off the dashboard in 0.15.21 (`49000c91`). A server at 0.15.20 or older has no such refusal and re-registers every state folder at boot, so it lists the stand-in as a project named "host"; the entry outlives an update, because the refusal is at registration and nothing filters the list. Read from the 0.15.20 source at `adada8ec`; the reproduction is the first check in §8.
+**It already bites.** Shell 0.13.13 runs every launch outside a project on `<data>/host`. The server learned to keep that folder off the dashboard in 0.15.21 (`49000c91`). A server at 0.15.20 or older has no such refusal and re-registers every state folder at boot, so it lists the stand-in as a project named "host"; the entry outlived an update, because the refusal was at registration and nothing filtered the list. Reproduced 2026-10-11 with the published `frizz-server` 0.15.20 under a shell built from `main`: the dashboard's project list held `<data>/host` (the last scenario of [`scripts/verify-server-updates.mjs`](../scripts/verify-server-updates.mjs)).
 
 **The rule: a shell declares the oldest server it works with, and installs its pinned one when the installed server is older.**
 
 - `frizzServer.minimum` in the shell's manifest, beside `version`. Absent means no floor, which keeps every shell so far unchanged.
-- At a cold start, a selected server below the floor is replaced by the pinned one through the path a new machine and a data-epoch change already take (`prepareInitial`): staged, validated, booted, and recorded as the selection only after it comes up. If it does not come up, the old selection stands.
+- At a cold start, a selected server below the floor is replaced by the pinned one through the path a new machine and a data-epoch change already take (`prepareInitial`): staged, validated, booted, and recorded as the selection only after it comes up. If it does not come up, the old selection is still on disk and the launch fails the way a new machine's would; the next launch tries the pinned release again.
 - Never while a server is running. A second launch joins whatever is there and falls back per §4.
 - If npm cannot be reached, the launch fails with that reason, as a new machine's does. A shell newer than its server came from npm seconds earlier, so this is a narrow case.
 
@@ -123,8 +123,8 @@ Server work first, because it ships in minutes and is inert until a shell asks f
 
 | # | Change | Ships in | State |
 | --- | --- | --- | --- |
-| 1 | The floor: `frizzServer.minimum`, raised at cold start | shell | not built |
-| 2 | Keep the stand-in off the project list even when an older server registered it, and drop the entry | server | not built |
+| 1 | The floor: `frizzServer.minimum`, raised at cold start | shell | **done**, on `main`; first floor is 0.15.21 |
+| 2 | Keep the stand-in off the project list even when an older server registered it, and drop the entry | server | **done**, on `main` |
 | 3 | The launch-routing module (classification, registration, landing) in the server package; `POST /_frizz/control/launch` | server | not built |
 | 4 | The serving record: written on open, checked before opening, read by registry recovery | server | not built |
 | 5 | Always host on the stand-in; carry the session state over; `--stop` and `--status` read the stand-in | shell | not built |
