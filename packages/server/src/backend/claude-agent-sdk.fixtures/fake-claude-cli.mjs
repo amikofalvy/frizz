@@ -214,6 +214,14 @@ function handleHostControl(message) {
     respond(message.request_id, { title: `titled: ${String(request.description ?? "").slice(0, 40)}` })
     return
   }
+  // Real claude re-reads the plugin closure and answers with what it now holds. The fake only needs to
+  // prove the REQUEST is made, and where it falls among the inputs, so it records (the `host-control`
+  // row above) and answers an empty closure.
+  if (request.subtype === "reload_plugins") {
+    if (scenario === "reload-failure") return respondError(message.request_id, "plugins could not be reloaded")
+    respond(message.request_id, { commands: [], agents: [], plugins: [], mcpServers: [], error_count: 0 })
+    return
+  }
   respondError(message.request_id, `unsupported fake control subtype ${String(request.subtype)}`)
 }
 
