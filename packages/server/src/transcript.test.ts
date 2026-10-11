@@ -121,7 +121,7 @@ test("a PR watcher's wake shows the news and not the agent-facing trailer frizz 
   assert.equal(wake.wake, true)
   assert.equal(wake.text, delivered, "the worker keeps every byte — the outbox acks on the token, and the trailer is written for it")
   assert.equal(wake.displayText, "\u{1F514} nubjs/nub#879: now CONFLICTS with the base branch.")
-  assert.doesNotMatch(wake.displayText!, /STILL ARMED|mcp__frizz__/, "worker instructions reached the operator")
+  assert.doesNotMatch(wake.displayText!, /STILL ARMED|frizzctl|mcp__frizz__/, "worker instructions reached the operator")
 })
 
 // The router appends the clock note to the WORKER's copy only, and says so — but the chat renders the

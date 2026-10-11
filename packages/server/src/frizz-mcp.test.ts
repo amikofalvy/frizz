@@ -22,13 +22,19 @@ interface Rpc {
 // `cwd` matters: with no FRIZZ_PROJECT_ID the shim derives its project by walking UP for `.frizz/.id`,
 // so a child left in this repo would address frizz's own project. Default it to an empty temp dir —
 // "a worker with no stamp and no project in its tree" — and let a test that wants the walk-up ask for it.
+const UNSET_FRIZZ_IDENTITY = { FRIZZ_THREAD: "", FRIZZ_THREAD_SLUG: "", FRIZZ_STATE_DIR: "", FRIZZ_PERM_DIR: "", FRIZZ_SERVER_LOCK: "", FRIZZ_PROJECT_ID: "" }
+
 function startServer(env: Record<string, string>, cwd = mkdtempSync(join(tmpdir(), "frizz-mcp-cwd-"))): Rpc {
   const descriptor = resolveFrizzMcp("/unused")
   assert.ok(descriptor, "the packaged frizz MCP script must be resolvable")
   const child = spawn(process.execPath, [descriptor.scriptPath], {
     stdio: ["pipe", "pipe", "inherit"],
     cwd,
-    env: { ...process.env, ...env },
+    // The Frizz identity of the shell running the suite is BLANKED before the test's own is laid on.
+    // Run from a worker, that shell names the real server (FRIZZ_SERVER_LOCK wins over the state dir
+    // a test passes), the real project and the worker's own thread, so an unblanked spawn sends every
+    // test's dispatch, steer and ask to the maintainer's board — two real opus threads per run.
+    env: { ...process.env, ...UNSET_FRIZZ_IDENTITY, ...env },
   })
   const pending = new Map<number, (value: any) => void>()
   let buf = ""
@@ -249,10 +255,10 @@ test("`spawn_thread` names the spawning thread at the end of the prompt, so the 
     const prompt: string = seen[0].body.prompt
     assert.ok(prompt.startsWith("do the thing\n\n---\n"), "the task comes first, untouched")
     assert.match(prompt, /Spawned by the Frizz thread `the-coordinator`/)
-    assert.match(prompt, /`steer` tool \(`to: "the-coordinator"`\)/)
+    assert.match(prompt, /send it there with `frizzctl steer the-coordinator --message-file <file\|->`/)
     // …and the spawner is told the child can now reach it, and how to reach the child.
     assert.match(call.result.content[0].text, /It knows your slug/)
-    assert.match(call.result.content[0].text, /`to: "spawned-child"`/)
+    assert.match(call.result.content[0].text, /with `frizzctl steer spawned-child`/)
   } finally {
     rpc.kill()
     http.close()
@@ -494,7 +500,7 @@ test("`goal` arms and disarms the CALLING thread, identified from its env", asyn
     })
     // The reply must teach how it ENDS, or a worker only knows how to start one — and it must warn
     // about the sign-off rather than merely offering it, since that exit files the thread away.
-    assert.match(armed.result.content[0].text, /action.{0,4}stop/)
+    assert.match(armed.result.content[0].text, /Run `frizzctl goal stop` once the work it drives is finished/)
     assert.match(armed.result.content[0].text, /```done/)
     assert.match(armed.result.content[0].text, /only when there is genuinely nothing left/)
 
@@ -606,7 +612,7 @@ test("`title` names the CALLING thread, and a human's own name refuses it out lo
     assert.equal(refused.result.isError, undefined, "a human owning the name is a correct answer, not a failure")
     assert.match(refused.result.content[0].text, /Not renamed/)
     assert.match(refused.result.content[0].text, /outranks yours/)
-    assert.match(refused.result.content[0].text, /do not call this again/)
+    assert.match(refused.result.content[0].text, /do not run this again/)
 
     // An empty name is refused in the HANDLER, so a whitespace-only title never reaches the server.
     const before = seen.length
@@ -838,7 +844,7 @@ test("`timer` refuses a bad delay, a missing/doubled instant and a missing id wi
 
     await refused(2, { action: "set", prompt: "x", in_seconds: 3 }, /must be between 10 and 2592000/)
     await refused(3, { action: "set", prompt: "x", in_seconds: 99_999_999 }, /must be between 10 and 2592000/)
-    await refused(4, { action: "set", prompt: "x" }, /give either `in_seconds`/)
+    await refused(4, { action: "set", prompt: "x" }, /give either `--in-seconds`/)
     await refused(5, { action: "set", prompt: "x", in_seconds: 60, at: "2026-08-04T15:00:00Z" }, /not both/)
     await refused(6, { action: "set", in_seconds: 60 }, /`prompt` is required/)
     await refused(7, { action: "set", prompt: "x", at: "2020-01-01T00:00:00Z" }, /at least 10s in the future/)
@@ -899,7 +905,7 @@ test("`goal` refuses to act when its thread identity was never stamped into its 
     rpc.send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "goal", arguments: { action: "stop" } } })
     const failed = await rpc.next(2)
     assert.equal(failed.result.isError, true)
-    assert.match(failed.result.content[0].text, /not told which thread it belongs to/)
+    assert.match(failed.result.content[0].text, /could not tell which thread is calling/)
   } finally {
     rpc.kill()
   }
@@ -1006,7 +1012,7 @@ test("`watch` and `unwatch` register and withdraw against the CALLING thread", a
     assert.match(added.result.content[0].text, /wch_abc123 {2}shell: nub --test \(bzvtnt3ig\)/)
     // And it says what happens at the expiry, because the cancel-and-re-decide is the whole mechanism
     // that stops a registration outliving the reason it was made.
-    assert.match(added.result.content[0].text, /WHEN `for` RUNS OUT the row is CANCELLED/)
+    assert.match(added.result.content[0].text, /WHEN `--for` RUNS OUT the row is CANCELLED/)
 
     rpc.send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "unwatch", arguments: { id: "wch_abc123" } } })
     const dropped = await rpc.next(3)
@@ -1209,7 +1215,7 @@ test("`done` marks the CALLING thread finished, and reports a refusal as an acti
     assert.match(refused.result.content[0].text, /NOT marked done/)
     assert.match(refused.result.content[0].text, /qst_aaa111 {2}Ship it\?/)
     assert.match(refused.result.content[0].text, /wch_bbb222 {2}shell: nub --test \(bzvtnt3ig\)/)
-    assert.match(refused.result.content[0].text, /There is no force parameter/)
+    assert.match(refused.result.content[0].text, /There is no force flag/)
 
     rpc.send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "done", arguments: { body: "- **Fixed** the parser" } } })
     const marked = await rpc.next(3)
@@ -1351,7 +1357,7 @@ test("`watch_pr` reads back the expiry it actually got, and says so when the cei
 
     rpc.send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "watch_pr", arguments: { action: "add", target: "acme/app#392", for: "9999d" } } })
     const capped = (await rpc.next(3)).result.content[0].text
-    assert.match(capped, /YOUR `for: 9999d` WAS CAPPED/)
+    assert.match(capped, /YOUR `--for 9999d` WAS CAPPED/)
     assert.match(capped, /until 2027-09-02T00:00:00\.000Z/, "…and names what it actually holds instead")
   } finally {
     rpc.kill()
@@ -1470,7 +1476,7 @@ test("`activity` with nothing running says so, and names the terminal states tha
     assert.match(got.result.content[0].text, /Nothing is running on this thread/)
     assert.match(got.result.content[0].text, /```done/)
     // The free-form question fence was retired (607c4c12); the way to ask is `ask`, and the copy says so.
-    assert.match(got.result.content[0].text, /register a question with `ask`/)
+    assert.match(got.result.content[0].text, /register a question with `frizzctl ask`/)
   } finally {
     rpc.kill()
     http.close()
@@ -1501,7 +1507,7 @@ test("with no server up, a tool call says NOTHING WAS SAVED and to retry — not
     assert.equal(failed.result.isError, true)
     const text = failed.result.content[0].text
     assert.match(text, /NOTHING WAS SAVED/, "the worker must learn its OWN call had no effect")
-    assert.match(text, /RETRY this exact call/, "…and what to do about it")
+    assert.match(text, /RETRY this exact command/, "…and what to do about it")
     assert.match(text, /do not come to rest assuming it took/, "…and the failure mode to avoid")
   } finally {
     rpc.kill()

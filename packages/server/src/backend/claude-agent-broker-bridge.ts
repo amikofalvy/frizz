@@ -23,7 +23,7 @@ import {
   parseClaudeAskUserQuestion,
   type ClaudeAskSpec,
 } from "./claude-permission-interactions.ts"
-import { FRIZZ_MCP, claudeCompactionEnv, claudeCompactionWindowOf, claudePromptCacheEnv, claudeWorkerEnv } from "./types.ts"
+import { FRIZZ_MCP, claudeCompactionEnv, claudeCompactionWindowOf, claudePromptCacheEnv, claudeWorkerEnv, frizzCliEnv, type FrizzCli } from "./types.ts"
 import type { WorkerMcpServers } from "./project-mcp-servers.ts"
 
 type BrokerMcpServers = NonNullable<ClaudeBrokerConfig["mcpServers"]>
@@ -73,6 +73,9 @@ export interface ClaudeBrokerBridgeDeps {
     mcpServers?: WorkerMcpServers
     allowedTools?: string[]
     permDir?: string
+    /** Present ⇒ the worker's shell is told where `frizzctl` finds the server (frizzCliEnv). The
+     *  command itself needs no PATH entry here: Claude Code puts the plugin's `bin/` on its Bash PATH. */
+    cli?: FrizzCli
   }
   /** The live Settings, read at every fork so the auto-compact window (Settings.autoCompactWindow →
    *  CLAUDE_CODE_AUTO_COMPACT_WINDOW) follows the drawer without a restart. Only the fork reads it: a
@@ -518,6 +521,9 @@ export function createClaudeAgentBrokerBridge(deps: ClaudeBrokerBridgeDeps): Cla
     // carries them. FRIZZ_THREAD is per-thread (the slug), so it's stamped here, not in deps.workerEnv.
     const we = deps.workerEnv
     const workerEnv: Record<string, string> = {
+      // Where `frizzctl`, run from this worker's shell, finds the server and its own project. The
+      // caller's identity is FRIZZ_THREAD below, which every worker shell has had all along.
+      ...(we?.cli ? frizzCliEnv(we.cli) : {}),
       FRIZZ_THREAD: slug,
       // Every Claude worker's environment — the token budget, the bash timeout ceiling, and the lifted
       // web-search / sub-agent caps — as ONE record, so a cap added there cannot miss this path. It

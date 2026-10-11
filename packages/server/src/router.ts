@@ -2432,7 +2432,7 @@ export function createRouter(ctx: AppContext) {
       }, () => sendFollowUp(input)),
     }),
 
-    // ONE WORKER MESSAGING ANOTHER THREAD — `mcp__frizz__steer`. Claude Code's own cross-session
+    // ONE WORKER MESSAGING ANOTHER THREAD — `frizzctl steer`. Claude Code's own cross-session
     // `SendMessage` reaches only a session whose process is live, so before this a worker told to hand its
     // results to a resting thread went looking for the board's `followUp` route and curled it by hand.
     // This is that delivery, with the board's own bookkeeping: the target's CURRENT session is read here
@@ -2454,7 +2454,7 @@ export function createRouter(ctx: AppContext) {
         detail: { from: input.from, message: textDigest(input.message) },
       }, async () => {
         if (input.from === input.to) {
-          throw new Error("That is your own thread. `steer` messages ANOTHER thread; to keep a note for yourself, write it to your scratch directory")
+          throw new Error("That is your own thread. `frizzctl steer` messages ANOTHER thread; to keep a note for yourself, write it to your scratch directory")
         }
         const sender = ctx.storage.getSession(input.from)
         if (!sender) throw new Error(`the calling thread ${input.from} is not registered in this project`)
@@ -3018,7 +3018,7 @@ export function createRouter(ctx: AppContext) {
       },
     }),
 
-    // The WORKER arming its own, from `mcp__frizz__goal`. Same row the Goal panel writes;
+    // The WORKER arming its own, from `frizzctl goal`. Same row the Goal panel writes;
     // different caller, and therefore a different guard.
     //
     // Unguarded on session/generation ON PURPOSE — see SetOwnThreadRecurringPromptInput. The MCP server
@@ -3078,7 +3078,7 @@ export function createRouter(ctx: AppContext) {
     }),
 
     // ---- THE WORKER'S ONE-OFF TIMERS (scheduler SOURCE 6) ----------------------------------------
-    // Three mutations, from `mcp__frizz__timer`. Same caller as the recurring prompt above and therefore
+    // Three mutations, from `frizzctl timer`. Same caller as the recurring prompt above and therefore
     // the same guard: keyed on the slug alone, because the MCP server keeps its slug across every resume
     // while the session id underneath it bumps.
     //
@@ -3240,7 +3240,7 @@ export function createRouter(ctx: AppContext) {
     }),
 
     // ---- REGISTERED PR WATCHERS (add / drop / list) ---------------------------------------------
-    // The worker's own PR watchers, from `mcp__frizz__watch_pr`. Same caller and therefore the same rules
+    // The worker's own PR watchers, from `frizzctl watch-pr`. Same caller and therefore the same rules
     // as the timers above: slug-only (the MCP server outlives the session ids underneath it), and no
     // thread parameter a model could aim elsewhere.
     addOwnPrWatch: mutation({
@@ -3252,7 +3252,7 @@ export function createRouter(ctx: AppContext) {
         if (row.state === "archived" || row.archived === 1) {
           throw new Error("Reopen this thread before registering a watcher on it")
         }
-        // A PULL REQUEST unless the caller says `issue` (2026-09-14, `mcp__frizz__watch_issue`). Same
+        // A PULL REQUEST unless the caller says `issue` (2026-09-14, `frizzctl watch-issue`). Same
         // registry and same rules below; the ref grammar, the probe and the refusal wording branch.
         const kind = input.kind ?? "pull"
         const noun = kind === "issue" ? "issue" : "pull request"
@@ -3332,7 +3332,7 @@ export function createRouter(ctx: AppContext) {
     }),
 
     // ---- THE WORKER'S OWN WATCHES on its own running work (add / drop) --------------------------
-    // `mcp__frizz__watch` and `mcp__frizz__unwatch`. A wait stops being a line the worker restates in a
+    // `frizzctl watch` and `frizzctl unwatch`. A wait stops being a line the worker restates in a
     // fence at every rest and becomes a row it creates once — see plans/rest-by-registration.md. Same
     // caller and therefore the same rules as the PR watchers above: slug-only, no thread parameter.
     addOwnWatch: mutation({
@@ -3359,7 +3359,7 @@ export function createRouter(ctx: AppContext) {
         if (!live) {
           throw new Error(
             `nothing running on this thread answers to \`${target}\` — a watch only ever names work that is ` +
-            "already live, and work that has already finished needs no watch at all. Call `activity` for the " +
+            "already live, and work that has already finished needs no watch at all. Run `frizzctl activity` for the " +
             "exact ids of everything you have running.",
           )
         }
@@ -3369,7 +3369,7 @@ export function createRouter(ctx: AppContext) {
         if (live.kind !== input.kind) {
           const said = input.kind === "agent" ? "sub-agent" : "background shell"
           const is = live.kind === "agent" ? "sub-agent" : "background shell"
-          throw new Error(`\`${target}\` is a ${is}, not a ${said} — register it with \`kind: "${live.kind}"\`.`)
+          throw new Error(`\`${target}\` is a ${is}, not a ${said} — register it with \`frizzctl watch ${live.kind}\`.`)
         }
         const armed = ctx.storage.listThreadWatches(input.slug, { armedOnly: true })
         if (armed.length >= OWN_WATCH_MAX_ARMED) {
@@ -3408,7 +3408,7 @@ export function createRouter(ctx: AppContext) {
     }),
 
     // ---- THE WORKER'S REGISTERED QUESTIONS (ask / unask) + the human's answer -------------------
-    // `mcp__frizz__ask` and `mcp__frizz__unask`, plus the two the CARD calls. See
+    // `frizzctl ask` and `frizzctl unask`, plus the two the CARD calls. See
     // plans/rest-by-registration.md: a question stops being a fenced block with the lifetime of the
     // message carrying it and becomes a row that survives the worker saying anything else.
     //
@@ -3788,7 +3788,7 @@ export function createRouter(ctx: AppContext) {
       },
     }),
 
-    // The WORKER naming its own thread, from `mcp__frizz__title`. Same row `renameThread` writes;
+    // The WORKER naming its own thread, from `frizzctl title`. Same row `renameThread` writes;
     // different caller, and therefore a weaker claim: this name is machine-authored, so it does NOT
     // lock, and a human rename outranks it both before and after.
     //

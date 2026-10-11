@@ -9,9 +9,10 @@
 // and 25% of threads opened with a `question` fence that was usually a permission gate on
 // already-recommended, reversible work. Per Anthropic's Claude-5 context-engineering guidance, the fix
 // was deletion, not rewording: cut the explanatory essays, keep every mechanical rule once, and defer
-// elaboration to the frizz MCP tool descriptions (progressive disclosure). When editing:
+// elaboration to each command's own `frizzctl <command> --help` (progressive disclosure; until
+// 2026-10-11 those were the frizz MCP tool descriptions). When editing:
 //   - DO NOT re-add a paragraph explaining WHY a rule exists. Put the why in a comment here.
-//   - DO NOT restate a rule a hook, tool description, or agent profile already enforces.
+//   - DO NOT restate a rule a hook, a command's `--help`, or agent profile already enforces.
 //   - A new rule earns its tokens only if a worker measurably gets it wrong without it.
 export type BackendKind = "claude" | "codex" | "acp"
 
@@ -82,6 +83,34 @@ Also wrong, for the same reason: a completed action (\`Fixed the alignment\`, \`
 bare noun phrase (\`Final workflow validation\` → \`Validating the final workflow\`), and a raw
 command pasted as prose. Never prefix a description with \`Running\` to force it into shape — fix the
 verb itself, and use \`Running\` only when the thing you are doing is literally running something.`
+
+// THE ONE INTRODUCTION OF THE COMMAND LINE (2026-10-11). Every worker capability was an MCP tool
+// (`mcp__frizz__ask`, …) until this date; each is now a `frizzctl` subcommand the worker runs from its
+// own shell, on every backend. The section states only what a worker cannot guess and gets wrong
+// without it — that the reference is each command's own `--help`, the three argument forms, and the
+// quoted heredoc (a handoff body is full of backticks, and a double-quoted argument would execute
+// them). Everything about a single command lives in that command's `--help`
+// (cc-worker/lib/frizz-tools.mjs), and frizzctl.test.ts runs this contract's own examples.
+const FRIZZCTL = `## \`frizzctl\` — how you reach Frizz
+
+Everything you register with Frizz — a question, a completion, a wait, a timer, a title, a message to
+another thread — is a subcommand of \`frizzctl\`, a program on your shell's PATH. Run it with your shell
+tool like any other command: \`frizzctl <command> [arguments]\`. It acts on YOUR thread.
+
+- \`frizzctl --help\` lists every command; \`frizzctl <command> --help\` is that command's full
+  reference. Read it before the first time you run the command.
+- Arguments arrive three ways, and they combine: flags (\`frizzctl watch shell bzvtnt3ig --for 2h\`); a
+  JSON object from \`--input <file>\`, \`--input -\` (stdin) or inline as the first argument; and
+  \`--<name>-file <path|->\` for any text argument.
+- **PROSE GOES THROUGH A FILE OR A QUOTED HEREDOC (\`<<'EOF'\`), NEVER A DOUBLE-QUOTED ARGUMENT:** inside
+  double quotes your shell runs backticks and \`$(…)\` before \`frizzctl\` sees them.
+- The answer is on stdout. Exit 0: done. 1: failed or misused, and the message says which. 2: refused.
+
+\`\`\`sh
+frizzctl done --body-file - <<'EOF'
+- **Fixed the lookup** in \`src/resolver.ts\`; \`npm test\` green.
+EOF
+\`\`\``
 
 // WHY the `done` entry keeps growing carve-outs (2026-08-16). Two zod threads fenced `done` on work
 // that was still owed, in one sitting, and BOTH reached it by reading the contract correctly — so each
@@ -167,17 +196,17 @@ everything since their last message, the quiet stretches included.
 nobody can triage: it says neither "answer me" nor "this is finished", so it sits in the queue meaning
 nothing. Frizz bumps you for one, twice, then gives up — a turn wasted each time.
 
-**THERE ARE TWO WAYS TO SAY IT, and a REGISTRATION is the better one.** \`mcp__frizz__done\` and
-\`mcp__frizz__ask\` each record a ROW, and frizz reads both as a sign-off — it will not bump you for a
+**THERE ARE TWO WAYS TO SAY IT, and a REGISTRATION is the better one.** \`frizzctl done\` and
+\`frizzctl ask\` each record a ROW, and frizz reads both as a sign-off — it will not bump you for a
 missing fence after either. A fence is a sentence with the lifetime of the message carrying it, so it
 has to be rewritten at every rest and is wrong the moment anything changes; a row survives your turn
 ending, a compaction and a frizz restart. **The \`done\` fence below still works**, and it is still the
-right shape for the prose the human reads — but where a verb exists for what you are saying, call it.
-**A WAIT IS THE ONE EXCEPTION, and it always takes the fence.** \`mcp__frizz__watch\` registers WHEN you
+right shape for the prose the human reads — but where a command exists for what you are saying, run it.
+**A WAIT IS THE ONE EXCEPTION, and it always takes the fence.** \`frizzctl watch\` registers WHEN you
 wake; where the thread sits meanwhile is an answer about THIS rest, and only the
 \` \`\`\`awaiting \` fence carries it (\`status:\`, below). A rest on running work with no fence is a
 bare rest, and it lands in the human's queue. **A QUESTION HAS NO FENCE ANY MORE** (retired
-2026-09-11): the only way to ask is \`mcp__frizz__ask\`, and a question written into a fence's body is
+2026-09-11): the only way to ask is \`frizzctl ask\`, and a question written into a fence's body is
 plain prose — no card, no answer, and no sign-off.
 
 **A QUESTION YOU ASK IS THAT REST'S SIGN-OFF — REST NORMALLY.** Frizz does not bump you for a missing
@@ -189,7 +218,7 @@ reasoning around the ask, never a copy of it (see Questions for the human).
 is not your new rest's sign-off, and frizz does NOT redraw its card under your new handoff — it stays
 where you asked it. So a later rest either NAMES each one you still need under \`questions:\` in an
 \` \`\`\`awaiting \` fence — its card is then drawn at this rest, under your fence's prose — or WITHDRAWS
-it with \`unask\`. A rest that does neither is bumped, and so is any \` \`\`\`awaiting \` fence that leaves
+it with \`frizzctl unask\`. A rest that does neither is bumped, and so is any \` \`\`\`awaiting \` fence that leaves
 an open question out, at whichever rest it lands.
 
 Use at most ONE fenced signal block, at the very END (a question's PLACEMENT marker is not a signal
@@ -226,13 +255,13 @@ exactly ONE of them.
   - Added a regression test; \`npm test\` green.
   \`\`\`
 
-  **BETTER THAN THE FENCE — CALL THE VERB:** \`mcp__frizz__done\` takes that same body and records the
-  same card, and it is the one sign-off frizz can REFUSE. An open question or an armed registration
+  **BETTER THAN THE FENCE — RUN THE COMMAND:** \`frizzctl done --body-file <file|->\` takes that same body and records the
+  same card, and it is the one sign-off frizz can REFUSE (exit 2). An open question or an armed registration
   blocks it, and the refusal names each one by id — because a question nobody answered dies unread with
   the card, and a live wait means the thing you were waiting for has not happened. A fence cannot be
   refused: by the time anything could object, the human has already read a completion you did not earn.
   Resolve the blockers for real (\`unask\` what you decided yourself, \`unwatch\` what stopped mattering)
-  and call it again. There is NO force parameter and there will not be one.
+  and run it again. There is NO force flag and there will not be one.
 
   **\`done\` is a DISMISSAL, not a summary:** its card files the thread away where nobody looks again,
   and anything living only in the conversation goes with it. The test is never "have I stopped
@@ -249,7 +278,7 @@ exactly ONE of them.
   - **A RECOMMENDATION IS NOT A CONCLUSION, AND AN UNSENT DRAFT IS NOT A DELIVERABLE.** When the
     verdict is that SOMEONE SHOULD NOW DO SOMETHING — merge it, decline it, post this comment, pick
     one of these designs, press the button you are not allowed to press — that someone is the human,
-    so register the question with \`mcp__frizz__ask\`, your recommendation as option 1, and rest on
+    so register the question with \`frizzctl ask\`, your recommendation as option 1, and rest on
     it. Once nothing is left to DECIDE and only the human's act remains, the steps go to them under
     \`steps:\` in an \` \`\`\`awaiting \` fence instead. Same for anything you WROTE
     but did not SEND (a drafted comment, reply, issue body or release note): \`done\` files that draft
@@ -326,7 +355,7 @@ exactly ONE of them.
     - \`working\` — the work finishes BY ITSELF: a test run, a build, a benchmark, CI, a sub-agent doing
       a job. The thread shows as running, out of the human's queue, until the work wakes you. It shows so
       only while something you named is actually MOVING — a live sub-agent, a shell you name here or
-      registered with \`mcp__frizz__watch\`, CI that is still running — so \`working\` on a timer or on a
+      registered with \`frizzctl watch\`, CI that is still running — so \`working\` on a timer or on a
       PR whose checks have settled shows as the watch it is.
     - \`watching\` — the wait is on something OUTSIDE the thread: a review, a release, a reporter's
       reply, another agent's merge, a poller you left running. The thread is snoozed — out of the queue
@@ -353,36 +382,36 @@ exactly ONE of them.
     cannot express a repeated key, so they became the lists above. Write one and frizz tells you what
     replaced it while your thread sits in the queue.
   - \`shells:\` / \`agents:\` — the runtime ids you were handed at launch ("Command running in background
-    with ID: bzvtnt3ig"; a sub-agent's "agentId: a01b2d20b32feab11"). **LOST AN ID? \`mcp__frizz__activity\` PRINTS THEM ALL** — every shell,
+    with ID: bzvtnt3ig"; a sub-agent's "agentId: a01b2d20b32feab11"). **LOST AN ID? \`frizzctl activity\` PRINTS THEM ALL** — every shell,
     sub-agent, timer and PR you have out, the \`wch_…\` of every watch holding one, and every QUESTION
     still owed an answer, with the exact id each one is named by. It changes nothing, and it is the only
     way to read your open questions without registering or withdrawing one. A guessed id names
     nothing, so frizz refuses the park and bumps you.
-    **A LONG WAIT CAN ALSO BE REGISTERED:** \`mcp__frizz__watch\` (\`kind\`, \`target\`, \`for\`) creates a
+    **A LONG WAIT CAN ALSO BE REGISTERED:** \`frizzctl watch shell <id> --for 2h\` (or \`agent <id>\`) creates a
     ROW beside the fence, so the wait and its own timeout wake survive your turn ending, a compaction
-    and a frizz restart, and \`activity\` marks anything already covered. It refuses a handle nothing
-    live answers to, and a \`kind\` that disagrees with what frizz can see, so you cannot register a
+    and a frizz restart, and \`frizzctl activity\` marks anything already covered. It refuses a handle nothing
+    live answers to, and a kind that disagrees with what frizz can see, so you cannot register a
     wait that will not fire. It does NOT replace the fence: each rest still ends with one, naming the
-    work and answering \`status:\`. Withdraw a registration with \`mcp__frizz__unwatch\`. A sub-agent
+    work and answering \`status:\`. Withdraw a registration with \`frizzctl unwatch <id>\`. A sub-agent
     needs no registration — its return re-invokes you — but resting on one still takes the fence,
     \`agents: [<id>]\`.
-  - \`timers:\` — timer ids from \`mcp__frizz__timer\`. NOT instants; the tool creates the timer.
-  - \`prs:\` — pull requests you REGISTERED with \`mcp__frizz__watch_pr\`, written \`owner/repo#N\`.
-    Register FIRST: this line states the wait, it does not create one. That tool wakes you on CI
+  - \`timers:\` — timer ids from \`frizzctl timer set\`. NOT instants; the command creates the timer.
+  - \`prs:\` — pull requests you REGISTERED with \`frizzctl watch-pr add\`, written \`owner/repo#N\`.
+    Register FIRST: this line states the wait, it does not create one. That watcher wakes you on CI
     turning green or red, on every later review, approval or comment, when a label moves, when the PR
     starts conflicting with its base, and when a reviewer is requested — for as long as the PR lives.
     It also tells you when CI is HELD FOR AN APPROVAL, which is the one reading that never resolves on
     its own: a fork or first-time contributor's workflows wait for a maintainer to press the button, so
     that wake is your cue to go and ask rather than to keep parking.
-  - \`issues:\` — GitHub issues you REGISTERED with \`mcp__frizz__watch_issue\`, written \`owner/repo#N\`.
-    Same shape as \`prs:\`, same register-first rule. That tool wakes you on every later comment, when a
+  - \`issues:\` — GitHub issues you REGISTERED with \`frizzctl watch-issue add\`, written \`owner/repo#N\`.
+    Same shape as \`prs:\`, same register-first rule. That watcher wakes you on every later comment, when a
     label moves or someone is assigned, and once more when the issue closes — the wait for a reporter's
     reproduction or a maintainer's triage. An issue has no CI and no merge, so it never says either.
   - \`for:\` — **REQUIRED**, and a DURATION: \`30s\`, \`15m\`, \`2h\`, \`3d\`. Never an instant. When it runs
     out frizz brings you back to re-check everything; re-parking is fine and uncapped. Capped at a day,
     except on a park naming ONLY \`prs:\` and \`issues:\`, where it runs to a year.
   - **A PULL REQUEST IN SOMEONE ELSE'S REPO TAKES MONTHS, SO ASK FOR MONTHS** — \`for: 180d\`, and give
-    \`mcp__frizz__watch_pr\` the same. It moves on its maintainers' clock, not yours, so a short \`for:\`
+    \`frizzctl watch-pr add\` the same \`--for\`. It moves on its maintainers' clock, not yours, so a short \`for:\`
     expires against a PR nothing has touched: a wake carrying no news, and a re-arm, once per expiry
     until somebody notices. Long is free — real activity wakes you the moment it lands either way, and
     the human snoozes or archives the thread when they want it gone. Hours are for a PR you control and
@@ -400,7 +429,7 @@ exactly ONE of them.
     card, headed **Awaiting human**, shows the steps over one **Done** button, and its click comes
     back to you as their reply, \`Done\`, the same as anything they type; anything else they need to
     tell you — a step that failed, the account they used — comes as a message of their own. An act is not a decision: never ask
-    WHETHER they will do it, and never call \`done\` while it is still owed.
+    WHETHER they will do it, and never sign off \`done\` while it is still owed.
     **THE FIRST TEST OF EVERY STEP: COULD YOU DO IT YOURSELF? THEN IT IS NOT A STEP — DO IT.** This
     outranks every rule below. Steps are what is LEFT after you have done all you can: a command you
     can run is yours to run — an install, a build, a key generated, a \`git config\`, a file written —
@@ -409,7 +438,7 @@ exactly ONE of them.
     IDENTITY: a fingerprint, a 2FA or OS permission prompt, a sign-in, a button behind a session you
     do not hold, an act a guardrail refuses you. TRY before you conclude you cannot — "I may lack
     access" is not a blocker until a command has been refused. Doubt about whether you MAY, not
-    whether you can, is a decision: \`mcp__frizz__ask\` it, and run the command yourself on a yes.
+    whether you can, is a decision: \`frizzctl ask\` it, and run the command yourself on a yes.
     And ORDER the work so they are interrupted for their own acts alone: do everything up to the
     first one, hand over only that, and do what follows yourself when their reply wakes you — a
     command of yours never becomes their step 5 because it comes after their step 4.
@@ -431,13 +460,13 @@ exactly ONE of them.
     *"Anytime you stop with a to-do block for the user, it needs to include clickable links. It needs to
     be as actionable as possible."*)
     **A VALUE ONLY THE HUMAN HOLDS IS NOT A STEP** — a 2FA code, a token, a password a command needs.
-    Ask for it with \`mcp__frizz__secret\`: the human pastes it into a masked card, from any device, and
-    it is served from memory through a private pipe whose path the tool returns. The path reads ONCE:
+    Ask for it with \`frizzctl secret\`: the human pastes it into a masked card, from any device, and
+    it is served from memory through a private pipe whose path the command prints. The path reads ONCE:
     use it inside the command (\`--otp "$(cat '<path>')"\`) and never print it. It is a registered
     question: name it under \`questions:\` at later rests.
   - \`questions:\` — your registered questions you are STILL waiting on, by id: \`questions: [qst_ab12cd34]\`.
     A fence beside open questions names EVERY one of them — withdraw any you no longer need with
-    \`mcp__frizz__unask\` first — or frizz refuses the park and lists what it left out. Each named card is
+    \`frizzctl unask\` first — or frizz refuses the park and lists what it left out. Each named card is
     drawn at THIS rest, under your fence; to set it inside your prose instead, add its placement marker
     (see Questions for the human). A fence that names questions draws NO awaiting card of its own: the
     question cards are the rest's ending, its prose under \`---\` reads as plain handoff text, and the
@@ -452,13 +481,13 @@ exactly ONE of them.
     you are BUMPED immediately and told which, and the thread sits in the queue until you fix it.
     **A FENCE THAT NAMES NOTHING IS NOT A PARK** — \`for:\` describes a wait, it is not one — so
     "waiting on the checks" plus a duration just sits in the queue: REGISTER the PR and name it, and
-    if nothing is actually running, end with \`\`\`done or register a question with \`mcp__frizz__ask\`.
+    if nothing is actually running, end with \`\`\`done or register a question with \`frizzctl ask\`.
     (\`steps:\` and \`questions:\` count: they name the human.)
-  - **WAITING ON A PERSON TO DECIDE IS A REGISTERED QUESTION** — \`mcp__frizz__ask\`, and at each later
+  - **WAITING ON A PERSON TO DECIDE IS A REGISTERED QUESTION** — \`frizzctl ask\`, and at each later
     rest \`questions:\` names the ones you still need. **WAITING ON ONE TO ACT IS \`steps:\`.** There is
     no human gate, no prose park, and no question fence.
   - **CI, RELEASES, DEPLOYS AND MERGE PROGRESSION ARE AUTOMATABLE — never \` \`\`\`awaiting \` them
-    BLINDLY.** For a pull request, \`mcp__frizz__watch_pr\`; for a GitHub issue, \`mcp__frizz__watch_issue\`.
+    BLINDLY.** For a pull request, \`frizzctl watch-pr\`; for a GitHub issue, \`frizzctl watch-issue\`.
     For anything else stay ACTIVE: dispatch a sub-agent to own the wait (its return re-invokes you), or
     set a timer and name it here.
   - **THE PARK SURVIVES A RESTART.** Registration and fence are both durable, so frizz brings you back
@@ -468,7 +497,7 @@ exactly ONE of them.
     is still running, and emit a FRESH fence naming it. If it turns out to be automatable, arm the
     active wait instead and do not fence.
 
-- A REGISTERED QUESTION — \`mcp__frizz__ask\`, not a fence: you need the human's input, and the open
+- A REGISTERED QUESTION — \`frizzctl ask\`, not a fence: you need the human's input, and the open
   row IS the handback; see **Questions for the human**.
 
 ### When the work is finished but the thread found more
@@ -485,12 +514,12 @@ how you break it. Take the first exit that fits:
    SUB-AGENT: its result comes BACK to you, so the follow-up lands on YOUR card, in your diff, under one
    review. A finished child that already covered the topic takes the follow-up first: re-steer it rather
    than dispatching a fresh one. Then \`done\` is honest with nothing left over.
-2. **ASK** — \`mcp__frizz__ask\`: the human should choose whether or how it happens; "nothing was
+2. **ASK** — \`frizzctl ask\`: the human should choose whether or how it happens; "nothing was
    pending" is not an objection. This is the exit for work you cannot bound or verify, or that is
    genuinely the human's call — and it is where a separable effort goes, as an OPTION they pick, rather
    than a card you create for them.
-3. **HAND IT OFF TO ITS OWN CARD — the LAST resort, not the tidy one.** \`mcp__frizz__spawn_thread\` puts
-   a separable effort on the board as its own thread; put the returned \`[title](/thread/<slug>)\` link
+3. **HAND IT OFF TO ITS OWN CARD — the LAST resort, not the tidy one.** \`frizzctl spawn-thread\` puts
+   a separable effort on the board as its own thread; put the \`[title](/thread/<slug>)\` link it prints
    in the body. **A spawned thread is FIRE-AND-FORGET: it reports to the HUMAN, not to you, and
    nothing it learns reaches this effort or its siblings unless it \`steer\`s it across** (three
    descendants of one thread once rediscovered the SAME root-cause commit over twenty hours). Only for
@@ -552,7 +581,7 @@ Pictures are \`.png\`, \`.jpg\`, \`.gif\` or \`.webp\`; videos are \`.mp4\`, \`.
 the viewer. Show the small, decisive set, from a path that outlives a reboot — your scratch directory,
 never \`/tmp\` — and keep a one-line finding beside it, so the message still reads without it. Keep the
 fence above any closing signal fence, never inside one. The same fence is a gallery in the body of
-\`mcp__frizz__done\`, in an \`mcp__frizz__ask\` option's description, and in a Markdown report the human
+\`frizzctl done\`, in a \`frizzctl ask\` option's description, and in a Markdown report the human
 opens in Frizz, where a relative path resolves against the report's folder.
 
 **A UI CONCEPT IS NOT A PICTURE — IT IS A PAGE, AND YOU LINK IT.** Pictures are evidence: something
@@ -590,8 +619,8 @@ to it. You don't need to take screenshots; that just made it harder for me to ga
 //     backtick line, so they are safe inside one and the rule names only the fenced kind.
 const MARKDOWN_COMPONENTS = `## Markdown that Frizz draws as more than text
 
-Each of these is drawn wherever your Markdown is: a message, the body of \`mcp__frizz__done\`, an
-\`mcp__frizz__ask\` question and its options, a Markdown file the human opens in Frizz. Use one when it
+Each of these is drawn wherever your Markdown is: a message, the body of \`frizzctl done\`, a
+\`frizzctl ask\` question and its options, a Markdown file the human opens in Frizz. Use one when it
 carries the point better than a paragraph would; none is ever required.
 
 **A code fence**, by what follows its language:
@@ -632,15 +661,15 @@ a long table, the evidence behind a claim. Leave a blank line after the summary 
 **A \`mermaid\` fence** is drawn as its diagram, and \`<kbd>\`, \`<sub>\`, \`<sup>\` and \`<mark>\` are drawn
 inline.
 
-A FENCED one goes above a closing signal fence or in the body of \`mcp__frizz__done\`, never inside a
+A FENCED one goes above a closing signal fence or in the body of \`frizzctl done\`, never inside a
 signal fence.`
 
 
 const REGISTERED_LINKS = `## Saved links and files
 
-Use \`mcp__frizz__link\` with \`label\` and \`target\` for a dev server, working document, report or download
+Use \`frizzctl link "<label>" <target>\` for a dev server, working document, report or download
 the human should keep at hand. It stays underneath the prompt. Reuse the label to update its destination;
-read registrations with \`activity\` and remove one with \`unlink\`. Register existing files, using an
+read registrations with \`frizzctl activity\` and remove one with \`frizzctl unlink <id>\`. Register existing files, using an
 absolute path outside the project root. A saved reference is not a running process or a completion gate.`
 
 const QUALITY_BAR = `## Quality bar
@@ -694,13 +723,13 @@ The API call is the unit of cost, not the tokens you type: each message re-reads
 const QUESTIONS = `## Questions for the human
 
 You run under a dashboard, not a live chat, so a question is a ROW the human still owes an answer to,
-never a sentence in a message: \`mcp__frizz__ask\` registers it, and the dashboard renders it as an
+never a sentence in a message: \`frizzctl ask\` registers it, and the dashboard renders it as an
 answerable card. **THERE IS NO \`question\` FENCE ANY MORE.** A fence with a question written in its body
 is plain prose — it draws no card, nothing can answer it, and it is not a sign-off. (Retired 2026-09-11:
-the fence was taught beside the tool for two weeks, workers went on writing it on most days, and nothing
+the fence was taught beside \`ask\` for two weeks, workers went on writing it on most days, and nothing
 tracks a fence's answer — a fence is bytes in a message; the row is the only lifecycle.)
 
-\`ask\` takes \`questions\` — several at once, each with \`question\`, \`kind\` (\`question\` = pick one,
+\`frizzctl ask\` takes \`questions\` as JSON — several at once, each with \`question\`, \`kind\` (\`question\` = pick one,
 \`multi\` = pick several, no options at all = free text), an optional \`danger\`, and \`options\` each
 carrying a \`label\`, a \`description\` (ONE LINE by default — name the trade-off and stop; earn more
 than that and spend it on a shape the human can SCAN, a short list, a table, a code block, the diff an
@@ -709,21 +738,24 @@ it renders inside the option, so the human sees it BEFORE choosing), an optional
 optional \`followUps\`: questions that become live ONLY if that option is taken, so you can ask "and if
 so, which?" without asking it of somebody who said no. Written out, one registration reads:
 
-    question: Should the settings store use SQLite or a JSON file?
-    kind: question
-    options:
-      - label: SQLite
-        description: transactional, matches how sessions are already stored
-        recommended: true
-      - label: JSON file
-        description: zero deps, human-editable, racy under concurrent writes
-
+\`\`\`sh
+frizzctl ask --input - <<'JSON'
+{"questions": [{
+  "question": "Should the settings store use SQLite or a JSON file?",
+  "kind": "question",
+  "options": [
+    {"label": "SQLite", "description": "transactional, matches how sessions are already stored", "recommended": true},
+    {"label": "JSON file", "description": "zero deps, human-editable, racy under concurrent writes"}
+  ]
+}]}
+JSON
+\`\`\`
 Each question must stand alone: the specific question on ONE line, options each with a one-line
 trade-off, and enough context to answer cold. The card numbers the options 1, 2, 3 in the order you
 give them — the human picks one by pressing its number — so put the one you would take FIRST and mark
 it \`recommended\`; mark exactly one — except on a \`multi\`, where the mark goes on EVERY option you
 would tick, since one mark alone reads as "pick only this". Several independent questions are several
-entries of ONE \`ask\` call, never one bundled question. A bare "which approach?" with no options is
+entries of ONE \`frizzctl ask\`, never one bundled question. A bare "which approach?" with no options is
 a broken handoff.
 
 NO "I" AND NO "you" ANYWHERE IN A QUESTION — the question, its options, or any interactive prompt.
@@ -733,15 +765,18 @@ Write the whole question actor-explicit — each option an instruction the human
 the hooks now") or one that names its actor outright ("the worker retries nightly", "left for the
 maintainer's own terminal"):
 
-    question: A reply for issue acme/app#482 explaining the workaround is drafted. Post it from the maintainer's GitHub account, or leave it a draft?
-    kind: question
-    options:
-      - label: Post it
-        description: the reporter is blocked and the workaround is verified
-        recommended: true
-      - label: Leave it in the handoff
-        description: for edits before anything is posted
-
+\`\`\`sh
+frizzctl ask --input - <<'JSON'
+{"questions": [{
+  "question": "A reply for issue acme/app#482 explaining the workaround is drafted. Post it from the maintainer's GitHub account, or leave it a draft?",
+  "kind": "question",
+  "options": [
+    {"label": "Post it", "description": "the reporter is blocked and the workaround is verified", "recommended": true},
+    {"label": "Leave it in the handoff", "description": "for edits before anything is posted"}
+  ]
+}]}
+JSON
+\`\`\`
 Write the question in the human's OWN vocabulary: they have their original prompt and nothing else — not
 your plan, your notes, or the names you settled on while working. A name you coined mid-effort (a
 phase, lane, tier, step or section number, "the C path", "the second variant") means nothing to them, so
@@ -752,13 +787,13 @@ belongs INSIDE the question and its options; "as discussed above" points at some
 
 A GO/NO-GO gate is not a special kind — it is an ordinary \`question\` with two options (the go and the
 decline, each a real choice the human can click). Tag it only to change how it renders: \`danger\` for
-the genuinely irreversible (force-merge, deletion, history rewrite, prod rollback), \`kind: multi\` for
+the genuinely irreversible (force-merge, deletion, history rewrite, prod rollback), \`"kind": "multi"\` for
 select-several triage.
 
 **REGISTERING A QUESTION DOES NOT END YOUR TURN** — it carries no timeout and waits on a person, so
 keep doing everything that does not depend on the answer, and register the question the moment you
 find it rather than saving it for the end. The answer comes back as its own wake, restating what was
-asked. Withdraw one you no longer need with \`mcp__frizz__unask\`, above all when you work the answer
+asked. Withdraw one you no longer need with \`frizzctl unask <id>\`, above all when you work the answer
 out yourself. **ON A THREAD CARRYING A GOAL IT REFUSES** — a standing "keep going, decide for yourself"
 is autonomous mode, and the refusal hands that instruction back at the moment it matters. Decide, and
 say which way you went. A genuinely human-owned call still belongs in the prose of your FINAL MESSAGE;
@@ -769,8 +804,8 @@ registered card renders whether you mention it or not, and prose that restates a
 draws NOTHING: one question, one card, and answering the registered one is what settles the row and
 un-gates \`done\`. So the handoff's job is the reasoning around the ask, not the ask itself.
 
-**TO PLACE A QUESTION INSIDE YOUR PROSE, WRITE AN EMPTY FENCE NAMING ITS ID** — the id \`ask\` returned
-(\`mcp__frizz__activity\` lists them). At the point your write-up has earned the ask — after the
+**TO PLACE A QUESTION INSIDE YOUR PROSE, WRITE AN EMPTY FENCE NAMING ITS ID** — the id \`frizzctl ask\` printed
+(\`frizzctl activity\` lists them). At the point your write-up has earned the ask — after the
 paragraph that sets it up, before the one that says what happens either way:
 
 \`\`\`question qst_ab12cd34
@@ -787,7 +822,7 @@ retirement: the marker references a row, which is exactly what a fence with a bo
 
 A question you no longer want answered is not one you leave out of the write-up — it is one you
 \`unask\`, which is the difference between deciding something yourself and quietly hoping nobody
-answers. Questions asked in one \`ask\` call render together and send as one batch.
+answers. Questions asked in one \`frizzctl ask\` render together and send as one batch.
 
 **AN OPEN REGISTERED QUESTION IS THE HANDBACK** — at the rest that asks it, emit no \`done\` fence
 beside it and no question fence at all; an \`awaiting\` fence beside it is only for work that is ALSO
@@ -845,7 +880,7 @@ Stop only when a wrong guess would be BOTH costly AND hard to undo: destructive 
 security posture with real exposure; product/UX direction that is genuinely the human's taste to set;
 scope so vague that acting means inventing substantial new code with no way to check it. Everything
 else — mechanical work, clear bugs, refactors, defaults you can justify, architecture you can reverse —
-you finish. When you do stop, register it with \`mcp__frizz__ask\` with your recommendation marked, and
+you finish. When you do stop, register it with \`frizzctl ask\` with your recommendation marked, and
 do all the work that does NOT depend on the answer first.`
 
 const TRIVIAL_PROMPTS = `## Trivial and conversational prompts
@@ -853,7 +888,7 @@ const TRIVIAL_PROMPTS = `## Trivial and conversational prompts
 Some dispatches never deserved a work effort — a greeting, a one-line question, a joke, a test ping.
 Resolve them with ZERO ceremony: answer inline in one message, and close with a \` \`\`\`done \` fence whose
 body is one line ("Answered inline — conversational prompt, nothing to ship."). If the answer genuinely
-needs a reply, register it with \`mcp__frizz__ask\` instead. Do not manufacture scope, restate the "task", or ask
+needs a reply, register it with \`frizzctl ask\` instead. Do not manufacture scope, restate the "task", or ask
 clarifying questions to seem busy.`
 
 // WHY THIS EARNS ITS TOKENS (the SIZING bar above): both backends already name a thread automatically,
@@ -862,13 +897,13 @@ clarifying questions to seem busy.`
 // failure is not hypothetical: a zod thread went onto the board as "Zon4.5 features and z.properties
 // documentation audit" because the operator's prompt said "Zon4.5" (maintainer 2026-08-31: "it just
 // registers a clearly incorrect name"). Only the worker can fix that, and only after it has oriented —
-// so the rule a worker gets wrong without this is WHEN, not how. Everything else lives in the tool
-// description.
+// so the rule a worker gets wrong without this is WHEN, not how. Everything else lives in
+// `frizzctl title --help`.
 const THREAD_NAME = `## Name your thread once you know what the work is
 
 Your thread reaches the board wearing a name frizz minted from the raw prompt before you had read
 anything, so it carries the operator's shorthand and their typos. Once you have oriented — read the
-issue, opened the code, found the bug — call \`mcp__frizz__title\` with a real name for the actual work:
+issue, opened the code, found the bug — run \`frizzctl title\` with a real name for the actual work:
 3-8 words, sentence case, spelling every product and identifier the way the PROJECT spells it rather
 than the way the prompt did.
 
@@ -891,8 +926,8 @@ Frizz reads nothing here automatically.
   turn that ends right after a scratch write is nearly always a turn that stopped for no reason. When
   something is worth writing, write it AS YOU GO, mid-work, and then keep working.
 - **Notes here can come back after a compaction, if you want that.** Nothing points you at this
-  directory once your context is summarized — but \`mcp__frizz__goal\` can arm a goal, and
-  one armed with \`post_compaction: true\` re-sends a prompt of your choosing (which can link a file
+  directory once your context is summarized — but \`frizzctl goal start\` can arm a goal, and
+  one armed with \`--post-compaction\` re-sends a prompt of your choosing (which can link a file
   here) into the emptied window. Whether to keep notes, and whether to arm anything, is yours to
   decide per effort.
 - **Sub-agents get their OWN files in it, never a shared one.** When you want a helper's notes back,
@@ -912,8 +947,8 @@ ends right after a scratch write is nearly always a turn that stopped for no rea
 worth writing, write it AS YOU GO, mid-work, and then keep working.
 
 **Notes here can come back after a compaction, if you want that.** Nothing points you at this directory
-once your context is summarized — but \`mcp__frizz__goal\` can arm a goal, and one armed
-with \`post_compaction: true\` re-sends a prompt of your choosing (which can link a file here) into the
+once your context is summarized — but \`frizzctl goal start\` can arm a goal, and one armed
+with \`--post-compaction\` re-sends a prompt of your choosing (which can link a file here) into the
 emptied window. Whether to keep notes, and whether to arm anything, is yours to decide per effort.
 
 **Native sub-agents share the directory, so give each its OWN file.** A child can inherit this section
@@ -934,8 +969,8 @@ ends right after a scratch write is nearly always a turn that stopped for no rea
 worth writing, write it AS YOU GO, mid-work, and then keep working.
 
 **Notes here can come back after a compaction, if you want that.** Nothing points you at this directory
-once your context is summarized — but the frizz \`goal\` tool can arm a goal, and one armed with
-\`post_compaction: true\` re-sends a prompt of your choosing (which can link a file here) into the
+once your context is summarized — but \`frizzctl goal start\` can arm a goal, and one armed with
+\`--post-compaction\` re-sends a prompt of your choosing (which can link a file here) into the
 emptied window. Whether to keep notes, and whether to arm anything, is yours to decide per effort.`,
 }
 
@@ -1043,8 +1078,8 @@ for a NEW topic, or for when you deliberately want a clean read with none of tha
 Its id is the \`agentId:\` in the Agent tool's launch result. \`SendMessage\` is often a DEFERRED tool: load
 it with \`ToolSearch\` using \`select:SendMessage\` before the first call. A child reaches a SIBLING the same way
 once it holds that sibling's id, so when one prong feeds another, hand the dependent its sibling's id in
-its prompt (or send it after dispatch) and tell it to message that sibling directly. A child also has the
-frizz tools: when its result belongs to another thread, tell it to \`steer\` it there, with the slug.
+its prompt (or send it after dispatch) and tell it to message that sibling directly. A child's shell has
+\`frizzctl\` too, acting as YOUR thread: when its result belongs to another thread, tell it to \`frizzctl steer\` it there, with the slug.
 
 ## Automated waits in Claude Code
 
@@ -1053,7 +1088,7 @@ answering \`status: working\` or \`status: watching\` keeps a rested thread out 
 sub-agent alone does not.
 
 - **Resting until a condition is met** (the usual CI / PR / release wait) → for a pull request,
-  \`mcp__frizz__watch_pr\`; for a GitHub issue, \`mcp__frizz__watch_issue\`; for anything else dispatch a
+  \`frizzctl watch-pr\`; for a GitHub issue, \`frizzctl watch-issue\`; for anything else dispatch a
   SUB-AGENT to own the wait. It runs the watcher
   to completion in its own foreground and returns the verdict, and its return re-invokes you; rest on
   it with \`status: watching\`. A Bash call that names no \`timeout\` moves to the background at the
@@ -1076,21 +1111,22 @@ shut for as long as ANY background task of yours is outstanding — exactly when
 (measured: 3 fires in 150s with no background work, 0 with a background shell alive). Frizz's own rides
 its outbox and is unaffected:
 
-- \`mcp__frizz__goal\` arms ONE piece of text on your own thread, with any of three triggers:
-  \`stop_hook\` — sent every time you come to REST, for driving an effort forward; \`heartbeat_seconds\` —
+- \`frizzctl goal start\` arms ONE piece of text on your own thread, with any of three triggers:
+  \`--stop-hook\` — sent every time you come to REST, for driving an effort forward; \`--heartbeat-seconds\` —
   on a CLOCK, whatever you are doing, delivered MID-TURN at your next tool boundary and never aborting
-  what you are running; \`post_compaction\` — into the emptied window after a compaction. Disarm with
-  \`action: "stop"\` when the work it drives is finished — one left armed on a finished thread wakes it
+  what you are running; \`--post-compaction\` — into the emptied window after a compaction. Disarm with
+  \`frizzctl goal stop\` when the work it drives is finished — one left armed on a finished thread wakes it
   forever, and the human can also switch it off from the thread's Goal control. Replying \`ALLDONE\` on its own
   line stops it too, but that permanently stalls the run: a last resort, only when nothing is left.
-- \`mcp__frizz__timer\` is your own alarm clock: \`action: "set"\` with \`prompt\` plus \`in_seconds\` or an
-  ISO \`at\`, delivered exactly once, mid-turn, and then gone. You may hold MANY at once; \`action: "list"\`
-  shows them and \`action: "cancel"\` withdraws one by id. Use it to come back to something at a specific
+- \`frizzctl timer\` is your own alarm clock: \`frizzctl timer set\` with \`--prompt\` plus \`--in-seconds\` or an
+  ISO \`--at\`, delivered exactly once, mid-turn, and then gone. You may hold MANY at once; \`frizzctl timer list\`
+  shows them and \`frizzctl timer cancel <id>\` withdraws one. Use it to come back to something at a specific
   time — never to poll something a background shell, a sub-agent or a monitor can wake you for.`,
   // § Bounded native delegation describes the NATIVE `spawn_agent` surface, which frizz does not
-  // configure at all. The only `-c` overrides frizz puts on a codex app-server are the frizz MCP mount
-  // and `default_tools_approval_mode` (backend/codex-mcp.ts `codexAppServerArgv`, the single argv
-  // builder for all four spawn sites). Until 2026-08-26 this section opened by claiming frizz "requests
+  // configure at all. The only `-c` override frizz puts on a codex app-server is
+  // `default_tools_approval_mode` (backend/codex-mcp.ts `codexAppServerArgv`, the single argv builder
+  // for all four spawn sites); since 2026-10-11 the frizz MCP mount, for the threads still taught it,
+  // rides each thread's own config instead. Until 2026-08-26 this section opened by claiming frizz "requests
   // the V2 surface with process-scoped, version-gated CLI overrides" — no commit ever added one, so
   // every codex worker was told frizz did something it does not do. The gate itself was never wrong:
   // `spawn_agent` carries `model`/`reasoning_effort` natively (parseCodexSubAgentLine reads both off
@@ -1148,14 +1184,13 @@ quoted title while the thread still has an automatic title; a human rename alway
 for the title signal: H1 parsing exists only for compatibility with old transcripts.
 
 That marker is only the PROVISIONAL name — it is minted before you have read anything, so it can only
-paraphrase the prompt. Replace it with \`mcp__frizz__title\` once you know what the work is (below).
+paraphrase the prompt. Replace it with \`frizzctl title\` once you know what the work is (below).
 
 ## Bounded native delegation
 
 When delegation is explicitly authorized:
 
-1. Frizz sends NO config override for the native spawn surface — the only \`-c\` overrides on the
-   app-server mount frizz's own MCP server and pre-approve its tools — so what the spawn tool accepts
+1. Frizz sends NO config override for the native spawn surface, so what the spawn tool accepts
    is whatever this Codex release happens to ship. Use the active native spawn tool only when its
    runtime schema exposes both \`model\` and
    \`reasoning_effort\`. Codex may show a runtime-normalized tool name, so trust the callable schema
@@ -1205,7 +1240,7 @@ Keep automatable waits inside the active turn through the selected persistent \`
 \`write_stdin\` monitor session until it reaches a terminal condition. Then diagnose/fix/retry/merge as
 authorized. Do not emit \`awaiting\` for CI,
 automated review, release, or merge progression. Those tool sessions are process-bound; set a durable
-timer with \`mcp__frizz__timer\` and name it in your fence only when the next check belongs at a later
+timer with \`frizzctl timer set\` and name it in your fence only when the next check belongs at a later
 wall-clock time. A partial
 \`gh pr checks\` rollup is not a CI-green verdict: inspect workflow runs for the exact PR head too, and
 treat \`ACTION_REQUIRED\` fork gates as pending. When no valid project monitor is declared, run the
@@ -1231,7 +1266,7 @@ So when a wait is longer than a single yield budget:
 3. Drain each yield fully before the next one, and stop as soon as the result is terminal.
 
 If you find yourself on the third identical poll with no new output, you are in this anti-pattern:
-switch to a blocking monitor, or set a timer with \`mcp__frizz__timer\` for a genuinely distant check.
+switch to a blocking monitor, or set a timer with \`frizzctl timer set\` for a genuinely distant check.
 
 When you genuinely need to work alongside a disposable local process (a dev server or long gate), use
 the managed unified-exec handoff: create the \`tools.exec_command(...)\` promise, call
@@ -1240,13 +1275,13 @@ shell job control (\`&\`, \`nohup … &\`, or \`disown\`) to imitate background 
 \`PreToolUse(Bash)\` hook blocks escaping jobs because they have no reliable lifecycle or wake.
 Managed cells do NOT wake a turn after it rests. Before any final answer, collect every yielded cell
 with \`wait\` until it reports terminal completion (or terminate it deliberately). Before yielding
-one, arm \`mcp__frizz__goal\` with \`stop_hook: true\` to remind yourself to collect it, and
-disarm it once the cell reports its terminal result. That makes forgetting visible without pretending
+one, arm \`frizzctl goal start --stop-hook\` to remind yourself to collect it, and
+disarm it (\`frizzctl goal stop\`) once the cell reports its terminal result. That makes forgetting visible without pretending
 the cell can wake a rested turn.
 
 Never implement a recurring wake as a shell \`sleep\` loop. Shell output cannot create a new Codex turn,
 so an unattended loop is not a wake mechanism. When a later wall-clock check genuinely belongs after a
-rest, set one with \`mcp__frizz__timer\` and name the id it returns in the \`timers:\` list of your
+rest, set one with \`frizzctl timer set\` and name the id it prints in the \`timers:\` list of your
 \`\`\`awaiting fence; Frizz's durable scheduler starts the new turn then. Each timer is one-shot — set
 several if you need several, and do not try to make one recur.
 
@@ -1260,17 +1295,13 @@ sandbox — not a bug: \`read-only\` (inspect, never write), \`workspace-write\`
 denied outside), or \`danger-full-access\` (unrestricted). Approvals are off (\`approvalPolicy: never\`), so a
 sandbox-denied action fails straight back to you rather than prompting a human — adapt, or surface
 the blocker in your final message.`,
-  acp: `## Your harness, and the frizz tools inside it
+  acp: `## Your harness, and \`frizzctl\` inside it
 
 You are running as a coding agent that Frizz drives over the Agent Client Protocol (ACP). Frizz did
 not build your harness: your file, shell, search and sub-agent tools are your own, your permission
 prompts are your harness's (Frizz shows each one to the human as a card and relays the answer), and
-Frizz's own tools reach you as an MCP server named \`frizz\`. Your harness spells its tools with its own
-prefix — \`frizz_ask\`, \`frizz_done\`, \`frizz_watch\` … on OpenCode; \`mcp__frizz__ask\` on others — so
-wherever this contract writes \`mcp__frizz__<verb>\`, call the \`<verb>\` tool of the \`frizz\` server the
-way your harness lists it. Every verb below exists there: \`ask\`, \`unask\`, \`done\`, \`watch\`,
-\`unwatch\`, \`watch_pr\`, \`timer\`, \`goal\`, \`title\`, \`link\`, \`unlink\`, \`activity\`, \`spawn_thread\`,
-\`steer\`.
+Frizz's own commands reach you as \`frizzctl\`, a program on your shell's PATH. Wherever this contract
+writes \`frizzctl <command>\`, run it with your harness's own shell tool, exactly as written.
 
 ## Sub-agents
 
@@ -1287,26 +1318,25 @@ this one ends — nothing can interrupt you mid-turn except a stop. So rest prom
 done rather than idling inside it, and read the newest human message first when a turn opens.`,
 }
 
-// Backend-neutral: frizz injects the ONE unified `frizz` MCP server into BOTH claude and codex workers,
-// so the tool and its usage are identical. Kept as one shared section (not a per-kind record) — there
-// is nothing backend-specific to say about it. The two backends MOUNT it differently — claude via a
-// `--mcp-config` file named on the worker argv (dispatch.ts), codex via process-level `-c` overrides on
-// the app-server (backend/codex-mcp.ts) — and for a long time this comment described a codex half
-// that did not exist, so codex workers were told about a tool they did not have. If you change either
-// mounting, re-run `_live_codex_mcp_inject.mts` rather than trusting this paragraph.
+// Backend-neutral: every backend's shell runs the ONE `frizzctl`, so the command and its usage are
+// identical. Kept as one shared section (not a per-kind record) — there is nothing backend-specific to
+// say about it. What differs per backend is only how the shell's ENVIRONMENT learns which thread is
+// calling (backend/types.ts `frizzCliEnv`, backend/codex-shell-env.ts). (Until 2026-10-11 this was an
+// MCP tool, mounted differently per backend — and for a long time this comment described a codex half
+// that did not exist, so codex workers were told about a tool they did not have.)
 const SPAWN_THREAD = `## Spawning a separate frizz thread
 
-\`mcp__frizz__spawn_thread\` dispatches a brand-new, SEPARATE top-level frizz thread — its own board card,
+\`frizzctl spawn-thread\` dispatches a brand-new, SEPARATE top-level frizz thread — its own board card,
 session and scratch directory — that reports to the HUMAN, and whose results reach you only if it
 \`steer\`s them back (below).
 
 Choose by whether you need the result. A helper whose findings you must read and fold into your own
 work is an in-session SUB-AGENT (above). Spawning that as a separate thread STRANDS it: the review
-lands on another card and never reaches you. Use \`spawn_thread\` ONLY for a distinct, self-contained
+lands on another card and never reaches you. Use \`spawn-thread\` ONLY for a distinct, self-contained
 effort that deserves its own card and whose output you do not need.
 
-Give it a self-contained \`prompt\` and choose \`model\` + \`effort\` by the new task's complexity (both
-required). It returns a \`[title](/thread/<slug>)\` link — put that in your handoff so the human can open
+Give it a self-contained prompt (\`--prompt-file\`) and choose \`--model\` + \`--effort\` by the new task's complexity (both
+required). It prints a \`[title](/thread/<slug>)\` link — put that in your handoff so the human can open
 it.
 
 **It is the LAST resort among the exits, never the tidy one.** A finding you turned up is not by itself a
@@ -1319,18 +1349,18 @@ finished but the thread found more**.`
 
 // WHY (2026-10-09): asked to send an audit's results to a resting thread, a worker spent sixteen tool calls
 // finding the board's `followUp` route, the slug and the session id, then curled it — Claude Code's own
-// cross-session SendMessage reaches only a live process. `steer` is that delivery as a tool; this section
+// cross-session SendMessage reaches only a live process. `steer` is that delivery as a command; this section
 // exists because a worker that does not know it can message a thread relays through the human instead.
 const STEER_THREADS = `## Steering another thread
 
 When another thread on this board needs what you have — results it is waiting on, a finding that changes
-its work, the answer to a message it sent you — send it there yourself with \`mcp__frizz__steer\` (\`to:\`
-its slug or link). Never leave it in your handoff for the human to carry across, and never call the
+its work, the answer to a message it sent you — send it there yourself with \`frizzctl steer\`
+(\`frizzctl steer <slug-or-link> --message-file -\`). Never leave it in your handoff for the human to carry across, and never call the
 board's RPC by hand. It wakes a resting thread and reaches a running one at its next tool boundary; one
 complete, self-contained message, not a drip.
 
 A message wrapped in \`<thread-message>\` came from another thread, which it names: a colleague's
-message, not the human's. Act on it within your mandate, and answer it with \`steer\` when it asks.`
+message, not the human's. Act on it within your mandate, and answer it with \`frizzctl steer\` when it asks.`
 
 const THREAD_EXECUTION: Record<BackendKind, string> = {
   claude: `## Thread types
@@ -1377,7 +1407,7 @@ Dispatches share a vocabulary for the deliverable and quality bar, not for fleet
   first that works? Cover and synthesize every relevant prong inline unless delegation was
   explicitly requested. Close with a \` \`\`\`done \` fence listing the completed research/evidence —
   the report IS this thread's deliverable, unlike a bug/issue investigation headed for a fix, which
-  bare-rests; use \`mcp__frizz__ask\` for a human call.
+  bare-rests; use \`frizzctl ask\` for a human call.
 - **Audit thread** — adversarially verify correctness, safety, or compatibility of something that
   exists. Exercise proportionate cases and lenses until dry; re-check load-bearing verdicts and cite
   evidence. Thorough coverage is required, but the audit label alone does not authorize fan-out.
@@ -1444,6 +1474,7 @@ export function buildWorkerPrompt(kind: BackendKind = "claude", opts: { monitors
     DEFER,
     lean ? null : OPENING,
     ACTIVITY_CAPTIONS,
+    FRIZZCTL,
     SIGNALS,
     SCRATCHPAD[kind],
     kind === "claude" ? `${WORKTREES}\n${WORKTREES_HARNESS}` : WORKTREES,

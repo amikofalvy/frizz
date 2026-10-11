@@ -37,7 +37,7 @@ import { log as frizzLog } from "./logging.ts"
 // ---- THE DURABLE WAKER ---------------------------------------------------------------------------
 // NOTHING IN AN ```awaiting FENCE WAKES A THREAD. A fence STATES what a thread is waiting on; every
 // wait frizz can actually fire is a REGISTRATION the worker made through a tool — a `thread_timer` row
-// (`mcp__frizz__timer`), a `pr_watch` row (`mcp__frizz__watch_pr`, SOURCE 11), a background shell's own
+// (`frizzctl timer`), a `pr_watch` row (`frizzctl watch-pr`, SOURCE 11), a background shell's own
 // telemetry — or a condition the server itself observes: a provider limit lifting, a human's snooze
 // coming due, a recurring prompt's schedule, a rest with nothing declared. The limb that polled
 // `pr-watch:`/`pr:`/`ci:`/`timer:` hints out of the fence was hardwired off by the 2026-08-15 grammar
@@ -711,7 +711,7 @@ function restMessageIsSignedOff(
  *
  *  A PR ENTRY IS THE ONE THAT NEEDS A SECOND FACT, since 2026-08-14: the fence no longer arms anything,
  *  so naming a PR says nothing about whether a wake is coming. A REGISTERED watcher
- *  (`mcp__frizz__watch_pr`) will fire, so the Goal holds; a `prs:` entry with no registration behind it
+ *  (`frizzctl watch-pr`) will fire, so the Goal holds; a `prs:` entry with no registration behind it
  *  is a park frizz cannot honour, so it gets the rescue like any other unfireable item. Without the first
  *  half this reintroduces the measured loop above verbatim.
  *
@@ -739,7 +739,7 @@ function registeredPrWatchesOf(storage: Storage, slug: string): ReadonlySet<stri
   return new Set(storage.listPrWatches(slug, { armedOnly: true }).filter((w) => w.kind !== "issue").map((w) => `${w.owner}/${w.repo}#${w.number}`))
 }
 
-/** The ISSUES a thread has registered (`mcp__frizz__watch_issue`), by the same `owner/repo#N` — what an
+/** The ISSUES a thread has registered (`frizzctl watch-issue`), by the same `owner/repo#N` — what an
  *  `issues:` fence entry is checked against. */
 function registeredIssueWatchesOf(storage: Storage, slug: string): ReadonlySet<string> {
   return new Set(storage.listPrWatches(slug, { armedOnly: true }).filter((w) => w.kind === "issue").map((w) => `${w.owner}/${w.repo}#${w.number}`))
@@ -1125,7 +1125,7 @@ export async function probeIssueReadable(ref: PrRef): Promise<PrProbe> {
     )
     const url = (JSON.parse(stdout) as { url?: unknown })?.url
     if (typeof url === "string" && /\/pull\/\d+$/.test(url)) {
-      return { ok: false, reason: `#${ref.number} is a pull request, not an issue — register it with \`mcp__frizz__watch_pr\`` }
+      return { ok: false, reason: `#${ref.number} is a pull request, not an issue — register it with \`frizzctl watch-pr add\`` }
     }
     return { ok: true }
   } catch (err) {
@@ -2167,7 +2167,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
           ...(notOpen.length > 0 ? ["", "Named, but not an open question of yours:", ...notOpen.map((id) => `- \`${id}\``)] : []),
           "",
           "A fence beside open questions names EVERY one you still need answered — `questions: [qst_…]` —",
-          "and you withdraw the rest with `mcp__frizz__unask`. A named question's card is drawn at this rest;",
+          "and you withdraw the rest with `frizzctl unask <id>`. A named question's card is drawn at this rest;",
           "an unnamed one stays where you asked it. Fix the list (or unask), re-send the fence, and the park",
           "takes. A fence on questions needs no other name and no `for:`.",
         ].join("\n")
@@ -2308,7 +2308,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         // a PR is unaccounted because the worker never registered it — a different mistake with a
         // different fix, and naming the fix here is the whole basis of the maintainer's 2026-08-24
         // decision to keep declaring and registering separate ("the worker learns to call the tool
-        // first"). Without this line the correction sends it to `mcp__frizz__activity`, which will
+        // first"). Without this line the correction sends it to `frizzctl activity`, which will
         // faithfully report that it has no PRs — true, and no help at all.
         const note = !gone
           ? "still running"
@@ -2321,9 +2321,9 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
           : i.kind === "shell" && staleShellHandles.has(i.value)
           ? "GONE WITHOUT A COMPLETION NOTICE — frizz knows this shell, but nothing holds its output file and no process it could be is still running; read its output to see how it ended"
           : i.kind === "pr"
-          ? "NOT REGISTERED — register it with `mcp__frizz__watch_pr` first, then name it here"
+          ? "NOT REGISTERED — register it with `frizzctl watch-pr add` first, then name it here"
           : i.kind === "issue"
-          ? "NOT REGISTERED — register it with `mcp__frizz__watch_issue` first, then name it here"
+          ? "NOT REGISTERED — register it with `frizzctl watch-issue add` first, then name it here"
           : "NOT RUNNING (nothing by that name)"
         // The PLURAL key, because that is what the worker has to write. `i.kind` is the internal wire
         // kind and stayed singular through the 2026-08-24 YAML cutover; printing it raw taught a
@@ -2357,9 +2357,9 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
           "```awaiting",
           "shells: [<runtime task id>]   background shells you launched",
           "agents: [<runtime agent id>]  sub-agents you dispatched",
-          "timers: [tmr_…]               timers from `mcp__frizz__timer`",
-          "prs:    [owner/repo#123]      PRs registered with `mcp__frizz__watch_pr`",
-          "issues: [owner/repo#45]       GitHub issues registered with `mcp__frizz__watch_issue`",
+          "timers: [tmr_…]               timers from `frizzctl timer set`",
+          "prs:    [owner/repo#123]      PRs registered with `frizzctl watch-pr add`",
+          "issues: [owner/repo#45]       GitHub issues registered with `frizzctl watch-issue add`",
           "for:    2h                    REQUIRED — a DURATION, never an instant",
           "---",
           "your handoff prose, as much as you want",
@@ -2368,9 +2368,9 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
           "Keep the keys you need and drop the rest. There is NO prose above the `---`: a colon or a ` #`",
           "in a sentence breaks the YAML, which is why `reason:` is gone.",
           "",
-          "`mcp__frizz__activity` lists everything you have running, and prints it back as a ready-to-paste",
+          "`frizzctl activity` lists everything you have running, and prints it back as a ready-to-paste",
           "fence. If you are not waiting on anything, you are not awaiting — end with ```done, or register",
-          "a question with `mcp__frizz__ask`.",
+          "a question with `frizzctl ask`.",
         ].join("\n")
         : nameless
         ? [
@@ -2379,18 +2379,18 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
           "",
           "A wait has to be something frizz can SEE. Register one, then name it:",
           "",
-          "- a pull request → `mcp__frizz__watch_pr` (it wakes you on CI going green or red, and on every",
+          "- a pull request → `frizzctl watch-pr add` (it wakes you on CI going green or red, and on every",
           "  later review and comment) → `prs: [owner/repo#123]`",
-          "- a GitHub issue → `mcp__frizz__watch_issue` (every later comment, a label or assignee moving,",
+          "- a GitHub issue → `frizzctl watch-issue add` (every later comment, a label or assignee moving,",
           "  and the close) → `issues: [owner/repo#45]`",
-          "- a wall-clock check → `mcp__frizz__timer` → `timers: [tmr_…]`",
+          "- a wall-clock check → `frizzctl timer set` → `timers: [tmr_…]`",
           "- work you already launched → `shells: [<the id your runtime gave you>]` or `agents: [<id>]`",
           "",
           "The frontmatter is YAML: PLURAL keys, each taking a list, and your prose below the `---`.",
-          "Use `mcp__frizz__activity` to read it all back as a ready-to-paste fence.",
+          "Use `frizzctl activity` to read it all back as a ready-to-paste fence.",
           "",
           "AND IF YOU ARE NOT WAITING ON ANYTHING, you are not awaiting — you are done. End with ```done,",
-          "or register a question with `mcp__frizz__ask` if you need the human.",
+          "or register a question with `frizzctl ask` if you need the human.",
         ].join("\n")
         // THESE TWO LIVE IN @frizz/shared, beside the parsers that read them back. Same rule as
         // `limitResumeSteer`: a formatter the chat cannot parse falls through FrizzWake's legacy
@@ -2405,9 +2405,9 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
           "",
           ...status,
           "",
-          "Use `mcp__frizz__activity` to read back what you actually have out, with the exact id each line",
+          "Use `frizzctl activity` to read back what you actually have out, with the exact id each line",
           "needs, then re-fence naming only those — or end in ```done or a registered question",
-          "(`mcp__frizz__ask`) if there is nothing left to wait for.",
+          "(`frizzctl ask`) if there is nothing left to wait for.",
         ].join("\n")
 
       const cause = retired.length > 0 ? "retired" : nameless ? "nameless" : expired ? "expired" : "dead"
@@ -2438,7 +2438,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         ? `${head}\n${ops.join("\n")}`
         : cause === "expired"
         ? head
-        : `${head}\n\nYou have NOTHING running right now — no shell, no sub-agent, no timer, no registered\npull request. There is nothing that could wake you, so this thread is not awaiting: finish in\n\`\`\`done, or register a question with \`mcp__frizz__ask\`.`
+        : `${head}\n\nYou have NOTHING running right now — no shell, no sub-agent, no timer, no registered\npull request. There is nothing that could wake you, so this thread is not awaiting: finish in\n\`\`\`done, or register a question with \`frizzctl ask\`.`
       // THE CONSECUTIVE CAP, and the reason SOURCE 12 needed one. A correction is only worth sending to a
       // worker that can act on it, and a worker whose contract froze before this grammar existed cannot:
       // no fence it knows how to write will pass the check. Uncapped, that is a closed loop — bump, wake,
@@ -2476,7 +2476,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   }
 
   // ---- SOURCE 11: THE REGISTERED PR WATCHERS ------------------------------------------------------
-  // A worker registers a pull request with `mcp__frizz__watch_pr` and frizz brings it back whenever
+  // A worker registers a pull request with `frizzctl watch-pr` and frizz brings it back whenever
   // something happens on it (maintainer 2026-08-14: "The agent should have a tool to register a PR
   // watcher… it should get notified when CI either succeeds or failed and on follow-up reviews and
   // comments").
@@ -3162,7 +3162,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       // done again — a second Done card, and a registered done is un-done by the wake's own user record
       // until it does (registeredDoneFence reads the last user instant). SOURCES 4 and 5 already decline
       // a done thread; this is the same guard. The one exception is a shell the worker REGISTERED a wait
-      // on (`mcp__frizz__watch`): a registration trumps a done on the board, so it trumps it here too —
+      // on (`frizzctl watch`): a registration trumps a done on the board, so it trumps it here too —
       // the wake is the thing it registered for. Matched by ROW, in any state but dropped, because
       // evalOwnWatches has already settled that row silently by the time this pass runs (it runs first
       // in the tick, and "target ended" is its silent case — the wake is this pass's to send). The

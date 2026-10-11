@@ -1560,7 +1560,7 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
                 // would drop it on the floor rather than show it.
                 //
                 // The DONE-REGISTRATION message is the opposite case and is excluded: its content is
-                // prose (the conclusive handoff, coalesced with the `mcp__frizz__done` call), so it
+                // prose (the conclusive handoff, coalesced with the `frizzctl done` call), so it
                 // takes the collapse branch like an open ask — the ordinary path would render its tool
                 // band and defer this run's divider below the very work it summarizes (the 2026-08-13
                 // inversion). See lib/queueCollapse.carriesDoneRegistration.
