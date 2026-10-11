@@ -152,7 +152,7 @@ On real built artifacts, in [`scripts/verify-server-updates.mjs`](../scripts/ver
 | 4 | A second `frizz` in another project joins and lands on that project. | harness; the 503 wait is unit-tested |
 | 5 | Against a server that predates the route, a launch in a project lands where it does today. | harness, against the published 0.15.20 |
 | 6 | Deleting the folder the command was typed in leaves Restart and Update working. | harness |
-| 7 | A device signed in before the move is still signed in after it. | unit, on real files (`adoptSessionState`); not driven through a browser |
+| 7 | A device signed in before the move is still signed in after it. | harness: the first launch leaves the stand-in holding the same key bytes an earlier host held; unit for which folder is chosen (`adoptSessionState`). No signed-in browser is driven through the move |
 | 8 | Two servers under one home never both open one project. | not built (item 4) |
 
 Plus unit coverage where each rule lives: the route's token and origin handling in `app.test.ts`, the classification table in `launch-routing.test.ts`, the floor in [`src/server-release.test.ts`](../src/server-release.test.ts), asking and falling back in [`src/launcher.test.ts`](../src/launcher.test.ts).
