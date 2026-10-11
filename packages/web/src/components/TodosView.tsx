@@ -42,7 +42,6 @@ import { StatusRow } from "./StatusRow.tsx"
 import { InteractionStack } from "./InteractionCards.tsx"
 import { RegisteredAnsweringProvider, RegisteredQuestionStack, SettledQuestionStack, openQuestionsOf, useSettledQuestions } from "./RegisteredQuestionCards.tsx"
 import { WakeDivider } from "./WakeDivider.tsx"
-import { CopyTerminalCommandButton, useCopyTerminalCommand } from "./ExternalTerminalCommand.tsx"
 import {
   captureTranscriptViewportAnchor,
   prependEarlierPage,
@@ -730,7 +729,6 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
   const anchorSettlementScheduled = useRef(false)
   const transcriptKeyRef = useRef<string | null>(null)
   const queryClient = useQueryClient()
-  const copyTerminalCommand = useCopyTerminalCommand(thread.id)
   // The queue card is a simplified thread: by default the most recent messages, with "View more"
   // revealing progressively older ones above. statusText is the fallback before any transcript exists.
   const q = useTranscript(thread.id, { poll: false })
@@ -1385,15 +1383,9 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
             standalone thread page and opens it in a NEW TAB (maintainer 2026-08-03) — it used to slide
             the side drawer over the card, re-painting the panel you were already reading. Either way
             the queue's own scroll position is untouched. */}
-        {/* Every Frizz-owned card carries the copy-resume-command affordance: queue cards are at rest
-            by default, so opening the same session in your own terminal is entirely safe (and both CLIs
-            allow it live too). Foreign/legacy rows have no Frizz-owned provider session to resume. */}
         {/* ONE control cluster, on the strip's own `gap-0.5` — not the header's `gap-2`, which spaces
-            the TITLE block from the controls and has no business spacing two icons against each other.
-            Left on the header gap this button drew 27px of ink to the icon beside it against 21.75 and
-            22.25 across the rest of the row (`scripts/ink-gaps.mjs` --dsf=4, on a real queue card). */}
+            the TITLE block from the controls and has no business spacing two icons against each other. */}
         <div className="flex shrink-0 items-center gap-0.5">
-          {thread.kind === "session" && thread.foreign !== true && <CopyTerminalCommandButton slug={thread.id} />}
           <HeaderActions
             thread={thread}
             collapsed={collapsed}
@@ -1717,7 +1709,6 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
                   state={queueStatus}
                   slug={thread.id}
                   retryText={lastAskIdx >= 0 ? messages[lastAskIdx]?.text : undefined}
-                  onTerminal={copyTerminalCommand}
                   liveRuntimeStart={liveRuntimeStart}
                   liveActivityLabel={liveActivityLabel}
                   liveToolRun={liveToolRun}

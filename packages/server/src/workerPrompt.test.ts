@@ -14,6 +14,23 @@ test("both worker backends receive the gerund activity-caption contract", () => 
   }
 })
 
+// ONE PLACE FOR WORKTREES. The contract named none until 2026-10-11, and four projects on one machine
+// had four conventions, two of them outside the project. The path is also known to the server: the
+// board's `.frizz` watcher prunes `worktrees` (board.test.ts pins that list) and repo-files.ts reads a
+// worktree's own ignore rules, so a contract that moves the location has to move those with it.
+test("every backend sends worktrees to one directory inside the project", () => {
+  for (const backend of ["claude", "codex", "acp"] as const) {
+    const prompt = buildWorkerPrompt(backend)
+    assert.match(prompt, /^## Git worktrees$/m)
+    assert.match(prompt, /`git worktree add \.frizz\/worktrees\/<slug> -b <slug>`/)
+    assert.match(prompt, /A project that names its own worktree location or command keeps it/)
+    assert.match(prompt, /never move or remove one you did not create/)
+  }
+  // Only Claude Code has tools that create a worktree somewhere else.
+  assert.match(buildWorkerPrompt("claude"), /`EnterWorktree` and the Agent tool's\s+`isolation: "worktree"`/)
+  assert.doesNotMatch(buildWorkerPrompt("codex"), /EnterWorktree/)
+})
+
 // THE CEILING, which is the counterweight to a stop criterion that otherwise only ever says "do not
 // stop". Traced 2026-08-17 on `investigate-nubjs-nub-642`: dispatched to TRIAGE an issue and recommend
 // what to do, it produced the analysis, asked one design question, got no answer for 36 hours, and then

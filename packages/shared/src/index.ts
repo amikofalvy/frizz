@@ -4400,18 +4400,6 @@ export const SetOwnThreadHeartbeatInput = z.object({
 }).strict()
 export type SetOwnThreadHeartbeatInput = z.infer<typeof SetOwnThreadHeartbeatInput>
 
-// What an in-place plugin reload changed, as the board reports it. Counts answer "did my edit land?";
-// `mcpServers` carries NAMES because a reload that changes MCP tools is the one with a real cost — the
-// provider re-reads the whole conversation instead of using its prompt cache.
-export const ThreadPluginReloadResult = z.object({
-  plugins: z.number().int().min(0),
-  commands: z.number().int().min(0),
-  agents: z.number().int().min(0),
-  mcpServers: z.array(z.string()),
-  errorCount: z.number().int().min(0),
-}).strict()
-export type ThreadPluginReloadResult = z.infer<typeof ThreadPluginReloadResult>
-
 // A human-authored display title for a registered session. Trimming happens at the RPC boundary so
 // storage never has to distinguish whitespace-only names from real intent; the web input mirrors the
 // same cap. This is metadata-only and therefore works identically for Claude and Codex sessions.
@@ -6002,10 +5990,10 @@ export const ProjectCard = z.object({
 export type ProjectCard = z.infer<typeof ProjectCard>
 
 /**
- * One project's rail badge: its queue (`queuedThread`) and its Active band (`activeBandThread`).
+ * One project's rail counts: its queue (`queuedThread`) and its Active band (`activeBandThread`).
  *
- * Two numbers rather than their sum because the tooltip splits them, and the spinner reads `running`
- * alone. A project absent from the map has no board open on this server — no badge, not a zero.
+ * The rail's badge draws `queued` alone; `running` is named in the square's tooltip and on the phone's
+ * projects list. A project absent from the map has no board open on this server — no badge, not a zero.
  *
  * `asks` is the phone's number, not the rail's: the threads waiting on a human ANSWER (`boardAskThread`,
  * the board header's "N need you"), a subset of `queued` that leaves out rested handoffs. The phone's

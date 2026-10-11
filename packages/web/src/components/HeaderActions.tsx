@@ -7,7 +7,6 @@ import { MarkAsButton } from "./MarkAsButton.tsx"
 import { offersRetry } from "../groups.ts"
 import { retrySession } from "../lib/retrySession.ts"
 import { HEADER_ICON_CLASS } from "../lib/headerIcon.ts"
-import { ReloadPluginsButton } from "./ReloadPluginsButton.tsx"
 import { RestartWorkerButton } from "./RestartWorkerButton.tsx"
 import { ExpandThreadLink } from "./ExpandThreadLink.tsx"
 import { CollapseThreadLink } from "./CollapseThreadLink.tsx"
@@ -23,12 +22,10 @@ export { STALLED_RETRY_MESSAGE } from "../lib/retrySession.ts"
 //     picks — the STALLED ones (the rail's yellow [!]) and the ones KILLED by a usage limit frizz will
 //     auto-resume (the yellow hourglass, offered the same one-click continue). Every surface that renders this
 //     component reads that same derivation, so the verb can never disagree between the card, the header
-//     and the rail. It also carries the two live-process MAINTENANCE verbs — Reload plugins and Restart
-//     worker — which sat in the lifecycle footer until 2026-08-26 (maintainer: "the restart worker
-//     button should be at the top. I just realized it shouldn't be along the bottom"). They travel
-//     TOGETHER: the plug glyph was chosen only because it sits beside the restart refresh and must not
-//     share its vocabulary, so splitting them would orphan it. Each still gates itself (dev build,
-//     broker-backed Claude, live process), so both render nothing on most rows.
+//     and the rail. It also carries the live-process MAINTENANCE verb, Restart worker, which sat in the
+//     lifecycle footer until 2026-08-26 (maintainer: "the restart worker button should be at the top. I
+//     just realized it shouldn't be along the bottom"). It gates itself (dev build, Claude, live
+//     process), so it renders nothing on most rows.
 //     The two lifecycle verbs (snooze, mark as done) close the same strip after this component, from
 //     ThreadLifecycleActions; the AI rename refresh is revealed by the title's own hover, in both this
 //     component's surfaces.
@@ -73,9 +70,8 @@ export function HeaderActions({
           onClick={onCollapse}
         />
       )}
-      {/* Maintenance FIRST, because the strip runs least→most important left→right and these are the
-          two verbs you reach for about the worker rather than about the thread. */}
-      <ReloadPluginsButton thread={thread} />
+      {/* Maintenance FIRST, because the strip runs least→most important left→right and this is the
+          verb you reach for about the worker rather than about the thread. */}
       <RestartWorkerButton thread={thread} />
       {onDoc && <IconBtn label="Frizz document" icon={FileText} size={14} onClick={onDoc} />}
       {/* THE FULLSCREEN DOOR, one slot, both directions — a real anchor that navigates IN PLACE on a

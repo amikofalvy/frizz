@@ -45,7 +45,6 @@ import {
   OwnThreadTimersResult,
   TIMER_MAX_ARMED,
   type ThreadTimerView,
-  ThreadPluginReloadResult,
   SetThreadPinnedInput,
   SetThreadSnoozeInput,
   GithubStatus,
@@ -182,7 +181,6 @@ import { adoptionRuntimeBinding, type AdoptionPaneLookup, type ExpectedAdoptionP
 import { parseIssueRef, parsePrRef, readGithubIssueStatusBook, readGithubStatusBook, GITHUB_ISSUE_STATUS_SETTING, GITHUB_STATUS_SETTING } from "./awaiting.ts"
 import { isBrokerClaudeRow, type SessionRow, type Storage, type SubAgentSteerRow } from "./storage.ts"
 import type { SessionTelemetry } from "./tailer.ts"
-import { providerResumeCommand } from "./external-terminal.ts"
 import { backgroundShellLineCount, readBackgroundShellOutput } from "./background-shell-output.ts"
 import { projectRetiredBackgroundOps, retiredOpsFor } from "./transcript.ts"
 import { clearProjectIcon, customIconPath, findById, forgetProject, ICON_SCAN_VERSION, listProjects, moveProjectDirectory, renameProject, reorderProjects, setProjectIcon, type RegistryEntry } from "./project-registry.ts"
@@ -2982,32 +2980,6 @@ export function createRouter(ctx: AppContext) {
       },
     }),
 
-    // Re-read the worker plugin closure INTO the live session: hooks, skills, agent profiles and MCP
-    // servers, without restarting the process. This is `/reload-plugins` driven from the board.
-    //
-    // It exists because Restart is a process-level reset — it discards the running turn and the
-    // session's in-memory sub-agents to apply a file change the session could simply re-read. For the
-    // common case (edit a hook or a skill, want the running worker to pick it up) that is far too
-    // blunt, and it is exactly what an operator iterating on the worker closure does all day.
-    //
-    // Claude-broker threads only. A legacy row has no control channel to ask through, and frizz's codex
-    // app-server client speaks no reload method — both surface as a plain refusal rather than a
-    // silently-ignored click.
-    reloadThreadPlugins: mutation({
-      input: z.object({ slug: ThreadSlug, sessionId: z.string().min(1) }).strict(),
-      output: ThreadPluginReloadResult,
-      handler: async ({ input }) => {
-        const row = currentOwnedSession(input.slug, input.sessionId)
-        if (row.claude_runtime !== "broker") {
-          throw new Error("Only a broker-backed Claude thread can reload its plugins in place")
-        }
-        const bridge = ctx.claudeBroker
-        if (!bridge) throw new Error("Claude session broker is unavailable; cannot reload this thread's plugins")
-        const reloaded = await bridge.reloadPlugins({ threadSlug: input.slug, sessionId: row.session_id })
-        return reloaded
-      },
-    }),
-
     // THE RECURRING PROMPT (scheduler.ts SOURCES 4 and 5), from the Goal panel. One mutation for the
     // text, both triggers and the cadence, because they are all views of one row: split apart, a tab
     // holding a stale copy of one field would clobber the rest on save.
@@ -3681,55 +3653,6 @@ export function createRouter(ctx: AppContext) {
       },
     }),
 
-    // Copy only a provider-native resume invocation. The durable session registry is the ownership
-    // boundary: board session views are derived from these exact rows, while foreign discoveries and
-    // legacy docs have no row. Avoid rebuilding the full board on this latency-sensitive click path.
-    // The command attaches a SECOND provider client and never touches Frizz's own worker daemon, so it
-    // is offered in every runtime state, live too. An absent/replaced row fails closed.
-    threadTerminalCommand: query({
-      input: SlugInput,
-      output: z.object({ command: z.string().nullable(), mode: z.enum(["attach", "resume", "unavailable"]), reason: z.string().nullable() }),
-      handler: async ({ input }) => {
-        const row = ctx.storage.getSession(input.slug)
-        if (!row) {
-          throw new Error("No Frizz-owned terminal session is available for this thread")
-        }
-        // Always a RESUME. There used to be an ATTACH branch for a worker frizz held open in a terminal
-        // — a genuinely different thing, since `<cli> resume` replays the transcript in a SEPARATE
-        // process and can show neither live runtime state nor a permission prompt the worker is parked
-        // on, which is never written to the transcript at all. Workers run in detached daemons now, with
-        // no terminal for a human to join, so there is nothing to attach to and the resume is the only
-        // honest offer.
-        // Gated only on a real provider-native id existing — no paternalistic "wait for it" block.
-        const backend = row.backend
-        if (backend === "claude" || backend === "codex") {
-          // Claude pins session_id via --session-id, so its native id IS session_id. Codex mints its OWN
-          // rollout id (agent_session_id), discovered shortly after spawn; the Frizz UUID would not resume
-          // it, so require the discovered id rather than falling back to session_id.
-          const nativeId = backend === "codex" ? row.agent_session_id : (row.agent_session_id ?? row.session_id)
-          if (nativeId) {
-            return {
-              command: providerResumeCommand(backend, ctx.project.dir, nativeId),
-              mode: "resume" as const,
-              reason: null,
-            }
-          }
-          if (backend === "codex") {
-            return {
-              command: null,
-              mode: "unavailable" as const,
-              reason: "Codex hasn't reported its resumable session id yet — it appears once the first turn begins.",
-            }
-          }
-        }
-        return {
-          command: null,
-          mode: "unavailable" as const,
-          reason: "This Frizz-owned thread has no verified provider session available to resume.",
-        }
-      },
-    }),
-
     // Route a link clicked inside the chromeless Chrome --app window to the OS default browser.
     // Without this, http(s) links open within our dedicated user-data-dir profile — the
     // "anonymous Chrome window" the user reported. Validation lives in open-external.ts, which
@@ -4031,13 +3954,13 @@ export function createRouter(ctx: AppContext) {
     }),
 
     /**
-     * Each project's queue size and Active-band size, keyed by project id — the rail's badges — plus its
+     * Each project's queue size and Active-band size, keyed by project id — the rail's counts — plus its
      * ask count (`boardAskThread`), which only the phone's projects list reads.
      *
-     * The rail draws ONE yellow badge per project whose number is the SUM, with a spinner lapping it
-     * while `running` is non-zero, and its tooltip splits the two (issue #41: which projects still
-     * have work in flight, at a glance). `running` is `activeBandThread` — the rows the sidebar draws
-     * below the rule — so the rail and the sidebar beside it count with one rule.
+     * The rail draws one yellow badge per project whose number is `queued`, and names `running` beside
+     * it in the square's tooltip (issue #41: which projects still have work in flight). `running` is
+     * `activeBandThread` — the rows the sidebar draws below the rule — so the rail and the sidebar
+     * beside it count with one rule.
      *
      * MACHINE-WIDE, answered from the boards this process has OPEN. A queue count is a board fact:
      * `needsYou` is derived from the tailer's live view of each session, so a project with no board

@@ -564,19 +564,47 @@ human reads the real page in their own browser faster and better than any pictur
 2026-10-06: *"you should always just generate an artifact or an HTML page or whatever and just link me
 to it. You don't need to take screenshots; that just made it harder for me to gauge"*).`
 
-// Code tabs (packages/web/src/lib/codeTabs.ts). Taught because nothing else can make a worker write
-// one: the trigger is a LABEL on consecutive fences, which no model reaches for unprompted — unlabelled
-// neighbours deliberately stay separate blocks. The bare tail is the form shown because it is the
-// shortest and the one Mintlify-trained models already know; `title=` is named for the label that is
-// a path with spaces and for the single titled block. "Never for blocks they must read together" is
-// the one rule here that a worker would get wrong without it: a tab hides every block but one, and a
-// command beside its output is the commonest pair of adjacent fences there is.
-const CODE_TABS = `## Code in tabs
+// The Markdown components the web app draws beyond CommonMark (packages/web/src/lib: codeBlock.ts and the
+// codeTabs / codeLines / codeDiff it builds from, callouts.ts, disclosure.ts; a diagram is
+// useMermaidIslands). ONE section for all of them, and taught at all, because a worker cannot find any
+// of them out: each is written as ordinary Markdown, the worker never sees its own message drawn, and
+// the trigger is a spelling no model reaches for unprompted — a label on consecutive fences, `{2,5-7}`,
+// `ts-diff`, a title after `[!WARNING]` (maintainer 2026-10-11: "make sure that the prompting for Frizz
+// makes it clear to the agent that it can use all these features").
+//
+// What each line is there for:
+//   - Only spellings a worker would get wrong are SHOWN. Tabs: unlabelled neighbours deliberately stay
+//     separate blocks, and the bare tail is the form Mintlify-trained models already know. A diff: the
+//     language-qualified name is the maintainer's own (`ts-diff`), and a plain `diff` fence loses the
+//     code's colour. `<details>`, `<kbd>` and `mermaid` are spellings every model knows, so they are
+//     named, not shown — except the blank lines inside `<details>`, without which CommonMark reads the
+//     whole section as one HTML block and prints its Markdown raw.
+//   - "Never for blocks they must read together": a tab hides every block but one, and a command
+//     beside its output is the commonest pair of adjacent fences there is.
+//   - The fold (LONG_BLOCK_OVER / LONG_BLOCK_SHOWN in codeBlock.ts — keep the numbers equal) is stated
+//     so a worker stops trimming a listing to keep a message short, which loses the lines for good.
+//   - "For the one thing…" / "what most readers skip": a callout on every paragraph is no callout, and
+//     a section hides what it holds, so neither is for the answer itself.
+//   - The last rule is VISUAL_EVIDENCE's, for the same reason (parseSignalFence, tailer.ts): a fence's
+//     closing line inside a signal fence ends the signal fence. A callout and a section carry no
+//     backtick line, so they are safe inside one and the rule names only the fenced kind.
+const MARKDOWN_COMPONENTS = `## Markdown that Frizz draws as more than text
 
-Consecutive code fences that each carry a label after the language are drawn as ONE block with a tab
-per fence. Use it for alternatives the human picks between — a command per package manager, a call in
-several languages, a file before and after — never for blocks they must read together, because a tab
-hides all but one.
+Each of these is drawn wherever your Markdown is: a message, the body of \`mcp__frizz__done\`, an
+\`mcp__frizz__ask\` question and its options, a Markdown file the human opens in Frizz. Use one when it
+carries the point better than a paragraph would; none is ever required.
+
+**A code fence**, by what follows its language:
+
+- \`title="src/server.ts"\` names the block.
+- \`{2,5-7}\` marks those lines, the ones the reader should look at.
+- \`diff\` draws added and removed lines as a diff, and \`ts-diff\` (any language) colours the code in
+  it too. A unified diff with its \`@@\` headers also gets line numbers and its file as the title.
+- A label on each of several CONSECUTIVE fences makes them one block with a tab per fence — for
+  alternatives the human picks between (a command per package manager, a call in several languages),
+  never for blocks they must read together, because a tab hides all but one. Only blank lines may
+  separate the fences.
+- A block over 40 lines is folded to its first 24 behind a button, so never trim one to save space.
 
 \`\`\`bash npm
 npm install left-pad
@@ -586,8 +614,26 @@ npm install left-pad
 pnpm add left-pad
 \`\`\`
 
-Only blank lines may separate the fences. \`title="src/server.ts"\` is a label too, and on a single
-fence it titles the block.`
+\`\`\`ts-diff
+-  await sleep(100)
++  await sleep(2 ** attempt * 100)
+\`\`\`
+
+**A callout** is a blockquote that opens \`[!NOTE]\`, \`[!TIP]\`, \`[!IMPORTANT]\`, \`[!WARNING]\` or
+\`[!CAUTION]\`; words after the marker replace its title. For the one thing the reader must not miss.
+
+> [!WARNING] Before you merge
+> The migration cannot be rolled back.
+
+**A collapsed section** is \`<details>\` with a \`<summary>\`, for what most readers skip — a full log,
+a long table, the evidence behind a claim. Leave a blank line after the summary and before
+\`</details>\`, or the Markdown between them is printed raw.
+
+**A \`mermaid\` fence** is drawn as its diagram, and \`<kbd>\`, \`<sub>\`, \`<sup>\` and \`<mark>\` are drawn
+inline.
+
+A FENCED one goes above a closing signal fence or in the body of \`mcp__frizz__done\`, never inside a
+signal fence.`
 
 
 const REGISTERED_LINKS = `## Saved links and files
@@ -892,6 +938,53 @@ once your context is summarized — but the frizz \`goal\` tool can arm a goal, 
 \`post_compaction: true\` re-sends a prompt of your choosing (which can link a file here) into the
 emptied window. Whether to keep notes, and whether to arm anything, is yours to decide per effort.`,
 }
+
+// WHY THIS EARNS ITS TOKENS (the SIZING bar above): the contract named no location, so every worker
+// invented one. Counted 2026-10-11 with `git worktree list` across this machine's projects: Frizz had
+// one in `/private/tmp/frizz-floor` and one in a sibling `frizz-wt-idle`, reylo three in a sibling
+// `reylo-wt/`, pullfrog one in its own `.worktrees/` (maintainer: "I'm a little confused about why
+// these projects are creating worktrees inside of temp directories anyway, instead of in some
+// dedicated location where worktrees can live inside of the current project").
+//
+// WHY `.frizz/worktrees/`: `.frizz/` is the one directory every Frizz project already has AND that
+// ignores itself (project-root.ts writes `.frizz/.gitignore` = `*`), so a checkout there never reaches
+// `git status` in a project that has never heard of Frizz. Git reads no ignore file above a worktree's
+// own root, so that `*` does not leak INTO the checkout: measured the same day in a worktree at
+// `.frizz/worktrees/<slug>` of this repo, `git status`, ripgrep, `tsc -b`, a Tailwind build and a
+// @parcel/watcher subscription rooted there all saw its files normally.
+//
+// TWO PIECES OF THE SERVER KNOW THE PATH, and move with it: board.ts prunes it from the `.frizz`
+// watcher (FRIZZ_WATCH_IGNORED_DIRS), and repo-files.ts asks the worktree itself whether a file in it
+// is ignored, so a worker's edits there still reach the edited-files rail.
+//
+// The install bullet is the one hazard the location CREATES. Module resolution walks up, and a checkout
+// nested in the project finds the parent's `node_modules`: before `nub install`, `@frizz/shared`
+// imported from this repo's worktree resolved to the MAIN checkout's `packages/shared`. A `/tmp`
+// worktree failed loudly there instead.
+//
+// The harness bullet is Claude-only because only Claude Code has such tools. `EnterWorktree` and the
+// Agent tool's `isolation: "worktree"` write to `.claude/worktrees/`, which a project ignores only if
+// it happens to say so.
+const WORKTREES = `## Git worktrees
+
+When you want an isolated checkout — for yourself or for a sub-agent — it lives in ONE place, inside
+the project: \`.frizz/worktrees/<slug>/\`. From the project root:
+\`git worktree add .frizz/worktrees/<slug> -b <slug>\`. Never \`/tmp\`, never a sibling folder, never a
+place of your own choosing. \`.frizz/\` ignores itself, so the project's \`git status\` never shows the
+checkout and no \`.gitignore\` needs an edit.
+
+- **A project that names its own worktree location or command keeps it.** That is a project norm, and
+  it outranks this default.
+- **Install its dependencies before you trust a result from it.** It sits inside the project, so a
+  checkout with nothing installed can resolve the PARENT checkout's packages and quietly test the
+  wrong code.
+- **Remove it once its branch has landed or been abandoned** — \`git worktree remove
+  .frizz/worktrees/<slug>\` — and never move or remove one you did not create: its owner may still be
+  running in it.`
+
+const WORKTREES_HARNESS = `- **Create it with \`git worktree add\`, not with the harness.** \`EnterWorktree\` and the Agent tool's
+  \`isolation: "worktree"\` put theirs under \`.claude/worktrees/\`; make the checkout here instead and
+  name its absolute path in the sub-agent's prompt.`
 
 const BACKEND: Record<BackendKind, string> = {
   claude: `## Sub-agents
@@ -1353,6 +1446,7 @@ export function buildWorkerPrompt(kind: BackendKind = "claude", opts: { monitors
     ACTIVITY_CAPTIONS,
     SIGNALS,
     SCRATCHPAD[kind],
+    kind === "claude" ? `${WORKTREES}\n${WORKTREES_HARNESS}` : WORKTREES,
     BACKEND[kind],
     THREAD_NAME,
     SPAWN_THREAD,
@@ -1360,7 +1454,7 @@ export function buildWorkerPrompt(kind: BackendKind = "claude", opts: { monitors
     lean ? null : THREAD_EXECUTION[kind],
     AGENT_COMPLETION,
     VISUAL_EVIDENCE,
-    CODE_TABS,
+    MARKDOWN_COMPONENTS,
     REGISTERED_LINKS,
     QUALITY_BAR,
     TOKEN_ECONOMY,
