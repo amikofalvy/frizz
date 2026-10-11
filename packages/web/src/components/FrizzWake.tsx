@@ -273,7 +273,7 @@ function TimerDivider({ wake, sourceId }: { wake: TimerWake; sourceId?: string }
       </WakeDivider>
       {open && (
         // The same ruled aside the reasoning disclosure uses, and PLAIN pre-wrapped text rather than
-        // markdown: this is what the worker typed into `mcp__frizz__timer`, and rendering it as markdown
+        // markdown: this is what the worker typed into `frizzctl timer`, and rendering it as markdown
         // would restyle a sentence that was never written as any.
         // Flush LEFT, unlike the reasoning aside this borrows its rule from: that one indents to sit
         // under its own left-flush label, and this divider's label is centred, so 5px of inset would be
@@ -368,7 +368,7 @@ function PrWatchExpiredDivider({ watchRef, sourceId, at }: { watchRef: string; s
   )
 }
 
-// The same lapse on one of the worker's OWN waits — a `mcp__frizz__watch` on a background shell or a
+// The same lapse on one of the worker's OWN waits — a `frizzctl watch` on a background shell or a
 // sub-agent whose `for:` ran out. It names the KIND and not the target: the target is a runtime id
 // (`bzvtnt3ig`), the handle a worker writes on a fence and nothing a reader correlates by eye, which is
 // the reason the shell-finished line below never draws one either. The glyph is the subject's own, as
@@ -447,8 +447,8 @@ function ShellDoneDivider({ wake, sourceId, at }: { wake: ShellDoneWake; sourceI
 // only thing under its title was one line of state and a parenthetical addressed to the worker.
 //
 // THE TRAILER IS DROPPED, not rendered. "This watcher is spent" and "STILL ARMED — drop it with
-// mcp__frizz__watch_pr" are instructions to the agent about its own registration; a human reading the
-// transcript has no watcher to re-register and no tool to call.
+// frizzctl watch-pr" are instructions to the agent about its own registration; a human reading the
+// transcript has no watcher to re-register and no command to run.
 //
 // STATE FIRST, ref second, matching the review divider's `{title} on {ref}` — so the news survives the
 // truncation at queue-rail width, where the label clips from the right.

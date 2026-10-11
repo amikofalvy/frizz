@@ -403,7 +403,7 @@ function liveWaitHandles(tele: SessionTelemetry | undefined): Set<string> {
 }
 
 /** The same live handles as `liveWaitHandles`, but resolved rather than merely tested — for
- *  `mcp__frizz__watch`, which has to answer three questions the fence's integrity check never asks:
+ *  `frizzctl watch`, which has to answer three questions the fence's integrity check never asks:
  *  does this handle name anything live, WHICH KIND is it, and what is the work called.
  *
  *  THE KIND IS RESOLVED, NOT TRUSTED. A shell handle and a sub-agent handle are both opaque runtime
@@ -662,7 +662,7 @@ export function hasDeclaredWait(
 // is still open.
 //
 // THE REGISTERED WATCH IS THE SIGNAL, NOT THE FENCE (2026-09-20). Until then this read `prs:` hints only
-// and required each to be registered too, so a worker that called `mcp__frizz__watch_pr` and rested
+// and required each to be registered too, so a worker that called `frizzctl watch-pr` and rested
 // WITHOUT a fence — the shape the worker contract steers toward ("Register FIRST: this line states the
 // wait, it does not create one") — was queued while its checks ran, while the rail's own mark
 // (groups.prChecksRunning) read the registered rows and called the same thread live. One thread, two
@@ -708,7 +708,7 @@ function hasLiveOwnWork(tele: SessionTelemetry | undefined, registeredPrWatches:
 /** A standing PR park the scheduler will actually fire. DECLARED AND REGISTERED, both — the rule
  *  heldByRunningChecks and hasParkedTimerWatch already spell out: the declaration says the thread is
  *  waiting, the registration is what will actually wake it. Until 2026-08-26 this read the declaration
- *  alone, so a `prs:` line naming a PR the worker never registered with `mcp__frizz__watch_pr`
+ *  alone, so a `prs:` line naming a PR the worker never registered with `frizzctl watch-pr`
  *  counted as a wait: the resting card showed with NOTHING in it (a `prs:` entry adds no watch row of
  *  its own — see fenceWatchViews), the fence card hid itself behind it, and the ref — the one thing the
  *  wait was about — rendered on no surface at all. Membership is by githubStatusKey, so a fence naming
@@ -1401,7 +1401,7 @@ export function resolvePendingPermission(row: Pick<SessionRow, "permission_pendi
 }
 
 // The recurring prompt as BOTH readers see it: the board's Goal panel (through the thread view below)
-// and the worker's own `mcp__frizz__goal` with `action: "get"` (through the router). One
+// and the worker's own `frizzctl goal get` (through the router). One
 // projection because they must agree — a worker reading back a different row than the human is editing
 // is exactly the confusion the read action exists to end.
 //
@@ -1483,7 +1483,7 @@ export function resolveLimitPause(
 // aiTitle on the wire the display side cannot tell a persisted worker title from the dispatch chop,
 // so it must assume the chop.
 //
-// THE REGISTRY COPY OUTRANKS TELEMETRY, which is the reverse of the rule here until `mcp__frizz__title`
+// THE REGISTRY COPY OUTRANKS TELEMETRY, which is the reverse of the rule here until `frizzctl title`
 // existed ("telemetry wins while present — it is the fresher of the two"). Freshness was the right
 // tiebreak only while the two could not disagree: both halves were the same codex marker, so the CAS
 // either matched telemetry exactly or had not run. A worker registering its own name breaks that tie
@@ -1623,7 +1623,7 @@ function sessionThreadView(
     createdAt: new Date(t.created_at).toISOString(),
   }))
   const armedTimerIds = new Set(armedTimers.map((t) => t.id))
-  // This thread's ARMED WATCHES on its own running work — the `thread_watch` rows `mcp__frizz__watch`
+  // This thread's ARMED WATCHES on its own running work — the `thread_watch` rows `frizzctl watch`
   // creates. Same per-thread lookup as the two registries above, and the same ms→ISO mapping as the
   // worker's own read-back (router.armedOwnWatchViews), so the row, the strip and the tool cannot
   // disagree about one wait.

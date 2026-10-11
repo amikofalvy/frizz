@@ -15,7 +15,7 @@
 // to a `.md` report, written beside the shots, whose gallery names its pictures RELATIVE to the report —
 // the reader resolves them against the document's own directory. The reader only opens files under the
 // project, so keep `--shots` inside `--cwd` for that one. With `--origin` (the stack's URL) it also
-// REGISTERS a question through the running server's own `ask` RPC — what a worker's mcp__frizz__ask
+// REGISTERS a question through the running server's own `ask` RPC — what a worker's frizzctl ask
 // does — whose first option's description is a gallery and whose second is a picture: a registered
 // question draws a multi-line description as the option's body, where the fence becomes a gallery.
 //

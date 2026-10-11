@@ -40,7 +40,7 @@ export interface SessionRow {
   // 0 | 1 — a HUMAN named this thread (explicit rename, native /rename, or an adopted `.frizz/<slug>.md`
   // heading), so no backend auto-title may ever replace it. A title HARD-CODED by a dispatch CALLER is
   // NOT this: `Investigate acme/app#391` from the GitHub batch, or a parent agent's guess through
-  // `mcp__frizz__spawn_thread`, is shown as a real name (title_auto = 0) yet stays replaceable, because
+  // `frizzctl spawn-thread`, is shown as a real name (title_auto = 0) yet stays replaceable, because
   // the worker's own title for the task is nearly always the more informative one. The human-facing
   // new-thread composer has no title field at all, so a dispatch title never means "a human typed this".
   // INVARIANT, relied on by the idempotent boot repair: title_locked = 1 ⇒ title_auto = 0.
@@ -670,7 +670,7 @@ export interface Storage {
   // Session-guarded: this comes from a browser tab that may be looking at a thread which has since been
   // re-dispatched.
   setRecurringPromptIfCurrent(slug: string, sessionId: string, generation: number, write: RecurringWrite): boolean
-  // The WORKER's path to the same row, from `mcp__frizz__goal`. Deliberately keyed on the
+  // The WORKER's path to the same row, from `frizzctl goal`. Deliberately keyed on the
   // slug ALONE, with no session/generation guard, because the MCP server cannot satisfy one: it is
   // spawned with its thread's slug and keeps it across a resume, while the session id and generation
   // bump underneath it — so a guard here would fail exactly on the long-lived thread this exists for.
@@ -828,7 +828,7 @@ export interface Storage {
   // atomic with the text write so no board refresh, transcript ai-title, resume upsert, or server
   // restart can see the new title as machine-generated or still replaceable.
   setTitle(slug: string, title: string): void
-  // Persist the WORKER's own considered name (`mcp__frizz__title`), marked `title_agent = 1` so the
+  // Persist the WORKER's own considered name (`frizzctl title`), marked `title_agent = 1` so the
   // display can trust it once live telemetry is gone. Refused — `false`, not a throw — when a human has
   // claimed the name, because that is a legitimate answer the worker should be told rather than an
   // error it will retry. Never touches `title_auto`: which machine wrote the current text does not
@@ -1950,7 +1950,7 @@ export function createStorage(source: string | Database, projectId: string): Sto
     WHERE project_id = @project_id AND slug = ? AND session_id = ? AND agent_session_id IS ?
       AND runtime_generation = ? AND title_locked = 0
   `)
-  // The WORKER's own considered name for its thread, from `mcp__frizz__title`. Writes exactly what the
+  // The WORKER's own considered name for its thread, from `frizzctl title`. Writes exactly what the
   // auto-title CAS writes — the text plus `title_agent = 1`, gated on the LOCK so a human rename always
   // outranks it — but keyed on the SLUG alone. The caller is the live worker's own MCP server, which
   // knows the slug frizz stamped into its env and nothing about the session id underneath it; that env

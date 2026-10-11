@@ -74,7 +74,7 @@ test("a batch of held wakes draws one hairline per wake, and the fallback card r
         assert.match(result.batched.lines[0], /^Wait over — its work finished/)
         assert.match(result.batched.lines[1], /^Background task «Running the update harness against the built shell and server» finished/)
         assert.deepEqual(result.batched.cards, [], "no part of it is a card")
-        assert.doesNotMatch(result.batched.text, /Frizz held|###|awaiting park named|READ ITS OUTPUT|NOTHING running|mcp__frizz__ask|Frizz sends this because/)
+        assert.doesNotMatch(result.batched.text, /Frizz held|###|awaiting park named|READ ITS OUTPUT|NOTHING running|frizzctl ask|Frizz sends this because/)
         // …at the pitch of two wakes that arrived a second apart, which is the whole claim: the
         // transcript must not say which delivery carried them.
         assert.ok(Math.abs(result.batched.tops[1] - result.batched.tops[0] - result.lonePitch) < 0.5, `merged pitch ${result.batched.tops[1] - result.batched.tops[0]} vs lone ${result.lonePitch}`)

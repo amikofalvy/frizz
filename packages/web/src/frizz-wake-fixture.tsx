@@ -54,7 +54,7 @@ const messages: ChatMessage[] = [
   // strings, from the day the merge shipped until 2026-10-11. Two hairlines, at the pitch of any other
   // two — compare the lone pair `w17` and `w9` further down, which must read identically.
   wake("batched", merged(
-    ["awaiting park named 1 dead item(s)", `${parkFinishedWakeMessage(["- `shells: [br6vpp762]` — FINISHED — its result is waiting for you"], false)}\n\nYou have NOTHING running right now — no shell, no sub-agent, no timer, no registered\npull request. There is nothing that could wake you, so this thread is not awaiting: finish in\n\`\`\`done, or register a question with \`mcp__frizz__ask\`.`],
+    ["awaiting park named 1 dead item(s)", `${parkFinishedWakeMessage(["- `shells: [br6vpp762]` — FINISHED — its result is waiting for you"], false)}\n\nYou have NOTHING running right now — no shell, no sub-agent, no timer, no registered\npull request. There is nothing that could wake you, so this thread is not awaiting: finish in\n\`\`\`done, or register a question with \`frizzctl ask\`.`],
     ["background shell finished (br6vpp762)", shellDoneMessage({ taskId: "br6vpp762", label: "Running the update harness against the built shell and server", status: "completed" })],
   )),
   // EVERY ROUTE A LONE WAKE CAN TAKE, taken from inside one delivery: a CI verdict reported by two polls
@@ -140,7 +140,7 @@ const messages: ChatMessage[] = [
   // A REGISTERED WATCHER whose own `for:` ran out. The ref is the only thing on the line a reader can
   // act on, so it is the link.
   wake("w19", prWatchExpiredWakeMessage("nubjs/nub#777")),
-  // …and the same lapse on one of the worker's OWN waits, a `mcp__frizz__watch` on a shell or a
+  // …and the same lapse on one of the worker's OWN waits, a `frizzctl watch` on a shell or a
   // sub-agent. It had no parser and was the other wake still drawing the verbatim card on 2026-10-11.
   wake("w19b", ownWatchExpiredWakeMessage("shell", "bzvtnt3ig")),
   wake("w19c", ownWatchExpiredWakeMessage("agent", "a01b2d20b32feab11")),

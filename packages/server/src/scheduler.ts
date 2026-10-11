@@ -37,7 +37,7 @@ import { log as frizzLog } from "./logging.ts"
 // ---- THE DURABLE WAKER ---------------------------------------------------------------------------
 // NOTHING IN AN ```awaiting FENCE WAKES A THREAD. A fence STATES what a thread is waiting on; every
 // wait frizz can actually fire is a REGISTRATION the worker made through a tool — a `thread_timer` row
-// (`mcp__frizz__timer`), a `pr_watch` row (`mcp__frizz__watch_pr`, SOURCE 11), a background shell's own
+// (`frizzctl timer`), a `pr_watch` row (`frizzctl watch-pr`, SOURCE 11), a background shell's own
 // telemetry — or a condition the server itself observes: a provider limit lifting, a human's snooze
 // coming due, a recurring prompt's schedule, a rest with nothing declared. The limb that polled
 // `pr-watch:`/`pr:`/`ci:`/`timer:` hints out of the fence was hardwired off by the 2026-08-15 grammar
@@ -711,7 +711,7 @@ function restMessageIsSignedOff(
  *
  *  A PR ENTRY IS THE ONE THAT NEEDS A SECOND FACT, since 2026-08-14: the fence no longer arms anything,
  *  so naming a PR says nothing about whether a wake is coming. A REGISTERED watcher
- *  (`mcp__frizz__watch_pr`) will fire, so the Goal holds; a `prs:` entry with no registration behind it
+ *  (`frizzctl watch-pr`) will fire, so the Goal holds; a `prs:` entry with no registration behind it
  *  is a park frizz cannot honour, so it gets the rescue like any other unfireable item. Without the first
  *  half this reintroduces the measured loop above verbatim.
  *
@@ -739,7 +739,7 @@ function registeredPrWatchesOf(storage: Storage, slug: string): ReadonlySet<stri
   return new Set(storage.listPrWatches(slug, { armedOnly: true }).filter((w) => w.kind !== "issue").map((w) => `${w.owner}/${w.repo}#${w.number}`))
 }
 
-/** The ISSUES a thread has registered (`mcp__frizz__watch_issue`), by the same `owner/repo#N` — what an
+/** The ISSUES a thread has registered (`frizzctl watch-issue`), by the same `owner/repo#N` — what an
  *  `issues:` fence entry is checked against. */
 function registeredIssueWatchesOf(storage: Storage, slug: string): ReadonlySet<string> {
   return new Set(storage.listPrWatches(slug, { armedOnly: true }).filter((w) => w.kind === "issue").map((w) => `${w.owner}/${w.repo}#${w.number}`))
@@ -2476,7 +2476,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   }
 
   // ---- SOURCE 11: THE REGISTERED PR WATCHERS ------------------------------------------------------
-  // A worker registers a pull request with `mcp__frizz__watch_pr` and frizz brings it back whenever
+  // A worker registers a pull request with `frizzctl watch-pr` and frizz brings it back whenever
   // something happens on it (maintainer 2026-08-14: "The agent should have a tool to register a PR
   // watcher… it should get notified when CI either succeeds or failed and on follow-up reviews and
   // comments").
@@ -3162,7 +3162,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       // done again — a second Done card, and a registered done is un-done by the wake's own user record
       // until it does (registeredDoneFence reads the last user instant). SOURCES 4 and 5 already decline
       // a done thread; this is the same guard. The one exception is a shell the worker REGISTERED a wait
-      // on (`mcp__frizz__watch`): a registration trumps a done on the board, so it trumps it here too —
+      // on (`frizzctl watch`): a registration trumps a done on the board, so it trumps it here too —
       // the wake is the thing it registered for. Matched by ROW, in any state but dropped, because
       // evalOwnWatches has already settled that row silently by the time this pass runs (it runs first
       // in the tick, and "target ended" is its silent case — the wake is this pass's to send). The

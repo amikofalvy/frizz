@@ -1076,9 +1076,10 @@ its outbox and is unaffected:
   shows them and \`frizzctl timer cancel <id>\` withdraws one. Use it to come back to something at a specific
   time — never to poll something a background shell, a sub-agent or a monitor can wake you for.`,
   // § Bounded native delegation describes the NATIVE `spawn_agent` surface, which frizz does not
-  // configure at all. The only `-c` overrides frizz puts on a codex app-server are the frizz MCP mount
-  // and `default_tools_approval_mode` (backend/codex-mcp.ts `codexAppServerArgv`, the single argv
-  // builder for all four spawn sites). Until 2026-08-26 this section opened by claiming frizz "requests
+  // configure at all. The only `-c` override frizz puts on a codex app-server is
+  // `default_tools_approval_mode` (backend/codex-mcp.ts `codexAppServerArgv`, the single argv builder
+  // for all four spawn sites); since 2026-10-11 the frizz MCP mount, for the threads still taught it,
+  // rides each thread's own config instead. Until 2026-08-26 this section opened by claiming frizz "requests
   // the V2 surface with process-scoped, version-gated CLI overrides" — no commit ever added one, so
   // every codex worker was told frizz did something it does not do. The gate itself was never wrong:
   // `spawn_agent` carries `model`/`reasoning_effort` natively (parseCodexSubAgentLine reads both off

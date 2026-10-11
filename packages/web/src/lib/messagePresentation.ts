@@ -41,7 +41,7 @@ export type HumanTurnLike = Pick<TranscriptMessage, "role" | "text"> &
 // reply to it.
 //
 // …EXCEPT THE ONE TURN FRIZZ DELIVERS THAT THE HUMAN WROTE: the answer to a REGISTERED question
-// (`mcp__frizz__ask`). It rides in as a scheduler wake because the human may have answered while the
+// (`frizzctl ask`). It rides in as a scheduler wake because the human may have answered while the
 // worker's process was down — so `wake` alone cannot decide the writer, and isAnswersMessage is the
 // same tell the chat already draws it by. Answering is a steer like any other; walking past it back to
 // the ask before it made the card repaint the whole already-answered iteration under the human's
