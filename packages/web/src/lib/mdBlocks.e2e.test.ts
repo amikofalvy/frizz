@@ -359,11 +359,15 @@ test("callouts, sections and inline keys render, stay sanitized, and a section s
     assert.equal(inline.optionKbd, "inline")
     assert.notEqual(inline.markBg, "rgb(255, 255, 0)", "not the UA's opaque yellow")
     assert.equal(inline.markColor, inline.proseColor, "a highlight keeps the prose colour")
-    // Plain, key, scripts, highlight: four line boxes, each measured against the plain one above it.
+    // Plain, key, scripts, highlight, plain: four distances between five lines. As the UA draws them
+    // these fail — a monospace `<kbd>` set the transcript's lines 24.80px apart against 23.80px, and a
+    // `<sup>` with its own line-height 25.47px (measured 2026-10-11).
     for (const [scale, heights] of Object.entries(inline.lines)) {
       assert.equal(heights.length, 4, `${scale}: five lines were found`)
-      for (const [i, height] of heights.entries()) {
-        assert.ok(Math.abs(height - heights[0]) < 0.01, `${scale}: line ${i + 1} is ${height}px against a plain line's ${heights[0]}px`)
+      // A line that grows moves its own glyphs down as well as the next line's, so a taller box shows
+      // in the distance on either side of it. Every distance equal means no line grew.
+      for (const height of heights) {
+        assert.ok(Math.abs(height - heights[0]) < 0.01, `${scale}: lines are ${heights.join(", ")}px apart, not all a plain line's ${heights[0]}px`)
       }
     }
 

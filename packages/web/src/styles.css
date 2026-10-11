@@ -1451,9 +1451,10 @@ a[href] {
    QuestionBlockCard.tsx): panel fill, a strong hairline with a heavier bottom lip, muted sans at
    10.5px on the option's 12px. Here in `em`, so it tracks whatever prose it sits in.
 
-   It must not make its LINE taller, for the reason the code chip above gives. An inline box's border
-   and padding never enter the line box, only its `line-height` does, so `line-height: 1` on a plain
-   inline is the whole guarantee; an inline-block would have counted the cap's full height. */
+   It must not make its LINE taller, for the reason the code chip above gives. As the UA draws it, in
+   monospace, it did: 24.80px against 23.80px in transcript prose and 21px against 20px in a card
+   (measured 2026-10-11, sans). The prose face at `line-height: 1` stays inside the strut, and a plain
+   INLINE box's border and padding never enter the line box, so the cap can be as tall as it likes. */
 .md-body kbd,
 .md-inline kbd {
   --md-kbd-size: 0.875;
@@ -1478,9 +1479,11 @@ a[href] {
   border-color: color-mix(in srgb, var(--color-fg) 14%, transparent);
 }
 /* SCRIPTS. The UA's `vertical-align: super` raises the fragment's whole inline box, which pushes the
-   line box taller. A fragment with `line-height: 0` contributes a box of no height, so it can be
-   moved by a length without the line noticing. Static, not preflight's `position: relative`: a
-   positioned fragment would paint above an answer chip's stretched button. */
+   line box taller: 26.6px against 23.8px in transcript prose, 23.25px against 20px in a card, 19.5px
+   against 16.5px on a chip's label (measured 2026-10-11, sans). A fragment with `line-height: 0`
+   contributes a box of no height, so it can be moved by a length without the line noticing. Static,
+   not preflight's `position: relative`: a positioned fragment would paint above an answer chip's
+   stretched button. */
 .md-body :is(sub, sup),
 .md-inline :is(sub, sup) {
   position: static;

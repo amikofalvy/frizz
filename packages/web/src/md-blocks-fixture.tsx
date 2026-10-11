@@ -162,14 +162,17 @@ function Fixture() {
         <div className="md-body mt-3" data-case="card-lines" dangerouslySetInnerHTML={{ __html: mdToHtml(LINES) }} />
       </div>
       {/* An answer chip, in the real chip's DOM shape: the stretched button FIRST, then the text. The
-          card scale comes from `.card-md`, as it does around a real question card. */}
+          card scale comes from `.card-md`, as it does around a real question card. The body does NOT
+          wear the real chip's `opacity-90`: an element with opacity paints above the button whatever its
+          children do, and this chip has to show that a summary is clickable by its own rule. The real
+          card below keeps it. */}
       <div className="card-md mt-6 max-w-md rounded-[12px] bg-panel-2 p-4">
         <div data-question-option className="relative flex items-baseline gap-2 rounded-md border border-border px-3 py-1.5 text-[12px] leading-snug">
           <button type="button" data-chip-hit className="absolute inset-0 rounded-md outline-none" aria-label="Pick this option"
             onClick={() => { w.__chipHits! += 1 }} />
           <div className="min-w-0 flex-1">
             <div><span className="md-inline" data-case="chip-label" dangerouslySetInnerHTML={{ __html: mdInlineToHtml("Cut it — press <kbd>1</kbd>, 2<sup>10</sup> KB, <mark>now</mark>") }} /></div>
-            <div className="md-body mt-1.5 opacity-90" data-case="chip" dangerouslySetInnerHTML={{ __html: mdToHtml(CHIP) }} />
+            <div className="md-body mt-1.5" data-case="chip" dangerouslySetInnerHTML={{ __html: mdToHtml(CHIP) }} />
           </div>
         </div>
         {/* A chip's LABEL is the inline path, at the chip's own 12px and snug leading. */}
