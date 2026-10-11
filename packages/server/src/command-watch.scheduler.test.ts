@@ -102,7 +102,7 @@ test("a failing check is recorded and wakes nobody; a passing one wakes ONCE, wi
   h.fake.script.push({ exitCode: 1, output: "not yet" })
   await h.cycle()
   assert.equal(h.fake.calls.length, 1, "no check recorded yet ⇒ due at once")
-  assert.deepEqual(h.resumes, [])
+  assert.equal(h.resumes.length, 0)
   let w = h.storage.getCommandWatch(id)!
   assert.deepEqual([w.state, w.runs, w.last_exit, w.last_output, w.last_run_at], ["armed", 1, 1, "not yet", T0])
 
@@ -208,7 +208,7 @@ test("a dropped watch's check in flight is killed, and what it found is never re
   await h.s.tick()
   const w = h.storage.getCommandWatch(id)!
   assert.deepEqual([w.state, w.runs], ["dropped", 0])
-  assert.deepEqual(h.resumes, [])
+  assert.equal(h.resumes.length, 0)
 })
 
 test("an archived thread's watch stays ARMED and is not run; its `for` still runs out, silently", async () => {
@@ -222,7 +222,7 @@ test("an archived thread's watch stays ARMED and is not run; its `for` still run
   h.clock.ms += 180_000
   await h.cycle()
   assert.equal(h.storage.getCommandWatch(id)!.state, "expired")
-  assert.deepEqual(h.resumes, [], "nobody to wake")
+  assert.equal(h.resumes.length, 0, "nobody to wake")
 })
 
 test("a pass while the worker is mid-turn is HELD until it rests (or the mid-turn ceiling)", async () => {
@@ -232,7 +232,7 @@ test("a pass while the worker is mid-turn is HELD until it rests (or the mid-tur
   h.arm("t")
   h.fake.script.push({ exitCode: 0, output: "up" })
   await h.cycle()
-  assert.deepEqual(h.resumes, [], "news about the world waits for the worker to stop")
+  assert.equal(h.resumes.length, 0, "news about the world waits for the worker to stop")
   // A held wake is retried after its deferral lease, not on the very next tick.
   h.tele.set("t", tele("idle"))
   h.clock.ms += 60_000
@@ -300,7 +300,7 @@ test("a rest on `commands:` naming an ARMED watch is honoured; an unknown id is 
   const restedAt = new Date(h.clock.ms - 60_000).toISOString()
   h.tele.set("t", parkedOn([{ kind: "command", value: id }, { kind: "status", value: "watching" }, { kind: "for", value: "6h" }], restedAt))
   await h.s.tick()
-  assert.deepEqual(h.resumes, [], "an honest park is left alone")
+  assert.equal(h.resumes.length, 0, "an honest park is left alone")
 
   h.tele.set("t", parkedOn([{ kind: "command", value: "cmw_000000000bad" }, { kind: "status", value: "watching" }, { kind: "for", value: "6h" }], new Date(h.clock.ms - 30_000).toISOString()))
   await h.s.tick()
@@ -308,6 +308,31 @@ test("a rest on `commands:` naming an ARMED watch is honoured; an unknown id is 
   assert.match(h.resumes[0].message, /`commands: \[cmw_000000000bad\]` — NOT REGISTERED — register it with `frizzctl watch-command add` first/)
   // …and the correction hands back the id it should have named.
   assert.ok(h.resumes[0].message.includes(id))
+  await h.s.stop()
+})
+
+// Measured in the e2e before this was fixed: SOURCE 12 saw the fence name a row that had just left
+// `armed` and queued "the work you parked on has FINISHED" beside the pass wake, and the two went out
+// merged — the worker told twice, in one message, that its watch had passed.
+test("a watch that passes under a rest on it sends ONE wake — no park correction beside it", async () => {
+  const h = harness()
+  h.storage.setSetting("signoffNudge", "off")
+  h.storage.upsertSession(row("t"))
+  const id = h.arm("t", { firstRunAtMs: T0 - 60_000 })
+  h.tele.set("t", parkedOn([{ kind: "command", value: id }, { kind: "status", value: "watching" }, { kind: "for", value: "6h" }], new Date(h.clock.ms - 30_000).toISOString()))
+  h.fake.script.push({ exitCode: 0, output: "0.13.12" })
+  await h.cycle()
+  assert.equal(h.resumes.length, 1)
+  assert.deepEqual(parseCommandWatchWake(h.resumes[0].message), { kind: "passed", id })
+  assert.doesNotMatch(h.resumes[0].message, /held 2 wakes|FINISHED/)
+  // The wake lands as a user record, which is the worker moving past this rest.
+  const landed = h.tele.get("t")!
+  h.tele.set("t", { ...landed, lastUserAt: new Date(h.clock.ms).toISOString() })
+  h.clock.ms += 60_000
+  await h.s.tick()
+  assert.equal(h.resumes.length, 1)
+  const parks = h.storage.db.prepare("SELECT fence_id FROM wake_delivery WHERE fence_id LIKE 'park:%'").all()
+  assert.deepEqual(parks, [])
   await h.s.stop()
 })
 

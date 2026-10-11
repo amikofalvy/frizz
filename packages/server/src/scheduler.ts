@@ -2236,7 +2236,31 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         registeredIssueWatchesOf(deps.storage, row.slug),
         armedCommandWatchIdsOf(deps.storage, row.slug),
       )
-      const dead = unaccountedItems(park.items, live)
+      // A command watch's settled rows, by id: one that PASSED has already woken the thread, the way a
+      // fired timer has, and one that expired or was cancelled is a wait that is over for another reason.
+      const settledCommands = new Map(
+        deps.storage.listCommandWatches(row.slug).filter((w) => w.state !== "armed").map((w) => [w.id, w.state] as const),
+      )
+      const deadAll = unaccountedItems(park.items, live)
+      // A COMMAND WATCH THAT SETTLED UNDER THIS REST HAS ITS OWN WAKE ON THE WAY (2026-10-11). SOURCE 13
+      // enqueues the pass / expiry / cancellation wake before it settles the row, so the moment the row
+      // leaves `armed` the news is already queued — and a correction here would repeat it. Measured in the
+      // e2e: the two went out merged as ONE delivery, the second half telling the worker "already PASSED —
+      // its wake was delivered" in the same breath as the wake itself. So a settled watch whose own wake is
+      // still in flight counts as accounted. Once that wake lands the worker's turn moves past this rest,
+      // and a later fence naming the spent id is corrected as usual.
+      const ownWakeInFlight = (i: { kind: string; value: string }): boolean => {
+        if (i.kind !== "command") return false
+        const settled = settledCommands.get(i.value)
+        const prefix = settled === "passed" ? COMMAND_WATCH_FENCE_PREFIX
+          : settled === "expired" ? COMMAND_WATCH_EXPIRED_FENCE_PREFIX
+          : settled === "cancelled" ? COMMAND_WATCH_CANCELLED_FENCE_PREFIX
+          : undefined
+        if (!prefix) return false
+        const wake = outbox.get(wakeDeliveryId(row.slug, row.session_id, `${prefix}:${i.value}`))
+        return wake?.state === "pending" || wake?.state === "leased"
+      }
+      const dead = deadAll.filter((i) => !ownWakeInFlight(i))
       const expiresAt = parkExpiresAt(park, Date.parse(spokeAt))
       const expired = expiresAt !== null && nowMs >= expiresAt
       // NAMES NOTHING — the loudest case, and it was the silent one. A fence carrying only `for:` and
@@ -2343,16 +2367,11 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       const firedTimers = new Set(
         deps.storage.listThreadTimers(row.slug).filter((t) => t.state === "fired").map((t) => t.id),
       )
-      // A command watch's settled rows, by id: one that PASSED has already woken the thread, the way a
-      // fired timer has, and one that expired or was cancelled is a wait that is over for another reason.
-      const settledCommands = new Map(
-        deps.storage.listCommandWatches(row.slug).filter((w) => w.state !== "armed").map((w) => [w.id, w.state] as const),
-      )
       const finishedItem = (i: { kind: string; value: string }) =>
         finishedHandles.has(i.value) || (i.kind === "timer" && firedTimers.has(i.value)) ||
         (i.kind === "command" && settledCommands.get(i.value) === "passed")
       const status = park.items.map((i) => {
-        const gone = dead.some((d) => d.kind === i.kind && d.value === i.value)
+        const gone = deadAll.some((d) => d.kind === i.kind && d.value === i.value)
         // AN UNREGISTERED PR GETS ITS OWN NOTE, because "nothing by that name" is true but useless for
         // this one kind. A shell or a sub-agent is unaccounted because it FINISHED or the id is wrong;
         // a PR is unaccounted because the worker never registered it — a different mistake with a
