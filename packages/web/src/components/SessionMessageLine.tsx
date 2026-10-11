@@ -16,10 +16,11 @@
 // title links to the sending thread (the in-project link opens it in the drawer — thread-links.ts
 // intercepts `/thread/<slug>`; a sender in another project navigates to that board), and "Click to
 // expand" toggles the body. A whole-row button would have to nest the link, which HTML forbids.
-import { useId, useState } from "react"
+import { useId, useRef, useState } from "react"
 import { MessagesSquare } from "lucide-react"
 import { useSnapshot } from "valtio"
 import type { ThreadView, TranscriptMessage } from "@frizz/shared"
+import { useMermaidIslands } from "./CodexRichOutput.tsx"
 import { DIVIDER_LINK } from "./FrizzWake.tsx"
 import { QUEUE_WRAP } from "./TranscriptCard.tsx"
 import { WakeDivider } from "./WakeDivider.tsx"
@@ -44,7 +45,11 @@ export function SessionMessageLine({ peer, text, queued, sourceId, at, wrap }: {
   // title at read time, which is all it can offer for a thread in another project.
   const local = sender && !sender.project ? (threadBySlug(snap.board as typeof store.board, sender.slug) as ThreadView | undefined) : undefined
   const title = local ? displayTitle(local) : sender?.title
-  const body = useInnerHtml(useMarkdownHtml(text))
+  const html = useMarkdownHtml(text)
+  const body = useInnerHtml(html)
+  // A ```mermaid fence in the message is a diagram, as it would be in the sender's own transcript.
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const diagrams = useMermaidIslands(bodyRef, html)
   return (
     <div data-frizz-msg={sourceId} data-session-message className={`flex flex-col ${queued ? "opacity-50" : ""}`}>
       <WakeDivider icon={MessagesSquare} marker="session-message" at={at}>
@@ -86,7 +91,8 @@ export function SessionMessageLine({ peer, text, queued, sourceId, at, wrap }: {
         // md-body on the 13px scale with an inherited colour, so it reads as the quiet aside the timer's
         // is rather than as more of the agent's own 14px prose.
         <div id={bodyId} className="card-md mt-1.5 border-l border-border/70 pl-3 text-muted">
-          <div className={`md-body [overflow-wrap:anywhere]${wrap ? ` ${QUEUE_WRAP}` : ""}`} dangerouslySetInnerHTML={body} />
+          <div ref={bodyRef} className={`md-body [overflow-wrap:anywhere]${wrap ? ` ${QUEUE_WRAP}` : ""}`} dangerouslySetInnerHTML={body} />
+          {diagrams}
         </div>
       )}
     </div>

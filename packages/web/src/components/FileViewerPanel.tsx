@@ -13,6 +13,7 @@ import { isLocalMarkdownFile, localFileDir } from "../lib/markdownTargets.ts"
 import { basename, tildePath } from "../lib/paths.ts"
 import { contextChipLabel, insertTokenIntoProse, locateInSource, uniqueToken } from "../lib/composerContext.ts"
 import { Frontmatter, FOOTER_STYLE, OpenAction } from "./MarkdownDrawer.tsx"
+import { useMermaidIslands } from "./CodexRichOutput.tsx"
 import { useLightboxIslands } from "./Lightbox.tsx"
 import { SheetHeader } from "./ui/SheetHeader.tsx"
 
@@ -88,6 +89,8 @@ export function FileViewerPanel({ slug, path, active }: { slug: string; path: st
   useLocalFileCodeLinks(renderedRef, html)
   // A ```lightbox fence renders as the gallery it is in the transcript, against the document's directory.
   const galleries = useLightboxIslands(renderedRef, html, baseDir)
+  // And a ```mermaid fence as the diagram it is there.
+  const diagrams = useMermaidIslands(renderedRef, html)
   const title = basename(resolved)
   const homeDir = useHomeDir()
 
@@ -226,6 +229,7 @@ export function FileViewerPanel({ slug, path, active }: { slug: string; path: st
             {front && <Frontmatter source={front} />}
             <div ref={renderedRef} className="md-body" dangerouslySetInnerHTML={inner} />
             {galleries}
+            {diagrams}
           </>
         ) : (
           <div className="text-[13px] text-muted">This file is empty.</div>

@@ -1281,6 +1281,50 @@ a[href] {
 .md-body > .md-lightbox:last-child {
   margin-bottom: 0;
 }
+/* ── A ```mermaid fence in rendered Markdown ────────────────────────────────────────────────────
+   components/CodexRichOutput.tsx useMermaidIslands: the diagram stands where the fence's code block
+   stood, so — like the gallery above — it takes that block's rhythm and the same first/last-child
+   resets. The diagram's own box is MermaidDiagram's, the transcript's. */
+.md-body .md-mermaid {
+  display: block;
+  margin: var(--md-step) 0;
+}
+.md-body > .md-mermaid:first-child {
+  margin-top: 0;
+}
+.md-body > .md-mermaid:last-child {
+  margin-bottom: 0;
+}
+/* A source mermaid cannot parse reads as its code, inside MermaidDiagram's "Diagram unavailable" box. In
+   prose that <pre> is a `.md-body pre` — the border, fill and padding of the code block the fence would
+   otherwise have been, which is the right thing for it to look like — and takes that rule's trailing
+   margin too, which stacked 13px under the box's own padding (29px below the code, 16px above the title). */
+.md-body .md-mermaid pre {
+  margin-bottom: 0;
+}
+/* Inside an answer chip the box is a NESTED one: the 6px control corner and the translucent chrome the
+   chip gives its code blocks (`[data-question-option] .md-body pre`), for the same reason — the chip's
+   fill changes with its state.
+
+   TWO SIZES FOLLOW THE CHIP. Mermaid sets its labels at 16px, drawn against the transcript's 14px prose;
+   under a 12px option label and 11.5px detail the same drawing out-shouted the choice it explains, so it
+   steps down by that ratio (`zoom` re-lays the <svg> out, inline `max-width` included, where a transform
+   would leave its box behind). And it is detail under a choice, so it may not make one option taller
+   than a framed picture is allowed to be (FRAMED_IMAGE's 420px): past that the drawing scales to fit —
+   an <svg> with a viewBox letterboxes inside its box — rather than scrolling inside a row that is itself
+   a button. The cap is written in the svg's own zoomed pixels, hence the division. */
+[data-question-option] .md-mermaid [data-mermaid-state] {
+  --mermaid-chip-scale: calc(11.5 / 14);
+  border-radius: var(--block-radius);
+  padding: 1em;
+  background: color-mix(in srgb, var(--color-bg) 60%, transparent);
+  border-color: color-mix(in srgb, var(--color-fg) 9%, transparent);
+}
+[data-question-option] .md-mermaid [data-mermaid-state] > svg {
+  zoom: var(--mermaid-chip-scale);
+  max-height: calc(420px / var(--mermaid-chip-scale));
+}
+/* ── end ```mermaid fence ───────────────────────────────────────────────────────────────────────── */
 /* Geometry is ExternalTerminalCommand's copy button — the app's existing one — expressed in `em` so it
    tracks the prose scale instead of being pinned at the transcript's 14px (a card's .md-body renders at
    13px). That button is a 24px box holding a 14px lucide glyph; 1.7em and 0.58 of the box are those two
