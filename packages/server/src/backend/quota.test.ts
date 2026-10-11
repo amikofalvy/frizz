@@ -5,7 +5,7 @@ import { createHash } from "node:crypto"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { parseCodexQuotaFromRollout, parseCodexQuotaFromRateLimits, readCodexQuota, resetCodexQuotaMemo } from "./codex-quota.ts"
-import { parseClaudeUsage, parseClaudeUsageOutput, tokenFromCredentialsJson, readClaudeQuota, refreshClaudeQuotaInBackground, claudeQuotaRefreshSettled, withObservedClaudeQuota } from "./claude-quota.ts"
+import { parseClaudeUsage, parseClaudeUsageOutput, tokenFromCredentialsJson, readClaudeQuota, refreshClaudeQuotaInBackground, claudeQuotaRefreshSettled, withObservedClaudeQuota, resolveConfiguredRoute } from "./claude-quota.ts"
 import { recordObservedClaudeQuota, resetObservedClaudeQuotaThrottle } from "./claude-quota-observed.ts"
 import { frizzRoots, resetFrizzRoots } from "../frizz-paths.ts"
 import { readQuota } from "../quota.ts"
@@ -958,4 +958,110 @@ test("claude quota: while the endpoint cannot be reached, the chip follows the s
     assert.equal(back.windows[0]?.usedPercent, 50)
     assert.equal(back.detail, undefined)
   })
+}))
+
+// ---- The configured route: a proxy or an environment token (resolveConfiguredRoute) ----
+
+async function withSettings(env: Record<string, string> | undefined, run: (configDir: string) => Promise<void>) {
+  const configDir = await mkdtemp(join(tmpdir(), "frizz-route-config-"))
+  try {
+    if (env) await writeFile(join(configDir, "settings.json"), JSON.stringify({ env }))
+    await run(configDir)
+  } finally {
+    await rm(configDir, { recursive: true, force: true })
+  }
+}
+
+test("configured route: the usage request goes where Claude Code's own requests go, with the credential it would send", async () => {
+  // A proxy's installer writes the pair into Claude Code's user settings; a base with a path keeps it.
+  await withSettings({ ANTHROPIC_BASE_URL: "https://proxy.example/anthropic/", ANTHROPIC_AUTH_TOKEN: "placeholder" }, async (dir) => {
+    const route = await resolveConfiguredRoute(dir, {})
+    assert.equal(route?.url, "https://proxy.example/anthropic/api/oauth/usage")
+    assert.deepEqual(route?.headers, { Authorization: "Bearer placeholder" })
+    assert.doesNotMatch(route?.fingerprint ?? "", /placeholder/)
+    // The settings' pair wins over the environment's, as it does for Claude Code (measured).
+    const both = await resolveConfiguredRoute(dir, { ANTHROPIC_BASE_URL: "http://127.0.0.1:9", ANTHROPIC_AUTH_TOKEN: "other" })
+    assert.equal(both?.url, route?.url)
+    assert.deepEqual(both?.headers, route?.headers)
+  })
+  await withSettings(undefined, async (dir) => {
+    const route = (env: NodeJS.ProcessEnv) => resolveConfiguredRoute(dir, env)
+    // An API-key placeholder rides in Claude Code's API-key header, to the proxy.
+    assert.deepEqual((await route({ ANTHROPIC_BASE_URL: "http://127.0.0.1:8080", ANTHROPIC_API_KEY: "placeholder" }))?.headers, { "x-api-key": "placeholder" })
+    // The gateway bearer outranks the others, as in Claude Code's own order.
+    assert.deepEqual((await route({ ANTHROPIC_BASE_URL: "http://127.0.0.1:8080", ANTHROPIC_API_KEY: "k", ANTHROPIC_AUTH_TOKEN: "b", CLAUDE_CODE_OAUTH_TOKEN: "o" }))?.headers, { Authorization: "Bearer b" })
+    // A `claude setup-token` token with no proxy goes to Anthropic itself.
+    const direct = await route({ CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-direct" })
+    assert.equal(direct?.url, "https://api.anthropic.com/api/oauth/usage")
+    assert.deepEqual(direct?.headers, { Authorization: "Bearer sk-ant-oat01-direct" })
+    // A credential change is a new route.
+    assert.notEqual((await route({ CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-other" }))?.fingerprint, direct?.fingerprint)
+    // NO ROUTE: nothing configured; a Console key sent to Anthropic itself (no plan behind it); a cloud
+    // provider; an address that is not one.
+    for (const env of [
+      {},
+      { ANTHROPIC_API_KEY: "sk-ant-api03-real" },
+      { ANTHROPIC_BASE_URL: "https://api.anthropic.com", ANTHROPIC_API_KEY: "sk-ant-api03-real" },
+      { CLAUDE_CODE_USE_BEDROCK: "1", ANTHROPIC_AUTH_TOKEN: "b" },
+      { ANTHROPIC_BASE_URL: "not a url", ANTHROPIC_AUTH_TOKEN: "b" },
+      { ANTHROPIC_BASE_URL: "file:///etc/passwd", ANTHROPIC_AUTH_TOKEN: "b" },
+      { ANTHROPIC_BASE_URL: "http://127.0.0.1:8080" },
+    ]) assert.equal(await route(env), undefined, JSON.stringify(env))
+  })
+})
+
+test("claude quota: with no readable token, the configured route is asked — never Claude Code — and a route that fails backs off", () => withCache(async (cacheDir) => {
+  await withSettings({ ANTHROPIC_BASE_URL: "http://127.0.0.1:8787", ANTHROPIC_AUTH_TOKEN: "placeholder" }, async (configDir) => {
+    const requests: Array<{ url: string; auth: string | null }> = []
+    let answer: () => Response = () => new Response("", { status: 404 })
+    let starts = 0
+    const deps = (now: number, env: NodeJS.ProcessEnv = {}) => ({
+      cacheDir,
+      readToken: signedOut,
+      readRoute: () => resolveConfiguredRoute(configDir, env),
+      now: () => now,
+      execUsage: async () => { starts++; return "" },
+      fetchImpl: (async (url: string, init?: RequestInit) => {
+        requests.push({ url, auth: new Headers(init?.headers).get("authorization") })
+        return answer()
+      }) as unknown as typeof fetch,
+    })
+    // A proxy that does not forward the usage path: the chip polls every 30s for 20 minutes.
+    for (let t = 0; t <= 20 * MIN; t += 30 * SEC) {
+      assert.equal((await readClaudeQuota("claude-test", deps(t))).status, "unavailable")
+      await claudeQuotaRefreshSettled()
+    }
+    assert.deepEqual(requests.map((r) => r.url), Array(3).fill("http://127.0.0.1:8787/api/oauth/usage"), "asked at 0, 5m and 15m: one request per window, the window doubling")
+    assert.ok(requests.every((r) => r.auth === "Bearer placeholder"), "carrying exactly what Claude Code sends")
+    assert.equal(starts, 0, "Claude Code cannot repair a credential it was handed, so it is never started")
+
+    // A changed configuration is asked at once, and a proxy that forwards the path is a reading.
+    answer = () => new Response(JSON.stringify(fiveHour(30)), { status: 200 })
+    await withSettings({ ANTHROPIC_BASE_URL: "http://127.0.0.1:8787", ANTHROPIC_AUTH_TOKEN: "placeholder-2" }, async (fixed) => {
+      const q = await readClaudeQuota("claude-test", { ...deps(20 * MIN + 31 * SEC), readRoute: () => resolveConfiguredRoute(fixed, {}) })
+      assert.equal(q.status, "ok")
+      assert.equal(q.windows[0]?.usedPercent, 30)
+      assert.equal(requests.length, 4)
+      assert.equal(requests[3]?.auth, "Bearer placeholder-2")
+    })
+    // A refusal from the proxy (its credential, not one Claude Code could refresh) is a route failure too.
+    answer = () => new Response("", { status: 401 })
+    const refused = await readClaudeQuota("claude-test", { ...deps(30 * MIN), readRoute: () => resolveConfiguredRoute(configDir, {}) }, { force: true })
+    assert.equal(refused.status, "ok", "the last good reading rides")
+    assert.equal(refused.detail, "Could not refresh · last updated 9m ago")
+    assert.equal(starts, 0)
+  })
+}))
+
+test("claude quota: a token Frizz can read is still the first source — the configured route is not consulted", () => withCache(async (cacheDir) => {
+  let routeAsked = 0
+  const q = await readClaudeQuota("claude-test", {
+    cacheDir,
+    readToken: signedIn,
+    readRoute: async () => { routeAsked++; return undefined },
+    now: () => 0,
+    fetchImpl: usageResponse(200, fiveHour(12)),
+  })
+  assert.equal(q.status, "ok")
+  assert.equal(routeAsked, 0)
 }))
