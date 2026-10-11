@@ -61,6 +61,7 @@ import { THREAD_HEADER_CLASS, THREAD_HEADER_CONTROLS_CLASS, THREAD_HEADER_TITLE_
 import { SheetClose } from "./ui/SheetHeader.tsx"
 import { ThreadActionBar } from "./ThreadActionBar.tsx"
 import { QueueOpsSummary } from "./QueueOpsSummary.tsx"
+import type { QueueOpsKind } from "../lib/queueOpsCounts.ts"
 import { MobileThreadHeader } from "./MobileThreadHeader.tsx"
 import { HeaderActions } from "./HeaderActions.tsx"
 import { ThreadLifecycleActions, StateButton } from "./ThreadLifecycle.tsx"
@@ -4219,13 +4220,15 @@ export function PermPolicyDenialCard({ policy, denies }: { policy: NonNullable<T
 // rather than transcript content). A 30s tick keeps
 // elapsed fresh even when no board push arrives (a steadily-running op changes nothing to re-push).
 // Saved links/files follow their own divider; they keep the strip visible without starting that tick.
-// Since 2026-10-09 the thread's own rows live in the hover panel of the op counts over its prompt box
-// (QueueOpsSummary), on the queue card and in the drawer alike; only the sub-agent drawer still hangs
-// a scoped strip under its box. The /full page draws none of it while its rail is on screen.
+// Since 2026-10-09 the thread's own rows live in the hover panels of the op counts over its prompt box
+// (QueueOpsSummary), one panel per kind of row (`only`), on the queue card and in the drawer alike; only
+// the sub-agent drawer still hangs a scoped strip under its box. The /full page draws none of it while
+// its rail is on screen.
 export function BackgroundOpsStrip({
   slug,
   className = "px-4 pb-2 pt-1",
   includeAgents = true,
+  only,
   transcriptShells = [],
   parentAgentId,
 }: {
@@ -4234,6 +4237,11 @@ export function BackgroundOpsStrip({
   // Queue cards render live sub-agents as compact child lines directly under their composer. They
   // still use this strip for unrelated background shells/Monitors, so suppress agent duplication.
   includeAgents?: boolean
+  // ONE KIND OF ROW, and nothing else: the counts over a prompt box open a panel each (QueueOpsSummary),
+  // so the shells' panel must not list the watched PRs and the files' must not list the links. The
+  // kinds are the counts' own (lib/queueOpsCounts.ts), split by the same tests, so a count and the
+  // panel it opens cannot disagree. Absent ⇒ every row, the reading the sub-agent drawer's strip wants.
+  only?: Exclude<QueueOpsKind, "agent">
   // Codex deliberate background execs are transcript-native; its board telemetry is still empty. A
   // CLAUDE shell shows up here AND in the board's telemetry — `launchId` is what lets the two rows
   // reconcile into one (see mergeBackgroundShells).
@@ -4257,12 +4265,14 @@ export function BackgroundOpsStrip({
     !includeAgents ? [] : parentAgentId ? childOpSubtree(allAgents, parentAgentId) : allAgents
   // A single shell arrives through BOTH provider board telemetry and transcript projection; they are
   // reconciled on the launch tool_use id (see mergeBackgroundShells for why label+startedAt could not).
-  const shells = parentAgentId ? [...transcriptShells] : mergeBackgroundShells(thread?.bgShells ?? [], transcriptShells)
+  const shells = only && only !== "shell" ? [] : parentAgentId ? [...transcriptShells] : mergeBackgroundShells(thread?.bgShells ?? [], transcriptShells)
   // PR WATCHERS the thread has parked on. Thread-wide only: a sub-agent cannot park on a fence, so the
   // drawer's scoped reading ("the ops running underneath THIS child") has none by construction, and
   // listing the parent's here would credit the child with its parent's wait.
-  const watchers = parentAgentId ? [] : (thread?.watches ?? []).filter((w) => w.kind === "github")
-  const links = parentAgentId ? [] : thread?.links ?? []
+  const watchers = parentAgentId || (only && only !== "pr" && only !== "issue")
+    ? []
+    : (thread?.watches ?? []).filter((w) => w.kind === "github" && (!only || (w.subject === "issue") === (only === "issue")))
+  const links = parentAgentId ? [] : (thread?.links ?? []).filter((link) => !only || link.kind === only)
   const total = agents.length + shells.length + watchers.length
   // IS A WATCHER ARMED ON THIS SHELL? A `shell` watch gets NO row of its own — it is not a second thing
   // running, it is a property of the row already here, and drawing both listed one object twice

@@ -64,11 +64,23 @@ test("/full lists the thread's ops in its rail, and over the prompt box only onc
     await page.waitForSelector("main[data-standalone-thread] [data-queue-ops-summary] button")
     const counts = await page.$$eval("main[data-standalone-thread] [data-ops-count]", (els) => els.map((el) => (el as HTMLElement).innerText.replace(/\s+/g, " ").trim()))
     assert.deepEqual(counts, ["2 agents", "2 shells", "1 file", "1 link"])
-    await page.hover("main[data-standalone-thread] [data-queue-ops-summary] button")
-    await page.waitForSelector("[data-queue-ops-panel] [data-background-ops]")
-    const panel = await page.$eval("[data-queue-ops-panel]", (el) => (el as HTMLElement).innerText)
-    for (const row of ["Verify the rail carries every row", "Audit the old projection", "Run the dev server", "Tail the old log", "Open dev server", "Working plan"]) {
-      assert.ok(panel.includes(row), `the narrow panel lists "${row}"`)
+    // Each count opens a panel of its own rows (2026-10-11), so between them the four panels hold all
+    // six, and each row is in exactly the panel its count names.
+    const narrowRows = {
+      agent: ["Verify the rail carries every row", "Audit the old projection"],
+      shell: ["Run the dev server", "Tail the old log"],
+      file: ["Working plan"],
+      link: ["Open dev server"],
+    }
+    for (const [kind, rows] of Object.entries(narrowRows)) {
+      await page.hover(`main[data-standalone-thread] [data-ops-count="${kind}"]`)
+      await page.waitForSelector(`[data-queue-ops-panel="${kind}"]`)
+      await page.waitForFunction(() => document.querySelectorAll("[data-queue-ops-panel]").length === 1)
+      const panel = await page.$eval(`[data-queue-ops-panel="${kind}"]`, (el) => (el as HTMLElement).innerText)
+      for (const row of rows) assert.ok(panel.includes(row), `the narrow ${kind} panel lists "${row}"`)
+      for (const other of Object.values(narrowRows).flat().filter((row) => !rows.includes(row))) {
+        assert.ok(!panel.includes(other), `the narrow ${kind} panel does not list "${other}"`)
+      }
     }
     await page.mouse.move(0, 0)
     await page.waitForFunction(() => !document.querySelector("[data-queue-ops-panel]"))

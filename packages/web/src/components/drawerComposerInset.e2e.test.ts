@@ -29,8 +29,9 @@ test("thread drawer counts its ops over the prompt box and keeps the box inset e
       const box = composer.getBoundingClientRect()
       const line = summary.getBoundingClientRect()
       return {
-        // The line of op counts takes the top of the bar's 12px inset (QueueOpsSummary's `-mt-2`), the
-        // way it does on the queue card's dock: 4px of air, its 28px line, then the prompt box.
+        // The line of op counts takes the whole of the bar's 12px top inset (QueueOpsSummary's `-mt-3`),
+        // the way it does on the queue card's dock: its 32px line starts on the rule, then the prompt
+        // box. Where the counts stand INSIDE that line is queueOpsPanels.e2e.test.ts's to pin.
         lineTop: line.top - bar.top,
         top: box.top - bar.top,
         right: bar.right - box.right,
@@ -45,20 +46,28 @@ test("thread drawer counts its ops over the prompt box and keeps the box inset e
     })
 
     const inset = await measure()
-    assert.deepEqual([inset.lineTop, inset.top, inset.right, inset.bottom, inset.left], [4, 32, 12, 12, 12])
+    assert.deepEqual([inset.lineTop, inset.top, inset.right, inset.bottom, inset.left], [0, 32, 12, 12, 12])
     assert.deepEqual(inset.counts, ["2 agents", "1 shell"], "the drawer counts its ops the way the queue card does")
     assert.equal(inset.hangingRows, 0, "no ops rows are drawn in the footer until the counts are hovered")
     // The chat footer carries the device's bottom inset now that no lifecycle footer sits under it — 0px
     // on a desktop screen, so the bar's own 12px stays the whole inset there.
     assert.equal(inset.chatFooterBottom, "0px")
 
-    // Hover opens the rows, the drawer's own, in the panel above the line.
-    await page.hover("[data-queue-ops-summary] button")
-    await page.waitForSelector("[data-queue-ops-panel] [data-queue-subagents]")
-    const panel = await page.$eval("[data-queue-ops-panel]", (el) => (el as HTMLElement).innerText)
-    for (const row of ["Trace the layout regression in the drawer", "Exercise desktop and narrow viewport behavior", "Watch the production fixture build"]) {
-      assert.ok(panel.includes(row), `the panel lists "${row}"`)
-    }
+    // Hover opens the rows, the drawer's own, in a panel above the count that names them — the agents'
+    // rows over "2 agents", the shell's over "1 shell", and neither panel holds the other's.
+    const AGENTS = ["Trace the layout regression in the drawer", "Exercise desktop and narrow viewport behavior"]
+    const SHELLS = ["Watch the production fixture build"]
+    await page.hover('[data-queue-ops-summary] [data-ops-count="agent"]')
+    await page.waitForSelector('[data-queue-ops-panel="agent"] [data-queue-subagents]')
+    const agents = await page.$eval('[data-queue-ops-panel="agent"]', (el) => (el as HTMLElement).innerText)
+    for (const row of AGENTS) assert.ok(agents.includes(row), `the agents panel lists "${row}"`)
+    for (const row of SHELLS) assert.ok(!agents.includes(row), `the agents panel does not list the shell "${row}"`)
+    await page.hover('[data-queue-ops-summary] [data-ops-count="shell"]')
+    await page.waitForSelector('[data-queue-ops-panel="shell"] [data-background-ops]')
+    await page.waitForFunction(() => !document.querySelector('[data-queue-ops-panel="agent"]'))
+    const shells = await page.$eval('[data-queue-ops-panel="shell"]', (el) => (el as HTMLElement).innerText)
+    for (const row of SHELLS) assert.ok(shells.includes(row), `the shells panel lists "${row}"`)
+    for (const row of AGENTS) assert.ok(!shells.includes(row), `the shells panel does not list the agent "${row}"`)
 
     assert.deepEqual(errors, [])
   } finally {

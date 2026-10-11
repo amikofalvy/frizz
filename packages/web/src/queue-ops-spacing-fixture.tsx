@@ -7,10 +7,10 @@ import { store } from "./store.ts"
 import "./styles.css"
 
 // Browser QA for the BOTTOM of a queue card: the docked prompt box and the line of op counts above it
-// (QueueOpsSummary), whose hover panel holds the ⤷ AGENT / SHELL / File / Link rows. Until 2026-10-05
-// the rows hung under the prompt box above a lifecycle footer, and this fixture measured that column's
-// rhythm (the maintainer read the gap under the prompt box as too large); the rows keep that rhythm
-// inside the panel, so it still measures them there.
+// (QueueOpsSummary), each of whose counts opens a hover panel of its own ⤷ rows — AGENT, SHELL, GITHUB,
+// File or Link. Until 2026-10-05 the rows hung under the prompt box above a lifecycle footer, and this
+// fixture measured that column's rhythm (the maintainer read the gap under the prompt box as too
+// large); the rows keep that rhythm inside a panel, so it still measures them there.
 
 const SLUG = "queue-ops-spacing-demo"
 
@@ -70,6 +70,16 @@ const thread = {
     { id: "lnk_file_a", kind: "file", label: "Structured restriction report", target: "/tmp/reports/structured-restriction.md" },
     { id: "lnk_file_b", kind: "file", label: "HKS pair-merge report", target: "/tmp/reports/hks-pair-merge.md" },
     { id: "lnk_url", kind: "link", label: "Dev server", target: "http://127.0.0.1:5173/" },
+  ] : [],
+  // ?watches=1 adds two watched pull requests and a watched issue, so with ?agents=1&links=1 the line
+  // carries all six counts — each opens a panel of its own kind of row and no other (2026-10-11).
+  watches: new URLSearchParams(location.search).get("watches") === "1" ? [
+    { id: "w_pr_a", kind: "github", target: "colinhacks/zod#6559", state: "armed", createdAt: "2026-07-18T08:40:00.000Z",
+      github: { checks: "running", running: 14, passed: 15, failed: 0, skipped: 0, gated: 0, gating: [], failing: [], merge: "unknown", state: "open", polledAt: "2026-07-18T09:10:00.000Z" } },
+    { id: "w_pr_b", kind: "github", target: "nubjs/nub#874", state: "armed", createdAt: "2026-07-18T08:12:00.000Z",
+      github: { checks: "passing", running: 0, passed: 29, failed: 0, skipped: 1, gated: 0, gating: [], failing: [], merge: "mergeable", state: "open", polledAt: "2026-07-18T09:10:00.000Z" } },
+    { id: "w_issue", kind: "github", subject: "issue", target: "colinhacks/frizz#61", state: "armed", createdAt: "2026-07-18T07:55:00.000Z",
+      issue: { state: "open", title: "Ops panel lists every row", comments: 4, polledAt: "2026-07-18T09:10:00.000Z" } },
   ] : [],
   lastActivityAt: "2026-07-18T09:11:00.000Z",
 } as unknown as ThreadViewModel

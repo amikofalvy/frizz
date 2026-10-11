@@ -22,22 +22,13 @@ import { ChildOpRow } from "./ChildOpRow.tsx"
 // column below are tagged, so an untagged agent line here started a tag's width left of all of them —
 // and the same child lost its tag every time its thread moved from the drawer to the queue (see
 // ChildOpRow).
-// Whether this card will actually draw any ⤷ child lines. The card renders these lines and the
-// background-ops strip as two SIBLING lists in one visual column — inside the hover panel of the op
-// counts above its docked prompt box since 2026-10-05 — so the strip has to know whether it is opening
-// that column or continuing it (see QueueOpsSummary) — and it must get the same answer this
-// component does. Exported from here, and used by the component itself, so the two cannot drift.
-export function hasQueueSubAgentLines(subAgents: readonly SubAgentView[]): boolean {
-  return visibleChildOps(subAgents, "card").length > 0
-}
-
+// They are the whole of the "agents" panel over a prompt box (QueueOpsSummary) since 2026-10-11; until
+// then they opened one column the strip's rows continued, in a panel that listed every kind.
 export function QueueSubAgentLines({
   slug,
   subAgents,
   // The ops COLUMN's padding, which is positional and therefore the caller's to set — the same prop
-  // BackgroundOpsStrip takes, for the same reason. These lines and that strip stack into one column,
-  // so only the list that ends the column may carry its bottom air; a list with the strip beneath it
-  // must not, or the two paddings sum into a gap between them.
+  // BackgroundOpsStrip takes, for the same reason.
   // Default = the column's opening padding with no bottom air, i.e. what a lone fixture wants.
   className = "px-1 pt-1.5",
 }: {
