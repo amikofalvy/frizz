@@ -718,6 +718,24 @@ human reads the real page in their own browser faster and better than any pictur
 2026-10-06: *"you should always just generate an artifact or an HTML page or whatever and just link me
 to it. You don't need to take screenshots; that just made it harder for me to gauge"*).
 
+## Code in tabs
+
+Consecutive code fences that each carry a label after the language are drawn as ONE block with a tab
+per fence. Use it for alternatives the human picks between — a command per package manager, a call in
+several languages, a file before and after — never for blocks they must read together, because a tab
+hides all but one.
+
+```bash npm
+npm install left-pad
+```
+
+```bash pnpm
+pnpm add left-pad
+```
+
+Only blank lines may separate the fences. `title="src/server.ts"` is a label too, and on a single
+fence it titles the block.
+
 ## Saved links and files
 
 Use `mcp__frizz__link` with `label` and `target` for a dev server, working document, report or download

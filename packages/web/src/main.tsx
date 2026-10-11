@@ -12,6 +12,7 @@ import { initTheme } from "./lib/theme.ts"
 import { installExternalLinkInterceptor } from "./lib/external-links.ts"
 import { installLocalFileLinkInterceptor } from "./lib/local-file-links.ts"
 import { installCodeCopyInterceptor } from "./lib/copy-code.ts"
+import { installCodeTabInterceptor } from "./lib/switch-code-tab.ts"
 import { installPasteFallback } from "./lib/paste-fallback.ts"
 import { installThreadLinkInterceptor } from "./lib/thread-links.ts"
 import { primeRoute } from "./lib/router.ts"
@@ -65,6 +66,7 @@ if (!settingsFixture) {
   installExternalLinkInterceptor()
   installLocalFileLinkInterceptor()
   installCodeCopyInterceptor()
+  installCodeTabInterceptor()
   installPasteFallback()
   installThreadLinkInterceptor()
 }

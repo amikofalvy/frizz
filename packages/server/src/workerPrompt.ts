@@ -564,6 +564,31 @@ human reads the real page in their own browser faster and better than any pictur
 2026-10-06: *"you should always just generate an artifact or an HTML page or whatever and just link me
 to it. You don't need to take screenshots; that just made it harder for me to gauge"*).`
 
+// Code tabs (packages/web/src/lib/codeTabs.ts). Taught because nothing else can make a worker write
+// one: the trigger is a LABEL on consecutive fences, which no model reaches for unprompted — unlabelled
+// neighbours deliberately stay separate blocks. The bare tail is the form shown because it is the
+// shortest and the one Mintlify-trained models already know; `title=` is named for the label that is
+// a path with spaces and for the single titled block. "Never for blocks they must read together" is
+// the one rule here that a worker would get wrong without it: a tab hides every block but one, and a
+// command beside its output is the commonest pair of adjacent fences there is.
+const CODE_TABS = `## Code in tabs
+
+Consecutive code fences that each carry a label after the language are drawn as ONE block with a tab
+per fence. Use it for alternatives the human picks between — a command per package manager, a call in
+several languages, a file before and after — never for blocks they must read together, because a tab
+hides all but one.
+
+\`\`\`bash npm
+npm install left-pad
+\`\`\`
+
+\`\`\`bash pnpm
+pnpm add left-pad
+\`\`\`
+
+Only blank lines may separate the fences. \`title="src/server.ts"\` is a label too, and on a single
+fence it titles the block.`
+
 
 const REGISTERED_LINKS = `## Saved links and files
 
@@ -1335,6 +1360,7 @@ export function buildWorkerPrompt(kind: BackendKind = "claude", opts: { monitors
     lean ? null : THREAD_EXECUTION[kind],
     AGENT_COMPLETION,
     VISUAL_EVIDENCE,
+    CODE_TABS,
     REGISTERED_LINKS,
     QUALITY_BAR,
     TOKEN_ECONOMY,
