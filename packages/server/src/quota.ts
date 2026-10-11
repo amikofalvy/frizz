@@ -54,7 +54,7 @@ async function fixture(name: string): Promise<QuotaSnapshot | undefined> {
       return { claude: { status: "unavailable", windows: [], detail: "Usage endpoint unreachable" }, codex: codexOk }
     case "codex-real":
       // REAL Codex quota (live app-server read, rollout tail as fallback), with Claude stubbed
-      // unavailable so QA never invokes the user's Claude CLI. Proves the Codex path end-to-end in the UI.
+      // unavailable so QA never calls the user's Claude account. Proves the Codex path end-to-end in the UI.
       return { claude: { status: "unavailable", windows: [], detail: "Live call disabled for QA" }, codex: await readCodexQuota() }
     default:
       return undefined
@@ -65,7 +65,7 @@ async function fixture(name: string): Promise<QuotaSnapshot | undefined> {
 // `codex app-server`, which refreshes the machine-wide ~/.codex/models_cache.json with ITS OWN version's
 // catalogue. An older CLI on PATH, polled every ~20s, overwrote the pinned runtime's catalogue and made
 // newer models (gpt-6-sol, gpt-6.1-sol) flicker out of the model picker.
-export async function readQuota(opts: { claudeBin?: string; codexBin?: string; force?: boolean } = {}): Promise<QuotaSnapshot> {
+export async function readQuota(opts: { codexBin?: string; force?: boolean } = {}): Promise<QuotaSnapshot> {
   // The fixture seam is a DEV/QA affordance only — never honor it in a production build, so an env var
   // leaking into a real deploy can't silently paint fabricated quota numbers.
   const fx = process.env.FRIZZ_QUOTA_FIXTURE
@@ -77,7 +77,7 @@ export async function readQuota(opts: { claudeBin?: string; codexBin?: string; f
     }
   }
   const [claude, codex] = await Promise.all([
-    readClaudeQuota(opts.claudeBin, {}, { force: opts.force }),
+    readClaudeQuota({}, { force: opts.force }),
     readCodexQuota(undefined, opts.codexBin),
   ])
   return { claude, codex }

@@ -6,18 +6,16 @@ import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 import type { ProviderQuota, QuotaWindow } from "@frizz/shared"
-import { resolveClaudeExecutableAbsolute } from "./claude-broker-host.ts"
 
 const execFileAsync = promisify(execFile)
 
-// Subscription quota is read from the OAuth usage endpoint FIRST — the same call Claude Code's own
+// Subscription quota is read ONLY from the OAuth usage endpoint — the same call Claude Code's own
 // /usage command makes — authorized by the credential already on this machine (the on-disk
 // ~/.claude/.credentials.json, or the macOS login Keychain). That is one ~200ms HTTPS GET, immune to
-// local CPU load. The `claude -p /usage` CLI is only the FALLBACK for what the raw token cannot do:
-// it owns OAuth refresh/rotation, so it covers the no-token and expired-token (401/403) cases.
-// Spawning a whole Claude Code process was previously the primary path, and under heavy machine load
-// (worker fleets pushing load-80+) it reliably exceeded any sane exec timeout — every refresh died
-// and the chip served the same stale reading for hours.
+// local CPU load. There is no `claude -p /usage` fallback any more: it booted a whole Claude Code
+// process, and when the endpoint kept failing every project's 30s heartbeat spawned one — measured
+// 2026-10-08 at ~8 spawns/min and ~9% of a core, for a reading that still came back unavailable. A
+// failed refresh now just serves the last good reading until the endpoint answers again.
 //
 //   GET https://api.anthropic.com/api/oauth/usage
 //     Authorization: Bearer <oauth access token>
@@ -35,14 +33,11 @@ const ENDPOINT_TIMEOUT_MS = 5000
 const OK_TTL_MS = 2 * 60_000
 const FAIL_TTL_MS = 10_000
 const STALE_MAX_AGE_MS = 24 * 60 * 60_000
-// The CLI fallback boots a full Claude Code process; under load-80 a cold boot alone can blow well
-// past 12s, and a too-tight bound here is indistinguishable from a broken credential.
-const CLI_TIMEOUT_MS = 30_000
-// The lock must outlive the slowest refresh (the 30s CLI fallback), and followers must be willing to
-// wait through most of that bound. Otherwise a merely slow first process would make every other Frizz
-// window give up early.
-const LOCK_STALE_MS = 40_000
-const LOCK_WAIT_MS = 15_000
+// The lock must outlive the slowest refresh (a keychain read plus the endpoint's timeout), and
+// followers must be willing to wait through that bound. Otherwise a merely slow first process would make
+// every other Frizz window give up early.
+const LOCK_STALE_MS = 15_000
+const LOCK_WAIT_MS = 10_000
 const LOCK_POLL_MS = 50
 // THE ENDPOINT RATE-LIMITS PER ACCESS TOKEN, HARD: measured 2026-09-19, one success bought a 429 with
 // `retry-after` counting down a fixed ~5-minute window, and every Claude Code session on the machine
@@ -182,8 +177,6 @@ export function parseClaudeUsage(body: unknown, planType?: string): ProviderQuot
   return { status: "ok", planType, windows }
 }
 
-type UsageExec = (claudeBin: string) => Promise<string>
-
 /** The endpoint refused with 429/529. `retryAt` (ms) is when it said another request may succeed. */
 class UsageRateLimited extends Error {
   constructor(status: number, readonly retryAt: number) {
@@ -199,7 +192,6 @@ function retryAtFrom(res: Response, now: number): number {
 
 export interface ClaudeQuotaDeps {
   now?: () => number
-  execUsage?: UsageExec
   cacheDir?: string
   fetchImpl?: typeof fetch
   readToken?: (configDir: string) => Promise<string | undefined>
@@ -266,22 +258,9 @@ async function acquireLock(path: string): Promise<() => Promise<void>> {
   }
 }
 
-async function runClaudeUsage(claudeBin: string): Promise<string> {
-  const { stdout } = await execFileAsync(
-    // Never a bare name: on Windows `execFile("claude")` is ENOENT and `execFile("claude.cmd")` is
-    // EINVAL (node refuses .cmd/.bat without a shell since CVE-2024-27980), so this reader could
-    // never reach the CLI there and every quota refresh threw. See auth-status.ts for the measurement.
-    // A resolver throw is a refresh failure like any other — the callers' stale-serving catch owns it.
-    resolveClaudeExecutableAbsolute(claudeBin),
-    ["-p", "/usage", "--safe-mode", "--output-format", "json", "--no-session-persistence", "--tools", ""],
-    { encoding: "utf8", timeout: CLI_TIMEOUT_MS, maxBuffer: 2 * 1024 * 1024 },
-  )
-  return String(stdout)
-}
-
-// One live refresh: the endpoint first, the CLI only for what the raw token can't do. Returns ONLY a
-// healthy quota; every failure shape throws so the callers' stale-serving catch handles them uniformly.
-async function refreshQuota(claudeBin: string, deps: ClaudeQuotaDeps, now: number): Promise<ProviderQuota> {
+// One live refresh against the endpoint. Returns ONLY a healthy quota; every failure shape throws so the
+// callers' stale-serving catch handles them uniformly.
+async function refreshQuota(deps: ClaudeQuotaDeps, now: number): Promise<ProviderQuota> {
   const doFetch = deps.fetchImpl ?? fetch
   const readToken = deps.readToken ?? readAccessToken
   let token: string | undefined
@@ -290,127 +269,25 @@ async function refreshQuota(claudeBin: string, deps: ClaudeQuotaDeps, now: numbe
   } catch {
     token = undefined
   }
-  if (token) {
-    try {
-      const res = await doFetch(USAGE_URL, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "anthropic-beta": OAUTH_BETA,
-          "User-Agent": USER_AGENT,
-          "Content-Type": "application/json",
-        },
-        signal: AbortSignal.timeout(ENDPOINT_TIMEOUT_MS),
-      })
-      if (res.ok) {
-        const body = (await res.json()) as Record<string, unknown>
-        const planType = typeof body.plan_type === "string" ? body.plan_type : undefined
-        const quota = parseClaudeUsage(body, planType)
-        if (quota.status === "ok") return quota
-      } else if (res.status === 429 || res.status === 529) {
-        // The endpoint asked us to back off. The CLI would just hit the same wall from inside a whole
-        // spawned process — fail this refresh and let the cached reading ride.
-        throw new UsageRateLimited(res.status, retryAtFrom(res, now))
-      }
-      // 401/403 (stale token the CLI can refresh), 5xx, or a malformed body → try the CLI below.
-    } catch (err) {
-      if (err instanceof UsageRateLimited) throw err
-      // Network/timeout failures fall through to the CLI, which retries with its own transport.
-    }
-  }
-  const quota = parseClaudeUsageOutput(await (deps.execUsage ?? runClaudeUsage)(claudeBin), now)
+  if (!token) throw new Error("No Claude Code credential")
+  const res = await doFetch(USAGE_URL, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "anthropic-beta": OAUTH_BETA,
+      "User-Agent": USER_AGENT,
+      "Content-Type": "application/json",
+    },
+    signal: AbortSignal.timeout(ENDPOINT_TIMEOUT_MS),
+  })
+  if (res.status === 429 || res.status === 529) throw new UsageRateLimited(res.status, retryAtFrom(res, now))
+  // 401/403 is a token Claude Code has not refreshed yet; its next session rotates it on disk/Keychain
+  // and the next tick reads the new one.
+  if (!res.ok) throw new Error(`Usage endpoint ${res.status}`)
+  const body = (await res.json()) as Record<string, unknown>
+  const planType = typeof body.plan_type === "string" ? body.plan_type : undefined
+  const quota = parseClaudeUsage(body, planType)
   if (quota.status !== "ok") throw new Error(quota.detail)
   return quota
-}
-
-const LINE_WINDOWS: Array<[RegExp, string, string]> = [
-  [/^Current session$/i, "5h", "5h"],
-  [/^Current week \(all models\)$/i, "weekly", "Weekly"],
-  [/^Current week \(Opus only\)$/i, "weekly-opus", "Opus wk"],
-  [/^Current week \(Sonnet only\)$/i, "weekly-sonnet", "Sonnet wk"],
-]
-
-function windowIdentity(title: string): [string, string] | undefined {
-  for (const [pattern, key, label] of LINE_WINDOWS) {
-    if (pattern.test(title)) return [key, label]
-  }
-  const scoped = /^Current week \((.+)\)$/i.exec(title)
-  if (!scoped) return undefined
-  const name = scoped[1]!.replace(/\s+only$/i, "")
-  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")
-  return slug ? [`weekly-${slug}`, `${name} wk`] : undefined
-}
-
-const MONTH_INDEX: Record<string, number> = {
-  jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
-}
-
-function parseResetLabel(label: string | undefined, now: number): number | undefined {
-  if (!label) return undefined
-  // Claude Code and Frizz run on the same machine, so its explicit IANA suffix names the local timezone
-  // already in effect here. Remove only that redundant suffix; never reinterpret it as UTC.
-  const text = label.replace(/\s+\([^)]+\)\s*$/, "").trim()
-  // The live label shapes: "3pm", "Jul 23 at 3pm", "Jul 27 at 12:59am", optionally with a year.
-  // Date.parse cannot handle the "<Mon> <D> at <clock>" form (and resolves a year-less "<Mon> <D>" to
-  // 2001), so assemble these from local-time parts directly.
-  const parts = /^(?:([A-Za-z]{3,9})\s+(\d{1,2})(?:,?\s+(\d{4}))?)?\s*(?:at\s+)?(?:(\d{1,2})(?::(\d{2}))?\s*(am|pm))?$/i.exec(text)
-  const month = parts?.[1] ? MONTH_INDEX[parts[1].slice(0, 3).toLowerCase()] : undefined
-  const hasClock = parts?.[6] !== undefined
-  if (parts && (month !== undefined || hasClock) && (parts[1] === undefined || month !== undefined)) {
-    const date = new Date(now)
-    if (hasClock) {
-      let hour = Number(parts[4]) % 12
-      if (parts[6]!.toLowerCase() === "pm") hour += 12
-      date.setHours(hour, Number(parts[5] ?? 0), 0, 0)
-    } else {
-      date.setHours(0, 0, 0, 0)
-    }
-    if (month !== undefined) {
-      date.setMonth(month, Number(parts[2]))
-      // A year-less date must resolve forward: a weekly reset labeled "Jan 2" in late December is next
-      // year's Jan 2, not the one eleven+ months past.
-      if (parts[3]) date.setFullYear(Number(parts[3]))
-      else if (date.getTime() <= now) date.setFullYear(date.getFullYear() + 1)
-    } else if (date.getTime() <= now) {
-      date.setDate(date.getDate() + 1)
-    }
-    return Math.round(date.getTime() / 1000)
-  }
-  const parsed = Date.parse(text)
-  if (!Number.isFinite(parsed)) return undefined
-  const date = new Date(parsed)
-  if (!/\b\d{4}\b/.test(text) && date.getTime() <= now) date.setFullYear(date.getFullYear() + 1)
-  return Math.round(date.getTime() / 1000)
-}
-
-// Claude Code intentionally formats this output as a small line-oriented contract for non-interactive
-// callers. Preserve its percentages and turn its local reset labels back into the unix instants Frizz's
-// display and subscription-limit scheduler already consume.
-export function parseClaudeUsageOutput(stdout: string, now = Date.now()): ProviderQuota {
-  let text = stdout
-  try {
-    const envelope = JSON.parse(stdout) as Record<string, unknown>
-    if (typeof envelope.result === "string") text = envelope.result
-  } catch {
-    // Plain-text output is accepted too, which keeps this parser compatible with simple test doubles.
-  }
-  const windows: QuotaWindow[] = []
-  for (const line of text.split(/\r?\n/)) {
-    const match = /^\s*(Current (?:session|week \(.+?\))):\s*(\d+(?:\.\d+)?)%\s+used\b(?:\s*·\s*resets\s+(.+?))?\s*$/i.exec(line)
-    if (!match) continue
-    const identity = windowIdentity(match[1]!)
-    if (!identity) continue
-    const resetsAt = parseResetLabel(match[3], now)
-    windows.push({
-      key: identity[0],
-      label: identity[1],
-      usedPercent: Number(match[2]),
-      ...(resetsAt === undefined ? {} : { resetsAt }),
-    })
-  }
-  if (windows.length === 0) {
-    return { status: "unavailable", windows: [], detail: "Claude Code did not report subscription quota" }
-  }
-  return { status: "ok", windows }
 }
 
 // One non-blocking lock attempt for a BACKGROUND refresh: if another process holds the lock, someone
@@ -455,14 +332,14 @@ function serveRateLimited(shared: SharedQuota & { retryAt: number }, now: number
 // In-process guard so overlapping polls from one server start at most one background refresh.
 const backgroundRefreshes = new Map<string, Promise<void>>()
 
-function refreshSharedInBackground(paths: { data: string; lock: string }, claudeBin: string, deps: ClaudeQuotaDeps, now: number): void {
+function refreshSharedInBackground(paths: { data: string; lock: string }, deps: ClaudeQuotaDeps, now: number): void {
   if (backgroundRefreshes.has(paths.data)) return
   const task = (async () => {
     if (rateLimited(await readShared(paths.data), now)) return
     const release = await tryAcquireLock(paths.lock)
     if (!release) return
     try {
-      const quota = await refreshQuota(claudeBin, deps, now)
+      const quota = await refreshQuota(deps, now)
       await writeShared(paths.data, { at: now, quota })
     } catch (err) {
       if (!(err instanceof UsageRateLimited)) throw err
@@ -490,11 +367,10 @@ export async function claudeQuotaRefreshSettled(): Promise<void> {
 // keeps the cache as warm as the endpoint allows: a tick is a no-op while the reading is inside its
 // TTL or the endpoint's `retryAt` has not passed.
 //
-// It uses the SAME non-blocking background path a stale read kicks — endpoint-first, one in-flight
-// refresh per process, cross-process lock so N Frizz processes make one request per window per account,
-// and the CLI fallback only for the 401/403 token-refresh case it already owned. It NEVER blocks the
+// It uses the SAME non-blocking background path a stale read kicks — one in-flight refresh per process,
+// cross-process lock so N Frizz processes make one request per window per account. It NEVER blocks the
 // caller and swallows every failure (the last known-good reading rides until the next success).
-export async function refreshClaudeQuotaInBackground(claudeBin = "claude", deps: ClaudeQuotaDeps = {}): Promise<void> {
+export async function refreshClaudeQuotaInBackground(deps: ClaudeQuotaDeps = {}): Promise<void> {
   const now = (deps.now ?? Date.now)()
   const configDir = claudeConfigDir()
   const cacheDir = deps.cacheDir ?? join(frizzRoots().cache, "quota-cache")
@@ -508,20 +384,19 @@ export async function refreshClaudeQuotaInBackground(claudeBin = "claude", deps:
   // rather than up to a whole interval late; a reading still inside its TTL needs nothing.
   const current = await readShared(paths.data)
   if (current?.quota.status === "ok" && now - current.at < OK_TTL_MS) return
-  refreshSharedInBackground(paths, claudeBin, deps, now)
+  refreshSharedInBackground(paths, deps, now)
 }
 
-// The healthy cache is shared under ~/.frizz so three project windows make one Claude Code request,
+// The healthy cache is shared under ~/.frizz so three project windows make one endpoint request,
 // not three simultaneous requests to the same account. A failed refresh serves the last known-good
 // reading (clearly labeled in the popover) for at most one day instead of erasing useful data.
 //
 // Ordinary (non-force) reads are STALE-WHILE-REVALIDATE: any known-good reading newer than a day is
 // returned immediately and the refresh happens in the background. The poll must never block on the
-// CLI + cross-process lock (~27s worst case) — responses that slow straddle dev-server restarts and
+// refresh + cross-process lock — responses that slow straddle dev-server restarts and
 // leave the browser's fetch hung, which is exactly how the chip froze into an em dash. Only `force`
 // (the popover's explicit recheck) waits for a live refresh.
 export async function readClaudeQuota(
-  claudeBin = "claude",
   deps: ClaudeQuotaDeps = {},
   options: { force?: boolean } = {},
 ): Promise<ProviderQuota> {
@@ -533,7 +408,7 @@ export async function readClaudeQuota(
     await mkdir(cacheDir, { recursive: true, mode: 0o700 })
   } catch {
     try {
-      return await refreshQuota(claudeBin, deps, now)
+      return await refreshQuota(deps, now)
     } catch {
       return { status: "unavailable", windows: [], detail: "Claude usage unavailable" }
     }
@@ -543,7 +418,7 @@ export async function readClaudeQuota(
     return initial.quota
   }
   if (!options.force && initial?.quota.status === "ok" && now - initial.at < STALE_MAX_AGE_MS) {
-    refreshSharedInBackground(paths, claudeBin, deps, now)
+    refreshSharedInBackground(paths, deps, now)
     const ageMs = now - initial.at
     if (ageMs >= 10 * 60_000 && rateLimited(initial, now)) return serveRateLimited(initial, now)
     // Freshly-expired data is normal churn; only label the reading once it is meaningfully old.
@@ -562,7 +437,7 @@ export async function readClaudeQuota(
     // Another Frizz process may have completed the requested refresh while this process waited.
     if (afterLock && afterLock.at !== initial?.at && now - afterLock.at < OK_TTL_MS) return afterLock.quota
 
-    const quota = await refreshQuota(claudeBin, deps, now)
+    const quota = await refreshQuota(deps, now)
     await writeShared(paths.data, { at: now, quota }).catch(() => {})
     return quota
   } catch (err) {

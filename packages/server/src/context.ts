@@ -650,9 +650,9 @@ function createContextUnchecked(opts: ContextOptions, resources: PartialContextR
   // same FRIZZ_WAKERS_OFF flag as the scheduler so a disposable adhoc/test stack never touches the real
   // account with the real credential.
   if (process.env.FRIZZ_WAKERS_OFF !== "1") {
-    void refreshClaudeQuotaInBackground(opts.claudeBin) // warm immediately so the first read is fresh
+    void refreshClaudeQuotaInBackground() // warm immediately so the first read is fresh
     const quotaRefreshTimer = setInterval(() => {
-      void refreshClaudeQuotaInBackground(opts.claudeBin)
+      void refreshClaudeQuotaInBackground()
     }, QUOTA_REFRESH_INTERVAL_MS)
     quotaRefreshTimer.unref?.()
     contextUnsubscribers.push(() => clearInterval(quotaRefreshTimer))
@@ -1008,7 +1008,7 @@ function createContextUnchecked(opts: ContextOptions, resources: PartialContextR
     // instant for a weekly limit, whose message text carries a clock but no date; readQuota memoizes,
     // so consulting it per tick costs a live request only every few minutes. Read through the resolved
     // runtimes, as the quota RPC does: a bare call would start whatever `codex` is first on PATH.
-    readQuota: () => readQuota({ claudeBin: opts.claudeBin, codexBin: opts.codexBin }),
+    readQuota: () => readQuota({ codexBin: opts.codexBin }),
     // The only runtime that can answer is the broker: its daemon record is on disk while the daemon
     // lives and is unlinked when it dies (liveBrokerRecords checks the pid), so "did the process that
     // took this wake survive" is one directory read. Codex and any row whose session moved on answer
