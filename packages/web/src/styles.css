@@ -1249,8 +1249,13 @@ a[href] {
   display: block;
   position: relative;
   margin: var(--md-step) 0;
-  /* The copy button's box and its inset (see `.md-code-copy` below). They live on the wrapper because a
-     tabbed block's header is sized from them too, so the button sits centred in that row. */
+}
+/* The copy button's box and its inset (see `.md-code-copy` below). Declared for the wrapper as well as
+   the button, because a tabbed block's header is sized from them too, so the button sits centred in
+   that row — and for the button in its own right, so one standing outside a wrapper
+   (scripts/verify-md-code-copy-button.mjs lays probes out that way) still resolves them. */
+.md-body .md-code,
+.md-body .md-code-copy {
   --md-copy-box: 1.7em;
   --md-copy-inset: 0.35em;
 }
@@ -1282,7 +1287,7 @@ a[href] {
    numbers. Inset 0.35em sits the button inside the `pre`'s own 0.75em/1em padding, so it never overhangs
    the border. */
 .md-body .md-code-copy {
-  /* --md-copy-box and --md-copy-inset come from `.md-code`. ONE inset, used three times, because the
+  /* --md-copy-box and --md-copy-inset are declared just above. ONE inset, used three times, because the
      corner depends on it — see the radius below. */
   position: absolute;
   top: var(--md-copy-inset);
