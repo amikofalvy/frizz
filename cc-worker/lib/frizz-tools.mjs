@@ -1336,9 +1336,11 @@ function unreachable(procedure, err) {
 /** Which thread is calling. Read from the environment the worker was started with, because nothing
  * else names the caller: a command run from a worker's shell inherits that worker's environment, and
  * the MCP protocol carries no caller identity at all.
- * FRIZZ_THREAD is what every Frizz worker process is tagged with, so a shell inside one has it.
- * FRIZZ_THREAD_SLUG is the explicit stamp a front-end sets when it resolved the caller another way
- * (the MCP mount's own env; a provider session id the server mapped back to a thread) and wins.
+ * FRIZZ_THREAD is what a Claude worker's broker daemon is tagged with, so a shell inside one has it.
+ * FRIZZ_THREAD_SLUG is the explicit stamp, and wins: the MCP mount's own env, and the whole identity of
+ * a codex thread's shell and an ACP agent, which must never carry FRIZZ_THREAD — that is the orphan
+ * reaper's ownership tag, and neither has the live `claude`/`codex` root that keeps a tagged process
+ * from being reaped (packages/server/src/backend/types.ts frizzCliEnv).
  *
  * This is also the reason a model can never point `goal` at someone else's thread: the slug is
  * read from HERE, never from the arguments. */
@@ -1350,7 +1352,7 @@ function threadSlug() {
     // which one the worker had actually called, and sent at least one worker off debugging the wrong
     // thing after `title` failed on a codex thread.
     throw new Error(
-      "Frizz could not tell which thread is calling (no FRIZZ_THREAD in this environment), so it cannot " +
+      "Frizz could not tell which thread is calling (neither FRIZZ_THREAD_SLUG nor FRIZZ_THREAD is in this environment), so it cannot " +
       "act on the caller's own thread. Inside a Frizz worker this is a Frizz bug — report it rather than " +
       "working around it. Outside one there is no thread to act on.",
     )

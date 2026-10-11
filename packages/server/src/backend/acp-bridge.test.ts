@@ -110,7 +110,8 @@ test("acp-bridge: the agent is forked with the worker command on its PATH and th
     await untilIdle(r, "s1")
     assert.equal(forked.length, 1)
     const env = forked[0]!
-    assert.equal(env.FRIZZ_THREAD, "t1")
+    assert.equal(env.FRIZZ_THREAD_SLUG, "t1")
+    assert.equal(env.FRIZZ_THREAD, undefined, "FRIZZ_THREAD is the orphan reaper's tag, and an ACP agent has no session root to keep it live")
     assert.equal(env.FRIZZ_STATE_DIR, "/data/projects/proj-1")
     assert.equal(env.FRIZZ_PROJECT_ID, "proj-1")
     assert.equal(env.FRIZZ_SERVER_LOCK, "/data/server.lock")

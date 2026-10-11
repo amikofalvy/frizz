@@ -22,13 +22,19 @@ interface Rpc {
 // `cwd` matters: with no FRIZZ_PROJECT_ID the shim derives its project by walking UP for `.frizz/.id`,
 // so a child left in this repo would address frizz's own project. Default it to an empty temp dir —
 // "a worker with no stamp and no project in its tree" — and let a test that wants the walk-up ask for it.
+const UNSET_FRIZZ_IDENTITY = { FRIZZ_THREAD: "", FRIZZ_THREAD_SLUG: "", FRIZZ_STATE_DIR: "", FRIZZ_PERM_DIR: "", FRIZZ_SERVER_LOCK: "", FRIZZ_PROJECT_ID: "" }
+
 function startServer(env: Record<string, string>, cwd = mkdtempSync(join(tmpdir(), "frizz-mcp-cwd-"))): Rpc {
   const descriptor = resolveFrizzMcp("/unused")
   assert.ok(descriptor, "the packaged frizz MCP script must be resolvable")
   const child = spawn(process.execPath, [descriptor.scriptPath], {
     stdio: ["pipe", "pipe", "inherit"],
     cwd,
-    env: { ...process.env, ...env },
+    // The Frizz identity of the shell running the suite is BLANKED before the test's own is laid on.
+    // Run from a worker, that shell names the real server (FRIZZ_SERVER_LOCK wins over the state dir
+    // a test passes), the real project and the worker's own thread, so an unblanked spawn sends every
+    // test's dispatch, steer and ask to the maintainer's board — two real opus threads per run.
+    env: { ...process.env, ...UNSET_FRIZZ_IDENTITY, ...env },
   })
   const pending = new Map<number, (value: any) => void>()
   let buf = ""

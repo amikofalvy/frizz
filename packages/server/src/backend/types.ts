@@ -338,8 +338,16 @@ export interface FrizzCli {
  * claude and not under codex, discoverable only by running a worker.
  *
  * `slug` is the caller's identity and belongs here only where the process this environment is for
- * serves ONE thread (a Claude broker daemon, an ACP agent daemon). A codex app-server serves every
+ * serves ONE thread (an ACP agent daemon, a codex thread's own shell). A codex app-server serves every
  * thread in its project, so its process environment cannot name one — see codexThreadShellConfig.
+ *
+ * IT IS FRIZZ_THREAD_SLUG, NEVER FRIZZ_THREAD. The two read the same to `frizzctl`, but FRIZZ_THREAD is
+ * also the orphan reaper's ownership tag (orphan-reaper.ts): a process carrying it is reaped once it is
+ * two minutes old unless a live `claude`/`codex` session root carries the same slug. A Claude worker
+ * has that root, and its broker stamps FRIZZ_THREAD itself. A codex thread's shell runs under a
+ * per-project app-server that carries no slug, and an ACP agent is neither `claude` nor `codex`, so the
+ * tag there would have the reaper SIGKILL a codex thread's two-minute build and an ACP agent with its
+ * whole subtree.
  *
  * FRIZZ_NODE is the node this server runs on: the command's launcher tries it before a bare `node`,
  * because a worker's PATH varies by launch context and the launcher must not depend on it.
@@ -350,7 +358,7 @@ export function frizzCliEnv(cli: FrizzCli, slug?: string, nodeBin: string = proc
     ...(cli.serverLock ? { FRIZZ_SERVER_LOCK: cli.serverLock } : {}),
     ...(cli.projectId ? { FRIZZ_PROJECT_ID: cli.projectId } : {}),
     FRIZZ_NODE: nodeBin,
-    ...(slug ? { FRIZZ_THREAD: slug } : {}),
+    ...(slug ? { FRIZZ_THREAD_SLUG: slug } : {}),
   }
 }
 

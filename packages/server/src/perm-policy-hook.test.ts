@@ -93,6 +93,11 @@ test("anything that is not provably that one shape is still left for a human", (
     `touch pwned; frizzctl ask --input - <<'EOF'${body}`,
     `touch pwned\nfrizzctl ask --input - <<'EOF'${body}`,
     `cat <<'EOF' | frizzctl ask --input -${body}`,
+    // Blanks the shell does not treat as blanks: each makes a word, so a different program runs.
+    `\u00a0frizzctl ask --input - <<'EOF'${body}`,
+    `\ufefffrizzctl ask --input - <<'EOF'${body}`,
+    `frizzctl ask --input - <<'EOF'${body}\n\u00a0`,
+    `frizzctl ask --input - <<'EOF'${body}\n\f`,
     // No heredoc at all: Claude Code's own rule carries these, and this hook adds nothing to it.
     `frizzctl title "Fix queue focus"`,
     `frizzctl title x && touch pwned`,

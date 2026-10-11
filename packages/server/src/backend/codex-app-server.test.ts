@@ -2742,7 +2742,7 @@ test("each thread's shell is told which thread it is, at thread/start and again 
   let plan = { generation: "gen-A", reattached: false, droppedWhileDetached: 0 }
   const cli = { binDir: "/gen-b/cc-worker/bin", stateDir: "/state/project-1", projectId: "project-1" }
   const h = scriptedHostHarness(() => plan, { frizzCli: cli })
-  const who = (bag: Record<string, unknown> | undefined) => bag?.["shell_environment_policy.set.FRIZZ_THREAD"]
+  const who = (bag: Record<string, unknown> | undefined) => bag?.["shell_environment_policy.set.FRIZZ_THREAD_SLUG"]
   try {
     const bridge = h.newBridge()
     const one = await bridge.startDisposableSession({ threadSlug: "thread-one", sessionId: "session-one", cwd: h.dir, ephemeral: false })

@@ -100,6 +100,21 @@ function coerce(tool, key, raw) {
   return raw
 }
 
+/** Whether a JSON value is of a JSON Schema `type`. @param {unknown} v @param {string | string[]} type @returns {boolean} */
+function hasType(v, type) {
+  if (Array.isArray(type)) return type.some((t) => hasType(v, t))
+  switch (type) {
+    case "string": return typeof v === "string"
+    case "boolean": return typeof v === "boolean"
+    case "number": return typeof v === "number" && Number.isFinite(v)
+    case "integer": return Number.isInteger(v)
+    case "array": return Array.isArray(v)
+    case "object": return v !== null && typeof v === "object" && !Array.isArray(v)
+    case "null": return v === null
+    default: return true
+  }
+}
+
 /** The flags a command takes, for the "you wrote a flag it does not have" message. @param {any} tool */
 function flagList(tool) {
   const flags = Object.keys(propsOf(tool)).map((k) => `--${hyphen(k)}`)
@@ -136,6 +151,14 @@ function jsonInput(tool, text, what) {
       `${unknown.join(", ")}. It takes: ${keys.join(", ") || "nothing"}.`,
     )
   }
+  // The type, too, for the reason the key is checked: `{"stop_hook": "false"}` is not false to a
+  // handler that tests for `true`, and it would arm a goal with no trigger and say nothing.
+  for (const [key, v] of Object.entries(value)) {
+    const want = propsOf(tool)[key]?.type
+    if (want && !hasType(v, want)) {
+      throw new UsageError(`${what}: ${key} must be ${Array.isArray(want) ? want.join(" or ") : want === "integer" ? "a whole number" : `a ${want}`}, not ${JSON.stringify(v)}`)
+    }
+  }
   return value
 }
 
@@ -165,6 +188,11 @@ function parseArgs(tool, argv) {
     const take = () => {
       if (inline !== undefined) return inline
       if (i + 1 >= argv.length) throw new UsageError(`--${hyphen(flag)} needs a value after it`)
+      // `goal start --prompt --post-compaction` left out the prompt; taking the next flag as the text
+      // would arm a goal reading "--post-compaction" on the wrong trigger and report success.
+      if (/^--[A-Za-z][\w-]*(=.*)?$/.test(argv[i + 1])) {
+        throw new UsageError(`--${hyphen(flag)} needs a value, and the next argument is the flag ${argv[i + 1].split("=")[0]}. A value that really begins with "--" is written --${hyphen(flag)}=<value>.`)
+      }
       return argv[++i]
     }
     if (flag === "input") {
@@ -319,6 +347,30 @@ function commandHelp(tool) {
   ].join("\n")
 }
 
+/** Whether the arguments ask for help, read the way parseArgs reads them: a `-h` that is a flag's
+ *  VALUE (`steer other --message -h`) is the message, not a request for help, and the command must run
+ *  rather than print help and exit 0 having sent nothing. Its own pass, with no side effects, so that
+ *  `--input - --help` prints help without first reading stdin.
+ *  @param {any} tool @param {string[]} argv @returns {"help" | "schema" | undefined} */
+function helpAsked(tool, argv) {
+  for (let i = 0; i < argv.length; i++) {
+    const tok = argv[i]
+    if (tok === "--") return undefined
+    if (tok === "--help" || tok === "-h") return "help"
+    if (tok === "--schema") return "schema"
+    if (tok.startsWith("--") && !tok.includes("=") && takesValue(tool, under(tok.slice(2).toLowerCase()))) i++
+  }
+  return undefined
+}
+
+/** Whether `--<flag>` consumes the next argument as its value. @param {any} tool @param {string} flag */
+function takesValue(tool, flag) {
+  const props = propsOf(tool)
+  if (flag === "input") return true
+  if (flag in props) return props[flag].type !== "boolean"
+  return flag.endsWith("_file") && props[flag.slice(0, -5)]?.type === "string"
+}
+
 /** @param {string[]} argv @returns {Promise<{ code: number, out?: string }>} */
 async function main(argv) {
   const [first, ...rest] = argv
@@ -329,8 +381,9 @@ async function main(argv) {
   }
   const tool = toolNamed(first)
   if (!tool) throw new UsageError(unknownCommand(first))
-  if (rest.includes("--help") || rest.includes("-h")) return { code: 0, out: commandHelp(tool) }
-  if (rest.includes("--schema")) return { code: 0, out: JSON.stringify(tool.inputSchema, null, 2) }
+  const asked = helpAsked(tool, rest)
+  if (asked === "help") return { code: 0, out: commandHelp(tool) }
+  if (asked === "schema") return { code: 0, out: JSON.stringify(tool.inputSchema, null, 2) }
   let args
   try {
     args = parseArgs(tool, rest)

@@ -95,11 +95,14 @@ function isDiskWrite(cmd) {
 // follow. Anything else, `<<EOF` unquoted included, is not this and falls through to the table.
 const FRIZZCTL_HEREDOC = /^frizzctl(?: +[A-Za-z0-9_.\/:=@%+,-]+)* +<<'([A-Za-z_][A-Za-z0-9_]*)'[ \t]*\n([\s\S]*)$/;
 function isOwnFrizzctlHeredoc(cmd) {
-  const m = FRIZZCTL_HEREDOC.exec(cmd.replace(/^\s+/, ''));
+  // Blanks are the SHELL's — space, tab, newline — and not JavaScript's `\s`, which also takes a
+  // no-break space or a form feed: to bash and zsh those are ordinary characters of a word, so
+  // `\u00a0frizzctl` is a different program.
+  const m = FRIZZCTL_HEREDOC.exec(cmd.replace(/^[ \t\n]+/, ''));
   if (!m) return false;
   const lines = m[2].split('\n');
   const end = lines.indexOf(m[1]);
-  return end !== -1 && lines.slice(end + 1).every((line) => line.trim() === '');
+  return end !== -1 && lines.slice(end + 1).every((line) => /^[ \t]*$/.test(line));
 }
 
 // The ordered policy table: FIRST MATCH WINS. Each rule returns a decision plus the `rule` id and

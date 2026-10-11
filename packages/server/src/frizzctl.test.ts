@@ -328,6 +328,37 @@ test("exit 0 is done, 1 is a failure, and 2 is a gate that held", async () => {
   }
 })
 
+// Three ways a command line can mean something other than it says, each of which used to run anyway: a
+// help flag that is really a flag's VALUE, a flag that is really the missing value of the flag before
+// it, and a JSON value of the wrong type that the handler then reads as absent.
+test("a value is never read as a flag, a flag never as a value, and a JSON value has the schema's type", async () => {
+  const fake = await fakeFrizz()
+  try {
+    const steered = await run(["steer", "other-thread", "--message", "-h"], { env: worker(fake) })
+    assert.equal(steered.code, 0, steered.stderr)
+    assert.deepEqual(fake.seen.map((s) => s.body), [{ from: "the-caller", to: "other-thread", message: "-h" }])
+    // …while `-h` standing as a flag of its own is still help, and reads no stdin to get there.
+    const help = await run(["steer", "--input", "-", "-h"], { env: worker(fake), holdStdinOpen: true })
+    assert.equal(help.code, 0)
+    assert.match(help.stdout, /^frizzctl steer — /)
+
+    fake.seen.length = 0
+    const missing = await run(["goal", "start", "--prompt", "--post-compaction"], { env: worker(fake) })
+    assert.equal(missing.code, 1)
+    assert.match(missing.stderr, /--prompt needs a value, and the next argument is the flag --post-compaction/)
+    // A value that really starts with `--` says so with `=`.
+    const dashed = await run(["goal", "start", "--prompt=--resume the audit", "--post-compaction"], { env: worker(fake) })
+    assert.equal(dashed.code, 0, dashed.stderr)
+
+    const mistyped = await run(["goal", '{"action":"start","prompt":"x","stop_hook":"false"}'], { env: worker(fake) })
+    assert.equal(mistyped.code, 1)
+    assert.match(mistyped.stderr, /stop_hook must be a boolean, not "false"/)
+    assert.deepEqual(fake.seen.map((s) => s.body?.prompt), ["--resume the audit"])
+  } finally {
+    fake.close()
+  }
+})
+
 // A codex thread a human narrowed to `workspace-write` or `read-only` cannot open a socket, loopback
 // included, and codex says so in the shell's environment. "fetch failed" there reads as Frizz being
 // down, which a worker answers by retrying; the message has to say that no retry can work.
