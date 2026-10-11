@@ -1,6 +1,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { mkdtempSync, readFileSync } from "node:fs"
+import { createServer } from "node:http"
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -116,6 +117,48 @@ test("acp-bridge: the agent is forked with the worker command on its PATH and th
     assert.equal(env.FRIZZ_NODE, process.execPath)
     assert.equal((env.PATH ?? env.Path)!.split(process.platform === "win32" ? ";" : ":")[0], "/plugin/bin")
   } finally { await teardown(r) }
+})
+
+// The whole path a real ACP worker's command takes, with only the agent's brain and Frizz's router stood
+// in for: the bridge forks the REAL detached daemon, the daemon forks the agent, the agent's shell runs
+// `frizzctl` by BARE NAME, and the plugin's real launcher reaches a real http server. The test above
+// reads the environment at the fork; this one proves that environment is enough, where it is used.
+test("acp-bridge: a command the agent's own shell runs reaches Frizz as that agent's thread", { skip: process.platform === "win32" }, async () => {
+  const seen: Array<{ url: string; body: unknown }> = []
+  const frizz = createServer((req, res) => {
+    let raw = ""
+    req.on("data", (c) => (raw += c))
+    req.on("end", () => {
+      const body = JSON.parse(raw) as { title: string }
+      seen.push({ url: req.url ?? "", body })
+      res.writeHead(200, { "content-type": "application/json" })
+      res.end(JSON.stringify({ result: { accepted: true, title: body.title } }))
+    })
+  })
+  await new Promise<void>((resolve) => frizz.listen(0, "127.0.0.1", resolve))
+  const projectState = join(mkdtempSync(join(tmpdir(), "acp-frizz-")), "projects", "proj-1")
+  mkdirSync(projectState, { recursive: true })
+  writeFileSync(join(projectState, "server.lock"), JSON.stringify({ port: (frizz.address() as { port: number }).port }))
+  const cli: FrizzCli = { binDir: fileURLToPath(new URL("../../../../cc-worker/bin", import.meta.url)), stateDir: projectState, projectId: "proj-1" }
+
+  const stateDir = mkdtempSync(join(tmpdir(), "acp-bridge-"))
+  const agentLog = join(stateDir, "agent-frames.jsonl")
+  const r = rig("shell", { stateDir, agentLog, frizzCli: cli, mountsMcp: () => false })
+  try {
+    const prompt = 'CONTRACT…\n\nRUN: frizzctl title "From an ACP agent"; echo "exit=$?"; command -v frizzctl'
+    await r.bridge.spawnDispatch({ threadSlug: "acp-thread", sessionId: "s1", cwd: r.stateDir, agentId: "fake", prompt, userText: "hi" })
+    await untilIdle(r, "s1", "acp-thread")
+    const ran = readFileSync(agentLog, "utf8").split("\n").filter(Boolean)
+      .map((l) => JSON.parse(l) as { shell?: { code: number; stdout: string; stderr: string } })
+      .find((f) => f.shell)?.shell
+    assert.ok(ran, "the agent ran the command")
+    assert.equal(ran.stderr, "")
+    assert.deepEqual(ran.stdout.trim().split("\n"), ['This thread is now named "From an ACP agent" on the board.', "exit=0", join(cli.binDir, "frizzctl")])
+    assert.deepEqual(seen, [{ url: "/_frizz/proj-1/rpc/setOwnThreadTitle", body: { slug: "acp-thread", title: "From an ACP agent" } }])
+  } finally {
+    await teardown(r)
+    frizz.close()
+  }
 })
 
 // An ACP thread's contract is its first prompt, so it has the contract it was started with for good.
