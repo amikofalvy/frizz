@@ -2,18 +2,40 @@ import { useCallback, useMemo, useSyncExternalStore } from "react"
 import { useSnapshot } from "valtio"
 import { store } from "../store.ts"
 
-// Drafts are deliberately session-scoped: they survive React unmounts and a same-tab reload, but never
-// escape this browser tab. Keep this schema tiny and text-only; server records, credentials and secret
-// interaction fields must never enter this cache.
+// A DRAFT BELONGS TO ITS BOX, NOT TO THE TAB IT WAS TYPED IN. Drafts live in localStorage, so every tab
+// on this origin reads and writes ONE set: they survive React unmounts, a reload and a browser restart,
+// and a thread's prompt box holds the same words on the queue card, in the drawer and on its /full
+// page whichever tab each is in.
+//
+// They were per-tab sessionStorage until 2026-10-11. The fullscreen door is a real link, so ⌘-click,
+// middle-click and "open in new tab" put /full in a NEW tab — and a new tab starts with an empty
+// sessionStorage, as does a /full tab that was already open (maintainer 2026-10-11: "The stuff that I
+// type into the prompt box when it's in the queue does not transfer over if I open that same queue card
+// in full-screen view"). Measured on a real stack before the move: typed into the queue card, then the
+// door in the same tab → the words are there; the same href in a second tab → "".
+//
+// Sharing has two halves. A tab that OPENS reads what is stored. A tab that is ALREADY open hears the
+// `storage` event the browser sends every other tab on a write (wired at the bottom of this section),
+// so typing in one tab shows in the other, and a send in one empties the box in both instead of
+// leaving the sent words behind to be sent twice.
+//
+// Keep this schema tiny and text-only; server records, credentials and secret interaction fields must
+// never enter this cache — it is on disk now, and it outlives the tab.
 export const DRAFT_STORAGE_KEY = "frizz-drafts:v1"
 export const DRAFT_SCHEMA_VERSION = 1
 const MAX_ENTRIES = 80
 const MAX_VALUE_BYTES = 512 * 1024
 const MAX_SNAPSHOT_BYTES = 2 * 1024 * 1024
+// sessionStorage ended with its tab; localStorage has no end of its own. A draft nobody has touched for
+// this long is dropped the next time a tab reads the store, so words typed for a thread long since
+// archived do not sit on disk until 80 newer drafts happen to push them out.
+export const DRAFT_TTL_MS = 30 * 24 * 60 * 60 * 1000
 const encoder = new TextEncoder()
 
 export type DraftSnapshot = { version: 1; entries: Record<string, { value: string; touchedAt: number }> }
 type Listener = () => void
+type DraftStorage = Pick<Storage, "getItem" | "setItem">
+type LegacyDraftStorage = Pick<Storage, "getItem" | "removeItem">
 
 function bytes(value: string): number { return encoder.encode(value).byteLength }
 function empty(): DraftSnapshot { return { version: DRAFT_SCHEMA_VERSION, entries: {} } }
@@ -47,39 +69,131 @@ function bounded(snapshot: DraftSnapshot): DraftSnapshot {
   return { version: DRAFT_SCHEMA_VERSION, entries }
 }
 
+function unexpired(snapshot: DraftSnapshot, now = Date.now()): DraftSnapshot {
+  const entries: DraftSnapshot["entries"] = {}
+  for (const [key, entry] of Object.entries(snapshot.entries)) if (now - entry.touchedAt <= DRAFT_TTL_MS) entries[key] = entry
+  return { version: DRAFT_SCHEMA_VERSION, entries }
+}
+
+// Reading the property can itself throw (a browser set to block site data), and a page without storage
+// still has to be typed into: the store then keeps to this tab's memory, as it does under Node.
+function browserStorage(area: "localStorage" | "sessionStorage"): Storage | undefined {
+  try { return typeof window === "undefined" ? undefined : window[area] } catch { return undefined }
+}
+
 export class DraftStore {
   // `snapshot` is the current tab's complete controlled-input source of truth. Persistence is a
   // bounded projection of it: quota or a hard persisted-value cap must never blank a textarea that
   // the user is actively editing.
-  private snapshot: DraftSnapshot
+  private snapshot: DraftSnapshot = empty()
   private listeners = new Set<Listener>()
-  private readonly storage: Pick<Storage, "getItem" | "setItem"> | undefined
-  constructor(storage: Pick<Storage, "getItem" | "setItem"> | undefined = typeof sessionStorage === "undefined" ? undefined : sessionStorage) {
+  private readonly storage: DraftStorage | undefined
+  // The exact string this tab last read from or wrote to storage. Any OTHER string there is another
+  // tab's write — which is the whole test `adopt` makes, so the keystrokes where nothing moved cost a
+  // string compare rather than a parse.
+  private persistedRaw: string | null = null
+  // Keys whose state HERE is not what storage holds: a value the bounded projection had to leave out,
+  // or a write storage refused. Another tab's snapshot must neither blank those nor bring back one
+  // this tab cleared, so they are the one thing `adopt` keeps from memory.
+  private unpersisted = new Set<string>()
+  constructor(storage: DraftStorage | undefined = browserStorage("localStorage"), legacy?: LegacyDraftStorage) {
     this.storage = storage
-    let raw: string | null = null
-    try { raw = storage?.getItem(DRAFT_STORAGE_KEY) ?? null } catch {}
-    this.snapshot = bounded(parseDraftSnapshot(raw))
+    this.adopt(this.read())
+    if (legacy) this.migrate(legacy)
   }
   getSnapshot = (): DraftSnapshot => this.snapshot
   subscribe = (listener: Listener) => { this.listeners.add(listener); return () => this.listeners.delete(listener) }
   get(key: string): string { return this.snapshot.entries[key]?.value ?? "" }
   set(key: string, value: string): void {
+    // READ, THEN WRITE. Every write stores the WHOLE snapshot, so a tab writing from a stale one would
+    // erase the draft another tab just typed and put back the one it just sent. The `storage` event
+    // keeps an open tab current, but an event is a thing that can be missed (a page restored from the
+    // back/forward cache never got its); re-reading here makes the write correct either way.
+    const adopted = this.adopt(this.read())
+    if (!value && !this.snapshot.entries[key]) {
+      if (adopted) this.emit()
+      return
+    }
     const entries = { ...this.snapshot.entries }
     if (!value) delete entries[key]
     else entries[key] = { value, touchedAt: Date.now() }
-    this.commit({ version: DRAFT_SCHEMA_VERSION, entries })
+    this.commit({ version: DRAFT_SCHEMA_VERSION, entries }, [key])
   }
-  clear(key: string): void { if (this.snapshot.entries[key]) this.commit({ version: DRAFT_SCHEMA_VERSION, entries: Object.fromEntries(Object.entries(this.snapshot.entries).filter(([candidate]) => candidate !== key)) }) }
-  private commit(next: DraftSnapshot): void {
+  clear(key: string): void { this.set(key, "") }
+  /** Another tab may have written: take what it stored, and tell this tab's fields if there was any. */
+  refresh = (): void => { if (this.adopt(this.read())) this.emit() }
+  private read(): string | null {
+    try { return this.storage?.getItem(DRAFT_STORAGE_KEY) ?? null } catch { return null }
+  }
+  private emit(): void { for (const listener of this.listeners) listener() }
+  private adopt(raw: string | null): boolean {
+    // A MISSING key is not news. A store this app wrote is at least `{"version":1,"entries":{}}`, so
+    // null means storage was emptied from under the page, and that never blanks a box someone is
+    // typing in; the next write puts the snapshot back.
+    if (raw === null || raw === this.persistedRaw) return false
+    this.persistedRaw = raw
+    const entries = unexpired(parseDraftSnapshot(raw)).entries
+    for (const key of this.unpersisted) {
+      const mine = this.snapshot.entries[key]
+      if (mine) entries[key] = mine
+      else delete entries[key]
+    }
+    this.snapshot = { version: DRAFT_SCHEMA_VERSION, entries }
+    return true
+  }
+  private commit(next: DraftSnapshot, touched: readonly string[]): boolean {
     this.snapshot = next
     // A too-large value remains in this tab's memory and subscribers see it immediately. `bounded`
-    // excludes it from the reload snapshot, instead of replacing the controlled input with "".
-    try { this.storage?.setItem(DRAFT_STORAGE_KEY, JSON.stringify(bounded(next))) } catch {}
-    for (const listener of this.listeners) listener()
+    // excludes it from the stored snapshot, instead of replacing the controlled input with "".
+    const stored = bounded(next)
+    const raw = JSON.stringify(stored)
+    let persisted = false
+    if (this.storage) {
+      try {
+        this.storage.setItem(DRAFT_STORAGE_KEY, raw)
+        this.persistedRaw = raw
+        this.unpersisted = new Set(Object.keys(next.entries).filter((key) => !stored.entries[key]))
+        persisted = true
+      } catch { for (const key of touched) this.unpersisted.add(key) }
+    }
+    this.emit()
+    return persisted
+  }
+  // ONE-TIME BRIDGE (2026-10-11). Drafts were per-tab sessionStorage until this build, so the tab that
+  // loads it may be holding words typed a minute ago under the old home. Fold them in — the newer copy
+  // of a key wins — and retire the old key only once they are stored. Delete this, and the `legacy`
+  // parameter, once no tab from before the move can still be open.
+  private migrate(legacy: LegacyDraftStorage): void {
+    let raw: string | null = null
+    try { raw = legacy.getItem(DRAFT_STORAGE_KEY) } catch { return }
+    if (raw === null) return
+    const entries = { ...this.snapshot.entries }
+    const moved: string[] = []
+    for (const [key, entry] of Object.entries(unexpired(parseDraftSnapshot(raw)).entries)) {
+      if (entries[key] && entries[key].touchedAt >= entry.touchedAt) continue
+      entries[key] = entry
+      moved.push(key)
+    }
+    if (moved.length > 0 && !this.commit({ version: DRAFT_SCHEMA_VERSION, entries }, moved)) return
+    try { legacy.removeItem(DRAFT_STORAGE_KEY) } catch {}
   }
 }
 
-export const draftStore = new DraftStore()
+export const draftStore = new DraftStore(browserStorage("localStorage"), browserStorage("sessionStorage"))
+
+// THE LIVE HALF OF SHARING: a write in one tab reaches the tabs that are already open. The browser
+// sends `storage` to every OTHER same-origin document, never to the writer, so adopting it cannot echo.
+// `pageshow` covers the one document that event skips — a page coming back out of the back/forward
+// cache, which was not live to receive it.
+if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+  const onStorage = (event: StorageEvent) => { if (event.key === DRAFT_STORAGE_KEY) draftStore.refresh() }
+  window.addEventListener("storage", onStorage)
+  window.addEventListener("pageshow", draftStore.refresh)
+  import.meta.hot?.dispose(() => {
+    window.removeEventListener("storage", onStorage)
+    window.removeEventListener("pageshow", draftStore.refresh)
+  })
+}
 
 // Put words back into a draft WITHOUT losing what is already there — the one rule every "give the
 // operator their text back" path shares (an unqueued send, a failed send, a failed bubble's Edit).
