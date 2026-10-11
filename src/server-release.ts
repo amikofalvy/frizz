@@ -4,6 +4,7 @@ import {
   closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, realpathSync,
   renameSync, rmSync, statSync, writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { frizzPaths } from "@frizz/server/frizz-paths";
 
@@ -167,7 +168,12 @@ export function npmServerPackageInstaller(env: NodeJS.ProcessEnv = process.env):
       // string. Reading only the string made every probe throw, and the throw reads as "no update": a
       // launcher on npm 12 never offered a newer server and failed every click (measured 2026-09-25,
       // npm 11.20.0 `"0.15.2"` against npm 12.1.0 `["0.15.2"]`). More than one element is still refused.
-      const parsed: unknown = JSON.parse(await run(["view", `${packageName}@latest`, "version", "--json"]));
+      //
+      // In the temp directory, not the inherited cwd. The launcher's cwd is the folder it was started
+      // from, and once that folder is deleted every child that inherits it dies before npm's first
+      // line (`uv_cwd ENOENT`), so the probe could never answer again (measured 2026-10-11). It also
+      // keeps a project's own `.npmrc` out of a question about Frizz's package, as `install` does.
+      const parsed: unknown = JSON.parse(await run(["view", `${packageName}@latest`, "version", "--json"], tmpdir()));
       const version = Array.isArray(parsed) && parsed.length === 1 ? parsed[0] : parsed;
       if (typeof version !== "string" || !VERSION.test(version)) throw new Error("npm returned an invalid Frizz server version");
       return version;

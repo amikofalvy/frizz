@@ -243,6 +243,26 @@ test("the npm adapter executes a real JS child with isolated prefix and scripts 
   assert.equal(await installer.latestVersion("frizz-server"), "1.1.0");
 });
 
+// The launcher's cwd is the folder it was started from. Once that is deleted, a child that inherits
+// it throws `uv_cwd ENOENT` on its first `process.cwd()`, which npm calls before anything else
+// (2026-10-11: every Update click on such a board failed with that stack).
+test("the latest-version probe answers after the folder the launcher was started from is deleted", async (t) => {
+  const { root } = setup(t);
+  const cli = join(root, "npm-cli.js");
+  writeFileSync(cli, `process.cwd(); console.log('"1.1.0"')`);
+  const installer = npmServerPackageInstaller({ ...process.env, npm_execpath: cli });
+  const launchFolder = mkdtempSync(join(tmpdir(), "frizz-launch-folder-"));
+  const original = process.cwd();
+  process.chdir(launchFolder);
+  try {
+    rmSync(launchFolder, { recursive: true });
+    assert.throws(() => process.cwd(), /uv_cwd/, "this process now has the deleted cwd a child would inherit");
+    assert.equal(await installer.latestVersion("frizz-server"), "1.1.0");
+  } finally {
+    process.chdir(original);
+  }
+});
+
 // npm 12 answers `view <spec> version --json` with a one-element array; npm 11 answered the bare
 // string. Reading only the string left every launcher on npm 12 reporting "no update" (2026-09-25).
 test("the latest-version probe reads npm 12's one-element array and still refuses anything wider", async (t) => {
