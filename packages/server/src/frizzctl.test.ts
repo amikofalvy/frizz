@@ -8,6 +8,7 @@ import { delimiter, join } from "node:path"
 import { fileURLToPath } from "node:url"
 // @ts-expect-error — the worker plugin is plain .mjs shipped loose beside the server; it has no types.
 import { CLI, TOOLS } from "../../../cc-worker/lib/frizz-tools.mjs"
+import { buildWorkerPrompt } from "./workerPrompt.ts"
 
 // Drives the REAL cc-worker/bin/frizzctl as a child process — its real argv, stdin, stdout and exit code
 // — against a REAL http server standing in for Frizz's RPC surface. Nothing is imported from the command
@@ -368,6 +369,61 @@ test("every example in every command's help runs as written", async () => {
         })
         assert.equal(ran.code, 0, `${name}: \`${example.split("\n")[0]}\` exited ${ran.code}: ${ran.stderr}`)
         assert.equal(fake.seen.length, 1, `${name}: \`${example.split("\n")[0]}\` made ${fake.seen.length} calls`)
+      }
+    }
+  } finally {
+    fake.close()
+  }
+})
+
+// THE CONTRACT'S OWN SPELLINGS. The system prompt (workerPrompt.ts) is where a worker first meets the
+// command line, and it lives in another file from the registry that defines it. So every `sh` fence the
+// contract writes out is run here through a real shell, and every `frizzctl <command>` it names in
+// prose must be a command that exists, in the hyphenated spelling the help prints. A rename in the
+// registry would otherwise leave every worker taught a command that exits 1.
+test("every frizzctl example the worker contract writes out runs as written, and every command it names exists", async () => {
+  const fake = await fakeFrizz()
+  try {
+    const commands = new Set((TOOLS as Array<{ name: string }>).map((t) => t.name.replace(/_/g, "-")))
+    for (const kind of ["claude", "codex", "acp"] as const) {
+      const prompt = buildWorkerPrompt(kind)
+      assert.doesNotMatch(prompt, /mcp__frizz__/, `${kind}: the contract still names an MCP tool`)
+      const named = [...prompt.matchAll(/`frizzctl ([a-z][a-z_-]*)/g)].map((m) => m[1])
+      assert.ok(named.length >= 30, `${kind}: the contract names the command line throughout (${named.length})`)
+      for (const name of named) assert.ok(commands.has(name), `${kind}: the contract names \`frizzctl ${name}\`, which is not a command`)
+      // Every capability a worker is told about by name is one it was introduced to as `frizzctl`.
+      assert.match(prompt, /`frizzctl --help` lists every command; `frizzctl <command> --help` is that command's full\s+reference/)
+
+      const examples = [...prompt.matchAll(/```sh\n(frizzctl [^]*?)\n```/g)].map((m) => m[1])
+      assert.equal(examples.length, 3, `${kind}: the done heredoc and the two written-out questions`)
+      for (const example of examples) {
+        fake.seen.length = 0
+        const ran = await new Promise<Ran>((resolve) => {
+          const child = spawn("sh", ["-c", example], {
+            cwd: mkdtempSync(join(tmpdir(), "frizzctl-contract-")),
+            env: { ...process.env, ...worker(fake), FRIZZ_THREAD_SLUG: "", FRIZZ_NODE: process.execPath, PATH: `${BIN}${delimiter}${process.env.PATH}` },
+            stdio: ["ignore", "pipe", "pipe"],
+          })
+          let stdout = ""
+          let stderr = ""
+          child.stdout.on("data", (c) => (stdout += c))
+          child.stderr.on("data", (c) => (stderr += c))
+          child.on("close", (code) => resolve({ code, stdout, stderr }))
+        })
+        const first = example.split("\n")[0]
+        assert.equal(ran.code, 0, `${kind}: \`${first}\` exited ${ran.code}: ${ran.stderr}`)
+        assert.equal(fake.seen.length, 1, `${kind}: \`${first}\` made ${fake.seen.length} calls`)
+        const { url, body } = fake.seen[0]
+        if (url.endsWith("/rpc/ask")) {
+          // The JSON the contract writes out is the question it describes: one pick-one question, two
+          // options, the recommended one first.
+          assert.equal(body.questions.length, 1)
+          assert.equal(body.questions[0].kind, "question")
+          assert.deepEqual(body.questions[0].options.map((o: { recommended?: boolean }) => !!o.recommended), [true, false])
+        } else {
+          assert.ok(url.endsWith("/rpc/markOwnDone"), url)
+          assert.equal(body.body, "- **Fixed the lookup** in `src/resolver.ts`; `npm test` green.")
+        }
       }
     }
   } finally {
