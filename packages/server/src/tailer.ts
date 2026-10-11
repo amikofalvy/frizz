@@ -2768,6 +2768,10 @@ export interface TailerDeps {
    *  cannot be established (probe unavailable, path unknown) — never a guess. Injectable for tests; the
    *  default is probeShellsAlive (`lsof`, then `ps`). */
   shellAlive?: (outputFile: string, launch: ShellLaunch) => boolean | undefined
+  /** The BATCHED probe itself, injectable so a test can count and script it. Unlike `shellAlive`, which
+   *  is answered inline and skips them, this one still sits behind the queue and the flush — the only
+   *  place a mistake about WHEN to ask can live. Defaults to probeShellsAlive. */
+  probeShells?: (shells: readonly ShellLaunch[]) => Promise<Map<string, boolean | undefined>>
   // The agent backend that locates + folds a session's transcript (Codex-support epic). Injected by
   // the composition layer as a ClaudeBackend; when absent (tests) the tailer folds with its own
   // corpus-verified applyRecord + deterministic Claude path — a byte-identical default.
@@ -3908,7 +3912,15 @@ export function createTailer(deps: TailerDeps): Tailer {
    *  uncertain answer leaves the shell running, so a wrong verdict can only ever under-report. */
   // PER TAILER, deliberately: a DEAD verdict is terminal and never re-probed, so a module-level cache
   // would let one tailer's verdict decide another's shells — and make the whole thing unclearable.
-  const shellAliveCache = new Map<string, { at: number; alive: boolean }>()
+  //
+  // `alive: undefined` IS A REMEMBERED UNKNOWN, and it is here so that a question the probe could not
+  // answer is not asked again until the TTL has passed. It reads exactly like having no entry at all —
+  // "running" — so remembering it can never demote a shell; it only stops the asking. Until 2026-10-11
+  // an unknown recorded nothing ("ask again next tick"), which is the same defect as a failed quota read
+  // that nobody remembers: whatever noticed the gap re-runs the expensive thing at once, forever. Here
+  // the thing that notices is board assembly, and the flush below nudged the board after every probe —
+  // see there for what that cost.
+  const shellAliveCache = new Map<string, { at: number; alive: boolean | undefined }>()
   // Paths this tick wanted a verdict for and the cache could not answer. Assembly is synchronous, so
   // every shellIsGone call of one tick has landed here by the time the flush below runs — which is what
   // makes ONE lsof per tick enough for all of them, rather than one per shell.
@@ -3932,19 +3944,48 @@ export function createTailer(deps: TailerDeps): Tailer {
     const batch = [...shellProbeWanted.values()]
     shellProbeWanted.clear()
     shellProbeInFlight = true
-    void probeShellsAlive(batch)
+    void (deps.probeShells ?? probeShellsAlive)(batch)
+      // A probe that THREW answered for nobody: every path it was asked about is an unknown.
+      .catch(() => new Map<string, boolean | undefined>())
       .then((verdicts) => {
-        for (const [file, alive] of verdicts) {
-          if (alive === undefined) continue // cannot tell ⇒ record nothing, ask again next tick
-          shellAliveCache.set(file, { at: now(), alive })
+        // EVERY path that was asked about is recorded, the unknowns included (see shellAliveCache), and
+        // the walk is over the BATCH rather than the verdicts so that a path the probe never mentioned
+        // is remembered as an unknown too, instead of being asked about again on the next pass.
+        const at = now()
+        let demoted = false
+        for (const { outputFile } of batch) {
+          const alive = verdicts.get(outputFile)
+          shellAliveCache.set(outputFile, { at, alive })
+          // An assembly that ran while this probe was in flight found nothing cached and queued the
+          // path again. It has just been answered, so it leaves the queue — otherwise a SLOW unknown (an
+          // lsof killed on its 8 s timeout, with eight ticks behind it) is asked again the moment it
+          // lands, and again after that, and the TTL above never gets to apply.
+          shellProbeWanted.delete(outputFile)
+          if (alive === false) demoted = true
         }
-        // A verdict that arrived after assembly changes what the board should say, and nothing else
-        // will notice: the next tick reads the cache, so nudge it rather than waiting for one.
-        if (verdicts.size > 0) deps.onChange()
+        // NUDGE THE BOARD ONLY FOR A VERDICT THAT CHANGES WHAT IT SAYS, and DEAD is the only one that
+        // does: every path in this batch read "running" when it was queued, and alive and unknown both
+        // leave it there. A shell that just died is the case nothing else will notice before the next
+        // tick, so that one is nudged rather than waited for.
+        //
+        // This was `if (verdicts.size > 0)`, which is true of a map holding nothing but unknowns — and
+        // the nudge is `board.refresh()`, which ASSEMBLES SYNCHRONOUSLY, and assembly is what calls
+        // shellIsGone. With nothing recorded for an unknown, that was a closed loop: assemble ⇒ not
+        // cached ⇒ queue + a zero timer ⇒ probe ⇒ unknown ⇒ nudge ⇒ assemble. One whole board assembly
+        // per millisecond (and one failed `lsof` spawn, on a machine that has none) for as long as any
+        // shell past its grace window stayed unanswerable, per project, with no browser attached.
+        // Measured 2026-10-11 on a disposable stack: one rested thread whose shell's output file had
+        // been cleaned out of the temp dir took an idle server from 0.0% to 27% of a core (2.20
+        // CPU-seconds in 8), and a bare tailer made 340 probe-and-assemble passes in 500 ms.
+        if (demoted) deps.onChange()
       })
-      .catch(() => {}) // a failed probe is an unknown verdict, and unknown never demotes a shell
+      .catch(() => {}) // a board that refuses the nudge (it has stopped) is no reason to lose the verdicts
       .finally(() => {
         shellProbeInFlight = false
+        // A path queued while this probe was in flight found the flush busy, and its timer has already
+        // fired and gone. The unconditional nudge used to pick it up by accident (it re-entered assembly,
+        // which re-armed); now that only a death nudges, the queue drains itself.
+        if (shellProbeWanted.size > 0) armShellProbeFlush()
       })
   }
   function shellIsGone(e: { outputFile?: string; startedAt: string; ackAt?: string }, sessionId: string): boolean {
@@ -3952,8 +3993,10 @@ export function createTailer(deps: TailerDeps): Tailer {
     const started = Date.parse(e.startedAt)
     if (!Number.isFinite(started) || now() - started < SHELL_PROBE_GRACE_MS) return false
     const cached = shellAliveCache.get(e.outputFile)
-    // A DEAD verdict is terminal — a process cannot come back — so it is never re-probed.
-    if (cached && (cached.alive === false || now() - cached.at < SHELL_PROBE_TTL_MS)) return !cached.alive
+    // A DEAD verdict is terminal — a process cannot come back — so it is never re-probed. A live one and
+    // a remembered unknown both read "running" and are both asked about again once the TTL has passed;
+    // hence `=== false` rather than `!alive`, which would read an unknown as dead.
+    if (cached && (cached.alive === false || now() - cached.at < SHELL_PROBE_TTL_MS)) return cached.alive === false
     // What the probe needs to recognise the shell's PROCESS when nobody holds its file — see
     // findShellProcesses. The ack bounds the fork from above; without one the window stays open.
     const acked = e.ackAt ? Date.parse(e.ackAt) : NaN

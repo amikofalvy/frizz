@@ -4642,6 +4642,157 @@ test("tailer: the real shell probe is async — the verdict lands on the NEXT ti
   }
 })
 
+// AN UNKNOWN VERDICT IS REMEMBERED, AND ONLY A DEMOTION NUDGES THE BOARD (2026-10-11).
+//
+// The batched flush used to record nothing for a shell it could not answer for — and then nudge the
+// board anyway, because a verdict map holding only `undefined` still has a size. The nudge is
+// `board.refresh()`, which assembles synchronously, and assembly is what asks about the shell: nothing
+// cached ⇒ queued again ⇒ a zero timer ⇒ probed ⇒ unknown ⇒ nudged ⇒ assembled. One full board assembly
+// per millisecond for as long as the verdict stayed unknown, with no browser attached. Measured on a real
+// stack, a single rested thread whose shell's output file had been cleaned out of the temp dir took the
+// idle server from 0.0% to 27% of a core, forever; without `lsof` on PATH every pass also spawned one.
+//
+// So this drives the path the loop lived on — no `shellAlive`, the queue and the flush — and wires
+// `onChange` the way context.ts does, so that a nudge RE-ENTERS assembly. The first half uses the real
+// probe against the real trigger (a path that does not exist); the second counts a scripted one.
+test("tailer: a shell probe that cannot tell is remembered for a TTL — it does not nudge the board, and is not asked again every pass", async () => {
+  const TTL = 30_000 // SHELL_PROBE_TTL_MS
+  const gone = join(tmp("frizz-shell-probe-unknown-"), "never-created.output")
+  const settle = (ms: number) => new Promise((r) => setTimeout(r, ms))
+  const open = (over: Partial<Parameters<typeof createTailer>[0]> = {}) => {
+    const h = harness()
+    h.storage.upsertSession(row())
+    fixture(h.logDir, "sid", [
+      IN_FLIGHT,
+      JSON.stringify(bashBg("toolu_sh", "Waiting for the verification and suite", "until grep -q done out; do sleep 5; done")),
+      JSON.stringify(resultText("toolu_sh", `Command running in background with ID: bGone. Output is being written to: ${gone}.`)),
+    ])
+    // `board.refresh()` is `cached = assemble(); publish(cached)`, and assemble reads every thread.
+    const assemble = (): string | undefined => t.get("t")?.bgShells[0]?.state
+    const t = makeTailer(h, { onChange: () => { h.changes.n++; assemble() }, ...over })
+    h.clock.ms = Date.parse("2026-07-01T00:00:01.000Z") + 10 * 60_000
+    t.tick()
+    h.changes.n = 0 // the fold's own nudge; from here on only a probe can add one
+    return { h, assemble }
+  }
+
+  // THE REAL PROBE, THE REAL TRIGGER: the output file is not there, so there is no verdict to give.
+  const real = open()
+  assert.equal(real.assemble(), "running")
+  await settle(150)
+  assert.equal(real.h.changes.n, 0, "an unknown verdict changes nothing the board says, so it must not nudge it (the loop made ~100 passes in this window)")
+  assert.equal(real.assemble(), "running", "and unknown is still never dead")
+
+  // A COUNTED PROBE, still behind the queue and the flush.
+  const asked: string[][] = []
+  let verdict: boolean | undefined | "throws" = undefined
+  const { h, assemble } = open({
+    probeShells: async (batch) => {
+      asked.push(batch.map((s) => (typeof s === "string" ? s : s.outputFile)))
+      if (verdict === "throws") throw new Error("the probe itself failed")
+      return new Map([[gone, verdict]])
+    },
+  })
+  const pass = async () => {
+    const state = assemble()
+    await settle(20)
+    return state
+  }
+  assert.equal(await pass(), "running")
+  assert.deepEqual(asked, [[gone]], "asked once, however many times the nudge re-entered assembly")
+  assert.equal(h.changes.n, 0)
+
+  // Every 1s tick and every 15s reconcile inside the TTL reads the remembered unknown instead of asking.
+  h.clock.ms += TTL - 1
+  assert.equal(await pass(), "running")
+  assert.equal(asked.length, 1, "an unknown is re-asked on the TTL, not on every pass")
+
+  // Past it the question is asked again — and a probe that THROWS is an unknown like any other.
+  verdict = "throws"
+  h.clock.ms += 1
+  assert.equal(await pass(), "running")
+  assert.equal(asked.length, 2, "the remembered unknown expires, so a shell that becomes answerable is answered")
+  h.clock.ms += 1_000
+  assert.equal(await pass(), "running")
+  assert.equal(asked.length, 2, "a failed probe is remembered too")
+  assert.equal(h.changes.n, 0)
+
+  // ALIVE is a verdict, and it changes nothing the board says either: the shell already read running.
+  verdict = true
+  h.clock.ms += TTL
+  assert.equal(await pass(), "running")
+  assert.equal(asked.length, 3)
+  assert.equal(h.changes.n, 0, "a live verdict leaves the board as it was")
+
+  // DEAD is the one verdict that changes the board, so it is the one that nudges it — once.
+  verdict = false
+  h.clock.ms += TTL
+  assert.equal(await pass(), "running", "the verdict lands after this pass, never inside it")
+  assert.equal(asked.length, 4)
+  assert.equal(h.changes.n, 1, "a newly dead shell clears without waiting for the next tick")
+  assert.equal(assemble(), "stale")
+  h.clock.ms += 10 * TTL
+  assert.equal(await pass(), "stale")
+  assert.equal(asked.length, 4, "and a dead verdict stays terminal: never asked about again")
+})
+
+// The real probe is SLOW (lsof: ~300 ms, 8 s when it times out), so assemblies happen while one is in
+// flight, and the flush refuses to start a second. Two things follow, and the unconditional nudge above
+// used to paper over the first while causing the second: a shell first asked about mid-flight must be
+// probed when the flight lands rather than whenever the board next happens to assemble, and a shell
+// whose own answer was in flight must NOT be — it was just answered.
+test("tailer: a shell queued while a probe is in flight is asked about when it lands — and one that was just answered is not", async () => {
+  const dir = tmp("frizz-shell-probe-flight-")
+  const first = join(dir, "bFirst.output")
+  const later = join(dir, "bLater.output")
+  const h = harness()
+  h.storage.upsertSession(row())
+  fixture(h.logDir, "sid", [
+    IN_FLIGHT,
+    JSON.stringify(bashBg("toolu_first", "Watch CI", "gh run watch")),
+    JSON.stringify(resultText("toolu_first", `Command running in background with ID: bFirst. Output is being written to: ${first}.`)),
+    JSON.stringify({ ...bashBg("toolu_later", "Run the dev server", "npx vite"), timestamp: "2026-07-01T00:05:01.000Z" }),
+    JSON.stringify({ ...resultText("toolu_later", `Command running in background with ID: bLater. Output is being written to: ${later}.`), timestamp: "2026-07-01T00:05:02.000Z" }),
+  ])
+  const asked: string[][] = []
+  const landing: Array<() => void> = []
+  const t = makeTailer(h, {
+    probeShells: (batch) => {
+      const files = batch.map((s) => s.outputFile)
+      asked.push(files)
+      // Unknown for everyone: the verdict that nudges nothing, so nothing but the queue itself can
+      // bring the second shell to the probe.
+      return new Promise((resolve) => landing.push(() => resolve(new Map(files.map((f) => [f, undefined])))))
+    },
+  })
+  const settle = () => new Promise((r) => setTimeout(r, 20))
+  const states = () => t.get("t")?.bgShells.map((s) => s.state)
+
+  // Only the first shell is past its grace window: the second was launched four minutes later.
+  h.clock.ms = Date.parse("2026-07-01T00:00:01.000Z") + 5 * 60_000
+  t.tick()
+  h.changes.n = 0 // the fold's own nudge
+  states()
+  await settle()
+  assert.deepEqual(asked, [[first]])
+
+  // The second crosses its grace window while that probe is still out, and the board assembles.
+  h.clock.ms += 5 * 60_000
+  assert.deepEqual(states(), ["running", "running"])
+  await settle()
+  assert.equal(asked.length, 1, "one probe at a time: the flush does not start a second while one is in flight")
+
+  landing[0]!()
+  await settle()
+  assert.deepEqual(asked, [[first], [later]], "the queue drains itself when the flight lands, and does not re-ask the path that flight just answered")
+  landing[1]!()
+  await settle()
+  assert.deepEqual(states(), ["running", "running"])
+  await settle()
+  assert.equal(asked.length, 2, "both are remembered unknowns now, so the next pass asks nothing")
+  assert.equal(h.changes.n, 0, "and none of it nudged the board")
+})
+
 // AN UNHELD OUTPUT FILE IS A QUESTION, NOT A VERDICT (2026-10-05). `exec cmd > out 2>&1` replaces the
 // shell with a process whose fds point at `out`, so nobody holds `<taskId>.output` while the work runs —
 // and lsof's "no holder" alone demoted exactly that shell, dropped it from `activity`, and refused a park
