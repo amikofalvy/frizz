@@ -498,6 +498,12 @@ export function runClaudeBroker(config: ClaudeBrokerConfig, options: RunClaudeBr
           )
         }
         else if (msg.t === "reload-plugins") {
+          // NO CURRENT SERVER SENDS THIS. It was the Reload plugins button's frame, and the button
+          // went on 2026-10-11 when this daemon began reloading itself between turns (pluginSync,
+          // above). It is still answered, and the capability still advertised, for an OLDER server:
+          // a downgrade attaches one to this daemon, and its button would otherwise be told the
+          // session "predates in-place plugin reload".
+          //
           // Answers on `sock` for the same reason cancel-input does: the caller is blocked on this
           // reply, and a silent drop reads as a wedged daemon rather than a failed reload.
           const requestId = msg.requestId as string
