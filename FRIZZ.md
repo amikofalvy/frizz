@@ -162,6 +162,7 @@ touches GitHub as a PR.
   that is always the wrong move. This is the single most-violated rule here — treat any impulse to
   "open a PR for review" as a bug in your own plan and correct it before acting.
 - **Don't push a branch to the remote to stage a review either.** The remote plays no part in landing work. Reading GitHub (issues, PRs, CI) is fine; creating or pushing a PR is not. The one push that is not staging a review is a RELEASE: `release` is a fast-forward pointer into `main`, and pushing it selects the commit that ships — a maintainer then dispatches the workflow against it. When asked to cut one, follow `AGENTS.md` § Cutting a release, which is the whole procedure.
+- **Releases are the dedicated releaser thread's job, never yours unless you were asked to cut one.** Your work is finished when it is on local `main`; the releaser ships it with everything else. Do not bump a package version, move `release`, or dispatch the workflow on your own, and never offer to — no "want me to cut a patch?", no release option in a question, no "needs a release" follow-up in the handoff (maintainer 2026-10-11). See `AGENTS.md` § Cutting a release.
 - **The default is to work directly on `main` and commit there.** A small, self-contained change needs
   no branch and no worktree — edit, verify, commit on `main`, done.
 - **Use a git worktree freely whenever you want isolation** — messy in-progress work, isolated and
