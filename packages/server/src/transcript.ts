@@ -19,6 +19,7 @@ import {
   parseAskUserQuestionAnswers,
   parseAskUserQuestionInput,
   parseGithubWakeSteer,
+  parseMergedWake,
   splitWakeDeliveries,
   stripHumanGapNote,
   stripWakeDeliveryToken,
@@ -292,16 +293,31 @@ function pushUserRecord(out: TranscriptMessage[], sourceId: string, text: string
 // is also why the MARK is deduped by text: the attachment routinely lands well after the worker has
 // already replied (measured p50 20.9s, max 9.6min), so a second walk from there would reach past the
 // refused fence and mark the worker's re-fence, which is the good one.
+//
+// A CORRECTION MERGED WITH OTHER WAKES is still a correction (see parseMergedWake): the scheduler sends
+// everything waiting for a thread as one message, and a refused fence is very often waiting beside the
+// shell whose exit refused it. Its lead is then a section down, so the prefix test alone missed it and
+// the refused fence kept its hourglass card. The mark is taken from the section; the record is dropped
+// only when corrections are ALL it carries — its other wakes still have to render, and the chat leaves
+// the correction's section out when it draws them.
 type CorrectionSink = (text: string) => boolean
 function createCorrectionSink(out: TranscriptMessage[]): CorrectionSink {
   const marked = new Set<string>()
+  const refuse = (correction: string) => {
+    if (marked.has(correction)) return
+    marked.add(correction)
+    markFenceRefused(out)
+  }
   return (text: string) => {
-    if (!isParkCorrection(text)) return false
-    if (!marked.has(text)) {
-      marked.add(text)
-      markFenceRefused(out)
+    if (isParkCorrection(text)) {
+      refuse(text)
+      return true
     }
-    return true
+    const merged = parseMergedWake(text)
+    if (!merged) return false
+    const corrections = merged.filter((part) => isParkCorrection(part.body))
+    for (const part of corrections) refuse(part.body)
+    return corrections.length === merged.length
   }
 }
 
