@@ -41,7 +41,7 @@ import { DispatchForm } from "./NewThreadModal.tsx"
 import { StatusRow } from "./StatusRow.tsx"
 import { InteractionStack } from "./InteractionCards.tsx"
 import { RegisteredAnsweringProvider, RegisteredQuestionStack, SettledQuestionStack, openQuestionsOf, useSettledQuestions } from "./RegisteredQuestionCards.tsx"
-import { WakeDivider } from "./WakeDivider.tsx"
+import { DividerHint, WAKE_DIVIDER_WIDE_ONLY, WakeDivider } from "./WakeDivider.tsx"
 import {
   captureTranscriptViewportAnchor,
   prependEarlierPage,
@@ -661,12 +661,13 @@ function MiddleRunsSummary({ runs, toolCount, onExpand }: { runs: number; toolCo
       <span className="shrink-0 tabular-nums">{label}</span>
       {tools && (
         <>
-          <span aria-hidden="true" className="shrink-0 opacity-50">·</span>
-          <span className="shrink-0 tabular-nums">{tools}</span>
+          {/* Wide only (see WAKE_DIVIDER_WIDE_ONLY): on a phone's card the two counts and the hint
+              outrun the room the rules leave, and the rounds are the count this line is for. */}
+          <span aria-hidden="true" className={`shrink-0 opacity-50 ${WAKE_DIVIDER_WIDE_ONLY}`}>·</span>
+          <span className={`shrink-0 tabular-nums ${WAKE_DIVIDER_WIDE_ONLY}`}>{tools}</span>
         </>
       )}
-      <span aria-hidden="true" className="shrink-0 opacity-50">·</span>
-      <span className="shrink-0">Click to expand</span>
+      <DividerHint />
     </WakeDivider>
   )
 }
@@ -680,13 +681,16 @@ function IntermediateSummary({ toolCount, onExpand }: { toolCount: number; onExp
       onClick={onExpand}
       ariaLabel={`Expand ${tools ? `${tools} of ` : ""}intermediate agent activity`}
     >
-      {tools && (
+      {/* With a count to show, the hint shortens on a narrow row like every other divider's. With none,
+          the words ARE the label — a zero-tool run has nothing else to say — so they stay whole. */}
+      {tools ? (
         <>
           <span className="shrink-0 tabular-nums">{tools}</span>
-          <span aria-hidden="true" className="shrink-0 opacity-50">·</span>
+          <DividerHint />
         </>
+      ) : (
+        <span className="shrink-0">Click to expand</span>
       )}
-      <span className="shrink-0">Click to expand</span>
     </WakeDivider>
   )
 }

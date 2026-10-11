@@ -65,8 +65,37 @@ test("a batch of held wakes draws one hairline per wake, and the fallback card r
             // Two wakes that arrived APART, one above the other: the pitch a merged pair must match.
             lonePitch: top("w3") - top("w2"),
             ownWatch: ["w19b", "w19c"].map((id) => document.querySelector(`[data-frizz-msg="${id}"][data-wake-divider]`)?.textContent ?? ""),
+            // EVERY hairline on the page — a rule, the label, a rule — as it is drawn: how much rule
+            // shows either side, and the label as the eye reads it (`innerText` leaves out what the
+            // narrow reading hides, which `textContent` above does not).
+            hairlines: Array.from(document.querySelectorAll("[data-wake-divider]")).map((el) => {
+              const [left, label, right] = Array.from(el.children) as HTMLElement[]
+              return {
+                reads: label.innerText.replace(/\s+/g, " ").trim(),
+                left: left.getBoundingClientRect().width,
+                right: right.getBoundingClientRect().width,
+                height: label.getBoundingClientRect().height,
+                clipped: label.scrollWidth > label.clientWidth + 1,
+              }
+            }),
           }
         })
+        // THE RULE IS NEVER SQUEEZED OUT: 50px of hairline either side of every label, on one line, with
+        // nothing cut off at the label's own edge. A long shell description used to take the whole row
+        // (maintainer 2026-10-11: "you can barely even see the hairline anymore").
+        assert.ok(result.hairlines.length >= 30, `the fixture's hairlines, got ${result.hairlines.length}`)
+        for (const line of result.hairlines) {
+          assert.ok(line.left >= 49.5 && line.right >= 49.5, `${width}px ${font}: "${line.reads}" leaves ${line.left.toFixed(1)}px / ${line.right.toFixed(1)}px of rule`)
+          assert.ok(line.height < 24, `${width}px ${font}: "${line.reads}" wrapped to ${line.height}px`)
+          assert.equal(line.clipped, false, `${width}px ${font}: "${line.reads}" is cut at the label's edge`)
+        }
+        // …and the room comes from a narrow READING, written per line, not from an ellipsis: the words a
+        // row can do without leave whole, and what stays is the news and the PR it is about.
+        const reads = (start: string) => result.hairlines.some((line) => line.reads.startsWith(start))
+        const readings = width < 500
+          ? ["Wait over · expand ·", "« Running the update harness against the built shell and server » finished ·", "comment #756 ·", "review comment #587 ·", "CI passed #761 · 2h ago", "PR merged #756 ·", "Watcher expired #777 ·", "Watch expired ·", "Weekly limit reset ·", "Fable 5 → Opus ·", "1 question cancelled ·", "Timer · expand ·"]
+          : ["Wait over — its work finished · Click to expand ·", "Background task « Running the update harness against the built shell and server » finished ·", "New comment from @colinhacks on nubjs/nub#756 ·", "New review comment from @pullfrog on nubjs/nub#587 ·", "CI passed on nubjs/nub#761 · 7 checks green ·", "PR merged on nubjs/nub#756 ·", "Watcher expired on nubjs/nub#777 ·", "Watch expired on a background shell ·", "Weekly usage limit reset — resuming ·", "Fable 5 limit — switched to Opus ·", "1 question cancelled — the worker decides it itself ·", "Timer · Click to expand ·"]
+        for (const reading of readings) assert.ok(reads(reading), `${width}px ${font}: no hairline reads "${reading}…", got ${result.hairlines.map((line) => line.reads).join(" | ")}`)
         // THE REPORTED DELIVERY: a park ending beside the shell that ended it. Two hairlines, in the
         // order they were queued, and none of the envelope — not its lead, not the scheduler's reason
         // headings, not either wake's instructions to the worker.
@@ -92,8 +121,8 @@ test("a batch of held wakes draws one hairline per wake, and the fallback card r
         assert.equal(result.unread.cards.length, 1)
         assert.match(result.unread.cards[0], /Its text survives, in a card of its own\./)
         assert.doesNotMatch(result.unread.text, /Frizz held|###|Frizz sends this because/)
-        assert.match(result.ownWatch[0], /^Watch on a background shell expired/)
-        assert.match(result.ownWatch[1], /^Watch on a sub-agent expired/)
+        assert.match(result.ownWatch[0], /^Watch expired on a background shell/)
+        assert.match(result.ownWatch[1], /^Watch expired on a sub-agent/)
         assert.deepEqual(result.headings, ["What it carries"])
         assert.ok(result.codes.includes("shells: [bc3rwp1k7]"))
         assert.equal(result.bold, "finished")
