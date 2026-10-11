@@ -1235,6 +1235,278 @@ a[href] {
   padding: 0;
   font-size: 0.88em;
 }
+/* ── Callouts, disclosures, keys and scripts ────────────────────────────────────────────────────
+   Three things an author writes that Markdown's own blocks have no drawing for: a `> [!WARNING]`
+   blockquote (lib/callouts.ts), a `<details>` section (lib/disclosure.ts), and the inline `<kbd>`,
+   `<sub>`, `<sup>` and `<mark>` the sanitizer admits.
+
+   CALLOUTS. A callout IS a blockquote and is drawn as one: the same 2px rule and the same inset as
+   `.md-body blockquote`, with the rule in the type's colour and a title row above the body. No fill and
+   no frame — a tinted banner out-shouts the code blocks and cards it sits between, and the type is
+   already said twice, by the icon and by the word. The body takes the PROSE colour, not the quote's
+   muted one: a quote is somebody else's words, a callout is the part the author most wants read.
+
+   The five colours are the theme's own status tokens, each already tuned for both themes. */
+.md-body .md-callout {
+  --md-callout-ink: var(--color-muted);
+  border-left-color: var(--md-callout-ink);
+  color: inherit;
+}
+.md-body .md-callout-note {
+  --md-callout-ink: var(--color-shell);
+}
+.md-body .md-callout-tip {
+  --md-callout-ink: var(--color-live);
+}
+.md-body .md-callout-important {
+  --md-callout-ink: var(--color-watch);
+}
+.md-body .md-callout-warning {
+  --md-callout-ink: var(--color-attention);
+}
+.md-body .md-callout-caution {
+  --md-callout-ink: var(--color-danger);
+}
+/* The body keeps the prose rhythm (--md-step between its blocks); only its outer edges close up, as
+   `.md-body`'s own do. Three classes, because the last block is often a `.md-code` wrapper, whose
+   margin rule (two classes, later in the file) would otherwise reopen the bottom. */
+.md-body .md-callout > :first-child {
+  margin-top: 0;
+}
+.md-body .md-callout > :last-child {
+  margin-bottom: 0;
+}
+/* The title binds to the body it labels, the way a heading does: a tight gap, where a full --md-step
+   read as a label floating over an unrelated paragraph. */
+.md-body .md-callout > .md-callout-title {
+  /* The glyph's dead space: how far its ink stands in from each side of its 1em box, which is the
+     glyph's own viewBox geometry (set per type below). And the gap the eye reads between icon and
+     word — the 6px of the app's `gap-1.5` rows at this 14px, in `em`. */
+  --md-callout-trim: 0.042em;
+  --md-callout-gap: 0.42em;
+  /* Where the title's text starts: the icon's INK width plus that gap. A wrapped title hangs under
+     its own first word, not under the icon. */
+  --md-callout-gutter: calc(1em - 2 * var(--md-callout-trim) + var(--md-callout-gap));
+  margin-bottom: 0;
+  padding-left: var(--md-callout-gutter);
+  font-weight: 600;
+  color: var(--md-callout-ink);
+}
+.md-body .md-callout > .md-callout-title + * {
+  margin-top: 0.3em;
+}
+/* The type's icon: a lucide glyph carried as a mask, for the reason the task marks give — the
+   sanitizer drops inline `<svg>` with its subtree, and a mask in the stylesheet keeps lucide's exact
+   geometry while `currentColor` paints it.
+
+   IN THE LINE, as `.md-task` is: a zero-advance inline-block whose margins hang it in the title's
+   gutter, so the title stays ordinary inline content (a title can carry `code` and emphasis, which a
+   flex row would split into items).
+
+   VERTICAL — the transcript chevron's correction (lib/transcriptMetaLabels.ts). The box sits ON the
+   baseline, so its centre is 0.5em above it; `translate` moves it down by `0.5em − 0.5cap`, onto the
+   centre of the cap band, with `1cap` resolved by the browser for whatever face is in use. The
+   negative top margin trims what the box adds above the baseline to `1cap`, so the word alone sets
+   the line's height. `translate` and not `vertical-align`, which says the same thing and measured
+   worse: a box offset by a fractional length is painted on the nearest whole pixel, a transform is
+   not. Measured in sans on the rendered pixels (scripts/verify-md-blocks-ink.mjs, 2026-10-11), cap
+   band centre minus ink centre: under `vertical-align` +0.06px at 14px but +0.44px in an answer chip
+   and −0.69px at 28px; under `translate` see the readings below. All five glyphs are symmetric about
+   their box centre (ink 2..22 or 1..23 of 24 on the vertical axis), so one correction serves them.
+
+   HORIZONTAL — `margin` spaces BOXES and the eye reads ink. The bulb inks 14 of its 24 units across
+   and the circle 22, so on one shared margin the gap to the word drew 7.00px to 9.25px across the
+   five types. Each type's trim hangs its box that far outside the column on the left — the ink
+   starts on the body's own left edge — and takes as much off the right. */
+.md-body .md-callout-title::before {
+  content: "";
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  margin: calc(1cap - 1em) calc(var(--md-callout-gap) - var(--md-callout-trim)) 0
+    calc(-1 * (var(--md-callout-gutter) + var(--md-callout-trim)));
+  translate: 0 calc(0.5em - 0.5cap);
+  background-color: currentColor;
+  -webkit-mask: var(--md-callout-glyph) center / 100% no-repeat;
+  mask: var(--md-callout-glyph) center / 100% no-repeat;
+}
+/* The trims: `Lightbulb` inks x 5..19 of 24 and `MessageSquareWarning` 2..22; the other three ink
+   1..23, the default above. */
+.md-body .md-callout-tip > .md-callout-title {
+  --md-callout-trim: 0.208em;
+}
+.md-body .md-callout-important > .md-callout-title {
+  --md-callout-trim: 0.083em;
+}
+/* lucide `Info`, `Lightbulb`, `MessageSquareWarning`, `TriangleAlert`, `OctagonAlert` — the shapes
+   GitHub's alerts use, in this app's icon family. */
+.md-body .md-callout-note {
+  --md-callout-glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M12 16v-4'/%3E%3Cpath d='M12 8h.01'/%3E%3C/svg%3E");
+}
+.md-body .md-callout-tip {
+  --md-callout-glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5'/%3E%3Cpath d='M9 18h6'/%3E%3Cpath d='M10 22h4'/%3E%3C/svg%3E");
+}
+.md-body .md-callout-important {
+  --md-callout-glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z'/%3E%3Cpath d='M12 7v2'/%3E%3Cpath d='M12 13h.01'/%3E%3C/svg%3E");
+}
+.md-body .md-callout-warning {
+  --md-callout-glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3'/%3E%3Cpath d='M12 9v4'/%3E%3Cpath d='M12 17h.01'/%3E%3C/svg%3E");
+}
+.md-body .md-callout-caution {
+  --md-callout-glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 16h.01'/%3E%3Cpath d='M12 8v4'/%3E%3Cpath d='M15.312 2a2 2 0 0 1 1.414.586l4.688 4.688A2 2 0 0 1 22 8.688v6.624a2 2 0 0 1-.586 1.414l-4.688 4.688a2 2 0 0 1-1.414.586H8.688a2 2 0 0 1-1.414-.586l-4.688-4.688A2 2 0 0 1 2 15.312V8.688a2 2 0 0 1 .586-1.414l4.688-4.688A2 2 0 0 1 8.688 2z'/%3E%3C/svg%3E");
+}
+
+/* DISCLOSURES. The summary is a disclosure row in the transcript's own idiom — the chevron of the
+   `Reasoning` and tool-digest rows (lib/transcriptMetaLabels.ts): lucide `ChevronRight` at 1em, muted
+   at 70%, the foreground under the pointer, turned a quarter when open.
+
+   The section's body is inset to the LABEL's left edge, so label and body share one column and the
+   chevron stands in a gutter of its own. The inset is padding on the `<details>`, not a margin on its
+   children, because a body written without blank lines is a bare text node no selector can reach. */
+.md-body details {
+  /* The label's left edge, and the body's: `.md-body blockquote`'s own inset (its 2px rule + 0.8em),
+     so a section's body, a quote and a callout stand on one left edge. */
+  --md-summary-inset: calc(0.8em + 2px);
+  margin: var(--md-step) 0;
+  padding-left: var(--md-summary-inset);
+}
+.md-body details > :last-child {
+  margin-bottom: 0;
+}
+/* A flex row of exactly two items, the chevron and the label span the sanitizer wraps the summary's
+   content in (lib/disclosure.ts gives the reason). `fit-content`: the row is the click target, and a
+   click on the empty line to its right is far more often the start of a text selection than a toggle. */
+.md-body details > summary {
+  display: flex;
+  align-items: baseline;
+  width: fit-content;
+  max-width: 100%;
+  margin-left: calc(-1 * var(--md-summary-inset));
+  border-radius: 4px;
+  /* Chrome draws the native triangle as the list marker; Safari as a pseudo-element of its own. */
+  list-style: none;
+  font-weight: 500;
+  cursor: pointer;
+}
+.md-body details > summary::-webkit-details-marker {
+  display: none;
+}
+.md-body .md-summary-label {
+  min-width: 0;
+}
+/* An open section's label binds to its body as a callout's title does. Margin on the summary and none
+   on what follows, so a bare-text body gets the same gap a paragraph does. */
+.md-body details[open] > summary {
+  margin-bottom: 0.3em;
+}
+.md-body details[open] > summary + * {
+  margin-top: 0;
+}
+/* The chevron, placed as transcriptMetaChevronClass places it.
+
+   VERTICAL: baseline-aligned, so its bottom edge sits on the label's baseline and its centre 0.5em
+   above; `translate` then moves it down by `0.5em − 0.5cap`, onto the centre of the cap band, with
+   `1cap` resolved by the browser for the face in use. The negative top margin trims what the 1em box
+   contributes above the baseline to `1cap`, so the label alone sets the row's height.
+
+   HORIZONTAL: `m9 18 6-6-6-6` under a 2-unit round pen inks 8 of the 24 box units across when it
+   points right and 14 when it points down, so the box carries 0.333em of dead space a side closed and
+   0.208em open. The glyph turns in place — the label must not move when the section opens — so the box
+   is hung 0.208em left of the column: the OPEN chevron's ink starts exactly on the prose's left edge
+   and the closed one's 0.125em inside it, never outside. The right margin is whatever is left of
+   --md-summary-inset. */
+.md-body details > summary::before {
+  content: "";
+  flex: none;
+  width: 1em;
+  height: 1em;
+  margin: calc(1cap - 1em) calc(var(--md-summary-inset) - 0.792em) 0 -0.208em;
+  translate: 0 calc(0.5em - 0.5cap);
+  background-color: var(--color-muted-70);
+  -webkit-mask: var(--md-summary-glyph) center / 100% no-repeat;
+  mask: var(--md-summary-glyph) center / 100% no-repeat;
+  --md-summary-glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m9 18 6-6-6-6'/%3E%3C/svg%3E");
+  transition: rotate var(--default-transition-duration) var(--default-transition-timing-function),
+    background-color var(--default-transition-duration) var(--default-transition-timing-function);
+}
+.md-body details[open] > summary::before {
+  rotate: 90deg;
+}
+.md-body details > summary:hover::before {
+  background-color: var(--color-fg);
+}
+.md-body details > summary:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+/* Inside an answer chip the summary is raised above the chip's stretched button, as a link is, so a
+   click on it opens the section; the chip's own click handler stands down for it
+   (QuestionBlockCard's Chip). Everything else in the section still picks the option. */
+[data-question-option] .md-body details > summary {
+  position: relative;
+  z-index: 1;
+}
+
+/* KEYS. A `<kbd>` is the keycap the question card already draws beside each option (OptionKey in
+   QuestionBlockCard.tsx): panel fill, a strong hairline with a heavier bottom lip, muted sans at
+   10.5px on the option's 12px. Here in `em`, so it tracks whatever prose it sits in.
+
+   It must not make its LINE taller, for the reason the code chip above gives. An inline box's border
+   and padding never enter the line box, only its `line-height` does, so `line-height: 1` on a plain
+   inline is the whole guarantee; an inline-block would have counted the cap's full height. */
+.md-body kbd,
+.md-inline kbd {
+  --md-kbd-size: 0.875;
+  font-family: var(--font-sans);
+  font-size: calc(1em * var(--md-kbd-size));
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  padding: 0 0.4em;
+  border: 1px solid var(--color-border-strong);
+  border-bottom-width: 2px;
+  border-radius: 0.35em;
+  background: var(--color-panel);
+  color: var(--color-muted);
+  /* Smaller type on a shared baseline has a lower cap band. Lifted by half the difference between
+     the prose's cap height and the cap's own, so the two bands share a centre. */
+  vertical-align: calc(0.5cap / var(--md-kbd-size) - 0.5cap);
+}
+/* On a chip's changing fill the cap goes translucent with the rest of the block chrome. */
+[data-question-option] :is(.md-body, .md-inline) kbd {
+  background: color-mix(in srgb, var(--color-bg) 60%, transparent);
+  border-color: color-mix(in srgb, var(--color-fg) 14%, transparent);
+}
+/* SCRIPTS. The UA's `vertical-align: super` raises the fragment's whole inline box, which pushes the
+   line box taller. A fragment with `line-height: 0` contributes a box of no height, so it can be
+   moved by a length without the line noticing. Static, not preflight's `position: relative`: a
+   positioned fragment would paint above an answer chip's stretched button. */
+.md-body :is(sub, sup),
+.md-inline :is(sub, sup) {
+  position: static;
+  font-size: 0.75em;
+  line-height: 0;
+}
+.md-body sup,
+.md-inline sup {
+  vertical-align: 0.5em;
+}
+.md-body sub,
+.md-inline sub {
+  vertical-align: -0.25em;
+}
+/* HIGHLIGHT. The UA's `<mark>` is opaque yellow under black text, in both themes. A wash of the
+   attention tone under the prose's own colour instead — and not the accent, which is already what a
+   text SELECTION is washed with. */
+.md-body mark,
+.md-inline mark {
+  padding: 0 0.15em;
+  border-radius: 0.2em;
+  background: color-mix(in srgb, var(--color-attention) 24%, transparent);
+  color: inherit;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
 /* ── Fenced-code copy button ────────────────────────────────────────────────────────────────────
    lib/syntaxHighlight.ts wraps every fenced block in this span and appends the button; one delegated
    listener (lib/copy-code.ts) does the copying. The wrapper exists because the `<pre>` above SCROLLS:
