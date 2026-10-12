@@ -903,6 +903,7 @@ export class AcpBridge {
         return
       case "plan":
       case "user_message_chunk":
+      case "compaction_summary_chunk":
         return
       case "unknown":
         this.diagnostic(live.slug, "update", `unhandled session/update ${String((update.raw as { sessionUpdate?: unknown })?.sessionUpdate)}`)
