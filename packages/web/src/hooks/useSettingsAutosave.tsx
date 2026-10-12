@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { type Settings } from "@frizz/shared"
-import { isRetryableRpcError, rpc } from "../api/rpc.ts"
+import { isRetryableRpcError, rpcFor } from "../api/rpc.ts"
+import { scopedKey, useProjectScope } from "../lib/projectScope.tsx"
 
 // Every settings control WRITES AS YOU TOUCH IT — there is no Save button and no Cancel. A picker or a
 // toggle persists on the click; a textarea persists this long after the last keystroke, so a long
@@ -22,6 +23,25 @@ export type SaveState = "idle" | "saving" | "saved" | "error"
 // its popover — lands before the dispatch that would read it.
 export const SETTINGS_WRITE_KEY = ["settingsSet"] as const
 
+// WHOSE SETTINGS. The agent settings a surface edits — permissions, the prompt cache tier, the
+// compaction windows — are stored PER PROJECT (server/settings.ts: only notifications, the file opener
+// and the rail are machine-wide), and a dispatch runs under its own project's. So a surface inside a
+// <ProjectScope> reads and writes THAT project's: on the Console that is the prompt box's chip, whose
+// gear otherwise showed and rewrote the launching project's permission while the thread it was about to
+// start ran under another. With no scope — a project's own page, the Settings drawer — it is the page's
+// project, as it always was, under the same bare key.
+export type SettingsWrite = { project: string | undefined; settings: Settings }
+
+/** The settings read for `project` (undefined: this page's), and the cache entry it lives in. */
+export function settingsQuery(project: string | undefined) {
+  return { queryKey: scopedKey(["settingsGet"], project), queryFn: () => rpcFor(project).settingsGet() }
+}
+
+/** One settings write, to the project it was queued for. */
+export function writeSettings({ project, settings }: SettingsWrite): Promise<Settings> {
+  return rpcFor(project).settingsSet(settings)
+}
+
 // The write side of every settings surface — the drawer and the in-context popovers alike. Three
 // invariants, all silent when broken:
 //
@@ -34,9 +54,13 @@ export const SETTINGS_WRITE_KEY = ["settingsSet"] as const
 //    again, so the one failure the RPC layer certifies as side-effect-free — `isRetryableRpcError`,
 //    which the composer already leans on during a control-plane restart — has to be replayed here.
 //    Anything else is AMBIGUOUS (it may have landed) and must be reported, never re-sent.
+//
+// Each write carries the project it was QUEUED for, so a debounce still pending when the scope moves
+// lands where it was typed (and is flushed first, rather than replaced by the next project's value).
 export function useSettingsAutosave() {
+  const project = useProjectScope()
   const [state, setState] = useState<SaveState>("idle")
-  const pending = useRef<Settings | null>(null)
+  const pending = useRef<SettingsWrite | null>(null)
   const timer = useRef<number | undefined>(undefined)
   const chain = useRef<Promise<unknown>>(Promise.resolve())
   const inflight = useRef(0)
@@ -47,7 +71,7 @@ export function useSettingsAutosave() {
   const flushRef = useRef<() => void>(() => {})
   // A react-query mutation rather than a bare RPC so the write is visible to `useIsMutating` — and it
   // stays in the mutation cache after this surface unmounts, so a flush-on-close is still counted.
-  const write = useMutation({ mutationKey: [...SETTINGS_WRITE_KEY], mutationFn: (next: Settings) => rpc.settingsSet(next) })
+  const write = useMutation({ mutationKey: [...SETTINGS_WRITE_KEY], mutationFn: writeSettings })
   const writeRef = useRef(write)
   writeRef.current = write
   const queryClient = useQueryClient()
@@ -64,7 +88,7 @@ export function useSettingsAutosave() {
       .then(() => writeRef.current.mutateAsync(next))
       .then((saved) => {
         // Publish the server's validated copy rather than racing queued writes with a refetch.
-        queryClient.setQueryData(["settingsGet"], saved)
+        queryClient.setQueryData(settingsQuery(next.project).queryKey, saved)
         inflight.current -= 1
         retries.current = 0
         if (inflight.current > 0 || pending.current) return
@@ -86,15 +110,16 @@ export function useSettingsAutosave() {
   flushRef.current = flush
 
   const queue = useCallback(
-    (next: Settings, debounce = false) => {
-      pending.current = next
+    (settings: Settings, debounce = false) => {
+      if (pending.current && pending.current.project !== project) flush()
+      pending.current = { project, settings }
       retries.current = 0
       if (timer.current !== undefined) window.clearTimeout(timer.current)
       timer.current = undefined
       if (!debounce) return flush()
       timer.current = window.setTimeout(flush, SAVE_DEBOUNCE_MS)
     },
-    [flush],
+    [flush, project],
   )
 
   useEffect(
@@ -113,21 +138,28 @@ export function useSettingsAutosave() {
 // afterwards: every save publishes the stored value straight into the query cache, so a later fetch
 // can only agree with what is here. `debounce` is for the free-text fields alone — a picker or a
 // toggle is a single discrete intent and writes on the spot.
+//
+// The draft belongs to the project it was seeded from: when the scope moves (the Console's chip), the
+// old project's draft is not shown for the new one, and the new project's copy seeds it afresh.
 export function useSettingsDraft() {
-  const settings = useQuery({ queryKey: ["settingsGet"], queryFn: () => rpc.settingsGet() })
-  const [draft, setDraft] = useState<Settings | null>(() => settings.data ?? null)
+  const project = useProjectScope()
+  const settings = useQuery(settingsQuery(project))
+  const [held, setHeld] = useState<{ project: string | undefined; settings: Settings } | null>(() =>
+    settings.data ? { project, settings: settings.data } : null,
+  )
+  const draft = held && held.project === project ? held.settings : null
   const { state, queue, flush } = useSettingsAutosave()
 
   useEffect(() => {
-    if (settings.data && !draft) setDraft(settings.data)
-  }, [settings.data, draft])
+    if (settings.data && !draft) setHeld({ project, settings: settings.data })
+  }, [settings.data, draft, project])
 
   const update = useCallback(
     (next: Settings, opts?: { debounce?: boolean }) => {
-      setDraft(next)
+      setHeld({ project, settings: next })
       queue(next, opts?.debounce)
     },
-    [queue],
+    [queue, project],
   )
 
   return { draft, update, saveState: state, flush }

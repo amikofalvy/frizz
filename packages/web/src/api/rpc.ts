@@ -86,7 +86,8 @@ export async function parseRpcResponse(res: Response, name: string): Promise<unk
  *
  * `settingsGet`/`settingsSet`/`settingsReset` are deliberately NOT here: the keys the Console itself
  * reads (`notifications`, `projectRail`, the file opener) are machine-level (server/settings.ts), and any
- * project answers them the same way.
+ * project answers them the same way. The AGENT settings are per project, though, so the prompt box's
+ * gear makes its calls through its scope's `rpcFor` (hooks/useSettingsAutosave.tsx).
  */
 export const PROJECT_SCOPED_PROCEDURES: ReadonlySet<string> = new Set([
   "board",
