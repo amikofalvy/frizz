@@ -47,7 +47,9 @@ test("settings save themselves — no Save button, no Cancel, no unsaved marker"
   // And every write is a react-query mutation under one key, so a dispatch surface can wait on it.
   assert.match(autosaveSource, /chain\.current = chain\.current\s*\n\s*\.then\(\(\) => writeRef\.current\.mutateAsync\(next\)\)/)
   assert.match(autosaveSource, /export const SETTINGS_WRITE_KEY = \["settingsSet"\] as const/)
-  assert.match(autosaveSource, /mutationKey: \[\.\.\.SETTINGS_WRITE_KEY\], mutationFn: \(next: Settings\) => rpc\.settingsSet\(next\)/)
+  assert.match(autosaveSource, /mutationKey: \[\.\.\.SETTINGS_WRITE_KEY\], mutationFn: writeSettings \}\)/)
+  // And each write goes to the project it was queued for (hooks/useSettingsAutosave.test.ts).
+  assert.match(autosaveSource, /pending\.current = \{ project, settings \}/)
 })
 
 test("the drawer no longer duplicates the composer's controls or offers vestigial toggles", () => {

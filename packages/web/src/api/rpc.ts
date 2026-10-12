@@ -86,7 +86,8 @@ export async function parseRpcResponse(res: Response, name: string): Promise<unk
  *
  * `settingsGet`/`settingsSet`/`settingsReset` are deliberately NOT here: the keys the Console itself
  * reads (`notifications`, `projectRail`, the file opener) are machine-level (server/settings.ts), and any
- * project answers them the same way.
+ * project answers them the same way. The AGENT settings are per project, though, so the prompt box's
+ * gear makes its calls through its scope's `rpcFor` (hooks/useSettingsAutosave.tsx).
  */
 export const PROJECT_SCOPED_PROCEDURES: ReadonlySet<string> = new Set([
   "board",
@@ -175,7 +176,12 @@ async function call(name: string, type: ProcType, rawInput?: unknown, opts?: Rpc
   assertMutationAllowedDuringControlPlaneTransition(type)
   const routed = routeCall(name, rawInput, project)
   const { base, input } = routed
-  const finish = (result: unknown) => (routed.project && isConsolePath() ? rekeyOutput(name, result, routed.project) : result)
+  // Whether this is a Console call is decided NOW, not when the answer lands: a dispatch can take
+  // seconds, and an operator who moved to a project's page meanwhile still started a thread in the
+  // project the call went to. Read after the await, a bare slug came back and opened that page's
+  // same-named thread instead (ARCHITECTURE.md § Switching projects: capture before the await).
+  const rekey = routed.project !== undefined && isConsolePath()
+  const finish = (result: unknown) => (rekey ? rekeyOutput(name, result, routed.project!) : result)
   if (type === "query") {
     const url = new URL(`${base}/rpc/${name}`, location.origin)
     if (input !== undefined) url.searchParams.set("input", JSON.stringify(input))

@@ -2,7 +2,7 @@ import { useMemo, useRef } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { ExternalLink } from "lucide-react"
 import { showToast } from "../store.ts"
-import { rpc } from "../api/rpc.ts"
+import { fileRpc } from "../lib/consoleProjects.ts"
 import { useLiveLocalFile } from "../hooks.ts"
 import { copyTextToClipboard } from "../lib/clipboard.ts"
 import { useInnerHtml } from "../lib/innerHtml.ts"
@@ -36,20 +36,10 @@ export const FOOTER_STYLE = { paddingBottom: "max(0.75rem, env(safe-area-inset-b
 // `localFileOpener` setting, exactly as a click on the link used to. Exported because the /full
 // page's split FileViewerPanel is the same reader in a different frame and must not fork this.
 export function OpenAction({ path }: { path: string }) {
-  const open = () => {
-    rpc
-      .openLocalFile({ path })
-      .then(async (result) => {
-        if (result.action !== "copy") return
-        await copyTextToClipboard(result.path)
-        showToast("Copied local path")
-      })
-      .catch((error) => showToast(`Could not open local file: ${(error as Error).message.slice(0, 100)}`))
-  }
   return (
     <button
       type="button"
-      onClick={open}
+      onClick={() => void openOutsideFrizz(path)}
       onMouseDown={(e) => e.preventDefault()}
       className="flex items-center gap-1.5 rounded-md border border-border-strong bg-panel-2/60 px-2.5 py-1 text-[12px] font-medium text-fg/80 outline-none transition-colors hover:bg-panel-2 hover:text-fg focus-visible:ring-1 focus-visible:ring-focus-ink-60"
       title={`Open ${path} outside Frizz`}
@@ -58,6 +48,21 @@ export function OpenAction({ path }: { path: string }) {
       <ExternalLink size={12} aria-hidden="true" /> Open
     </button>
   )
+}
+
+/**
+ * The Open button's click. By PATH (`fileRpc`), like every other file call: a reader drawer has no
+ * ProjectScope, and on the Console a plain `rpc.openLocalFile` is refused for naming no project.
+ */
+export function openOutsideFrizz(path: string): Promise<void> {
+  return fileRpc(path)
+    .openLocalFile({ path })
+    .then(async (result) => {
+      if (result.action !== "copy") return
+      await copyTextToClipboard(result.path)
+      showToast("Copied local path")
+    })
+    .catch((error) => showToast(`Could not open local file: ${(error as Error).message.slice(0, 100)}`))
 }
 
 // The document's frontmatter is YAML, so render it through the same grammar and token palette as a

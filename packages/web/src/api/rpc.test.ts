@@ -81,3 +81,36 @@ test("machine-wide calls and project pages are unchanged", () => {
   assert.deepEqual(routeCall("threadTranscript", { slug: "fix" }, undefined, "/project/nub/thread/fix"), { base: "/_frizz/nub", input: { slug: "fix" } })
   assert.deepEqual(routeCall("dispatch", { prompt: "x" }, undefined, "/"), { base: "/_frizz", input: { prompt: "x" } })
 })
+
+// ── THE CONSOLE'S RE-KEYING IS DECIDED WHEN THE CALL IS SENT ──────────────────────────────────────
+// A dispatch can take seconds to answer (the server waits out session start), and the operator can
+// leave the Console meanwhile. The answer's slug still names a thread in the project the call went to,
+// so it must come back keyed: a bare `fix-auth` handed to the toast's "Open thread" on another project's
+// page opens THAT project's same-named thread.
+test("a Console call answered after the page left the Console still comes back keyed", async () => {
+  const previousLocation = Object.getOwnPropertyDescriptor(globalThis, "location")
+  const previousFetch = globalThis.fetch
+  const page = { pathname: "/console", origin: "http://frizz.test" }
+  Object.defineProperty(globalThis, "location", { configurable: true, writable: true, value: page })
+  const sent: string[] = []
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    sent.push(String(url))
+    // The operator moves to another project's board while the server is still answering.
+    page.pathname = "/project/docs-site"
+    return new Response(JSON.stringify({ result: { slug: "fix-auth", sessionId: "s" } }), { status: 200 })
+  }) as typeof fetch
+  try {
+    const { rpcFor } = await import("./rpc.ts")
+    const res = await rpcFor("billing").dispatch({ prompt: "x" } as never)
+    assert.deepEqual(sent, ["/_frizz/billing/rpc/dispatch"])
+    assert.equal(res.slug, "billing~fix-auth")
+    // The negative control: the same call made from a project's page is that page's, and stays bare.
+    page.pathname = "/project/billing"
+    const own = await rpcFor("billing").dispatch({ prompt: "x" } as never)
+    assert.equal(own.slug, "fix-auth")
+  } finally {
+    globalThis.fetch = previousFetch
+    if (previousLocation) Object.defineProperty(globalThis, "location", previousLocation)
+    else Reflect.deleteProperty(globalThis, "location")
+  }
+})

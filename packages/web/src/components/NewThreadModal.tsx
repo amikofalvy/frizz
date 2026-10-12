@@ -21,7 +21,8 @@ import { useBoard } from "../hooks.ts"
 import { projectIdentity } from "./Sidebar.tsx"
 import { X } from "lucide-react"
 import { isConsolePath } from "../lib/base-path.ts"
-import { useProjectScope } from "../lib/projectScope.tsx"
+import { ProjectScope, useProjectScope } from "../lib/projectScope.tsx"
+import { useConsoleDispatchTarget } from "./ConsoleProjectChip.tsx"
 
 // THE dispatch prompt box — composer + quiet selects row — shared by every surface that can start a
 // thread: the queue's inline section and the anywhere-modal. There is no title field — the server
@@ -297,11 +298,12 @@ function PendingDispatch({ prompt, className = "" }: { prompt: string; className
 // the prompt a third of the screen. × closes; "Start" in the header sends, disabled until there is text;
 // the prompt fills the page at 17px; the tool row — attach, the model chip, the GitHub picker — rides
 // on the keyboard. Start returns to the board when the server has the thread, as the dialog does.
-function PhoneNewThreadPage({ onDispatched }: { onDispatched: () => void }) {
-  const form = useDispatchForm(onDispatched)
+function PhoneNewThreadPage({ onDispatched, projectPicker, project }: { onDispatched: () => void; projectPicker?: ReactNode; project?: string }) {
+  const form = useDispatchForm(onDispatched, projectPicker)
   const board = useBoard()
   const identity = projectIdentity(board)
-  const projectName = identity.state === "verified" ? identity.repo : identity.state === "local" ? identity.name : ""
+  // On the Console the board is every project's, so the subtitle names the one the chip points at.
+  const projectName = project ?? (identity.state === "verified" ? identity.repo : identity.state === "local" ? identity.name : "")
   const [uploading, setUploading] = useState(false)
   const canStart = form.prompt.trim().length > 0 && !form.busy && !uploading
   return (
@@ -365,13 +367,28 @@ function PhoneNewThreadPage({ onDispatched }: { onDispatched: () => void }) {
 
 // The anywhere-modal behind the pill button: same form in a centered dialog. Esc closes (captured
 // here BEFORE the composer's own Escape-blurs handler can swallow it).
+//
+// On the Console (⌘K → "New thread", and the phone's New thread button) the page names no project, so
+// the form wears the same project chip as the sidebar's prompt box and runs inside that project's scope
+// (ConsoleProjectChip.tsx) — without it the dispatch was refused and an attachment was uploaded to the
+// LAUNCHING project first.
 export function NewThreadDialog({ onClose }: { onClose: () => void }) {
   const isMobile = useIsMobile()
+  const onConsole = isConsolePath()
+  const target = useConsoleDispatchTarget(onConsole)
   const contentRef = useRef<HTMLDivElement>(null)
   // Frizz opens this dialog by writing store state, not through RadixDialog.Trigger. Capture the real
   // opener during the mount render so close can restore it explicitly.
   const openerRef = useRef<HTMLElement | null>(
     typeof document !== "undefined" && document.activeElement instanceof HTMLElement ? document.activeElement : null,
+  )
+  const form = isMobile ? (
+    <PhoneNewThreadPage onDispatched={onClose} projectPicker={target.chip} project={target.project?.name} />
+  ) : (
+    <>
+      <RadixDialog.Title className="mb-1 text-[14px] font-medium">New thread</RadixDialog.Title>
+      <DispatchForm autoFocus onDispatched={onClose} projectPicker={target.chip} />
+    </>
   )
   useEffect(() => () => {
     const opener = openerRef.current
@@ -405,14 +422,7 @@ export function NewThreadDialog({ onClose }: { onClose: () => void }) {
             ? "fixed inset-0 z-50 flex flex-col bg-bg pt-[env(safe-area-inset-top)] outline-none"
             : "fixed left-1/2 top-1/2 z-50 w-[640px] max-w-[86vw] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border bg-panel p-5 shadow-2xl shadow-shadow-ink/50 outline-none max-[700px]:top-[calc(env(safe-area-inset-top)+56px)] max-[700px]:w-[calc(100vw-24px)] max-[700px]:max-w-none max-[700px]:translate-y-0"}
         >
-          {isMobile ? (
-            <PhoneNewThreadPage onDispatched={onClose} />
-          ) : (
-            <>
-              <RadixDialog.Title className="mb-1 text-[14px] font-medium">New thread</RadixDialog.Title>
-              <DispatchForm autoFocus onDispatched={onClose} />
-            </>
-          )}
+          {onConsole ? <ProjectScope project={target.project?.slug}>{form}</ProjectScope> : form}
         </RadixDialog.Content>
       </RadixDialog.Portal>
     </RadixDialog.Root>
