@@ -13,8 +13,9 @@
 // two-line wrap was most of what was wrong, so every row here is a SHORTER caption that holds one line
 // down to the phone's 13px.
 //
-// SETTLED ON ROW 8 — the shortest copy, `text-muted`, `mt-2`, a 0.9em lock at stroke 2.25 — which
-// shipped as components/SecretCaption.tsx. That file carries the measurements.
+// THE LOCK SETTLED ON ROW 8: `text-muted`, `mt-2`, a 0.9em lock at stroke 2.25. It shipped as
+// components/SecretCaption.tsx, which carries the measurements. The copy shipped as the maintainer
+// wrote it, "Value stored only in memory. It will not show up in transcripts.", not as any row here.
 //
 // THE LOCK SITS ON THE CAP BAND, not on the box centre: it is 1em tall and `self-baseline` inside an
 // `items-baseline` row, lifted by `0.5em − 0.5cap` — the browser's own cap height, so it holds at the

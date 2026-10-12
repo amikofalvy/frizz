@@ -4,12 +4,15 @@ import { Lock } from "lucide-react"
 // phone answer sheet (RegisteredAnswerSheet) alike: a lock, then what happens to the value. Each caller
 // passes only its own type size, tone and margin; the lock and the copy live here.
 //
-// ONE LINE, down to the phone's 13px at 390pt. The caption it replaced ("Held in memory on the machine
-// running Frizz and handed to one command, once. The worker never sees it.") wrapped to two lines on
-// every surface. The maintainer, 2026-10-12, on five treatments of the long copy: "They're all so bad …
+// THE COPY IS THE MAINTAINER'S, verbatim (2026-10-12). It replaced "Held in memory on the machine
+// running Frizz and handed to one command, once. The worker never sees it.", which wrapped to two lines
+// on every surface. Of five treatments of that long copy, the maintainer said: "They're all so bad …
 // shorten it onto one line and then go with something like option A with the hanging lock." Round 2,
-// which settled this one, is the mockup sheet `secret-caption-mockups-fixture.tsx`. "Used once" is
-// literal: the value is a FIFO the first read spends (packages/server/src/secret-files.ts).
+// which settled the lock, is the mockup sheet `secret-caption-mockups-fixture.tsx`. "Only in memory"
+// is the FIFO in packages/server/src/secret-files.ts, which never writes the value to disk. Windows has
+// no FIFOs, so there the value sits in a short-lived 0600 file. Measured in sans: one line on a desktop
+// card 456px wide or wider. A 356px card and the phone's 390pt sheet wrap once, and `text-pretty` keeps
+// the second line from being a lone word ("…show up / in transcripts.").
 //
 // THE LOCK SITS ON THE CAP BAND. Its box is 0.9em square and `self-baseline` in an `items-baseline` row.
 // A box S tall standing on the baseline has its ink centre at baseline − S/2, and the cap band's centre
@@ -24,7 +27,7 @@ export function SecretCaption({ className }: { className: string }) {
   return (
     <div className={`flex items-baseline gap-[0.3em] ${className}`}>
       <Lock aria-hidden strokeWidth={2.25} className="size-[0.9em] shrink-0 self-baseline translate-y-[calc(0.45em_-_0.5cap)]" />
-      <span className="min-w-0 flex-1 text-pretty">Used once. The worker never sees it.</span>
+      <span className="min-w-0 flex-1 text-pretty">Value stored only in memory. It will not show up in transcripts.</span>
     </div>
   )
 }
