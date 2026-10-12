@@ -36,6 +36,7 @@ import { ThreadLifecycleActions } from "./ThreadLifecycle.tsx"
 import { ThreadHeaderFacts } from "./ThreadHeaderFacts.tsx"
 import { QueueOpsSummary } from "./QueueOpsSummary.tsx"
 import { trackQueueDock } from "../lib/queueDockInset.ts"
+import { useFileDropZone, useFileIntakeHandle } from "../lib/fileDrop.ts"
 import { ThreadTitle } from "./ThreadTitle.tsx"
 import { DispatchForm } from "./NewThreadModal.tsx"
 import { StatusRow } from "./StatusRow.tsx"
@@ -1271,6 +1272,16 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
   // handle is what the card-level Enter below and each question block's own Enter send through.
   const composerSend = useComposerSendHandle()
   const promptBoxSends = useComposerSendPresent(composerSend)
+  // A FILE DROPPED ANYWHERE ON THE CARD goes into its prompt box, exactly as one dropped on the box does
+  // (maintainer 2026-10-12: "drag a file anywhere onto a card in the queue in order to drop it into the
+  // chat"). The card is the zone and the box the intake (lib/fileDrop). A collapsed card has no box, so
+  // the drop opens it and the box takes the file as it mounts.
+  const fileIntake = useFileIntakeHandle()
+  const fileDropZone = useFileDropZone((files) => {
+    fileIntake.give(files)
+    setCollapsed(false)
+  })
+  const composerFileDrop = useMemo(() => ({ over: fileDropZone.over, intake: fileIntake }), [fileDropZone.over, fileIntake])
   const { answeringForMessage, answerable, anyAnswered, sendAnswers, sendMessage, stagedCount, takeAnswers } = useLiveAnswering(thread.id, messages, () => {
     ;(document.activeElement as HTMLElement | null)?.blur()
     onResolve(thread.id)
@@ -1361,7 +1372,10 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
       // element on the way to /full (see ExpandThreadLink) — the card is what morphs into the page's
       // thread column.
       data-vt-chat
-      className={`flex flex-col min-w-0 max-w-full ${BLOCK_RADIUS} border border-border-strong bg-panel shadow-lg shadow-shadow-ink/25 transition-opacity ${resolving ? "opacity-40" : ""}`}
+      {...fileDropZone.handlers}
+      // The accent border while a file is over the card says WHICH card takes it; its prompt box says
+      // where in it, with the same dashed "Drop file to attach" a drop on the box itself shows.
+      className={`flex flex-col min-w-0 max-w-full ${BLOCK_RADIUS} border ${fileDropZone.over ? "border-accent" : "border-border-strong"} bg-panel shadow-lg shadow-shadow-ink/25 transition-opacity ${resolving ? "opacity-40" : ""}`}
     >
       {/* Sticky-header CONTAINING BLOCK, deliberately EXCLUDING the docked prompt box: position:sticky is
           clamped to its containing block, so wrapping only the header + body here stops the header at
@@ -1822,6 +1836,7 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
         // box is the way AROUND the question ("Or skip the questions and reply…") rather than a second
         // way to answer it.
         submitOverride={sendMessage}
+        fileDrop={composerFileDrop}
         // The shells read off the transcript, as the drawer passes them: a Codex thread's background
         // execs live there and nowhere on the board, so without them the two lines counted differently.
         above={<QueueOpsSummary thread={thread} transcriptShells={liveTranscriptShells} />}

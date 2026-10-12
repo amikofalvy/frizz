@@ -19,6 +19,7 @@ import { useProjectScope } from "../lib/projectScope.tsx"
 import { localImageUrl } from "../lib/markdownTargets.ts"
 import { basename } from "../lib/paths.ts"
 import { useKeyboardInset } from "../lib/keyboardInset.ts"
+import { useFileDropZone, type SurfaceFileDrop } from "../lib/fileDrop.ts"
 
 // The shared prompt composer (the pattern the user called "perfect"): ONE rounded bordered box
 // holding a borderless auto-growing textarea plus a small round accent send button hovering INSIDE
@@ -162,6 +163,7 @@ export function Composer({
   send,
   phone,
   onUploadingChange,
+  fileDrop,
 }: {
   value: string
   onChange: (v: string) => void
@@ -218,11 +220,14 @@ export function Composer({
   // For a surface whose send lives OUTSIDE this box (the phone's new-thread page puts Start in its
   // header): an upload in flight must hold that send too, as it holds Enter and ↑ here.
   onUploadingChange?: (uploading: boolean) => void
+  // THE SURFACE IS THE DROP ZONE. The queue card takes a file dropped anywhere on it (lib/fileDrop), so
+  // this box binds no drop handlers of its own there: it draws its drop hint while `over` and registers
+  // its intake on `intake`. Absent, the box itself is the zone.
+  fileDrop?: SurfaceFileDrop
 }) {
   const taRef = useRef<HTMLTextAreaElement>(null)
   const contextRef = useRef<HTMLDivElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
-  const [dragging, setDragging] = useState(false)
   const [uploading, setUploading] = useState(false)
   // The project an attachment is uploaded to, on the Console (undefined on a project's page).
   const project = useProjectScope()
@@ -322,6 +327,19 @@ export function Composer({
     }
     requestAnimationFrame(() => taRef.current?.focus())
   }
+
+  // Drag-and-drop intake: the box's own zone, or the surface's (see `fileDrop`). The surface reaches
+  // `takeFiles` through its handle, by a ref, because the function closes over this render's draft.
+  const ownDrop = useFileDropZone((files) => void takeFiles(files))
+  const dragging = fileDrop ? fileDrop.over : ownDrop.over
+  const takeFilesRef = useRef(takeFiles)
+  takeFilesRef.current = takeFiles
+  const intake = fileDrop?.intake
+  useEffect(() => {
+    if (!intake) return
+    intake.set((files) => void takeFilesRef.current(files))
+    return () => intake.set(null)
+  }, [intake])
 
   // Auto-grow on every value change. A first layout pass
   // can precede font settlement or a narrow drawer's final width, leaving scrollHeight stale and the
@@ -930,18 +948,7 @@ export function Composer({
       className={`group relative rounded-xl border bg-bg transition-colors focus-within:border-accent ${
         dragging ? "border-dashed border-accent" : "border-border"
       }`}
-      onDragOver={(e) => {
-        if ([...e.dataTransfer.items].some((i) => i.kind === "file")) {
-          e.preventDefault()
-          setDragging(true)
-        }
-      }}
-      onDragLeave={() => setDragging(false)}
-      onDrop={(e) => {
-        e.preventDefault()
-        setDragging(false)
-        void takeFiles(e.dataTransfer.files)
-      }}
+      {...(fileDrop ? {} : ownDrop.handlers)}
     >
       {dragging && (
         <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-bg/80 text-[12px] text-muted">

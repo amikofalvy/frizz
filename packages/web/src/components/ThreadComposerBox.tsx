@@ -22,6 +22,7 @@ import type { PhoneBarApi } from "./Composer.tsx"
 import { RegisteredAnsweringContext } from "./RegisteredQuestionCards.tsx"
 import { SendScopeContext } from "../lib/sendScope.tsx"
 import { sendPlaceholder, setSendMode, useSendMode } from "../lib/sendMode.ts"
+import type { SurfaceFileDrop } from "../lib/fileDrop.ts"
 
 // THE prompt box for a registered thread — the single block every "steer this thread" surface renders.
 // The <Composer> leaf was already shared; the ~14 lines AROUND it were not, and the queue card's copy had
@@ -66,6 +67,7 @@ export function ThreadComposerBox({
   submitOverride,
   phoneBarOverride,
   phoneChrome,
+  fileDrop,
 }: {
   slug: string
   // Pure data- tag forwarded to the textarea. Also the two surfaces' only behavioral fork inside
@@ -98,6 +100,9 @@ export function ThreadComposerBox({
   // does, and /full never does — it keeps the desktop header at every width. Absent, the breakpoint
   // alone decides, as it did before the caller could say.
   phoneChrome?: boolean
+  // The surface's file drop zone, when the SURFACE takes a dropped file rather than the box alone — the
+  // queue card, anywhere on it. Desktop box only; see Composer's `fileDrop`.
+  fileDrop?: SurfaceFileDrop
 }): ReactElement {
   const snap = useSnapshot(store)
   const thread = snap.board?.threads.find((candidate) => candidate.id === slug)
@@ -299,6 +304,7 @@ export function ThreadComposerBox({
         busy={controls.busy}
         footer={controls.footer}
         railLead={goal}
+        fileDrop={fileDrop}
         // An external session keeps the ↑: sending there takes the session over, and there is no turn
         // of Frizz's to steer or queue behind until it has.
         send={thread?.foreign ? undefined : { mode, onMode: (next) => setSendMode(slug, next), running, staged }}
