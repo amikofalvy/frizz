@@ -25,7 +25,7 @@ import { createBoard, resolveSessionTitle, type BoardManager } from "./board.ts"
 import { createSessionPeerResolver, type SessionPeerThread } from "./session-peer.ts"
 import { auditLogPathForStateDir, fileAuditLog, type AuditLog } from "./audit.ts"
 import { createTailer, defaultLogDir, type Tailer } from "./tailer.ts"
-import { createDispatcher, claudeWorkerSystemPrompt, claudeCliConfig, codexWorkerThreadConfig, resolveFrizzCli, resolveFrizzMcp, workerPluginDir, coldResumePermission, type Dispatcher, type FrizzMcpTarget } from "./dispatch.ts"
+import { createDispatcher, acpWorkerContract, claudeWorkerSystemPrompt, claudeCliConfig, codexWorkerThreadConfig, resolveFrizzCli, resolveFrizzMcp, workerPluginDir, coldResumePermission, type Dispatcher, type FrizzMcpTarget } from "./dispatch.ts"
 import { createScheduler, type Scheduler, probeIssueReadable, probePrReadable, type PrRef, type PrProbe } from "./scheduler.ts"
 import {
 resumeThread,
@@ -774,6 +774,11 @@ function createContextUnchecked(opts: ContextOptions, resources: PartialContextR
     interactions: storage.interactions,
     env: process.env,
     customAgents: () => getSettings(storage, home).acpAgents,
+    // Re-sent after the agent compacts and into a fresh session that replaced a lost one (acp-bridge.ts).
+    // Today's contract, not the one the thread was born with: that one is gone from the session. A thread
+    // born under the MCP contract keeps its mount (mountsMcp above), and its agent is forked with
+    // `frizzctl` on PATH like any other (frizzCli above), so the `frizzctl` contract still holds for it.
+    contractFor: (_slug, sessionId) => acpWorkerContract(sessionId, project.dir),
     onStatusChange: () => board?.refresh(),
   })
   resources.acpBridge = acpBridge

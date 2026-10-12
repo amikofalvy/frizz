@@ -5,7 +5,7 @@ import { log } from "../logging.ts"
 import { acpAgentSpecs, resolveAcpAgent, type AcpAgentInput, type AcpAgentSpec, type ResolvedAcpAgent } from "./acp-agents.ts"
 import { AcpConnection, AcpConnectionClosed, AcpRemoteError, AcpRequestError, spawnAcpChild, type AcpSpawn } from "./acp-rpc.ts"
 import { daemonAcpHost, directAcpHost, liveAcpDaemonRecord, stopAcpDaemon, type AcpHost } from "./acp-host.ts"
-import { AcpTranscriptWriter, acpTranscriptPath, type AcpRecord } from "./acp-transcript.ts"
+import { AcpTranscriptWriter, acpContractOwed, acpTranscriptPath, type AcpContractReason, type AcpRecord } from "./acp-transcript.ts"
 import {
   ACP_ERROR_AUTH_REQUIRED, ACP_ERROR_INTERNAL, ACP_ERROR_METHOD_NOT_FOUND, ACP_PROTOCOL_VERSION,
   AcpInitializeResult, AcpLoadSessionResult, AcpNewSessionResult, AcpPromptResult, AcpRequestPermissionParams, AcpSessionNotification, AcpSetConfigOptionResult, type AcpConfigOption,
@@ -39,6 +39,15 @@ import type { AcpAgentModels } from "@frizz/shared"
 // stated difference from the broker and the app-server, and it is gone. A session whose daemon has
 // actually died is re-opened on the next input: `session/load` when the agent advertised `loadSession`,
 // else a fresh session with a transcript note saying so.
+//
+// The worker contract rides a PROMPT, because ACP has no system-prompt channel, so the session holds it
+// only as long as its history does. Two things end that, and after either the next prompt carries the
+// contract again (`contractFor`, prepended once, recorded as an `acp-contract` record):
+//   - the agent COMPACTS. Measured 2026-10-12 against opencode 2.0.27 with a recording fake model: the
+//     request after `/compact` was `[system][checkpoint summary][new message]`, the contract gone, and
+//     opencode's summary prompt asks the model to leave out "instructions and setup the assistant was
+//     given". A compaction in the middle of a turn is answered at the turn after it: ACP has no steer.
+//   - a FRESH session replaces one the agent could not load. It has no history at all.
 
 export interface AcpBridgeOptions {
   projectId: string
@@ -62,6 +71,9 @@ export interface AcpBridgeOptions {
   /** How an agent process is obtained. Default: the detached daemon host (`daemonAcpHost`). */
   host?: AcpHost
   onDiagnostic?: (d: { threadSlug: string; kind: string; message: string }) => void
+  /** The worker contract for a thread (dispatch.ts `acpWorkerContract`), sent again when the session has
+   *  lost it — see the header. Absent ⇒ nothing is re-sent, which is what the tests that predate it get. */
+  contractFor?: (threadSlug: string, sessionId: string) => string | undefined
   /** Called whenever a turn starts or ends, so the board can refresh without polling. */
   onStatusChange?: () => void
   now?: () => Date
@@ -166,12 +178,27 @@ interface LiveSession {
   /** True from `shutdown()` on: the connection is being DETACHED from a daemon that keeps running, so
    *  a rejected prompt is not the turn ending and must not be recorded as one. */
   detaching: boolean
+  /** Set when the session no longer holds the worker contract; the next prompt carries it and clears it. */
+  contractOwed?: AcpContractReason
 }
 
 const AUTH_HINT = "The agent needs a login first. "
 const ACP_MODEL_CACHE_MS = 10 * 60_000
 
 function clip(text: string, max: number): string { return text.length > max ? `${text.slice(0, max - 1)}…` : text }
+
+// A slash command is parsed off the START of the prompt (opencode's `/compact`, `/review`), so text put
+// in front of one turns it into a plain message. A contract that is owed waits for the next prompt that
+// is not one. `/Users/…` is a path, not a command: the name must end at whitespace or the end.
+function isSlashCommand(text: string): boolean { return /^\/[\w-]+(?:\s|$)/.test(text.trimStart()) }
+
+/** `_meta["opencode/compaction"]` on a `session_info_update`: how opencode reports a compaction to a
+ *  client that did not advertise `session.compaction` (cli/src/acp/compaction.ts, v2.0.27). */
+function opencodeCompactionStatus(update: unknown): string | undefined {
+  const meta = (update as { _meta?: Record<string, unknown> } | undefined)?._meta?.["opencode/compaction"]
+  const status = (meta as { status?: unknown } | undefined)?.status
+  return typeof status === "string" ? status : undefined
+}
 
 function frizzMcpServer(mcp: FrizzMcp | undefined, slug: string): AcpMcpServerStdio[] {
   if (!mcp) return []
@@ -300,7 +327,8 @@ export class AcpBridge {
     return this.options.host ?? (this.options.spawn ? directAcpHost(this.options.spawn) : daemonAcpHost)
   }
 
-  private async open(input: { threadSlug: string; sessionId: string; cwd: string; agentId: string; modelId?: string | null; acpSessionId?: string | null }): Promise<{ live: LiveSession; resumed: "loaded" | "fresh" | "reattached" }> {
+  /** `dispatch` marks the open that starts a brand-new thread, whose first prompt already IS the contract. */
+  private async open(input: { threadSlug: string; sessionId: string; cwd: string; agentId: string; modelId?: string | null; acpSessionId?: string | null; dispatch?: boolean }): Promise<{ live: LiveSession; resumed: "loaded" | "fresh" | "reattached" }> {
     const { threadSlug: slug, sessionId, cwd } = input
     const agent = this.resolveAgent(input.agentId)
     // An ACP agent is one detached daemon PER THREAD (acp-host.ts), so its environment can say who is
@@ -312,6 +340,8 @@ export class AcpBridge {
     const attachment = await this.host()({ stateDir: this.options.stateDir, threadSlug: slug, sessionId, command: agent.bin!, args: agent.args, cwd, env })
     const proc = attachment.process
     const writer = new AcpTranscriptWriter(acpTranscriptPath(this.options.stateDir, sessionId))
+    // Read BEFORE this open writes anything: a compaction the previous runtime recorded and never answered.
+    const owedFromTranscript = acpContractOwed(writer.path)
     let live: LiveSession | undefined
     // Traffic from the agent that arrives before the session is READY is held, not dropped or refused.
     // On a reattach the daemon replays everything the agent said while Frizz was away — the running
@@ -348,12 +378,14 @@ export class AcpBridge {
     try {
       init = AcpInitializeResult.parse(await conn.request("initialize", {
         protocolVersion: ACP_PROTOCOL_VERSION,
-        clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
+        // `session.compaction` asks for the standard `compaction_update`; without it opencode reports a
+        // compaction only through `_meta` on a `session_info_update` (both are handled below).
+        clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false, session: { compaction: {} } },
         clientInfo: { name: "frizz", version: "0" },
       }))
     } catch (err) { return fail(err instanceof Error ? new Error(`${agent.label} did not complete the ACP handshake: ${err.message}`) : err) }
     const mcpServers = this.options.mountsMcp?.(slug) === false ? [] : frizzMcpServer(this.options.frizzMcp, slug)
-    live = { slug, sessionId, cwd, agent, conn, init, acpSessionId: "", writer, loading: false, queue: [], pendingPerms: new Map(), tools: new Map(), exited: false, detaching: false }
+    live = { slug, sessionId, cwd, agent, conn, init, acpSessionId: "", writer, loading: false, queue: [], pendingPerms: new Map(), tools: new Map(), exited: false, detaching: false, ...(owedFromTranscript ? { contractOwed: "compaction" as const } : {}) }
     void conn.exited.then(() => { if (live) this.onExit(live) })
 
     // REATTACHED to an agent that outlived a frizz restart: the session is already open (the daemon
@@ -412,6 +444,10 @@ export class AcpBridge {
     if (resumed === "fresh") {
       writer.append({ kind: "acp-session", at: this.now(), agent: { id: agent.id, ...(init.agentInfo?.name ? { name: init.agentInfo.name } : {}), ...(init.agentInfo?.version ? { version: init.agentInfo.version } : {}) }, acpSessionId: live.acpSessionId, cwd, ...(live.model ? { model: live.model } : {}) })
       if (input.acpSessionId) writer.append({ kind: "acp-note", at: this.now(), text: `Resumed with a fresh ${agent.label} session: the previous one (${input.acpSessionId}) could not be loaded, so the agent no longer has the earlier conversation.` })
+      // Every fresh open but a dispatch's replaces a session this thread already had, so it starts with
+      // nothing — not even the contract the dispatch's first prompt carried. Keyed on the dispatch, not
+      // on `acpSessionId`: a row whose session id was never pinned is just as much a re-open.
+      if (!input.dispatch) live.contractOwed = "fresh-session"
     }
     if (modelProblem) writer.append({ kind: "acp-note", at: this.now(), text: modelProblem })
     this.sessions.set(sessionId, live)
@@ -547,7 +583,7 @@ export class AcpBridge {
 
   async spawnDispatch(input: AcpSpawnDispatchInput): Promise<AcpSessionInfo> {
     if (this.closed) throw new Error("ACP bridge is closed")
-    const { live } = await this.openOnce(input)
+    const { live } = await this.openOnce({ ...input, dispatch: true })
     void this.runTurn(live, input.prompt, input.userText, undefined)
     return this.info(live)
   }
@@ -697,6 +733,15 @@ export class AcpBridge {
   private async runTurn(live: LiveSession, sendText: string, recordText: string, deliveryId: string | undefined): Promise<void> {
     const turn = this.newTurn(deliveryId)
     live.turn = turn
+    // The contract goes out in front of the operator's words, once, and only when the session lost it —
+    // an 18KB block on every follow-up would be a tax on every message. The transcript records the words.
+    const owed = live.contractOwed
+    const contract = owed && !isSlashCommand(sendText) ? this.options.contractFor?.(live.slug, live.sessionId) : undefined
+    if (owed && contract) {
+      sendText = `${contract}\n\n${sendText}`
+      live.contractOwed = undefined
+      live.writer.append({ kind: "acp-contract", at: turn.startedAt, reason: owed })
+    }
     live.writer.append({ kind: "user-message", at: turn.startedAt, text: recordText, synthetic: false })
     live.writer.append({ kind: "turn-start", at: turn.startedAt })
     this.options.onStatusChange?.()
@@ -846,18 +891,33 @@ export class AcpBridge {
         return
       case "session_info_update":
         if (update.title) live.writer.append({ kind: "title", title: clip(update.title, 200) })
+        if (opencodeCompactionStatus(update) === "completed") this.compacted(live)
         return
       case "config_option_update":
         this.adoptModel(live, update.configOptions)
         return
+      case "compaction_update":
+        // `in_progress`, then one of `completed` / `cancelled` / `failed`; only a completed one rewrote
+        // the history the contract lived in.
+        if (update.status === "completed") this.compacted(live)
+        return
       case "plan":
       case "user_message_chunk":
-      case "compaction_update":
         return
       case "unknown":
         this.diagnostic(live.slug, "update", `unhandled session/update ${String((update.raw as { sessionUpdate?: unknown })?.sessionUpdate)}`)
         return
     }
+  }
+
+  /** The agent rewrote its history. The `compaction` record is the fold's (it sets `lastCompactionAt`,
+   *  which the post-compaction Goal trigger reads, and the activity clock); the debt is this bridge's.
+   *  A `session/load` replays old compactions too, but `handleNotification` drops replays (`loading`). */
+  private compacted(live: LiveSession): void {
+    this.flushThought(live)
+    this.flushText(live, false)
+    live.writer.append({ kind: "compaction", at: this.now() })
+    live.contractOwed = "compaction"
   }
 
   private recordToolResult(live: LiveSession, tc: AcpToolCallUpdate): void {
