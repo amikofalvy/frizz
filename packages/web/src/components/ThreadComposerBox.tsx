@@ -21,6 +21,7 @@ import { RecurringPromptControl } from "./RecurringPromptControl.tsx"
 import type { PhoneBarApi } from "./Composer.tsx"
 import { RegisteredAnsweringContext } from "./RegisteredQuestionCards.tsx"
 import { SendScopeContext } from "../lib/sendScope.tsx"
+import { useStepsAnswer, withStepsDone } from "../lib/stepsAnswer.ts"
 import { sendPlaceholder, setSendMode, useSendMode } from "../lib/sendMode.ts"
 import type { SurfaceFileDrop } from "../lib/fileDrop.ts"
 
@@ -111,7 +112,10 @@ export function ThreadComposerBox({
   // surface around it simply has nothing staged.
   const registered = useContext(RegisteredAnsweringContext)
   const scope = useContext(SendScopeContext)
-  const staged = (registered?.staged ?? 0) + (scope?.fencedCount ?? 0)
+  // …and a steps card's ticked "I have completed this" box, which is answered the same way (lib/
+  // stepsAnswer). It reads the thread rather than a context: the card and this box address one draft.
+  const stepsAnswer = useStepsAnswer(thread)
+  const staged = (registered?.staged ?? 0) + (scope?.fencedCount ?? 0) + (stepsAnswer.staged ? 1 : 0)
   // "A turn is in flight" — the only time sending as a steer and sending to the queue differ.
   const running = thread?.runtime === "running"
   const mode = useSendMode(slug, running)
@@ -174,7 +178,9 @@ export function ThreadComposerBox({
     // go through its own sheet (PhoneQuestionCards), which this bar never registered a send for.
     const answers = phoneBar ? null : registered?.take() ?? null
     const fenced = phoneBar ? null : scope?.takeFenced() ?? null
-    if (!text && !answers && !fenced) return
+    // On the phone the steps card keeps its own Send, as the questions keep their sheet.
+    const steps = phoneBar ? null : stepsAnswer.take()
+    if (!text && !answers && !fenced && !steps) return
     // `/login` / `/logout` are frizz-owned account actions for THIS thread's backend — invoked
     // locally, never delivered to the worker as a prompt (a leading slash is not a stable provider
     // command transport across the live-paste vs dead-resume lifecycles).
@@ -193,7 +199,9 @@ export function ThreadComposerBox({
     // Staged ⌘I context items ride the send: serialized into the text (before any trailing
     // attachment paths) and cleared with it — restored on a rejected send exactly like the draft.
     const context = takeContextItems(slug)
-    const note = text ? buildMessageWithContext(text, context, projectDir) : ""
+    const typed = text ? buildMessageWithContext(text, context, projectDir) : ""
+    // A ticked steps box is the reply's opening word, `Done`, with the typed words under it.
+    const note = steps ? withStepsDone(typed) : typed
     // ONE TURN. Fenced answers are composed here and the typed words go under them as the note; the
     // registered ones are settled and composed by the server, above all of it (FollowUpInput.answers),
     // so `outgoing` may be empty when only those ride. `shown` is what the optimistic bubble draws
@@ -205,6 +213,7 @@ export function ThreadComposerBox({
         clearMessage()
         answers?.onOptimistic()
         fenced?.onOptimistic()
+        steps?.onOptimistic()
       },
       onSuccess: () => answers?.onSuccess(),
       ...(answers ? { answers: answers.answers, displayText: shown } : {}),
@@ -226,6 +235,7 @@ export function ThreadComposerBox({
         noteFailedDraftOrigin(key, { ...failure, text: message })
         answers?.onRollback(failure.kept)
         fenced?.onRollback()
+        steps?.onRollback()
       },
     }
     if (submitOverride) submitOverride(outgoing, callbacks)

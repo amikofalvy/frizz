@@ -480,12 +480,12 @@ test("hasAwaitingWaitRows agrees with the table", () => {
 // ---- STEPS FOR THE HUMAN (2026-10-03) --------------------------------------------------------------
 // A fence carrying `steps:` waits on the READER. The steps themselves render through the markdown
 // sanitizer, which needs a real DOM this runner does not have — the drawn card, its "Awaiting human" chip head
-// and its one verb are pinned in a real browser by AwaitingSteps.e2e.test.ts (the chip head's structure
+// and its one box are pinned in a real browser by AwaitingSteps.e2e.test.ts (the chip head's structure
 // is TranscriptCard's, in TranscriptCard.test.ts). What is DOM-free is pinned here: the one test that
-// decides whether the verbs may be offered at all.
+// decides whether the box may be offered at all — and whether the prompt box may send it.
 const stepHints = [{ kind: "step" as const, value: "Run `npm login`" }, { kind: "step" as const, value: "Approve the prompt" }]
 
-test("the steps' Done is offered only while the thread rests on exactly those steps", () => {
+test("the steps' box is offered only while the thread rests on exactly those steps", () => {
   const steps = stepHints.map((h) => h.value)
   const resting = { runtime: "turn-idle", lastFence: { kind: "awaiting", body: "", hints: stepHints } } as Parameters<typeof restingOnSteps>[0]
   assert.equal(restingOnSteps(resting, steps), true)
@@ -496,7 +496,7 @@ test("the steps' Done is offered only while the thread rests on exactly those st
   assert.equal(restingOnSteps({ ...resting, lastFence: { kind: "done", body: "", hints: stepHints } } as typeof resting, steps), false)
   assert.equal(restingOnSteps(resting, [steps[0]]), false, "a card for other steps is a record, not the ask")
   assert.equal(restingOnSteps(resting, [...steps].reverse()), false)
-  assert.equal(restingOnSteps(resting, []), false, "no steps, no Done")
+  assert.equal(restingOnSteps(resting, []), false, "no steps, no box")
   assert.equal(restingOnSteps(undefined, steps), false, "a sub-agent's transcript has no thread to reply to")
 })
 
@@ -508,5 +508,5 @@ test("showsRestingCard stands down for a fence that names questions, and only fo
   const pr = { kind: "pr", value: "acme/app#1480" }
   assert.equal(showsRestingCard(rest([pr])), true, "the control: the same rest with no question keeps its card")
   assert.equal(showsRestingCard(rest([pr, { kind: "question", value: "qst_466f9d6ee188" }])), false)
-  assert.equal(showsRestingCard(rest([pr, { kind: "question", value: "qst_466f9d6ee188" }, { kind: "step", value: "Run `npm login`" }])), true, "steps keep the card and its Done")
+  assert.equal(showsRestingCard(rest([pr, { kind: "question", value: "qst_466f9d6ee188" }, { kind: "step", value: "Run `npm login`" }])), true, "steps keep the card and its box")
 })

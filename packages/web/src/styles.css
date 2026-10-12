@@ -1002,10 +1002,11 @@ a[href] {
   text-decoration-thickness: from-font;
 }
 /* ── The steps card's to-do STEPPER (AwaitingSteps.tsx StepsList, 2026-10-12) ─────────────────────
-   One numbered marker per step down a gutter, joined by a rail, each a checkbox the reader ticks as
-   they go. It speaks the task family's language above — the same muted ring, the same check at
-   strokeWidth 3, the accent spent on exactly one live mark — but in a CIRCLE, because a numbered
-   rounded square reads as a keycap and a numbered circle is what a stepper is.
+   One numbered marker per step down a gutter, joined by a rail. It speaks the task family's language
+   above — the same muted ring — but in a CIRCLE, because a numbered rounded square reads as a keycap
+   and a numbered circle is what a stepper is. The markers are read-only: the card's one checkbox sits
+   under the list (AwaitingSteps.tsx StepsComplete), and each marker was a checkbox of its own for an
+   afternoon before it.
 
    THE MARKER SITS ON THE FIRST LINE'S CAP BAND, computed by the browser rather than fitted. The gutter
    opens with a line box of its own at the step text's size and leading, so its baseline is the text's;
@@ -1060,27 +1061,12 @@ a[href] {
   border-radius: 50%;
   color: color-mix(in srgb, var(--color-muted) 85%, transparent);
 }
-.frizz-step-mark:has(> button):hover {
-  border-color: color-mix(in srgb, var(--color-muted) 80%, transparent);
-}
 .frizz-step-face {
   position: absolute;
   inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 0;
-  border: 0;
-  border-radius: 50%;
-  background: none;
-  color: inherit;
-}
-button.frizz-step-face {
-  cursor: pointer;
-}
-button.frizz-step-face:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--color-accent) 70%, transparent);
-  outline-offset: 2px;
 }
 .frizz-step-num {
   font-size: calc(10em / 13);
@@ -1099,23 +1085,6 @@ button.frizz-step-face:focus-visible {
 }
 .frizz-step:last-child .frizz-step-rail {
   display: none;
-}
-/* The step to do NEXT — the first one not yet ticked, and only while the thread rests on them. */
-.frizz-step[data-step-state="next"] .frizz-step-mark {
-  color: var(--color-accent);
-  border-color: color-mix(in srgb, var(--color-accent) 90%, transparent);
-}
-/* Done: FILLED, still monochrome. With the ring alone a ticked marker differed from an unticked one
-   only by its glyph, and a column of rings had to be read mark by mark to find where the reader was;
-   the fill is the stepper's own "complete" and scans at a glance. The text takes the task family's
-   checked tone, links included, so a ticked step recedes as one piece rather than leaving its link lit. */
-.frizz-step[data-step-state="done"] .frizz-step-mark {
-  background: color-mix(in srgb, var(--color-muted) 22%, transparent);
-  border-color: transparent;
-}
-.frizz-step[data-step-state="done"] .frizz-step-text,
-.frizz-step[data-step-state="done"] .frizz-step-text a {
-  color: color-mix(in srgb, var(--color-muted) 90%, transparent);
 }
 /* Links and local-file actions wear ONE treatment on both prose surfaces — the block body and the
    inline-only run (an answer chip, the recommendation caption). The inline run used to get a bare
