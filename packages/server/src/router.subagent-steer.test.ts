@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { BoardSnapshot, Settings } from "@frizz/shared"
 import type { BoardManager } from "./board.ts"
+import { claudeWorkerSystemPrompt } from "./dispatch.ts"
 import { createRouter } from "./router.ts"
 import { createStorage, type SessionRow } from "./storage.ts"
 import type { AppContext } from "./context.ts"
@@ -86,7 +87,7 @@ function harness(subAgent: (slug: string, id: string) => SubAgentInfo, opts: {
   const stops: { threadSlug: string; sessionId: string; taskId: string }[] = []
   // Every message frizz delivered into the worker's own conversation. For these tests that is only ever
   // the shell-kill notice — the one thing the provider does not tell a worker itself.
-  const notices: { threadSlug: string; sessionId: string; text: string; permissionMode?: string }[] = []
+  const notices: { threadSlug: string; sessionId: string; text: string; permissionMode?: string; appendSystemPrompt?: string }[] = []
   const codexTerminations: { threadSlug: string; sessionId: string; processId: string; notice?: string }[] = []
   const ctx = {
     project,
@@ -113,9 +114,9 @@ function harness(subAgent: (slug: string, id: string) => SubAgentInfo, opts: {
         stops.push(input)
       },
       isDaemonAlive: () => opts.daemonAlive !== false,
-      followUp: async (input: { threadSlug: string; sessionId: string; text: string; permissionMode?: string }) => {
+      followUp: async (input: { threadSlug: string; sessionId: string; text: string; permissionMode?: string; appendSystemPrompt?: string }) => {
         if (opts.followUpThrows) throw opts.followUpThrows
-        notices.push({ threadSlug: input.threadSlug, sessionId: input.sessionId, text: input.text, permissionMode: input.permissionMode })
+        notices.push({ threadSlug: input.threadSlug, sessionId: input.sessionId, text: input.text, permissionMode: input.permissionMode, appendSystemPrompt: input.appendSystemPrompt })
       },
     },
   } as unknown as AppContext
@@ -569,6 +570,9 @@ test("the × STOPS a background shell for real, retires the row, and TELLS the w
     // prompt-on-everything mode that turns the rebuilt worker's every call into a card. The notice
     // carries the dispatch floor for the same reason every other fork does.
     assert.equal(h.notices[0]!.permissionMode, "auto", "the dispatch floor, not undefined → default")
+    // …and for the same race, the worker contract: a fork without it is a worker with no contract for
+    // as long as that daemon lives, because every later message reconnects to it.
+    assert.equal(h.notices[0]!.appendSystemPrompt, claudeWorkerSystemPrompt("sid-t", h.ctx.project.dir), "the notice carries the worker system prompt")
   } finally {
     h.cleanup()
   }

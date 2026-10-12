@@ -25,7 +25,7 @@ import { createBoard, resolveSessionTitle, type BoardManager } from "./board.ts"
 import { createSessionPeerResolver, type SessionPeerThread } from "./session-peer.ts"
 import { auditLogPathForStateDir, fileAuditLog, type AuditLog } from "./audit.ts"
 import { createTailer, defaultLogDir, type Tailer } from "./tailer.ts"
-import { createDispatcher, loadWorkerPrompt, scratchpadOrientation, frizzConfigBlock, claudeCliConfig, codexWorkerThreadConfig, resolveFrizzCli, resolveFrizzMcp, workerPluginDir, coldResumePermission, type Dispatcher, type FrizzMcpTarget } from "./dispatch.ts"
+import { createDispatcher, claudeWorkerSystemPrompt, claudeCliConfig, codexWorkerThreadConfig, resolveFrizzCli, resolveFrizzMcp, workerPluginDir, coldResumePermission, type Dispatcher, type FrizzMcpTarget } from "./dispatch.ts"
 import { createScheduler, type Scheduler, probeIssueReadable, probePrReadable, type PrRef, type PrProbe } from "./scheduler.ts"
 import {
 resumeThread,
@@ -458,11 +458,7 @@ export function deliverClaudeBrokerWake(deps: {
   freshProcess?: boolean
 }): Promise<void> {
   const { bridge, slug, cwd, row, settings, deliveryMessage, freshProcess } = deps
-  const appendSystemPrompt = [
-    loadWorkerPrompt("claude"),
-    scratchpadOrientation(row.session_id, "claude"),
-    frizzConfigBlock(cwd),
-  ].filter(Boolean).join("\n\n")
+  const appendSystemPrompt = claudeWorkerSystemPrompt(row.session_id, cwd)
   return bridge.followUp({
     threadSlug: slug,
     sessionId: row.session_id,

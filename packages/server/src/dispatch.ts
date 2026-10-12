@@ -368,6 +368,15 @@ export function composePrompt(sessionId: string, prompt: string, kind: BackendKi
   return `${scratch}${handoff}\n\n\n${DISPATCH_TASK_BANNER_MARKER}${prompt}`
 }
 
+// The appended SYSTEM prompt a broker Claude worker runs under: the worker contract, the scratch line
+// and the project's FRIZZ.md. Compaction never touches it — it is not a message — but a cold resume
+// forks the daemon with whatever its caller passed, and a fork without it is a worker with no contract
+// for as long as that daemon lives: every later follow-up reconnects to it and its own copy is
+// ignored. So every caller that can reach the bridge's `followUp` builds it here.
+export function claudeWorkerSystemPrompt(sessionId: string, projectDir: string): string {
+  return [loadWorkerPrompt("claude"), scratchpadOrientation(sessionId, "claude"), frizzConfigBlock(projectDir)].filter(Boolean).join("\n\n")
+}
+
 // The SYSTEM-level scratch-directory orientation (survives compaction, rebuilds on every resume).
 // Passed as extraSystemPrompt on dispatch, adopt, AND the followUp resume path.
 //
@@ -1156,11 +1165,7 @@ export function createDispatcher(deps: DispatchDeps): Dispatcher {
           cleanupDispatchFiles(scratchRel, { argv: [], env: {}, prewrite: [] }, sessionId)
           throw new Error("Claude session broker is unavailable; cannot start this thread.")
         }
-        const appendSystemPrompt = [
-          loadWorkerPrompt("claude"),
-          scratchpadOrientation(sessionId, kind),
-          frizzConfigBlock(deps.project.dir),
-        ].filter(Boolean).join("\n\n")
+        const appendSystemPrompt = claudeWorkerSystemPrompt(sessionId, deps.project.dir)
         try {
           await bridge.spawnDispatch({
             threadSlug: slug,
@@ -1434,12 +1439,7 @@ export function createDispatcher(deps: DispatchDeps): Dispatcher {
           cwd: deps.project.dir,
           prompt,
           permissionMode,
-          appendSystemPrompt: [
-            loadWorkerPrompt("claude"),
-            scratchpadOrientation(sessionId),
-            frizzConfigBlock(deps.project.dir),
-            adoption,
-          ].filter(Boolean).join("\n\n"),
+          appendSystemPrompt: [claudeWorkerSystemPrompt(sessionId, deps.project.dir), adoption].filter(Boolean).join("\n\n"),
           model: settings.model,
           effort: settings.effort,
         })

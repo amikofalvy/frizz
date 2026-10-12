@@ -178,7 +178,7 @@ import { openableFileRoots } from "./project.ts"
 import { resolveThreadLink, threadLinkView } from "./thread-links.ts"
 import { ghInstalled, ghAuthed, ghRepo, gitGithubRemote, listItems, hydrateIssue, hydratePr, renderGithubPrompt, effectiveTemplate, DEFAULT_GITHUB_PROMPT } from "./github.ts"
 import { createGithubHovercardService } from "./github-hovercard.ts"
-import { slugify, resolveSlug, resolveLegacyThreadFile, loadWorkerPrompt, scratchpadOrientation, frizzConfigBlock, coldResumePermission } from "./dispatch.ts"
+import { slugify, resolveSlug, resolveLegacyThreadFile, claudeWorkerSystemPrompt, coldResumePermission } from "./dispatch.ts"
 import { readCodexModels } from "./backend/codex-models.ts"
 import { peekClaudeModels, readClaudeModels } from "./backend/claude-models.ts"
 import { claudeModelStanding, claudeModelUpgradeBlock, claudeModelUpgradeDue, claudeModelUpgradeRefusal, claudeUpgradeCandidate, SERVER_STARTED_AT_MS } from "./backend/claude-model-upgrade.ts"
@@ -1062,11 +1062,7 @@ export function createRouter(ctx: AppContext) {
         // a SECOND time — and it matters more now that the deliveryId IS the SDK input uuid: the SDK
         // rejects an id that is still outstanding, so a replay would surface as an error on the
         // operator's send instead of the no-op it should be.
-        const appendSystemPrompt = [
-          loadWorkerPrompt("claude"),
-          scratchpadOrientation(row.session_id, "claude"),
-          frizzConfigBlock(ctx.project.dir),
-        ].filter(Boolean).join("\n\n")
+        const appendSystemPrompt = claudeWorkerSystemPrompt(row.session_id, ctx.project.dir)
         // Is this thread MID-TURN right now? Sampled BEFORE the bridge call on purpose: a cold resume
         // takes seconds, and by the time it returns the turn this very message started reads as
         // in-flight — which would gray the one send that is provably being read. The tailer's `turn`
@@ -1877,8 +1873,10 @@ export function createRouter(ctx: AppContext) {
         // `isDaemonAlive` above is a check, not a hold: the daemon can exit before this frame lands,
         // and followUp then COLD-RESUMES rather than failing. Take the same floor every other fork
         // takes, so a notice that loses the race cannot be the thing that rebuilds the worker at
-        // Claude's `default` — see coldResumePermission.
+        // Claude's `default` — see coldResumePermission — or rebuilds it with no worker contract,
+        // which the daemon it forks would then keep for every later message.
         permissionMode: coldResumePermission(row, ctx.getSettings()),
+        appendSystemPrompt: claudeWorkerSystemPrompt(row.session_id, ctx.project.dir),
         model: row.model ?? undefined,
         effort: row.effort ?? undefined,
         // Frizz's own notice, not the operator's reply to anything: an open card stays open.
@@ -2691,11 +2689,7 @@ export function createRouter(ctx: AppContext) {
         if (!bridge) throw new Error("Claude session broker is unavailable; cannot compact this thread")
         // The same cold-resume inputs a follow-up carries: a hibernated daemon is resumed to run the
         // command, and it must come back as the worker it was.
-        const appendSystemPrompt = [
-          loadWorkerPrompt("claude"),
-          scratchpadOrientation(row.session_id, "claude"),
-          frizzConfigBlock(ctx.project.dir),
-        ].filter(Boolean).join("\n\n")
+        const appendSystemPrompt = claudeWorkerSystemPrompt(row.session_id, ctx.project.dir)
         await bridge.followUp({
           threadSlug: input.slug,
           sessionId: row.session_id,
