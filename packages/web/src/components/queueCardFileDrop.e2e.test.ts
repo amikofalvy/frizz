@@ -38,7 +38,7 @@ test("a file dropped anywhere on a queue card attaches to that card's prompt box
       const fallthrough = window.fetch
       window.fetch = async (input, init) => {
         const url = typeof input === "string" ? input : (input as Request).url ?? input.toString()
-        if (!url.endsWith("/attach")) return fallthrough(input, init)
+        if (!/\/_frizz\/(?:[^/]+\/)?attach$/.test(new URL(url, location.href).pathname)) return fallthrough(input, init)
         const { name } = JSON.parse(String(init?.body)) as { name: string }
         return new Response(JSON.stringify({ path: `/fixture/uploads/${name}` }), { headers: { "content-type": "application/json" } })
       }
