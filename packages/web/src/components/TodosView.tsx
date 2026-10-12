@@ -1262,8 +1262,7 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
   // renders is answerable in place, not just the one still standing at the tail (maintainer 2026-08-03).
   // `answerable` is now only the chrome signal ("the agent is waiting on you right now"), which is why
   // the Send button below also shows on `anyAnswered`: staging an answer on an older question must have
-  // something to click. Queue sends deliberately suppress the generic chat bottom-pin: it fights card
-  // exit/reorder. Both keyboard and button submits run this same onSent, which dissolves the card in
+  // something to click. Both keyboard and button submits run this same onSent, which dissolves the card in
   // place — TodosView's unmount effect then auto-scrolls the next card to the viewport top (like every
   // user-initiated dismissal). …and `onSendFailed` puts it straight back when the send is refused,
   // rather than leaving the human to wait out resolve()'s 8s reappear guard with only a toast.
@@ -1285,7 +1284,7 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
   const { answeringForMessage, answerable, anyAnswered, sendAnswers, sendMessage, stagedCount, takeAnswers } = useLiveAnswering(thread.id, messages, () => {
     ;(document.activeElement as HTMLElement | null)?.blur()
     onResolve(thread.id)
-  }, { scrollToBottom: false, onSendFailed: () => onUnresolve(thread.id), composer: composerSend })
+  }, { onSendFailed: () => onUnresolve(thread.id), composer: composerSend })
   const sendScope = useSendScope(composerSend, { stagedCount, takeAnswers })
   // The card-level "Send answers" action is the FALLBACK for a card with no prompt box mounted (a
   // collapsed one): there it shows for the standing ask OR the moment the human touches an OLDER
@@ -1814,7 +1813,7 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
       {/* THE standard prompt box — the exact block the drawer renders (ThreadActionBar), differing only
           in its padding wrapper, the line of op counts above it, and the send. `submitOverride` routes
           this box through the card's own answering controller so a free-form reply and a reply that
-          carries answers are one send: same optimistic dissolve, same suppressed bottom-pin.
+          carries answers are one send: same optimistic dissolve, same rollback.
 
           DOCKED: `sticky bottom-0` holds it to the bottom of the screen while any of the card is above
           it, the way /full holds its prompt box, so a reply never means scrolling to the card's end

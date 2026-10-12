@@ -121,11 +121,10 @@ test("a queue card holds still through a send that does not dismiss it — Retry
     await page.waitForSelector(`[data-queue-card-root="${BELOW}"]`)
     await new Promise((r) => setTimeout(r, 300))
 
-    // DOCUMENT geometry (offsetTop), not viewport geometry, on this path only: appendQueuedMessage
-    // smooth-scrolls the window to the document bottom unless the caller opts out, and only the queue
-    // card's own send does (TodosView passes scrollToBottom:false; every other surface commits to a
-    // conversation tail and wants the bottom). That scroll moves the whole page for ~800ms, so a
-    // getBoundingClientRect reading here measures the scroll and never the layout it is asked about.
+    // DOCUMENT geometry (offsetTop), not viewport geometry: the assertion is about the layout of the
+    // queue, and offsetTop reads it whatever the page's scroll position is doing. (Until 2026-10-12 a
+    // send from anywhere but the card's own composer also smooth-scrolled the whole page toward its
+    // bottom for ~800ms, which is why this reading was chosen; appendQueuedMessage no longer does.)
     const before = await page.evaluate((steered: string, below: string) => ({
       h: document.querySelector<HTMLElement>(`[data-queue-card-root="${steered}"]`)!.offsetHeight,
       belowTop: document.querySelector<HTMLElement>(`[data-queue-card-root="${below}"]`)!.offsetTop,

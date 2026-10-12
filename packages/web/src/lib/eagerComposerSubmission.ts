@@ -27,7 +27,6 @@ export type EagerFollowUpCallbacks = {
   onOptimistic?: () => void
   onSuccess?: () => void
   onRollback?: (failure: SendFailure) => void
-  scrollToBottom?: boolean
   // The deliveryId of a failed send this one re-sends (FollowUpInput.supersedes).
   supersedes?: string
   // THE PROMPT BOX'S ONE SEND (ThreadComposerBox). Staged answers to registered questions travel in
@@ -217,7 +216,7 @@ export function sendEagerFollowUp(
   beginEagerSubmission({
     optimistic: () => {
       callbacks.onOptimistic?.()
-      appendQueuedMessage(queryClient, slug, shown, { scrollToBottom: callbacks.scrollToBottom, deliveryId, held })
+      appendQueuedMessage(queryClient, slug, shown, { deliveryId, held })
       // The row is working again the instant the operator commits, not when the injection
       // returns ~half a second later — see lib/steering.ts.
       markSteered(slug)
