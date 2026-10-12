@@ -691,11 +691,19 @@ export const AWAITING_HINT_MAX = 8
 export const AWAITING_HINT_VALUE_MAX = 200
 const AWAITING_SCALAR_KINDS: ReadonlySet<AwaitingHint["kind"]> = new Set(["for", "title", "status", "needs_input"])
 
-/** `steps:` has caps of its own. A step is a SENTENCE rather than an id, so it gets a sentence's length;
- *  and the list is appended AFTER the hints capped above, so a long list can never crowd a `prs:` entry
- *  out of AWAITING_HINT_MAX. */
+/** `steps:` has caps of its own, and the list is appended AFTER the hints capped above, so a long list can
+ *  never crowd a `prs:` entry out of AWAITING_HINT_MAX.
+ *
+ *  THE LENGTH CAP IS DEFENSIVE, NOT A FIT. The board carries every thread's last fence, so a runaway
+ *  step must not fatten it — that is the cap's whole job, and keeping a step to one act is the worker
+ *  contract's. It was 500, "a sentence's length", from 2026-10-03 to 2026-10-12, and that cut a real
+ *  step: one naming three 32-character key ids beside a dashboard link ran 724 characters, and the card
+ *  ended mid-sentence on "open each token" with nothing to say it had been cut (maintainer: "Did your
+ *  question get cut off or something?"). The contract demands every link, id and value written in, and
+ *  Markdown link targets spend characters nobody reads, so 2,000 now — and a step past it ends on an
+ *  ellipsis rather than mid-word in silence. */
 export const AWAITING_STEPS_MAX = 12
-export const AWAITING_STEP_VALUE_MAX = 500
+export const AWAITING_STEP_VALUE_MAX = 2_000
 
 /** `questions:` rides after the capped hints for the same reason `steps:` does: a thread carrying many
  *  open questions must still be able to name every one of them — the park is refused for any it leaves
@@ -816,10 +824,10 @@ export function splitAwaitingFrontmatter(raw: string): { body: string; hints: Aw
   const title = trimAwaitingTitle(titleLines.join(" "))
   if (title) parsed.hints.push({ kind: "title", value: title })
   const stepHints: AwaitingHint[] = steps
-    .map((step) => step.trim())
+    .map(readStep)
     .filter(Boolean)
     .slice(0, AWAITING_STEPS_MAX)
-    .map((step) => ({ kind: "step", value: step.slice(0, AWAITING_STEP_VALUE_MAX) }))
+    .map((step) => ({ kind: "step", value: step }))
   const questionHints = parsed.hints.filter((h) => h.kind === "question").slice(0, AWAITING_QUESTIONS_MAX)
   // The cap counts named items alone (see AWAITING_HINT_MAX); every scalar survives it, in written order.
   let items = 0
@@ -841,6 +849,26 @@ function inlineSteps(value: string): string[] {
     // fall through to the one-step reading
   }
   return [v.slice(1, -1)]
+}
+
+/** One step as it will RENDER: trimmed, unquoted, and capped where the cut shows.
+ *
+ *  A WORKER WRITES YAML OUT OF HABIT, and the frontmatter looks like YAML, so a step arrives as a quoted
+ *  scalar often enough to matter — `- "Open the token list and delete…"` — and read verbatim its quotes
+ *  rendered as the step's first character (2026-10-12). A step that is ONE whole quoted scalar is
+ *  unwrapped by YAML itself, escapes and `''` included; anything YAML cannot read as a single string —
+ *  `"Done" — then type "yes"` opens and closes on a quote without being one — stays as written. */
+function readStep(raw: string): string {
+  let step = raw.trim()
+  if (step.length >= 2 && (step[0] === '"' || step[0] === "'") && step.endsWith(step[0])) {
+    try {
+      const value = parseYaml(step)
+      if (typeof value === "string") step = value.trim()
+    } catch {
+      // not one quoted scalar: the quotes are the worker's prose
+    }
+  }
+  return step.length > AWAITING_STEP_VALUE_MAX ? `${step.slice(0, AWAITING_STEP_VALUE_MAX).trimEnd()}…` : step
 }
 
 /** The fence's steps for the human, in the order written — empty for every fence that is not waiting on

@@ -477,7 +477,8 @@ exactly ONE of them.
     upload.\` Good: \`Open the [Frizz account audit log](https://dash.cloudflare.com/<account-id>/audit-log),
     filter to 2026-10-05 18:00–19:00 UTC, and note the actor and IP on the frizz-relay upload.\`
     Fill in every id you hold; when you cannot know a URL, link the nearest page you can and say what to
-    click there. A step is cut at 500 characters, so keep each link inside that.
+    click there. ONE ACT PER STEP: the human ticks each one off as they go, so three tokens to delete
+    are three steps, never one step that lists all three.
     (Maintainer 2026-10-08, after a security handoff listed seven to-dos with no link in any of them:
     *"Anytime you stop with a to-do block for the user, it needs to include clickable links. It needs to
     be as actionable as possible."*)
