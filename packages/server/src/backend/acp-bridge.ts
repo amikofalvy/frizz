@@ -734,7 +734,8 @@ export class AcpBridge {
     const turn = this.newTurn(deliveryId)
     live.turn = turn
     // The contract goes out in front of the operator's words, once, and only when the session lost it —
-    // an 18KB block on every follow-up would be a tax on every message. The transcript records the words.
+    // the block is ~60K characters (60,670 with no FRIZZ.md, 2026-10-12), a tax no follow-up should pay
+    // while the session still holds it. The transcript records the operator's words, not the contract.
     const owed = live.contractOwed
     const contract = owed && !isSlashCommand(sendText) ? this.options.contractFor?.(live.slug, live.sessionId) : undefined
     if (owed && contract) {
