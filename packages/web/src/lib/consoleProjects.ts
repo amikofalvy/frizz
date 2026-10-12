@@ -42,12 +42,17 @@ export function useConsoleFeedProjects(): ConsoleProjects {
     if (projects.ready) setConsoleProjects(slugs ? slugs.split("\n") : [])
   }, [projects.ready, slugs])
   useEffect(() => {
-    fileProjects = projects.projects.map(({ slug, path }) => ({ slug, path }))
+    setFileProjects(projects.projects.map(({ slug, path }) => ({ slug, path })))
   }, [projects.projects])
   return projects
 }
 
 let fileProjects: { slug: string; path: string }[] = []
+
+/** The open projects `fileRpc` chooses among. Set by the Console's route; exported for tests. */
+export function setFileProjects(projects: { slug: string; path: string }[]): void {
+  fileProjects = projects
+}
 
 /**
  * The API to read or open a local FILE with. A file names no project, and the reads are not React (a
