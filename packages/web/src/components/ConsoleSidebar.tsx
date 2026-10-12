@@ -1,7 +1,6 @@
-import * as RadixDropdown from "@radix-ui/react-dropdown-menu"
-import { useCallback, useMemo, useState, type ReactNode } from "react"
+import { useMemo, type ReactNode } from "react"
 import { useSnapshot } from "valtio"
-import { Check, ChevronDown, ChevronUp } from "lucide-react"
+import { ChevronDown, ChevronUp } from "lucide-react"
 import type { ProjectCard, ThreadView } from "@frizz/shared"
 import { store } from "../store.ts"
 import { asThreads, useBoard } from "../hooks.ts"
@@ -24,9 +23,9 @@ import {
 } from "../lib/consoleBoard.ts"
 import { keyProject } from "../lib/threadKey.ts"
 import { ProjectScope } from "../lib/projectScope.tsx"
-import { OPAQUE_SURFACE_BASE } from "../lib/overlaySurface.ts"
 import { CONSOLE_TOP_PX } from "../lib/homeView.ts"
 import { DispatchForm } from "./NewThreadModal.tsx"
+import { useConsoleDispatchTarget } from "./ConsoleProjectChip.tsx"
 import { ProjectSquare } from "./ProjectRail.tsx"
 import { SectionHeader, SubAgentRows, ThreadRow, useQueueScrollspy } from "./Sidebar.tsx"
 import { StatusRow } from "./StatusRow.tsx"
@@ -90,7 +89,7 @@ export function ConsoleSidebar() {
       <div className="flex min-h-0 min-w-0 w-full flex-1 flex-col max-[800px]:max-h-none">
         <div className="mb-3 shrink-0 px-0.5">
           <StatusRow label="All projects" />
-          <ConsoleDispatch projects={projects} />
+          <ConsoleDispatch />
         </div>
         <GroupSwitch group={group} />
         <div ref={railRef} data-sidebar-rail className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden pb-10 max-[800px]:overflow-y-visible">
@@ -197,88 +196,12 @@ function GroupSwitch({ group }: { group: ConsoleGroup }) {
   )
 }
 
-const PICK_KEY = "frizz:console-dispatch-project"
-
-function readPick(): string | null {
-  try {
-    return localStorage.getItem(PICK_KEY)
-  } catch {
-    return null
-  }
-}
-
-/** The prompt box, pointed at the project its chip names. */
-function ConsoleDispatch({ projects }: { projects: ProjectCard[] }) {
-  const [picked, setPicked] = useState<string | null>(readPick)
-  // The remembered project while it is still open here, else the first in the rail's order.
-  const project = projects.find((p) => p.slug === picked) ?? projects[0]
-  const pick = useCallback((slug: string) => {
-    setPicked(slug)
-    try {
-      localStorage.setItem(PICK_KEY, slug)
-    } catch {
-      // Not remembered, but it holds for this page.
-    }
-  }, [])
-  // Memoized: the form's footer is memoized on it, and a fresh element per keystroke would rebuild it.
-  const chip = useMemo(
-    () => (project ? <ProjectChip project={project} projects={projects} onPick={pick} /> : null),
-    [project, projects, pick],
-  )
+/** The prompt box, pointed at the project its chip names (components/ConsoleProjectChip.tsx). */
+function ConsoleDispatch() {
+  const { project, chip } = useConsoleDispatchTarget()
   return (
     <ProjectScope project={project?.slug}>
       <DispatchForm projectPicker={chip} />
     </ProjectScope>
-  )
-}
-
-/**
- * The prompt box's PROJECT chip: where a task typed here will run. Shaped like the profile pill beside
- * it (ProfileGridSelector's trigger) so the two read as one strip of settings for the next thread: the
- * same 26px height and border, and the same ink distance from its words to its chevron. The square sits
- * 5px inside the border, as the approved mockup has it — a filled mark needs less room than a word.
- * Measured 2026-10-11 (sans): square → name 6.75px of ink; the square centred on the name's cap band to 0.23px.
- */
-function ProjectChip({ project, projects, onPick }: { project: ProjectCard; projects: ProjectCard[]; onPick: (slug: string) => void }) {
-  return (
-    <RadixDropdown.Root modal={false}>
-      <RadixDropdown.Trigger asChild>
-        <button
-          type="button"
-          aria-label={`Project: ${project.name}`}
-          title="The project a new thread runs in"
-          data-console-project-chip={project.slug}
-          className="group inline-flex min-w-0 max-w-[min(14rem,40vw)] cursor-pointer items-center gap-1.5 rounded-md border border-border/50 bg-transparent py-1 pl-[5px] pr-2 text-left text-[12px] leading-4 text-fg/90 outline-none transition-colors hover:border-border hover:bg-panel-2 data-[state=open]:border-border data-[state=open]:bg-panel-2"
-        >
-          <ProjectSquare project={project} size={16} />
-          <span className="min-w-0 truncate">{project.name}</span>
-          {/* `-ml-[1.5px]`: on the shared 6px gap the name's ink sat 8.75px from the chevron's, where the profile
-              pill beside it reads 7.14 (scripts/ink-gaps.mjs, 2026-10-11, sans). The trim brings it to 7.25. */}
-          <ChevronDown aria-hidden size={13} className="-ml-[1.5px] shrink-0 text-fg/65 transition-transform group-data-[state=open]:rotate-180" />
-        </button>
-      </RadixDropdown.Trigger>
-      <RadixDropdown.Portal>
-        <RadixDropdown.Content
-          align="start"
-          side="bottom"
-          sideOffset={5}
-          collisionPadding={8}
-          className={`z-[110] ${OPAQUE_SURFACE_BASE} max-h-[min(360px,var(--radix-dropdown-menu-content-available-height))] min-w-[200px] overflow-auto rounded-lg p-1.5`}
-        >
-          {projects.map((p) => (
-            <RadixDropdown.Item
-              key={p.id}
-              onSelect={() => onPick(p.slug)}
-              data-console-project-option={p.slug}
-              className="flex cursor-default items-center gap-2 rounded px-1.5 py-1 text-[12.5px] text-fg outline-none data-[highlighted]:bg-panel-2"
-            >
-              <ProjectSquare project={p} size={16} />
-              <span className="min-w-0 flex-1 truncate">{p.name}</span>
-              <Check aria-hidden size={13} className={p.slug === project.slug ? "shrink-0 text-fg/70" : "invisible shrink-0"} />
-            </RadixDropdown.Item>
-          ))}
-        </RadixDropdown.Content>
-      </RadixDropdown.Portal>
-    </RadixDropdown.Root>
   )
 }
