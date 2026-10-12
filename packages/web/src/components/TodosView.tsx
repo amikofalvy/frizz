@@ -142,6 +142,9 @@ function resumeNativeAnchoring(): void {
 
 // A message as the queue's text-only render draws it: the prose, with its tool bands dropped. The gap
 // rule (messageGap) reads a row's edges, and a text-only row's edges are prose whatever the message held.
+// A stable empty list for a thread with no `questions` yet, so the memos keyed on it hold.
+const NO_QUESTIONS: readonly RegisteredQuestionView[] = []
+
 function proseOnly(m: ChatMessage): ChatMessage {
   return { ...m, tools: [], parts: m.parts?.filter((part) => part.kind !== "tools") }
 }
@@ -1072,8 +1075,10 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
   // anchor group; its rest's stack still carries a Send for it (placedRestEnds). A marker ABOVE the
   // window places nothing here — that message is not drawn — so its card flushes first (placedFrom).
   const placement = useMemo(() => placedFrom(placeQuestions(messages, openQuestions), visibleStart), [messages, openQuestions, visibleStart])
-  // Whether an open question is THIS rest's ending, for the residual card below (RestedCard).
-  const questionsHere = useMemo(() => questionsAtCurrentRest(messages, openQuestions), [messages, openQuestions])
+  // Whether an open question is THIS rest's ending, for the residual card below (RestedCard) — off the
+  // board's questions, not the locally answered-away list (ChatView's copy of this rung says why).
+  const boardQuestions = thread.questions ?? NO_QUESTIONS
+  const questionsHere = useMemo(() => questionsAtCurrentRest(messages, boardQuestions), [messages, boardQuestions])
   const questionAnchors = useMemo(() => {
     const tail: RegisteredQuestionView[] = []
     const byAnchor = new Map<number, RegisteredQuestionView[]>()
