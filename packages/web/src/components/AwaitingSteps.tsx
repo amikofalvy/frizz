@@ -110,7 +110,7 @@ export function StepsComplete({ slug, steps, onReplied, onReplyFailed }: {
       <div
         data-steps-complete
         data-checked={checked}
-        className={`relative mt-3 flex items-baseline rounded-md border px-3 py-2.5 text-[13px] leading-5 transition-colors ${
+        className={`relative mt-3 flex items-center rounded-md border px-3 py-2.5 text-[13px] leading-5 transition-colors ${
           checked ? "border-selection-border bg-selection text-fg" : "border-border text-fg/90 hover:border-border-strong hover:bg-elevated"
         }`}
       >
@@ -123,13 +123,9 @@ export function StepsComplete({ slug, steps, onReplied, onReplyFailed }: {
           onMouseDown={(e) => e.preventDefault()}
           className="absolute inset-0 rounded-md outline-none focus-visible:ring-1 focus-visible:ring-focus-ink-60"
         />
-        {/* THE SQUARE SITS ON THE LABEL'S CAP BAND, computed by the browser: it has no in-flow content
-            (the check is absolutely placed), so its baseline is its bottom edge, which `items-baseline`
-            stands on the label's baseline; the translate then lowers it by half its height less half a
-            cap, putting its centre on baseline − 0.5cap in whatever face the OS picked. */}
         <span
           aria-hidden
-          className={`pointer-events-none relative size-[18px] shrink-0 translate-y-[calc(9px_-_0.5cap)] rounded-[4px] border transition-colors ${
+          className={`pointer-events-none relative size-[18px] shrink-0 rounded-[4px] border transition-colors ${
             checked ? "border-accent bg-accent-fill text-on-accent" : "border-control-strong bg-panel"
           }`}
         >
@@ -139,7 +135,7 @@ export function StepsComplete({ slug, steps, onReplied, onReplyFailed }: {
             </span>
           )}
         </span>
-        <span id={labelId} className="pointer-events-none ml-2.5 font-medium">{STEPS_COMPLETE}</span>
+        <span id={labelId} className="pointer-events-none ml-2 font-medium">{STEPS_COMPLETE}</span>
       </div>
       {!promptBoxSends && (
         <CardActions data-awaiting-steps-reply>
