@@ -25,7 +25,7 @@ import { createBoard, resolveSessionTitle, type BoardManager } from "./board.ts"
 import { createSessionPeerResolver, type SessionPeerThread } from "./session-peer.ts"
 import { auditLogPathForStateDir, fileAuditLog, type AuditLog } from "./audit.ts"
 import { createTailer, defaultLogDir, type Tailer } from "./tailer.ts"
-import { createDispatcher, claudeWorkerSystemPrompt, claudeCliConfig, codexWorkerThreadConfig, resolveFrizzCli, resolveFrizzMcp, workerPluginDir, coldResumePermission, type Dispatcher, type FrizzMcpTarget } from "./dispatch.ts"
+import { createDispatcher, claudeWorkerSystemPrompt, claudeCliConfig, codexWorkerThreadConfig, codexWorkerBaseInstructions, resolveFrizzCli, resolveFrizzMcp, workerPluginDir, coldResumePermission, type Dispatcher, type FrizzMcpTarget } from "./dispatch.ts"
 import { createScheduler, type Scheduler, probeIssueReadable, probePrReadable, type PrRef, type PrProbe } from "./scheduler.ts"
 import {
 resumeThread,
@@ -705,13 +705,18 @@ function createContextUnchecked(opts: ContextOptions, resources: PartialContextR
         // Codex's MCP servers mount PROCESS-wide on the app-server, not per thread, so the descriptor
         // is resolved once here — the codex twin of the per-dispatch resolveFrizzMcp on the claude side.
         frizzMcp: resolveFrizzMcp(frizzMcpTarget),
-        // …and only for a thread whose contract taught it the MCP tools: a codex thread keeps the
-        // contract it was started with, so one that predates `frizzctl` keeps its mount.
+        // …and only for a thread whose contract taught it the MCP tools. One that predates `frizzctl`
+        // keeps its mount even though its next resume hands it the current contract: its history still
+        // calls the tools, and a thread only rejoined (mid-turn, or holding a background command) runs
+        // on the contract it was loaded with until it is rebuilt.
         mountsMcp: (slug) => workerTaughtMcp(storage.getSession(slug)),
         frizzCli: resolveFrizzCli(frizzMcpTarget),
         // The rest of a worker thread's config — hooks and reasoning summaries — sent with the start
         // and every resume, so a thread that comes back under this server runs on this server's.
         workerConfig: (_slug, sessionId) => codexWorkerThreadConfig(sessionId),
+        // The worker contract, rebuilt for every resume exactly as dispatch builds it for the start —
+        // see codexWorkerBaseInstructions for why a resume that sends none can lose it.
+        workerBaseInstructions: (_slug, sessionId) => codexWorkerBaseInstructions(sessionId, project.dir),
         db: storage.db,
         interactions: storage.interactions,
         codexBin: opts.codexBin,

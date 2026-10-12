@@ -377,6 +377,21 @@ export function claudeWorkerSystemPrompt(sessionId: string, projectDir: string):
   return [loadWorkerPrompt("claude"), scratchpadOrientation(sessionId, "claude"), frizzConfigBlock(projectDir)].filter(Boolean).join("\n\n")
 }
 
+// The codex twin: the `baseInstructions` a Codex worker's thread runs under. Sent with its
+// `thread/start` AND, through the bridge's `workerBaseInstructions` (context.ts), with every
+// `thread/resume`, rebuilt each time like Claude's.
+//
+// The resume is not redundant. Codex restores base instructions on a resume in priority order: the
+// request's own `baseInstructions`, then the operator's `model_instructions_file` / `instructions` in
+// any config.toml layer, and only then the rollout's saved `session_meta.base_instructions` (codex
+// 0.161.0 `config/mod.rs:4003-4011`, `session/mod.rs:722-756`). So a resume that sent nothing put a
+// worker whose operator set either key back on THAT file, with no contract, after any Frizz restart
+// or app-server death (measured against a fake model: `instructions` read the file's text, before
+// and after a compaction).
+export function codexWorkerBaseInstructions(sessionId: string, projectDir: string): string {
+  return [loadWorkerPrompt("codex"), scratchpadOrientation(sessionId, "codex"), frizzConfigBlock(projectDir)].filter(Boolean).join("\n\n")
+}
+
 // The SYSTEM-level scratch-directory orientation (survives compaction, rebuilds on every resume).
 // Passed as extraSystemPrompt on dispatch, adopt, AND the followUp resume path.
 //
@@ -1036,8 +1051,6 @@ export function createDispatcher(deps: DispatchDeps): Dispatcher {
           cleanupDispatchFiles(scratchRel, { argv: [], env: {}, prewrite: [] }, sessionId)
           throw new Error("Codex app-server is unavailable; cannot start this thread. Check that `codex` is installed and its app-server protocol matches the pinned revision (re-pin if you upgraded codex).")
         }
-        const extraSystemPrompt = [scratchpadOrientation(sessionId, kind), frizzConfigBlock(deps.project.dir)]
-          .filter(Boolean).join("\n\n")
         try {
           const spawned = await bridge.spawnDispatch({
             threadSlug: slug,
@@ -1047,7 +1060,7 @@ export function createDispatcher(deps: DispatchDeps): Dispatcher {
             model,
             effort,
             sandbox: codexSandbox(permissionMode) as "read-only" | "workspace-write" | "danger-full-access",
-            baseInstructions: [loadWorkerPrompt("codex"), extraSystemPrompt].filter(Boolean).join("\n\n"),
+            baseInstructions: codexWorkerBaseInstructions(sessionId, deps.project.dir),
             developerInstructions: CODEX_FIRST_OUTPUT_TITLE_DEVELOPER_INSTRUCTIONS,
             // No `config` here: the hooks and the reasoning summary are the bridge's to send
             // (codexWorkerThreadConfig), with this start and with every resume after it.
@@ -1083,8 +1096,8 @@ export function createDispatcher(deps: DispatchDeps): Dispatcher {
           // The codex SESSION id (not the thread id) matches the rollout filename the tailer scans for.
           deps.storage.setAgentSession(slug, spawned.binding.codexSessionId)
           deps.storage.setCodexRuntime(slug, "app-server")
-          // The contract this thread was just started with teaches `frizzctl`, and a codex thread keeps
-          // the contract it was started with — so it is never handed the MCP tools (workerTaughtMcp).
+          // The contract this thread was just started with teaches `frizzctl`, and every resume hands it
+          // the current one, which does too — so it is never handed the MCP tools (workerTaughtMcp).
           deps.storage.setWorkerSurface(slug, "cli")
           void deps.board.rebuild().catch(() => {})
           return { slug, sessionId }

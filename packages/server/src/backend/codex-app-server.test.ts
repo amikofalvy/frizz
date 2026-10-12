@@ -2359,7 +2359,7 @@ test("bridge persistence refuses malformed or future authority schemas before sp
  *  fields are the entire input to the bridge's "did my turns survive?" decision. */
 function scriptedHostHarness(
   script: () => { generation: string; reattached: boolean; droppedWhileDetached: number; serviceExitCode?: number },
-  worker: Pick<import("./codex-app-server.ts").CodexAppServerBridgeOptions, "frizzMcp" | "mountsMcp" | "frizzCli" | "workerConfig"> = {},
+  worker: Pick<import("./codex-app-server.ts").CodexAppServerBridgeOptions, "frizzMcp" | "mountsMcp" | "frizzCli" | "workerConfig" | "workerBaseInstructions"> = {},
 ) {
   const dir = mkdtempSync(join(tmpdir(), "frizz-codex-attachment-"))
   const dbPath = join(dir, "ui.db")
@@ -2806,6 +2806,89 @@ test("the MCP mount rides only the threads whose contract taught it", async () =
     assert.ok((legacyResume!.mcp_servers as Record<string, unknown>)[FRIZZ_MCP.name])
     assert.equal(cliResume?.mcp_servers, undefined)
     assert.equal(cliResume?.[`mcp_servers.${FRIZZ_MCP.name}.enabled`], false)
+  } finally { h.close() }
+})
+
+// The worker contract rides every resume that carries the bag. Codex prefers a config.toml
+// `model_instructions_file` / `instructions` to the rollout's saved contract on a resume, so a resume
+// that sent none put such an operator's file in place of the Frizz contract after every restart.
+const workerContract = (slug: string, sessionId: string) => `FRIZZ CONTRACT for ${slug} (${sessionId})`
+const instructionsOf = (request: Message): unknown => (request.params as Message).baseInstructions
+
+test("thread/resume carries the worker contract on every resume path: rebind, restart reconcile, and legacy adoption", async () => {
+  let plan = { generation: "gen-A", reattached: false, droppedWhileDetached: 0 }
+  const h = scriptedHostHarness(() => plan, { frizzMcp: WORKER_MCP, workerConfig: workerHooks, workerBaseInstructions: workerContract })
+  try {
+    const bridge = h.newBridge()
+    const idle = await bridge.startDisposableSession({ threadSlug: "idle-worker", sessionId: "idle-session", cwd: h.dir, ephemeral: false })
+    const busy = await bridge.startDisposableSession({ threadSlug: "busy-worker", sessionId: "busy-session", cwd: h.dir, ephemeral: false })
+    const { turnId } = await bridge.startTurn({ threadSlug: busy.threadSlug, sessionId: busy.sessionId, text: "Work" })
+    await waitFor(() => bridge.binding(busy.threadSlug, busy.sessionId)?.currentTurnId === turnId, "turn active")
+    bridge.close()
+
+    // The app-server died with the turn in it: the reconcile at warm-up resumes the mid-turn thread…
+    plan = { generation: "gen-B", reattached: false, droppedWhileDetached: 0 }
+    const restarted = h.newBridge()
+    await restarted.warmUp()
+    const resumesOf = (threadId: string) =>
+      requestsOf(h.processes[1]!, "thread/resume").filter((request) => (request.params as Message).threadId === threadId)
+    // (The recovery nudge after it releases and resumes the thread again, before its turn — that
+    // rebuild carries the contract too.)
+    const reconciled = resumesOf(busy.codexThreadId)
+    assert.ok(reconciled.length >= 1)
+    for (const request of reconciled) assert.equal(instructionsOf(request), "FRIZZ CONTRACT for busy-worker (busy-session)")
+
+    // …the idle one is rebound by its next use…
+    await restarted.resumeOwnedSession(idle.threadSlug, idle.sessionId)
+    const [rebound] = resumesOf(idle.codexThreadId)
+    assert.ok(rebound)
+    assert.equal((rebound.params as Message).threadId, idle.codexThreadId)
+    assert.equal(instructionsOf(rebound), "FRIZZ CONTRACT for idle-worker (idle-session)")
+    assert.ok(bagOf(rebound)?.hooks, "beside the bag, not instead of it")
+
+    // …and a pre-app-server rollout, whose contract was only ever its first prompt, gains it on adoption.
+    await restarted.adoptExternalRollout({ threadSlug: "legacy-worker", sessionId: "legacy-session", codexThreadId: "legacy-rollout-id", cwd: h.dir })
+    const [adopted] = resumesOf("legacy-rollout-id")
+    assert.ok(adopted)
+    assert.equal((adopted.params as Message).threadId, "legacy-rollout-id")
+    assert.equal(instructionsOf(adopted), "FRIZZ CONTRACT for legacy-worker (legacy-session)")
+  } finally { h.close() }
+})
+
+// Codex counts any `baseInstructions` on a resume as an override and rebuilds a loaded thread nobody
+// subscribes to for it — so the contract stays off a rejoin exactly as the bag does, or it would end
+// the background command the rejoin is for.
+test("a thread holding a background command is rejoined without the contract, and gets it with the rebuild after", async () => {
+  let plan = { generation: "gen-A", reattached: false, droppedWhileDetached: 0 }
+  const h = scriptedHostHarness(() => plan, { frizzMcp: WORKER_MCP, workerConfig: workerHooks, workerBaseInstructions: workerContract })
+  try {
+    const bridge = h.newBridge()
+    const { binding, terminal } = await threadWithBackgroundExec(h, bridge, "bg-contract")
+    bridge.close()
+
+    plan = { generation: "gen-A", reattached: true, droppedWhileDetached: 1 }
+    h.backgroundTerminals({ [binding.codexThreadId]: [terminal] })
+    const restarted = h.newBridge()
+    await restarted.warmUp()
+    const process_ = h.processes[1]!
+    const rejoin = requestsOf(process_, "thread/resume")
+    assert.equal(rejoin.length, 1)
+    assert.equal(instructionsOf(rejoin[0]!), undefined, "a contract here rebuilds the thread and ends its command")
+
+    const input = { threadSlug: binding.threadSlug, sessionId: binding.sessionId, text: "next" }
+    const { turnId } = await restarted.followUp(input)
+    process_.notify("item/completed", {
+      item: { type: "commandExecution", id: "exec-item-1", command: "sleep 811", processId: "4242", status: "completed", exitCode: 0 },
+      threadId: binding.codexThreadId,
+      turnId,
+      completedAtMs: Date.parse("2026-07-13T12:00:01.000Z"),
+    })
+    await waitFor(() => restarted.backgroundExecs(binding.threadSlug, binding.sessionId).length === 0, "the command ended")
+    process_.completeActiveTurn()
+    await waitFor(() => restarted.binding(binding.threadSlug, binding.sessionId)?.currentTurnId === null, "turn completed")
+    await restarted.followUp({ ...input, text: "again" })
+    assert.deepEqual(wireOf(process_), ["thread/resume", "turn/start", "thread/unsubscribe", "thread/resume", "turn/start"])
+    assert.equal(instructionsOf(requestsOf(process_, "thread/resume")[1]!), `FRIZZ CONTRACT for ${binding.threadSlug} (${binding.sessionId})`)
   } finally { h.close() }
 })
 

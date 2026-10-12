@@ -1079,6 +1079,13 @@ export interface CodexAppServerBridgeOptions {
    * its hooks at its first resume. Not applied to a disposable session, which is not a worker.
    */
   workerConfig?: (threadSlug: string, sessionId: string) => Record<string, unknown>
+  /**
+   * A Frizz WORKER thread's contract, sent as `baseInstructions` with EVERY `thread/resume` that
+   * carries the bag (see resumeRebuild). `thread/start` takes the dispatcher's own copy. Absent ⇒ a
+   * resume sends none and Codex falls back to config.toml, then the rollout — which is how a worker
+   * whose operator set `model_instructions_file` came back from a restart with no contract.
+   */
+  workerBaseInstructions?: (threadSlug: string, sessionId: string) => string | undefined
 }
 
 function bindingFromRow(row: BindingRow): CodexAppServerSessionBinding {
@@ -2097,7 +2104,7 @@ export class CodexAppServerBridge {
         approvalsReviewer: "user",
         ...this.resumeSandboxOverride(binding),
         ...cwdOverride,
-        ...(holdsExec ? {} : this.threadConfig(threadSlug, sessionId)),
+        ...(holdsExec ? {} : this.resumeRebuild(threadSlug, sessionId)),
       })
       const response = ThreadResponse.parse(rawResponse)
       if (response.thread.id !== binding.codex_thread_id || response.thread.ephemeral) {
@@ -2142,7 +2149,7 @@ export class CodexAppServerBridge {
   private syncsThreadConfig(): boolean {
     return !this.unsubscribeRefused
       && process.env.FRIZZ_PLUGIN_SYNC_OFF !== "1"
-      && (this.options.frizzMcp !== undefined || this.options.workerConfig !== undefined)
+      && (this.options.frizzMcp !== undefined || this.options.workerConfig !== undefined || this.options.workerBaseInstructions !== undefined)
   }
 
   // Adopt a rollout this bridge did NOT create — a legacy Codex thread from before the app-server
@@ -2183,7 +2190,9 @@ export class CodexAppServerBridge {
         // Adoption is the first time frizz owns this rollout, so it is also the first chance to give
         // the thread a frizz MCP mount that knows its slug, and its hooks. The rollout belonged to a
         // process of its own, so this app-server is loading it cold and the bag is what it is built from.
-        ...this.threadConfig(input.threadSlug, input.sessionId),
+        // And its contract: a pre-app-server thread carried it only in its FIRST PROMPT, so its rollout's
+        // saved base instructions are Codex's default, and a compaction took the contract with it.
+        ...this.resumeRebuild(input.threadSlug, input.sessionId),
       })
       const response = ThreadResponse.parse(rawResponse)
       if (response.thread.id !== input.codexThreadId || response.thread.ephemeral) {
@@ -3182,7 +3191,7 @@ export class CodexAppServerBridge {
           // commands and ended every one of them instead (measured 2026-10-11 on codex 0.161.0: a
           // `sleep` alive after the old server left was gone after the new server's warm-up). Without
           // the bag the same resume only rejoins.
-          ...(execThreads.includes(row.codex_thread_id) ? {} : this.threadConfig(row.thread_slug, row.frizz_session_id)),
+          ...(execThreads.includes(row.codex_thread_id) ? {} : this.resumeRebuild(row.thread_slug, row.frizz_session_id)),
         })
         const response = ThreadResponse.parse(rawResponse)
         if (response.thread.id !== row.codex_thread_id || response.thread.ephemeral) throw new Error("resume ownership mismatch")
@@ -3418,6 +3427,30 @@ export class CodexAppServerBridge {
       ...callerConfig,
     }
     return Object.keys(config).length ? { config } : {}
+  }
+
+  /**
+   * Everything a `thread/resume` that may rebuild the thread sends of this server's own: the bag, and
+   * the worker contract as `baseInstructions`. Both or neither, because they obey the same rule.
+   *
+   * The contract has to ride every such resume. Codex picks a resumed thread's base instructions from
+   * the request first, then from `model_instructions_file` / `instructions` in any config.toml layer,
+   * and only then from the rollout's saved `session_meta` (codex 0.161.0 `config/mod.rs:4003-4011`,
+   * `session/mod.rs:722-756`). Sending none handed a worker whose operator set either key that file in
+   * place of the Frizz contract, after every restart and for the rest of its life — measured against a
+   * fake model (`instructions` read the file's text on the first turn after the resume and after a
+   * compaction), and fixed by this (the same run reads the contract).
+   *
+   * And it has to stay off the resumes the bag stays off. Codex counts ANY `baseInstructions` on a
+   * resume of a loaded thread as an override (`thread_processor.rs:218`, no comparison with what the
+   * thread already has), and an override on a loaded, idle thread nobody subscribes to tears it down
+   * and rebuilds it (`resume_running_thread`, `:4350-4380`) — the very rebuild that ends a background
+   * command. So a rejoin of a thread holding one carries neither; it is loaded already, with its
+   * instructions, and the rebuild before its next turn (startTurn) brings the contract in.
+   */
+  private resumeRebuild(threadSlug: string, sessionId: string): { config?: Record<string, unknown>; baseInstructions?: string } {
+    const baseInstructions = this.options.workerBaseInstructions?.(threadSlug, sessionId)
+    return { ...this.threadConfig(threadSlug, sessionId), ...(baseInstructions ? { baseInstructions } : {}) }
   }
 
   /** An idle thread on this connection that still runs on a previous server's config and can be

@@ -204,10 +204,12 @@ export interface SessionRow {
   acp_agent?: string | null
   // Which worker surface this thread's CONTRACT taught it: 'cli' = the `frizzctl` command line, written
   // by every dispatch since 2026-10-11. NULL = a thread started before that, whose contract tells it
-  // to call `mcp__frizz__*` tools. It matters on the two backends whose contract is fixed when the
-  // thread starts — codex (baseInstructions) and ACP (the first prompt) — because such a thread is told
-  // about tools for the rest of its life, so it must go on being given them (workerTaughtMcp). A Claude
-  // thread is handed the current contract at every fork and never reads this.
+  // to call `mcp__frizz__*` tools. It matters on the two backends that do not rebuild a thread's
+  // contract on every load: ACP (the first prompt, fixed for the thread's life) and codex — which is
+  // handed the current contract at each resume that rebuilds it (codexWorkerBaseInstructions), but
+  // whose history still calls the tools and which runs on its old contract while it is only rejoined.
+  // Either way it must go on being given them (workerTaughtMcp). A Claude thread is handed the current
+  // contract at every fork and never reads this.
   worker_surface?: string | null
 }
 
