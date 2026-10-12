@@ -1,4 +1,5 @@
 import { FRIZZ_ROUTE_PREFIX } from "@frizz/shared"
+import { threadKey } from "./threadKey.ts"
 
 // WHICH PROJECT THIS PAGE IS SHOWING, taken from its own URL.
 //
@@ -24,6 +25,10 @@ import { FRIZZ_ROUTE_PREFIX } from "@frizz/shared"
  * sanitizer, and renders as a disabled local-file chip.
  */
 export const APP_ROUTE_SEGMENTS = new Set(["thread", "status"])
+
+// A thread slug's grammar (shared/src/thread-slug.ts) — what a Console link may pair with its project.
+// A segment outside it (already a `<project>~<slug>` key, or junk) is not re-keyed.
+const CONSOLE_KEYABLE_SLUG = /^[a-z0-9][a-z0-9-]*$/
 
 /**
  * This page’s path, or `/` where there is no page.
@@ -112,13 +117,29 @@ export function outerPath(inner: string, pathname?: string): string {
  * sanitize time fixes every one of those without the author having to know which project they are in.
  *
  * `/` is deliberately NOT rewritten: it is the all-projects grid, which is the same page everywhere.
+ *
+ * ON THE CONSOLE a thread link needs `project` — the project the prose belongs to (its surface's
+ * <ProjectScope>). The Console names no project, so `/console/thread/<slug>` would leave the browser to
+ * guess among every project's threads of that name: one that opens it in a new tab, or any link the
+ * click interceptor (lib/thread-links.ts) cannot place, landed on whichever project happened to have the
+ * slug, or on the launching project's. With a project the link names the thread's key
+ * (`/console/thread/<project>~<slug>`), and a deeper page (`…/full`) goes to that project's own page,
+ * which is where it lives. With none, the link is left exactly as written.
  */
-export function prefixedAppRoute(href: string | null | undefined, pathname?: string): string | null {
+export function prefixedAppRoute(href: string | null | undefined, pathname?: string, project?: string): string | null {
   if (!href || !href.startsWith("/") || href.startsWith("//")) return null
   const bare = href.replace(/[?#].*$/u, "")
   if (projectSlug(bare)) return null // already names its project
-  const first = bare.split("/")[1] ?? ""
+  const [, first = "", slug = "", ...deeper] = bare.split("/")
   if (!APP_ROUTE_SEGMENTS.has(first)) return null
+  if (first === "thread" && isConsolePath(pathname)) {
+    if (!project || !CONSOLE_KEYABLE_SLUG.test(slug)) return null
+    const tail = href.slice(bare.length)
+    const rest = deeper.filter(Boolean)
+    return rest.length > 0
+      ? `${projectHref(project)}${bare}${tail}`
+      : `${CONSOLE_PATH}/thread/${threadKey(project, slug)}${tail}`
+  }
   const outer = outerPath(href, pathname)
   return outer === href ? null : outer
 }

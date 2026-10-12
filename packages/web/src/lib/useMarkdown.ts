@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useSyncExternalStore } from "react"
+import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react"
 import { mdToHtml, mdInlineToHtml } from "./markdown.ts"
 import { githubRepoForLinks, subscribeGithubRepo } from "./githubAutolink.ts"
 import { githubRefsInHtml, noteGithubRefs } from "./githubHovercards.ts"
-import { localPathBase, subscribeLocalPathBase, type LocalPathBase } from "./localPathBase.ts"
+import { localPathBaseFor, subscribeLocalPathBase, type LocalPathBase } from "./localPathBase.ts"
+import { useProjectScope } from "./projectScope.tsx"
 
 // Memoized markdown rendering, for every surface that drops agent prose into `dangerouslySetInnerHTML`.
 //
@@ -27,9 +28,14 @@ export function useGithubRepoForLinks(): string | null {
  * Same subscription shape, and the same reason, as the repo above: the board arrives after a thread's
  * own transcript query, so prose memoized on its markdown string alone renders its file links while
  * this is still empty and never rebuilds them.
+ *
+ * On the Console it is the SURFACE's project, not the page's — the page names none, and a card's
+ * `.frizz/…/HANDOFF.md` means the directory of the project that card belongs to (localPathBaseFor).
  */
 export function useLocalPathBase(): LocalPathBase {
-  return useSyncExternalStore(subscribeLocalPathBase, localPathBase, localPathBase)
+  const project = useProjectScope()
+  const read = useCallback(() => localPathBaseFor(project), [project])
+  return useSyncExternalStore(subscribeLocalPathBase, read, read)
 }
 
 /**
@@ -40,13 +46,15 @@ export function useLocalPathBase(): LocalPathBase {
 export function useMarkdownHtml(md: string, opts?: { baseDir?: string; asDocument?: boolean }): string {
   const repo = useGithubRepoForLinks()
   const base = useLocalPathBase()
+  // The project a worker's `/thread/<slug>` link names on the Console (lib/base-path.ts prefixedAppRoute).
+  const project = useProjectScope()
   const { baseDir, asDocument } = opts ?? {}
   const dir = baseDir ?? base.dir
   // `repo` is deliberately a dependency without appearing in the body — it is an input to mdToHtml
   // through githubAutolink.ts's module state, not through this argument list.
   const html = useMemo(
-    () => mdToHtml(md, { baseDir: dir, homeDir: base.home, document: asDocument }),
-    [md, dir, base.home, asDocument, repo],
+    () => mdToHtml(md, { baseDir: dir, homeDir: base.home, document: asDocument, project }),
+    [md, dir, base.home, asDocument, project, repo],
   )
   useGithubHovercardRefs(html)
   return html
@@ -72,9 +80,10 @@ function useGithubHovercardRefs(html: string): void {
 export function useInlineMarkdownHtml(md: string): string {
   const repo = useGithubRepoForLinks()
   const base = useLocalPathBase()
+  const project = useProjectScope()
   const html = useMemo(
-    () => mdInlineToHtml(md, { baseDir: base.dir, homeDir: base.home }),
-    [md, base.dir, base.home, repo],
+    () => mdInlineToHtml(md, { baseDir: base.dir, homeDir: base.home, project }),
+    [md, base.dir, base.home, project, repo],
   )
   useGithubHovercardRefs(html)
   return html

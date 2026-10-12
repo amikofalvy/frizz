@@ -47,3 +47,55 @@ export function subscribeLocalPathBase(listener: () => void): () => void {
   listeners.add(listener)
   return () => listeners.delete(listener)
 }
+
+// THE CONSOLE'S BASES. The Console shows every project on one page, so "this page's project" names
+// none of them and the page base above stays empty there (store.ts refuses the union board at its door,
+// and the binding's reset clears it). A card or drawer on it still belongs to ONE project — the one its
+// <ProjectScope> names — and a relative path in that surface's prose means that project's directory,
+// exactly as it would on the project's own page. So the Console registers each open project's directory
+// here (lib/consoleProjects.ts, from the project list it already reads), with the machine's home, and a
+// surface asks for its project's base by name. Off the Console the map is empty and every surface gets
+// the page base: nothing about a project page changes.
+let projectDirs: ReadonlyMap<string, string> = new Map()
+let projectHome = ""
+// One stable object per project for as long as its directory and the home are unchanged — the same
+// useSyncExternalStore identity rule as `setLocalPathBase`.
+let projectBases = new Map<string, LocalPathBase>()
+
+/** The Console's open projects (`slug → directory`) and the server's home. An empty map off the Console. */
+export function setProjectPathBases(dirs: Iterable<readonly [string, string]>, home?: string | null): void {
+  const next = new Map(dirs)
+  const nextHome = home ?? ""
+  const same = nextHome === projectHome && next.size === projectDirs.size && [...next].every(([slug, dir]) => projectDirs.get(slug) === dir)
+  if (same) return
+  projectDirs = next
+  projectHome = nextHome
+  projectBases = new Map()
+  for (const listener of listeners) listener()
+}
+
+/** A project's directory as the Console knows it, or "" when it is not one of the Console's projects. */
+export function projectPathDir(project: string): string {
+  return projectDirs.get(project) ?? ""
+}
+
+/**
+ * The base a surface's relative paths resolve against: its project's, when it names one the Console
+ * knows, else the page's. `project` is the surface's <ProjectScope> (undefined on a project's own page).
+ */
+export function localPathBaseFor(project: string | undefined): LocalPathBase {
+  const dir = project ? projectDirs.get(project) : undefined
+  if (project && dir) {
+    let scoped = projectBases.get(project)
+    if (!scoped) projectBases.set(project, (scoped = { dir, home: projectHome }))
+    return scoped
+  }
+  // A surface on the Console with no project of its own (the Markdown reader, which names its own
+  // directory) still expands `~`: the home is the machine's, not a project's.
+  if (projectHome && base === EMPTY) {
+    let homeOnly = projectBases.get("")
+    if (!homeOnly) projectBases.set("", (homeOnly = { dir: "", home: projectHome }))
+    return homeOnly
+  }
+  return base
+}

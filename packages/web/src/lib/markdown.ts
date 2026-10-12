@@ -294,8 +294,10 @@ const documentMarkdown = new Marked({ ...MARKDOWN_OPTIONS, breaks: false })
 //
 // `baseDir` is the directory a relative link resolves against — the document's own directory from the
 // built-in file reader, the project root from every other surface (see lib/localPathBase.ts). `homeDir`
-// expands a `~`-anchored one. `document` is the file reader's alone: soft wraps stay soft.
-export function mdToHtml(md: string, opts?: { baseDir?: string; homeDir?: string; document?: boolean }): string {
+// expands a `~`-anchored one. `document` is the file reader's alone: soft wraps stay soft. `project` is
+// the project the prose belongs to on the Console (its surface's <ProjectScope>), which a worker's
+// `/thread/<slug>` link names (lib/base-path.ts prefixedAppRoute).
+export function mdToHtml(md: string, opts?: { baseDir?: string; homeDir?: string; document?: boolean; project?: string }): string {
   if (!md.trim()) return ""
   // breaks: single newlines are HARD breaks (chat convention — Slack/GitHub-comment style);
   // CommonMark default silently glued "item ✅\nitem ✅" lists onto one line.
@@ -303,7 +305,7 @@ export function mdToHtml(md: string, opts?: { baseDir?: string; homeDir?: string
   const html = opts?.document
     ? withLongBlocksOpen(() => documentMarkdown.parse(md, { async: false }) as string)
     : markdown.parse(md, { async: false }) as string
-  return sanitize(html, { block: true, baseDir: opts?.baseDir, homeDir: opts?.homeDir })
+  return sanitize(html, { block: true, baseDir: opts?.baseDir, homeDir: opts?.homeDir, project: opts?.project })
 }
 
 // INLINE-only render: emphasis/strong/code/del/links but NO block wrapping (`<p>`, headings, lists).
@@ -315,10 +317,10 @@ export function mdToHtml(md: string, opts?: { baseDir?: string; homeDir?: string
 // flattened (`inertInteractive`), because the chip was a `<button>` around its text and an anchor
 // inside one is invalid HTML; the chip now lays its hit area BESIDE the text instead
 // (components/QuestionBlockCard.tsx), so a file named in an option opens like one named in a paragraph.
-export function mdInlineToHtml(md: string, opts?: { baseDir?: string; homeDir?: string }): string {
+export function mdInlineToHtml(md: string, opts?: { baseDir?: string; homeDir?: string; project?: string }): string {
   if (!md.trim()) return ""
-  const { baseDir, homeDir } = opts ?? {}
-  return sanitize(markdown.parseInline(md, { async: false }) as string, { baseDir, homeDir })
+  const { baseDir, homeDir, project } = opts ?? {}
+  return sanitize(markdown.parseInline(md, { async: false }) as string, { baseDir, homeDir, project })
 }
 
 export function stripFrontmatter(md: string): string {
@@ -384,13 +386,14 @@ const DROP_WITH_CONTENT = new Set([
 // `baseDir` — the directory a relative destination resolves against: the FILE's own directory in the
 // built-in reader, and the PROJECT ROOT everywhere else, which is the base the server already uses for
 // a bare path in inline code. `homeDir` — the expansion of a leading `~`. Both come from the caller;
-// see lib/localPathBase.ts for where the non-reader surfaces get them.
-type WalkContext = { block: boolean; baseDir?: string; homeDir?: string }
+// see lib/localPathBase.ts for where the non-reader surfaces get them. `project` — the Console project
+// the prose belongs to, for an in-app link that names none (prefixedAppRoute).
+type WalkContext = { block: boolean; baseDir?: string; homeDir?: string; project?: string }
 
-function sanitize(dirty: string, { block = false, baseDir, homeDir }: Partial<WalkContext> = {}): string {
+function sanitize(dirty: string, { block = false, baseDir, homeDir, project }: Partial<WalkContext> = {}): string {
   const tpl = document.createElement("template")
   tpl.innerHTML = dirty
-  walk(tpl.content, { block, baseDir, homeDir })
+  walk(tpl.content, { block, baseDir, homeDir, project })
   return tpl.innerHTML
 }
 
@@ -409,7 +412,7 @@ function walk(node: ParentNode, ctx: WalkContext) {
     }
     if (tag === "a" || tag === "img") rebaseRelative(el, tag === "a" ? "href" : "src", ctx)
     if (tag === "a") {
-      const inApp = prefixedAppRoute(el.getAttribute("href"))
+      const inApp = prefixedAppRoute(el.getAttribute("href"), undefined, ctx.project)
       if (inApp) el.setAttribute("href", inApp)
       const target = localMarkdownTarget(el.getAttribute("href"))
       if (target) {
