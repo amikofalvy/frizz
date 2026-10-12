@@ -1,9 +1,12 @@
 import { useEffect, useMemo } from "react"
 import { useQuery } from "@tanstack/react-query"
+import { subscribe } from "valtio"
 import type { ProjectCard } from "@frizz/shared"
 import { rpc, rpcFor, type Api } from "../api/rpc.ts"
 import { isConsolePath } from "./base-path.ts"
 import { setConsoleProjects } from "../api/consoleFeed.ts"
+import { store } from "../store.ts"
+import { setProjectPathBases } from "./localPathBase.ts"
 
 // WHICH PROJECTS THE CONSOLE SHOWS — every project the server has OPEN, in the rail's order.
 //
@@ -43,6 +46,20 @@ export function useConsoleFeedProjects(): ConsoleProjects {
   }, [projects.ready, slugs])
   useEffect(() => {
     setFileProjects(projects.projects.map(({ slug, path }) => ({ slug, path })))
+  }, [projects.projects])
+  // Each project's directory is the base a relative path in ITS cards resolves against, and the home
+  // (carried on the merged board, the one payload that has it) expands `~` — lib/localPathBase.ts. A
+  // subscription rather than a snapshot, so the route does not re-render on every board change for a
+  // value that is set once.
+  useEffect(() => {
+    const dirs = projects.projects.map(({ slug, path }) => [slug, path] as const)
+    const sync = () => setProjectPathBases(dirs, store.board?.homeDir)
+    sync()
+    const unsubscribe = subscribe(store, sync)
+    return () => {
+      unsubscribe()
+      setProjectPathBases([], "")
+    }
   }, [projects.projects])
   return projects
 }

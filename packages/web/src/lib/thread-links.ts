@@ -15,8 +15,9 @@ import { keyProject, threadKey } from "./threadKey.ts"
 // unprefixed in-app link (see prefixedAppRoute — the raw href had to become navigable in its own
 // right, for the modified clicks this handler deliberately does not take). Opening in the drawer is
 // only right for a thread of the project already on screen, so a link naming a DIFFERENT project is
-// left to the browser.
-const THREAD_HREF = /^\/thread\/([a-z0-9][a-z0-9-]*)\/?$/
+// left to the browser. On the Console the stamped link already names its thread's KEY
+// (`/console/thread/<project>~<slug>`, prefixedAppRoute), so the optional `<project>~` is part of the match.
+const THREAD_HREF = /^\/thread\/((?:[^/~]+~)?[a-z0-9][a-z0-9-]*)\/?$/
 
 export function installThreadLinkInterceptor(): () => void {
   const handler = (event: MouseEvent) => {
@@ -33,7 +34,11 @@ export function installThreadLinkInterceptor(): () => void {
     const match = THREAD_HREF.exec(innerPath(href))
     if (!match) return
     let target = match[1]
-    if (onConsole) {
+    const keyed = keyProject(target) !== undefined
+    if (keyed && !onConsole) return // a key is the Console's name; no project page has it
+    if (keyed) {
+      if (!store.board?.threads.some((t) => t.id === target)) return // not on the Console — let the browser go
+    } else if (onConsole) {
       // A worker's `/thread/<slug>` names a thread of ITS project: the card or drawer the link is in.
       const from = linked ?? keyProject(anchor.closest("[data-queue-card]")?.getAttribute("data-queue-card") ?? topThreadSlug() ?? "")
       if (from) {

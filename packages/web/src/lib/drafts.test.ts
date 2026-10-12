@@ -175,3 +175,38 @@ test("mergeIntoDraft never drops either text, and never duplicates the returned 
   assert.equal(draftStore.get(key), "the failed steer\n\ntyped while it was in flight", "a second rollback adds nothing")
   draftStore.clear(key)
 })
+
+// Review finding 5 (2026-10-11): the Console names a thread `<project>~<slug>` and its merged board has no
+// projectDir, so a reply typed on a Console card was stored as `followup:unresolved-project:billing~fix-auth:…`
+// while billing's own /full page reads `followup:<billing dir>:fix-auth:…` — the fullscreen door opened on an
+// empty box, and a send there left the old words on the card. A Console surface passes its project's real
+// directory (useProjectDir, from its ProjectScope); every thread-scoped kind must then land on the page's key.
+test("a Console card's drafts are the project page's drafts: real dir + bare slug, for every kind", () => {
+  const dir = "/Users/me/code/billing"
+  const pairs: [string, string, string][] = [
+    ["followUp", draftKey.followUp(dir, "billing~fix-auth", "s1"), draftKey.followUp(dir, "fix-auth", "s1")],
+    ["adopt", draftKey.adopt(dir, "billing~fix-auth"), draftKey.adopt(dir, "fix-auth")],
+    ["answer", draftKey.answer(dir, "billing~fix-auth", "s1", "m1", 0), draftKey.answer(dir, "fix-auth", "s1", "m1", 0)],
+    ["question", draftKey.question(dir, "billing~fix-auth", "qst_1", "root"), draftKey.question(dir, "fix-auth", "qst_1", "root")],
+    ["questionPick", draftKey.questionPick(dir, "billing~fix-auth", "qst_1", "root"), draftKey.questionPick(dir, "fix-auth", "qst_1", "root")],
+    ["interaction", draftKey.interaction(dir, "pid", "billing~fix-auth", "s1", 1, "ask", "text"), draftKey.interaction(dir, "pid", "fix-auth", "s1", 1, "ask", "text")],
+  ]
+  for (const [kind, onConsole, onPage] of pairs) {
+    assert.equal(onConsole, onPage, kind)
+    assert.ok(!onConsole.includes("~"), `${kind} key carries no Console key: ${onConsole}`)
+  }
+  // The text typed on one is the text read on the other.
+  const storage = new MemoryStorage()
+  const consoleTab = new DraftStore(storage)
+  consoleTab.set(draftKey.followUp(dir, "billing~fix-auth", "s1"), "typed on the Console card")
+  assert.equal(new DraftStore(storage).get(draftKey.followUp(dir, "fix-auth", "s1")), "typed on the Console card")
+})
+
+// The negative half: with no directory to go with it a key keeps its project, so two projects' same-named
+// threads never meet under `unresolved-project`.
+test("a Console key with no project directory keeps its project in the draft key", () => {
+  assert.notEqual(draftKey.followUp(undefined, "acme~fix-auth", "s1"), draftKey.followUp(undefined, "billing~fix-auth", "s1"))
+  assert.notEqual(draftKey.followUp("", "acme~fix-auth", "s1"), draftKey.followUp("", "fix-auth", "s1"))
+  // Two projects' dirs keep their same-named threads apart, as on their own pages.
+  assert.notEqual(draftKey.followUp("/code/acme", "acme~fix-auth", "s1"), draftKey.followUp("/code/billing", "billing~fix-auth", "s1"))
+})
