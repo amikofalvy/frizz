@@ -1,6 +1,9 @@
 import { useCallback, useMemo, useSyncExternalStore } from "react"
 import { useSnapshot } from "valtio"
 import { store } from "../store.ts"
+import { projectPathDir, subscribeLocalPathBase } from "./localPathBase.ts"
+import { useProjectScope } from "./projectScope.tsx"
+import { splitThreadKey } from "./threadKey.ts"
 
 // A DRAFT BELONGS TO ITS BOX, NOT TO THE TAB IT WAS TYPED IN. Drafts live in localStorage, so every tab
 // on this origin reads and writes ONE set: they survive React unmounts, a reload and a browser restart,
@@ -213,17 +216,33 @@ export function mergeIntoDraft(key: string, text: string): void {
 export function projectDraftScope(projectDir: string | undefined): string {
   return encodeURIComponent(projectDir || "unresolved-project")
 }
+
+// ONE THREAD, ONE KEY, WHICHEVER PAGE ITS BOX IS ON. The Console names a thread `<project>~<slug>`
+// (lib/threadKey.ts) where its project's own page names it `<slug>`, and its merged board has no
+// `projectDir` — so a reply typed on a Console card was stored under `unresolved-project` + the key,
+// and the card's fullscreen door opened the project's /full page on an EMPTY box; a send there left the
+// sent words on the Console card to be sent again (review finding 5). A Console surface passes its
+// project's real directory (useProjectDir, from its <ProjectScope>), and here the key loses its project
+// prefix, so both pages address the identical `<dir>:<bare slug>` entry. A key with no directory to go
+// with it keeps the prefix: two projects' `fix-auth` must not meet under `unresolved-project`.
+function draftSlug(projectDir: string | undefined, slug: string): string {
+  return encodeURIComponent(projectDir ? splitThreadKey(slug)?.slug ?? slug : slug)
+}
+function threadDraftScope(projectDir: string | undefined, slug: string): string {
+  return `${projectDraftScope(projectDir)}:${draftSlug(projectDir, slug)}`
+}
+
 export const draftKey = {
   dispatch: (projectDir: string | undefined) => `dispatch:${projectDraftScope(projectDir)}:new`,
-  followUp: (projectDir: string | undefined, slug: string, sessionId?: string) => `followup:${projectDraftScope(projectDir)}:${encodeURIComponent(slug)}:${encodeURIComponent(sessionId ?? "unowned")}`,
-  adopt: (projectDir: string | undefined, slug: string) => `adopt:${projectDraftScope(projectDir)}:${encodeURIComponent(slug)}`,
-  answer: (projectDir: string | undefined, slug: string, sessionId: string | undefined, messageId: string, block: number) => `answer:${projectDraftScope(projectDir)}:${encodeURIComponent(slug)}:${encodeURIComponent(sessionId ?? "unowned")}:${encodeURIComponent(messageId)}:${block}`,
-  interaction: (projectDir: string | undefined, projectId: string, slug: string, sessionId: string, epoch: number, id: string, field: string) => `interaction:${projectDraftScope(projectDir)}:${encodeURIComponent(projectId)}:${encodeURIComponent(slug)}:${encodeURIComponent(sessionId)}:${epoch}:${encodeURIComponent(id)}:${encodeURIComponent(field)}`,
+  followUp: (projectDir: string | undefined, slug: string, sessionId?: string) => `followup:${threadDraftScope(projectDir, slug)}:${encodeURIComponent(sessionId ?? "unowned")}`,
+  adopt: (projectDir: string | undefined, slug: string) => `adopt:${threadDraftScope(projectDir, slug)}`,
+  answer: (projectDir: string | undefined, slug: string, sessionId: string | undefined, messageId: string, block: number) => `answer:${threadDraftScope(projectDir, slug)}:${encodeURIComponent(sessionId ?? "unowned")}:${encodeURIComponent(messageId)}:${block}`,
+  interaction: (projectDir: string | undefined, projectId: string, slug: string, sessionId: string, epoch: number, id: string, field: string) => `interaction:${projectDraftScope(projectDir)}:${encodeURIComponent(projectId)}:${draftSlug(projectDir, slug)}:${encodeURIComponent(sessionId)}:${epoch}:${encodeURIComponent(id)}:${encodeURIComponent(field)}`,
   // A REGISTERED question's free-text box. Keyed by the question's own durable id and its node path in
   // the follow-up tree — no session or epoch, because a registered question outlives the session that
   // asked it (that is the whole point of it being a row), and a half-typed answer must survive the
   // worker restarting under it.
-  question: (projectDir: string | undefined, slug: string, id: string, path: string) => `question:${projectDraftScope(projectDir)}:${encodeURIComponent(slug)}:${encodeURIComponent(id)}:${encodeURIComponent(path)}`,
+  question: (projectDir: string | undefined, slug: string, id: string, path: string) => `question:${threadDraftScope(projectDir, slug)}:${encodeURIComponent(id)}:${encodeURIComponent(path)}`,
   // The same node's staged option picks (lib/registeredPicks encodes them). The text key plus a suffix,
   // so picks share its exact project/thread/question/path scope; the encoded path never holds a `:`.
   questionPick: (projectDir: string | undefined, slug: string, id: string, path: string) => `${draftKey.question(projectDir, slug, id, path)}:picks`,
@@ -232,7 +251,17 @@ export const draftKey = {
   // and it outlived the save — a stale entry that reappeared over the stored value on the next open.
 }
 
-export function useProjectDir(): string | undefined { return useSnapshot(store).board?.projectDir }
+/**
+ * The directory a draft is scoped by: the page's project's, or on the Console the project of the
+ * surface's <ProjectScope> — the Console's merged board has none of its own (see threadDraftScope).
+ */
+export function useProjectDir(): string | undefined {
+  const project = useProjectScope()
+  const read = useCallback(() => (project ? projectPathDir(project) : ""), [project])
+  const scoped = useSyncExternalStore(subscribeLocalPathBase, read, read)
+  const boardDir = useSnapshot(store).board?.projectDir
+  return scoped || boardDir
+}
 export function useThreadSessionId(slug: string): string | undefined {
   return useSnapshot(store).board?.threads.find((thread) => thread.id === slug)?.sessionId
 }
