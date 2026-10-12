@@ -697,7 +697,7 @@ const AWAITING_SCALAR_KINDS: ReadonlySet<AwaitingHint["kind"]> = new Set(["for",
  *  THE LENGTH CAP IS DEFENSIVE, NOT A FIT. The board carries every thread's last fence, so a runaway
  *  step must not fatten it — that is the cap's whole job, and keeping a step to one act is the worker
  *  contract's. It was 500, "a sentence's length", from 2026-10-03 to 2026-10-12, and that cut a real
- *  step: one naming three 32-character key ids beside a dashboard link ran 724 characters, and the card
+ *  step: one naming three 32-character key ids beside a dashboard link ran 665 characters, and the card
  *  ended mid-sentence on "open each token" with nothing to say it had been cut (maintainer: "Did your
  *  question get cut off or something?"). The contract demands every link, id and value written in, and
  *  Markdown link targets spend characters nobody reads, so 2,000 now — and a step past it ends on an
