@@ -1,7 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query"
 import type { BoardSnapshot, ServerEvent, SocketClientMsg, SocketServerMsg, ThreadView } from "@frizz/shared"
 import { applyBoardDelta, deltaAction } from "@frizz/shared"
-import { store, openThread } from "../store.ts"
+import { store, openThread, setBoardPendingCheck } from "../store.ts"
 import { isConsolePath, projectApiBase, projectHref } from "../lib/base-path.ts"
 import { localFileQueryKey } from "../lib/localFileQuery.ts"
 import { splitThreadKey, threadKey } from "../lib/threadKey.ts"
@@ -32,7 +32,10 @@ import { writeTranscriptPush } from "./transcript-push.ts"
 //
 // What this does NOT have is the SSE fallback. Browsers allow about six connections per host over
 // HTTP/1.1 and the Console would need one EventSource per project, so a project whose board is too big
-// for its socket is polled over HTTP instead (BOARD_POLL_MS), and its transcripts still push.
+// for its socket is polled over HTTP instead (BOARD_POLL_MS), and its transcripts still push: the server
+// shuts only that connection's BOARD channel (app-socket.ts), and keeps its transcripts and heartbeat.
+// What such a project loses is the bus — its desktop notifications and its question-card invalidations —
+// because those ride the board channel the server has closed.
 
 const HEARTBEAT_TIMEOUT = 35_000
 const BOARD_POLL_MS = 5_000
@@ -53,6 +56,8 @@ let active = false
 let staged: BoardSnapshot | null = null
 let publishDeadline: ReturnType<typeof setTimeout> | null = null
 const PUBLISH_DEADLINE_MS = 2_500
+// Has the route said which projects this start covers? Until it has, every project is still to come.
+let projectsKnown = false
 
 /** The merged board's own fields. It belongs to no project, so it carries no project's identity. */
 function emptyUnion(): BoardSnapshot {
@@ -110,7 +115,7 @@ class ProjectFeed {
   constructor(readonly project: string) {}
 
   connect(): void {
-    if (this.closed || this.ws || this.pollTimer) return
+    if (this.closed || this.ws) return
     const sock = new WebSocket(`${location.origin.replace(/^http/, "ws")}${projectApiBase(this.project)}/ws`)
     this.ws = sock
     this.protocolReady = false
@@ -170,9 +175,24 @@ class ProjectFeed {
     this.connect()
   }
 
+  /**
+   * Start over for a new start of the feed: a fresh connection, and so a fresh keyframe, and this
+   * project counted as not yet answered. A feed that outlived its start would otherwise report the
+   * keyframe it delivered to a board that has since been thrown away — and the new start would publish
+   * without it.
+   */
+  restart(): void {
+    this.keyframed = false
+    this.failures = 0
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
+    this.reconnectTimer = null
+    this.state = "connecting"
+    this.resync()
+  }
+
   /** The watchdog's and the wake signals' reconnect: a socket gone quiet past the heartbeat is dead. */
   checkHealth(now: number, force = false): void {
-    if (this.closed || this.pollTimer) return
+    if (this.closed) return
     if (!this.ws) {
       if (force) this.scheduleReconnect(true)
       return
@@ -231,6 +251,9 @@ class ProjectFeed {
         if (msg.channel === "board") {
           console.warn(`[frizz] ${this.project}'s live board exceeded the socket limit; polling it instead`, { actualBytes: msg.actualBytes, maxBytes: msg.maxBytes })
           this.pollBoard()
+          // The connection is still this project's transcript channel; only its board was shut. So it is
+          // ready for subscriptions now, as a keyframe would have made it.
+          this.becomeReady()
         } else {
           store.socketTranscriptFallbacks[threadKey(this.project, msg.slug)] = { kind: "payload-too-large", actualBytes: msg.actualBytes, maxBytes: msg.maxBytes }
         }
@@ -253,12 +276,7 @@ class ProjectFeed {
         if (event.board.projectSlug && event.board.projectSlug !== this.project) return false
         this.adoptKeyframe(event.board)
         this.seq = typeof event.seq === "number" ? event.seq : -1
-        if (!this.protocolReady) {
-          this.protocolReady = true
-          this.setState("open")
-          store.socketTranscripts = true
-          this.resubscribe()
-        }
+        this.becomeReady()
         return true
       case "board-delta":
         noteServerBootId(event.bootId)
@@ -290,6 +308,14 @@ class ProjectFeed {
         refreshProjectList(qc)
         return true
     }
+  }
+
+  private becomeReady(): void {
+    if (this.protocolReady) return
+    this.protocolReady = true
+    this.setState("open")
+    store.socketTranscripts = true
+    this.resubscribe()
   }
 
   private adoptKeyframe(board: BoardSnapshot): void {
@@ -434,6 +460,7 @@ export function initConsoleFeed(queryClient: QueryClient): void {
  * activates a project out of the server's paced start-up order.
  */
 export function setConsoleProjects(projects: readonly string[]): void {
+  projectsKnown = true
   const wanted = new Set(projects)
   for (const [project, feed] of feeds) {
     if (wanted.has(project)) continue
@@ -457,11 +484,35 @@ export function consoleFeedActive(): boolean {
   return active
 }
 
-/** Start the Console's feed. The merged board is shown once its projects have answered (maybePublish). */
+/**
+ * Is a project the Console is still waiting to hear from — or, with no project named, any of them? A
+ * thread URL that names a project still loading is not MISSING yet, and must not be sent away to look
+ * for it (store.ts resolveRoutedThread).
+ */
+export function consoleFeedPending(project?: string): boolean {
+  if (!active) return false
+  if (!projectsKnown) return true
+  const waiting = (feed: ProjectFeed) => !feed.keyframed && feed.state !== "closed"
+  if (project === undefined) return [...feeds.values()].some(waiting)
+  const feed = feeds.get(project)
+  return feed !== undefined && waiting(feed)
+}
+
+setBoardPendingCheck(consoleFeedPending)
+
+/**
+ * Start the Console's feed. The merged board is shown once its projects have answered (maybePublish).
+ * Connections left from an earlier start are started over, not trusted: they answered a board this one
+ * has just thrown away.
+ */
 export function startConsoleFeed(): void {
   active = true
   store.board = null
   staged = null
+  // A restart keeps the projects it already has, so the set is known; a first start learns it from the
+  // route (setConsoleProjects).
+  projectsKnown = feeds.size > 0
+  for (const feed of feeds.values()) feed.restart()
   store.connection = "connecting"
   if (publishDeadline) clearTimeout(publishDeadline)
   publishDeadline = setTimeout(() => {
@@ -474,6 +525,7 @@ export function startConsoleFeed(): void {
 export function stopConsoleFeed(): void {
   if (!active && feeds.size === 0) return
   active = false
+  projectsKnown = false
   for (const feed of feeds.values()) feed.close()
   feeds.clear()
   staged = null

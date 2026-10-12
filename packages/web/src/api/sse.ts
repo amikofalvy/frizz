@@ -19,6 +19,8 @@ let failures = 0
 let qc: QueryClient | null = null
 // How many times this stream has opened. Every open after the first follows a gap — see `onopen`.
 let opens = 0
+// The Console holds the feed: no stream, and no reconnect that would open one (api/socket.ts bindConsole).
+let suspended = false
 
 // Board seq-gap resync = reconnect the EventSource: the connect handshake re-sends the full board as a
 // fresh keyframe with the current seq. NOT a failure (the connection is healthy) so it skips backoff.
@@ -35,7 +37,7 @@ const stream = new BoardStream(
 const HEARTBEAT_TIMEOUT = 35_000
 
 function connect() {
-  if (es) return
+  if (es || suspended) return
   if (store.connection !== "open") store.connection = "connecting"
   es = new EventSource(`${apiBase()}/events`)
   // The project THIS stream was opened for, frozen at construction — the socket freezes the same thing
@@ -96,6 +98,7 @@ function connect() {
 // only a run of consecutive failures reads as truly "disconnected". Backoff grows 1s → 15s;
 // `immediate` (user-return wake signals) skips the wait entirely.
 function reconnect(immediate = false) {
+  if (suspended) return
   es?.close()
   es = null
   // The socket is gone; the fresh connect will re-establish the keyframe. Drop the seq so any stray
@@ -142,11 +145,22 @@ function resync() {
  * caller at all, which meant the paragraph above described a bug rather than a fix.
  */
 export function rebindSSEProject(): void {
+  suspended = false
   stream.reset()
   es?.close()
   es = null
   store.connection = "connecting"
   connect()
+}
+
+/** Close the stream and keep it closed until `rebindSSEProject` reopens it for a project. */
+export function suspendSSE(): void {
+  suspended = true
+  if (reconnectTimer) clearTimeout(reconnectTimer)
+  reconnectTimer = null
+  stream.reset()
+  es?.close()
+  es = null
 }
 
 export function connectSSE(queryClient?: QueryClient) {

@@ -359,6 +359,15 @@ export function openThread(slugOrKey: string): void {
   pushDrawer(t && t.runtime === "none" ? "doc" : "thread", slug)
 }
 
+// Is the board still waiting on part of itself? The Console's merged board is shown once its projects
+// answer or a deadline passes (api/consoleFeed.ts), so a slow project can still be on its way — and a
+// thread URL naming it is not MISSING yet. The feed registers this rather than the store importing a
+// transport; on a project's page nothing is ever pending.
+let boardPending: (project?: string) => boolean = () => false
+export function setBoardPendingCheck(check: (project?: string) => boolean): void {
+  boardPending = check
+}
+
 // Settle a parked `/thread/<slug>` URL, now that the board can say whether the thread is queued.
 // A deep link deliberately asks for the CHAT surface even for a session-less thread (unlike
 // openThread's doc-routing), so this pushes the thread layer rather than delegating — but it obeys
@@ -368,6 +377,9 @@ export function openThread(slugOrKey: string): void {
 export function resolveRoutedThread(): void {
   const routed = store.routeThreadSlug
   if (!routed || !store.board) return
+  // On the Console, a key waits for its project's first keyframe, and a bare slug for every project's —
+  // it could belong to any of them. It stays parked, and the board's next change asks again (App.tsx).
+  if (isConsolePath() && boardPending(splitThreadKey(routed)?.project)) return
   store.routeThreadSlug = null
   // The Console's URL names a thread by key; a bare one is placed by the merged board, or handed to the
   // unprefixed full page, whose MissingThread asks the server which project owns it.

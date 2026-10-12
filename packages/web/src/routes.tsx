@@ -11,7 +11,7 @@ import { Toaster } from "./components/Toaster.tsx"
 import { LightboxHost } from "./components/Lightbox.tsx"
 import { applyPath, registerNavigate } from "./lib/router.ts"
 import { CONSOLE_PATH, innerPath, isConsolePath } from "./lib/base-path.ts"
-import { bindConsole, feedIsBoundTo, feedIsConsole, rebindProject } from "./api/socket.ts"
+import { bindConsole, feedIsBoundTo, feedIsConsole, leaveConsole, rebindProject } from "./api/socket.ts"
 import { noteStandaloneThreadRender, primeFullscreenReturn, resetProjectState, store } from "./store.ts"
 import { useProjectRailVisible } from "./lib/projectRail.ts"
 import { ownedByThisPage } from "./lib/projectOwnership.ts"
@@ -180,9 +180,24 @@ function GridRoute() {
   // records "Projects" before it navigates here, so the grid is always one click away. Not on a phone:
   // it has no switcher, and its board's back arrow comes HERE for the projects list — forwarding would
   // send that arrow straight back to the Console it was leaving.
+  //
+  // Decided once, on ARRIVAL. The kept home is shared by every tab (lib/homeView.ts follows the storage
+  // event), and read live it moved a tab sitting on the grid to the Console the moment ANOTHER tab chose
+  // it. Another tab's choice should move this tab's house link, not the page this tab is reading.
   const homeView = useHomeView()
   const isMobile = useIsMobile()
-  if (homeView === "console" && !isMobile) return <Navigate to={CONSOLE_PATH} replace />
+  const [forward] = useState(() => homeView === "console" && !isMobile)
+  if (forward) return <Navigate to={CONSOLE_PATH} replace />
+  return <GridPage />
+}
+
+/**
+ * The grid itself. It shows no project's board, and it does not disturb a PROJECT's feed (above) — but a
+ * feed the Console holds is handed back, because the Console's N connections serve nothing here
+ * (api/socket.ts `leaveConsole`).
+ */
+function GridPage() {
+  useEffect(() => leaveConsole(), [])
   return <ProjectGrid />
 }
 

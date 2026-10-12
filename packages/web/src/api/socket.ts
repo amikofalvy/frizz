@@ -2,7 +2,7 @@ import type { QueryClient } from "@tanstack/react-query"
 import type { SocketClientMsg, SocketServerMsg } from "@frizz/shared"
 import { store } from "../store.ts"
 import { BoardStream, refreshProjectList } from "./board-stream.ts"
-import { connectSSE, rebindSSEProject } from "./sse.ts"
+import { connectSSE, rebindSSEProject, suspendSSE } from "./sse.ts"
 import { writeTranscriptPush } from "./transcript-push.ts"
 import { invalidateInteractionQueries } from "./interaction-cache.ts"
 import { FRIZZ_ROUTE_PREFIX } from "@frizz/shared"
@@ -104,8 +104,9 @@ export function feedIsBoundTo(slug: string | undefined): boolean {
 
 function connect(): void {
   // The Console has no project of its own to connect to — its feed is one connection per project
-  // (consoleFeed.ts). A timer or a wake armed before the switch must not open the launching project's.
-  if (ws || fellBack || isConsolePath()) return
+  // (consoleFeed.ts). A timer or a wake armed before the switch must not open the launching project's,
+  // and neither may one that fires while the Console still holds the feed off its own page.
+  if (ws || fellBack || isConsolePath() || feedProject === CONSOLE_FEED) return
   if (store.connection !== "open") store.connection = "connecting"
   noteFeedProject()
   const sock = new WebSocket(wsUrl())
@@ -242,7 +243,7 @@ function installHealth(): void {
 // Watchdog/wake-triggered reconnect. A socket that never confirmed and has now gone stale is treated like
 // an unconfirmed drop (fall back to SSE); a confirmed one reconnects with backoff.
 function forceReconnect(immediate = false): void {
-  if (fellBack || isConsolePath()) return
+  if (fellBack || isConsolePath() || feedProject === CONSOLE_FEED) return
   dropWs()
   stream.reset()
   if (!confirmed) {
@@ -511,6 +512,9 @@ export function bindConsole(): void {
   fileSubs.clear()
   stream.reset()
   dropWs()
+  // A session that fell back to SSE has its board coming down an EventSource bound to one project. The
+  // Console has no use for it, and left open its notifications would double the Console's own.
+  if (fellBack) suspendSSE()
   if (reconnectTimer) {
     clearTimeout(reconnectTimer)
     reconnectTimer = null
@@ -518,6 +522,18 @@ export function bindConsole(): void {
   feedProject = CONSOLE_FEED
   feedBound = true
   startConsoleFeed()
+}
+
+/**
+ * Take the feed back from the Console for a page that shows no project's board — the grid. It is what a
+ * cold load of that page would hold: the launching project's connection. Left with the Console instead,
+ * N connections sit on a page that reads none of them, each dropping its frames and being reopened by
+ * the watchdog for it, and the next visit to the Console started from feeds that had already answered a
+ * board it had thrown away.
+ */
+export function leaveConsole(): void {
+  if (feedProject !== CONSOLE_FEED && !consoleFeedActive()) return
+  rebindProject()
 }
 
 /** Is the live feed the Console's? What `feedIsBoundTo` is for a project page. */
