@@ -51,6 +51,7 @@ import { SessionMessageLine } from "./SessionMessageLine.tsx"
 import { lastAskIndex, messagePresentationText } from "../lib/messagePresentation.ts"
 import { inQueuedTail, withRestReplyInline } from "../lib/restReply.ts"
 import { steeredSinceRest, useSteeredAt, useTurnHeldForTranscript } from "../lib/steering.ts"
+import { useTranscriptHeldForBoard } from "../lib/restAhead.ts"
 import { snoozePresetInstant, formatSnoozeWake } from "../lib/snooze.ts"
 import { noteGithubRefs } from "../lib/githubHovercards.ts"
 import { ICON_LABEL_NUDGE } from "../lib/iconAlign.ts"
@@ -269,7 +270,11 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
   const [earlierError, setEarlierError] = useState<string | null>(null)
   // Raw server order — each message renders its `parts` in block order (fidelity). Memoized so
   // useLiveAnswering's `liveMsg` identity check compares objects from THIS same list.
-  const messages = useMemo(() => q.data?.messages ?? [], [q.data])
+  const liveMessages = useMemo(() => q.data?.messages ?? [], [q.data])
+  // …less a rest the board has not reached yet: a push that ends on one while the board still reports the
+  // turn waits for the board, so the reply, its card and the Working row's departure land in one render
+  // (lib/restAhead.ts). Everything below reads THIS list.
+  const messages = useTranscriptHeldForBoard(boardThread, liveMessages)
   const liveTranscriptShells = useMemo(() => transcriptBackgroundShells(messages), [messages])
   const steerStamp = useSteeredAt()[slug]
   // The send that ends a rest draws where it will land, stamped with the instant this tab sent it — see
