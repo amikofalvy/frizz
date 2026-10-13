@@ -3263,11 +3263,22 @@ export function createTailer(deps: TailerDeps): Tailer {
   // condition clears on its own. Bounded so an event that never produces a record (init, and the
   // system sidecars) costs a fixed number of cheap ticks and then hands back to the poll — at ~25ms
   // per chase this covers ~500ms of write lag, comfortably over the measured ~140ms.
-  function chaseRuntime(row: SessionRow, state: TailState, foldAdvanced: boolean): boolean {
+  //
+  // …and "the fold advances" has to mean it reached WHAT THE PROVIDER REPORTED, not that it read
+  // something. A `result` says the turn is over; a fold that advanced and still reads in-flight read an
+  // EARLIER record (a tool result written just before the final message, a steer's enqueue) and the
+  // end_turn record is still on its way. Counting that advance as caught up ended the chase one record
+  // short, with no event left to announce the last write: the board said `running` until the next poll
+  // while the transcript push — a fresh read of the same file, a few ms after the tick — already carried
+  // the reply and its rest. Measured with scripts/scripted-claude.mjs (`disklag=40 resultlag=10`, a tool
+  // call before the final message, 2026-10-13): Working drawn under the finished reply for 767-971ms on
+  // 37 of 40 turn ends; with this, the idle follows the record within one chase.
+  function chaseRuntime(row: SessionRow, state: TailState, foldAdvanced: boolean, nowMs: number): boolean {
     if (!deps.runtimeLiveness || !isBrokerClaudeRow(row)) return false
     const live = deps.runtimeLiveness(row.session_id)
     if (!live || live.events <= (state.runtimeEventsSeen ?? 0)) return false
-    if (foldAdvanced || (state.runtimeChase ?? 0) >= RUNTIME_CHASE_MAX) {
+    const reached = foldAdvanced && !(live.turn === "settled" && computeTurnDetailed(state, nowMs).turn !== "idle")
+    if (reached || (state.runtimeChase ?? 0) >= RUNTIME_CHASE_MAX) {
       state.runtimeEventsSeen = live.events
       state.runtimeChase = 0
       return false
@@ -5523,7 +5534,7 @@ export function createTailer(deps: TailerDeps): Tailer {
       }
       // The bytes just folded may have carried a restart that supersedes an operator's ×.
       drainUnretiredOps(state, row)
-      if (chaseRuntime(row, state, state.offset !== prevOffset)) chaseWanted = true
+      if (chaseRuntime(row, state, state.offset !== prevOffset, nowMs)) chaseWanted = true
 
       // turn transition (in-flight → idle): a completed turn. Mark unread + notify, gated on
       // last_read_at so a turn the user has already scrolled past doesn't re-badge.
