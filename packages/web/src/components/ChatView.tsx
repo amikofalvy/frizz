@@ -4167,25 +4167,35 @@ export function FenceCard({ fenceKind, body, hints, wrap }: { fenceKind: FenceKi
   // the phone thread flagged exactly that, and the approved design draws the card without it).
   const isMobile = useIsMobile()
   if (fenceKind === "done") {
+    // A white "Mark as done" button, deliberately redundant with the header's check — the same completion
+    // mutation, styled as the primary (light-on-dark) verb. Only shown when the thread can actually take
+    // the action, and never on a phone (see `isMobile` above).
+    const markDone = doneThread && !isMobile ? (
+      <CardActions>
+        <StateButton
+          thread={doneThread}
+          className={`${CARD_ACTION_RADIUS} text-[11px] ${CARD_PRIMARY_BUTTON}`}
+          iconClassName={ICON_LABEL_NUDGE}
+          onArchived={queueDismiss?.dismiss}
+          onDismissCancel={queueDismiss?.cancel}
+        />
+      </CardActions>
+    ) : null
     return (
       // NEUTRAL tone — the green splash stood out as the only saturated color in the UI (maintainer
-      // 2026-07-10). The Check + "Done" label carries the meaning; no color needed.
-      <TranscriptCard icon={Check} label="Done">
-        {html && <LinkedHtml className={`md-body${wrap ? ` ${QUEUE_WRAP}` : ""}`} html={html} />}
-        {/* A white "Mark as done" button, deliberately redundant with the header's check — the
-            same completion mutation, styled as the primary (light-on-dark) verb. Only shown when the
-            thread can actually take the action, and never on a phone (see `isMobile` above). */}
-        {doneThread && !isMobile && (
-          <CardActions>
-            <StateButton
-              thread={doneThread}
-              className={`${CARD_ACTION_RADIUS} text-[11px] ${CARD_PRIMARY_BUTTON}`}
-              iconClassName={ICON_LABEL_NUDGE}
-              onArchived={queueDismiss?.dismiss}
-              onDismissCancel={queueDismiss?.cancel}
-            />
-          </CardActions>
-        )}
+      // 2026-07-10). The Check + "Done" carries the meaning; no color needed.
+      //
+      // HEADED BY A KIND CHIP AND A RULE, as the awaiting cards are (2026-10-13, TranscriptCard's KindChip:
+      // "it's weird that the done blocks still don't have a visually separate header, the way that the
+      // awaiting blocks do"). A done fence has no `title:`, so the chip alone heads it. An empty body draws
+      // no rule — the band's own border is the only seam left to draw — and nothing at all draws no body.
+      <TranscriptCard icon={Check} chip="Done" label={null} ruled={!!html}>
+        {html || markDone ? (
+          <>
+            {html && <LinkedHtml className={`md-body${wrap ? ` ${QUEUE_WRAP}` : ""}`} html={html} />}
+            {markDone}
+          </>
+        ) : null}
       </TranscriptCard>
     )
   }

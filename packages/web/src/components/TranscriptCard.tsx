@@ -122,7 +122,10 @@ const CARD_ICON_OFFSET = "card-icon-offset"
 // half the stroke width goes back on each side), and the difference to the viewBox edge is the dead
 // space, cancelled with an equal negative margin before paint. The ink then starts on the card's own
 // content edge like every other line in it, and `gap-2` means 8px of INK to the title on every kind.
-function CardGlyph({ icon: Icon, className }: { icon: LucideIcon; className: string }) {
+//
+// The kind chip's glyph is trimmed the same way (KindChip): four card kinds share that chip, each with a
+// different glyph, and one padding cannot sit four different dead spaces at one inset.
+function useInkTrim(Icon: LucideIcon | undefined) {
   const ref = useRef<SVGSVGElement>(null)
   useLayoutEffect(() => {
     const svg = ref.current
@@ -135,6 +138,11 @@ function CardGlyph({ icon: Icon, className }: { icon: LucideIcon; className: str
     svg.style.marginLeft = `${-Math.max(0, ink.x - halfStroke - view.x) * scale}px`
     svg.style.marginRight = `${-Math.max(0, view.x + view.width - (ink.x + ink.width) - halfStroke) * scale}px`
   }, [Icon])
+  return ref
+}
+
+function CardGlyph({ icon: Icon, className }: { icon: LucideIcon; className: string }) {
+  const ref = useInkTrim(Icon)
   return <Icon ref={ref} aria-hidden="true" size={16} className={`shrink-0 ${CARD_ICON_OFFSET} ${className}`} />
 }
 
@@ -200,20 +208,32 @@ export function CardHead({
 // body"). The 16px glyph beside a 16px title read as two headings side by side; a chip says what KIND
 // of card this is once, small, and leaves the title to say what THIS one is about.
 //
+// EVERY SIGNAL CARD WEARS IT since 2026-10-13 — the done card and every awaiting shape, not the steps card
+// alone (maintainer: "it's weird that the done blocks still don't have a visually separate header, the
+// way that the awaiting blocks do. We need consistency here in our … block types"). The chip carries the
+// kind the glyph-beside-title head used to spell as its title ("Done", "Awaiting"); a title under it is
+// only ever the worker's own. The runtime banners and the question card keep the plain head: neither is a
+// fence the worker signs off with, and the question card's tinted surface already sets it apart.
+//
 // FILLED, NEVER OUTLINED: the code chip's own translucent fill (styles.css, `.card-md .md-body code`),
 // so the two chip kinds on one card are one family on any card fill. An outlined pill was the
 // secondary button's treatment, and that border was the first thing the maintainer struck off this
 // card ("There should be no border around the 'couldn't do it' button").
 //
-// The LEFT padding is 1px under the right, because the two ends are different marks: ListTodo inks 1.5px
-// in from its 12px box while the label's last letter inks ~0.6px in from its advance. Measured
-// 2026-10-05 (sans, 11px): 8.5px of fill before the glyph's ink, 8.6px after the label's.
-const CARD_CHIP = "inline-flex shrink-0 items-center gap-1 rounded-full bg-fg/[0.08] py-0.5 pl-[7px] pr-2 text-[11px] font-medium leading-4 text-fg/85"
+// THE GLYPH IS TRIMMED TO ITS INK (useInkTrim), so the padding and the gap are INK distances on every
+// kind. They were box distances tuned to ListTodo alone until 2026-10-13 (`pl-[7px]` + `gap-1`), and the
+// moment four kinds shared the chip that tuning drifted per glyph — fill to glyph ink 8.5px on ListTodo,
+// 9.0px on Check, 9.5px on Hourglass, and glyph ink to label 5.5 / 6.0 / 6.5px. The numbers below put
+// every glyph where ListTodo already sat: 8px of fill before its painted ink (8.5px to its stroke-less
+// geometry, the 2026-10-05 reading) and 5px of ink to the label's box. The label's last letter inks ~0.6px
+// in from its advance, so `pr-2` reads 8.6px. Measured 2026-10-13 (sans, 11px, dsf 2).
+const CARD_CHIP = "inline-flex shrink-0 items-center gap-[5px] rounded-full bg-fg/[0.08] px-2 py-0.5 text-[11px] font-medium leading-4 text-fg/85"
 
 export function KindChip({ icon: Icon, children }: { icon?: LucideIcon; children: ReactNode }) {
+  const ref = useInkTrim(Icon)
   return (
     <span data-card-chip className={CARD_CHIP}>
-      {Icon && <Icon aria-hidden="true" size={12} className="shrink-0" />}
+      {Icon && <Icon ref={ref} aria-hidden="true" size={12} className="shrink-0" />}
       {children}
     </span>
   )
@@ -260,8 +280,13 @@ function ChipHead({ icon, chip, label, head, aside, ruled }: {
 // UNDER A CHIPPED HEAD the body opens past a full-bleed rule (ChipHead draws it) — the same rule the
 // wait table's divider and the action footer draw (`-mx-4 … border-t border-border`), so a chipped card
 // reads as three bands: what it is, what it says, what to do.
-export function CardContent({ children, ruled = false }: { children: ReactNode; ruled?: boolean }) {
-  return <div className={`card-md ${ruled ? "mt-3" : "mt-1"} min-w-0 text-fg/75`}>{children}</div>
+//
+// A CHIPPED CARD WITH NOTHING BUT ITS ACTION BAND (a bare ```done) draws no rule, and the band's own border
+// takes the rule's place at the rule's own distance — 17px under the chip's fill — so the head reads the
+// same height on every card whether a rule or a band closes it. `mt-[17px]` is the whole gap: the band's
+// `mt-3` collapses into it.
+export function CardContent({ children, gap = "plain" }: { children: ReactNode; gap?: "plain" | "ruled" | "band" }) {
+  return <div className={`card-md ${gap === "ruled" ? "mt-3" : gap === "band" ? "mt-[17px]" : "mt-1"} min-w-0 text-fg/75`}>{children}</div>
 }
 
 // Part one: the SHELL. One rounded panel-2 card at one padding for every kind. Cards used to disagree
@@ -296,6 +321,7 @@ export function TranscriptCard({
   icon,
   chip,
   label,
+  ruled,
   aside,
   children,
   className = "",
@@ -310,6 +336,11 @@ export function TranscriptCard({
   chip?: ReactNode
   /** The title. Under a chip it may be absent: the chip alone heads the card. */
   label: ReactNode
+  /** Whether a chipped head rules its body off. Defaults to whether the card HAS a body; a card whose only
+   *  content is its CardActions band passes false, or the rule and the band's own border draw two seams
+   *  around nothing (a ```done fence with an empty body, under its Mark-as-done). The band's border then
+   *  sits where the rule would have (CardContent's `band` gap). */
+  ruled?: boolean
   // Optional trailing slot at the title row's far right: the one thing the card is ABOUT, when that is a short reference rather than
   // prose (the wake card's `owner/repo#N` link). It rides the title instead of taking a body line of
   // its own, which keeps the body for the card's actual content.
@@ -323,12 +354,13 @@ export function TranscriptCard({
   surface?: "inset" | "question"
 } & Omit<ComponentPropsWithoutRef<"div">, "children" | "className">) {
   const { border, head } = CARD_TONES[tone]
+  const rule = chip != null && (ruled ?? children != null)
   return (
     <div {...rest} className={`min-w-0 ${BLOCK_RADIUS} border ${surface === "question" ? "border-question-border bg-question" : `${border} bg-panel-2`} p-4 ${className}`}>
       {chip != null
-        ? <ChipHead icon={icon} chip={chip} label={label} head={head} aside={aside} ruled={children != null} />
+        ? <ChipHead icon={icon} chip={chip} label={label} head={head} aside={aside} ruled={rule} />
         : <CardHead icon={icon} label={label} head={head} aside={aside} />}
-      {children != null && <CardContent ruled={chip != null}>{children}</CardContent>}
+      {children != null && <CardContent gap={chip == null ? "plain" : rule ? "ruled" : "band"}>{children}</CardContent>}
     </div>
   )
 }
