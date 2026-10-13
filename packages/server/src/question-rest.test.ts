@@ -119,7 +119,7 @@ test("an honoured park still gives the allowance back on a rest whose question f
 // outbox handed the worker both under "Frizz held 2 wakes" — the two-deliveries-for-one-rest shape the
 // sign-off nudge already stands down for (SOURCE 9 reads the same correction), and the one an
 // ```awaiting fence's own correction (SOURCE 12) holds the Goal for.
-test("on a Goal thread, a refused question takes the rest: the Goal stands down for the correction", async () => {
+test("on a Goal thread, a question is cancelled on the record and that wake has the rest to itself", async () => {
   const w = world()
   try {
     w.storage.setRecurringPromptBySlug("t", { prompt: "Keep going until the suite is green.", stopHook: true, heartbeat: false, postCompaction: false, intervalMs: null, armedAt: at(0) })
@@ -129,10 +129,13 @@ test("on a Goal thread, a refused question takes the rest: the Goal stands down 
     w.user(0, "go")
     w.say(1, `One call to make first.\n\n${choice("store")}`)
     await w.tick(2)
-    assert.deepEqual(w.storage.listThreadQuestions("t"), [], "autonomous: the question was not asked")
-    assert.deepEqual(w.deliveries(), [`park:question-fence:${at(1)}`], "the correction alone — no Goal prompt beside it")
+    // Autonomous: the question is recorded and cancelled in one breath, never put to the human, and the
+    // worker hears of it from the cancellation wake — the one voice at this rest, naming its own id.
+    assert.deepEqual(w.storage.listThreadQuestions("t").map((q) => [q.handle, q.state]), [["store", "dismissed"]])
+    assert.equal(w.deliveries().length, 1, "the cancellation alone — no Goal prompt and no fence correction beside it")
     assert.equal(w.sent.length, 1)
-    assert.match(w.sent[0], /running autonomously, so the question was not asked/)
+    assert.match(w.sent[0], /^1 question you registered was CANCELLED without an answer\. Decide it yourself/)
+    assert.match(w.sent[0], /- `store` — /)
     // The worker decides, and rests bare: now the Goal has the rest to itself.
     w.user(2.5, w.sent[0])
     w.say(3, "Went with SQLite.")

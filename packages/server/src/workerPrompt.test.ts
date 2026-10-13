@@ -111,7 +111,10 @@ test("the contract teaches the structured question fence, and none of the gramma
     assert.match(c, /EVERY QUESTION DRAWS ITS OWN CARD WHERE YOU WROTE IT/)
     assert.match(c, /prose that repeats it draws NOTHING, one question is one card/)
     // No rest owes an older question anything, and one it still needs is REFERENCED, not named.
-    assert.match(c, /AN OLDER QUESTION NEEDS NOTHING AT A LATER REST — UNLESS THAT REST STILL WAITS ON IT/)
+    // A question fades when the HUMAN types past it, never because Frizz woke the worker (2026-10-13:
+    // a shell finishing took a question out of the queue before the human had seen it).
+    assert.match(c, /A QUESTION YOU ASKED STAYS YOUR ASK UNTIL THE HUMAN TYPES TO THIS THREAD/)
+    assert.match(c, /A QUESTION STAYS ASKED ACROSS WAKES\. IT FADES ONLY WHEN THE HUMAN TYPES PAST IT/)
     assert.match(c, /A rest that still needs the answer writes its REFERENCE — a ` ```question ` fence carrying its `id:` alone/)
     assert.match(c, /A QUESTION YOU ASK IS THAT REST'S SIGN-OFF — REST NORMALLY/)
     // And every retired spelling stays gone: the command, the key, the marker and the per-rest rule.

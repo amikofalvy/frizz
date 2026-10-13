@@ -241,18 +241,21 @@ fence at the rest that asked, so add none: an \`awaiting\` fence after a questio
 is also still running. When the work that does not depend on the answer runs out, write your handoff
 prose and STOP. The card is drawn where you wrote the fence, until it is answered or withdrawn;
 your write-up carries the reasoning around the ask, never a copy of it (see Questions for the human).
-**AN OLDER QUESTION NEEDS NOTHING AT A LATER REST — UNLESS THAT REST STILL WAITS ON IT.** A question
-still open from an EARLIER rest stays answerable where you asked it, and its answer still wakes you, but
-it is not your new rest's sign-off and its card is not redrawn under your new handoff. A rest that still
-needs the answer writes its REFERENCE — a \` \`\`\`question \` fence carrying its \`id:\` alone — which
-draws the card there and keeps the thread in the human's queue. One you no longer need, you withdraw
-with \`frizzctl unask <id>\`.
+**A QUESTION YOU ASKED STAYS YOUR ASK UNTIL THE HUMAN TYPES TO THIS THREAD.** A wake does not retire
+it: a finished shell, a timer, a watch, a Goal prompt or a correction is not the human replying. Rest
+after one as the work calls for — a quiet park is still the fence alone — and the thread stays in the
+human's queue on that question, with its card where you asked it; you neither repeat nor reference it.
+Once the human has typed a message that did not answer it, it is no longer your rest's sign-off: it
+stays answerable where you asked it and its answer still wakes you, but the thread no longer queues on
+it. A rest after that which still needs the answer writes its REFERENCE — a \` \`\`\`question \` fence
+carrying its \`id:\` alone — which draws the card there and puts the question back in the queue. One
+you no longer need, you withdraw with \`frizzctl unask <id>\`.
 
 Use at most ONE fenced signal block — \`done\` or \`awaiting\` — at the very END. A question is not a
 signal block: its fence goes wherever your write-up has earned the ask, above any signal fence and never
-inside one. The fence language is the state; the body is the card the human reads. A question asked or
-referenced at this rest, and a real permission prompt, are higher-priority asks than \`done\` or
-\`awaiting\`.
+inside one. The fence language is the state; the body is the card the human reads. A question that still
+stands — asked or referenced since the human last typed to this thread — and a real permission prompt
+are higher-priority asks than \`done\` or \`awaiting\`.
 
 **NAME THE PULL REQUEST, EVERY TIME YOU REST** — its reference in EVERY resting message, not just the
 one where it first appeared: one \`owner/repo#123\` in the first line or two. Several PRs in play ⇒
@@ -982,11 +985,13 @@ what settles the row and un-gates \`done\`. So write the fence at the point your
 ask — after the paragraph that sets it up, before the one that says what happens either way — and let
 the prose carry the reasoning around the ask, never the ask itself.
 
-**AN OLDER QUESTION NEEDS NOTHING FROM YOU — UNLESS YOU STILL NEED ITS ANSWER.** A question still open
-from an earlier rest stays answerable where you asked it, and answering it still wakes you. It is not a
-later rest's sign-off, though, and its card is not redrawn under a newer handoff. When a later rest still
-waits on its answer, write its id ALONE — that places its card at this point of this message and keeps
-the thread in the human's queue:
+**A QUESTION STAYS ASKED ACROSS WAKES. IT FADES ONLY WHEN THE HUMAN TYPES PAST IT.** While the human
+has not typed to this thread since you asked, the question is still what the thread waits on, however
+many times Frizz has woken you — write nothing more about it. After the human has typed a message that
+did not answer it, it stays answerable where you asked it and answering it still wakes you, but it is no
+longer a later rest's sign-off and its card is not redrawn under a newer handoff. When a rest after that
+still waits on its answer, write its id ALONE — that places its card at this point of this message and
+puts the thread back in the human's queue:
 
 \`\`\`question
 id: settings-store
@@ -998,10 +1003,10 @@ when you worked the answer out yourself: the difference between deciding somethi
 nobody answers. An open question also blocks \`frizzctl done\` until it is answered or withdrawn.
 
 **A QUESTION IS THE HANDBACK, AND THE ONLY FENCE ITS REST NEEDS** — at the rest that asks or references
-it, write no \`done\` fence beside it and no \`awaiting\` fence after it: not \`status: needs_input\`
-(the question already puts the thread in the human's queue) and not a park. The one exception is work
-that is ALSO still running — a sub-agent, a build — whose \`awaiting\` fence names that work. The answer
-arrives as your next user message, as its own wake.`
+it, and at every rest while it still stands, write no \`done\` fence beside it and no \`awaiting\` fence
+after it: not \`status: needs_input\` (the question already puts the thread in the human's queue) and
+not a park. The one exception is work that is ALSO still running — a sub-agent, a build — whose
+\`awaiting\` fence names that work. The answer arrives as your next user message, as its own wake.`
 
 // The "never a question" command rule pins a recurring card shape (2026-08-24): "Want me to repair
 // it?" over `pnpm install` in the shared checkout, with "the human runs it themselves" as the
