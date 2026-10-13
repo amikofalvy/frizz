@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query"
 import { subscribe } from "valtio"
 import type { ProjectCard } from "@frizz/shared"
 import { rpc, rpcFor, type Api } from "../api/rpc.ts"
-import { isConsolePath } from "./base-path.ts"
+import { apiBase, isConsolePath, projectApiBase } from "./base-path.ts"
 import { setConsoleProjects } from "../api/consoleFeed.ts"
 import { store } from "../store.ts"
 import { setProjectPathBases } from "./localPathBase.ts"
@@ -81,9 +81,22 @@ export function setFileProjects(projects: { slug: string; path: string }[]): voi
  */
 export function fileRpc(path?: string): Api {
   if (!isConsolePath()) return rpc
+  const project = fileProject(path)
+  return project ? rpcFor(project.slug) : rpc
+}
+
+function fileProject(path: string | undefined): { slug: string; path: string } | undefined {
   const owner = path
     ? fileProjects.filter((p) => path === p.path || path.startsWith(`${p.path}/`)).sort((a, b) => b.path.length - a.path.length)[0]
     : undefined
-  const project = owner ?? fileProjects[0]
-  return project ? rpcFor(project.slug) : rpc
+  return owner ?? fileProjects[0]
+}
+
+/**
+ * A local file's bytes, through the `/local-file` route of the project `fileRpc` would ask: inline for a
+ * PDF, a download for anything else (server/local-file.ts resolveServedLocalFile).
+ */
+export function localFileUrl(path: string): string {
+  const project = isConsolePath() ? fileProject(path) : undefined
+  return `${project ? projectApiBase(project.slug) : apiBase()}/local-file?path=${encodeURIComponent(path)}`
 }

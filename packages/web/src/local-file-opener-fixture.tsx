@@ -5,11 +5,12 @@ import { mdToHtml } from "./lib/markdown.ts"
 import { installLocalFileLinkInterceptor } from "./lib/local-file-links.ts"
 import { store } from "./store.ts"
 
-// Both destinations a local-file link can have, on one page. A `.md` file is rendered by Frizz's own
-// reader (the interceptor pushes a `markdown` drawer and never calls the RPC); anything else is handed
-// to the desktop opener through `openLocalFile`. The two readouts below are what the e2e test asserts,
-// so a regression in EITHER direction — a Markdown link that launches an editor, a PDF that silently
-// opens a reader that cannot render it — fails loudly rather than looking fine in the markup.
+// Both destinations a local-file link can have on the board, on one page. A document Frizz renders
+// itself — a `.md` file, or a PDF in the browser's own viewer — opens the reader (the interceptor pushes
+// a `markdown` drawer and never calls the RPC); anything else is handed to the desktop opener through
+// `openLocalFile`. The two readouts below are what the e2e test asserts, so a regression in EITHER
+// direction — a Markdown link that launches an editor, a file opening a reader that cannot render it —
+// fails loudly rather than looking fine in the markup.
 //
 // The page also carries the two destinations a worker WRITES rather than spells out: a project-relative
 // path and a home-anchored one. Both used to stay relative hrefs, which the browser resolved against

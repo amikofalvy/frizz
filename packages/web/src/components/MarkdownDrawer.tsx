@@ -2,7 +2,7 @@ import { useMemo, useRef } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { ExternalLink } from "lucide-react"
 import { showToast } from "../store.ts"
-import { fileRpc } from "../lib/consoleProjects.ts"
+import { fileRpc, localFileUrl } from "../lib/consoleProjects.ts"
 import { useLiveLocalFile } from "../hooks.ts"
 import { copyTextToClipboard } from "../lib/clipboard.ts"
 import { useInnerHtml } from "../lib/innerHtml.ts"
@@ -10,7 +10,7 @@ import { LOCAL_FILE_POLL_MS, highlightedSource, localFileQuery } from "../lib/lo
 import { useLocalFileCodeLinks } from "../lib/localFileCode.ts"
 import { useMarkdownHtml } from "../lib/useMarkdown.ts"
 import { splitFrontmatter } from "../lib/frontmatter.ts"
-import { isLocalMarkdownFile, localFileDir } from "../lib/markdownTargets.ts"
+import { browserShowsPdf, isLocalMarkdownFile, isLocalPdfFile, localFileDir } from "../lib/markdownTargets.ts"
 import { useIsMobile } from "../lib/mobile.ts"
 import { CodeBody } from "./CodeBody.tsx"
 import { useMermaidIslands } from "./CodexRichOutput.tsx"
@@ -65,6 +65,34 @@ export function openOutsideFrizz(path: string): Promise<void> {
     .catch((error) => showToast(`Could not open local file: ${(error as Error).message.slice(0, 100)}`))
 }
 
+// A PDF, in the browser's own viewer: the reader's one binary document (lib/local-file-links.ts says
+// which kinds open where). The bytes come through the gated `/local-file` route, which serves a PDF
+// inline and nothing else that way. `revision` is the file's mtime, so a worker re-rendering the PDF
+// while it is open reloads the frame, and the reader's two-second poll — which re-reads only the file's
+// head — reloads nothing on its own. Exported for the /full split viewer, the same reader in a
+// different frame.
+export function PdfView({ path, revision, title }: { path: string; revision: number | undefined; title: string }) {
+  return (
+    <iframe
+      data-pdf-view
+      src={`${localFileUrl(path)}${revision === undefined ? "" : `&v=${revision}`}`}
+      title={title}
+      className="block min-h-0 w-full flex-1 border-0"
+    />
+  )
+}
+
+// A file that is not text, reaching a reader anyway: a click routes binary files to the system opener
+// before any reader opens (lib/local-file-links.ts), so this is a file that STOPPED being text while it
+// was open, or a reader restored onto one. Never the read's error — there is nothing wrong with the file.
+export function BinaryFileNotice({ phone = false }: { phone?: boolean }) {
+  return (
+    <div className="text-[13px] text-muted">
+      This file isn’t text, so Frizz can’t show it.{phone ? "" : " Open sends it to its default app."}
+    </div>
+  )
+}
+
 // The document's frontmatter is YAML, so render it through the same grammar and token palette as a
 // `.yaml` source file. CodeBody keeps the text byte-for-byte while the pre preserves nesting/indentation;
 // the former hand-rolled "text before the first colon is a key" treatment flattened both.
@@ -92,6 +120,8 @@ export function MarkdownDrawer({ id, path, title, depth, widthDepth }: { id: num
   // it became otherwise. It opens every MDX blog post and every skill file, so this is the common case.
   // (A non-markdown file — the phone's source view, below — skips the markdown pipeline entirely.)
   const markdown = isLocalMarkdownFile(path)
+  // A PDF in a browser with no viewer to lend falls to the binary notice below, as the file it then is.
+  const pdf = isLocalPdfFile(path) && browserShowsPdf()
   const { front, body: source } = splitFrontmatter(markdown ? body.data?.markdown ?? "" : "")
   const baseDir = localFileDir(resolved)
   const html = useMarkdownHtml(source, { baseDir, asDocument: true })
@@ -103,10 +133,10 @@ export function MarkdownDrawer({ id, path, title, depth, widthDepth }: { id: num
   const galleries = useLightboxIslands(ref, html, baseDir)
   // And its ```mermaid fence a diagram.
   const diagrams = useMermaidIslands(ref, html)
-  // ON A PHONE this drawer is the reader for EVERY file (lib/local-file-links: the desktop opener would
-  // launch it on the machine Frizz runs on). A file that is not markdown has no rendered form, so it
-  // shows as highlighted source — the /full split viewer's source view, same read, same highlighter.
-  // The desktop never opens a non-markdown path here, so none of this reaches it.
+  // ON A PHONE this drawer is the reader for every TEXT file (lib/local-file-links: the desktop opener
+  // would launch it on the machine Frizz runs on). A file that is not markdown has no rendered form, so
+  // it shows as highlighted source — the /full split viewer's source view, same read, same highlighter.
+  // The desktop opens only Markdown and PDFs here, so the source view never reaches it.
   const phone = useIsMobile()
   const raw = body.data?.markdown ?? ""
   const sourceHtml = useInnerHtml(useMemo(() => (markdown ? "" : highlightedSource(resolved, raw)), [markdown, raw, resolved]))
@@ -120,13 +150,18 @@ export function MarkdownDrawer({ id, path, title, depth, widthDepth }: { id: num
               7.00px below the title's cap band and read as floating between the lines. The basename is the
               title and the path is the subtitle; neither needs a glyph to say "file". */}
           <SheetHeader title={title} subtitle={resolved} onClose={close} />
-          <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4">
-            {body.isLoading ? (
+          {/* A PDF's frame fills the body edge to edge; its viewer scrolls and pads itself. */}
+          <div className={`flex-1 min-h-0 ${pdf && body.data ? "flex flex-col" : "overflow-y-auto px-5 py-4"}`}>
+            {pdf && body.data ? (
+              <PdfView path={resolved} revision={body.data.modifiedAt} title={title} />
+            ) : body.isLoading ? (
               <div className="text-[13px] text-muted">Loading…</div>
             ) : body.error ? (
               // The gate's own words — "outside Frizz's trusted roots", "was not found" — say more than
               // a generic failure would, and (on the desktop) the footer still offers the desktop opener.
               <div className="text-[13px] text-danger-90">Couldn’t read this file: {(body.error as Error).message}</div>
+            ) : body.data?.binary ? (
+              <BinaryFileNotice phone={phone} />
             ) : !markdown ? (
               raw ? (
                 <pre

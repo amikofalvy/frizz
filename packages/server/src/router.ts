@@ -3837,7 +3837,7 @@ export function createRouter(ctx: AppContext) {
     // of the rail's own rows (a worker's checkout is very often a worktree outside the project dir).
     localFile: query({
       input: z.object({ path: z.string().max(4096) }).strict(),
-      output: z.object({ path: z.string(), text: z.string(), truncated: z.boolean() }),
+      output: z.object({ path: z.string(), text: z.string(), truncated: z.boolean(), binary: z.boolean(), modifiedAt: z.number() }),
       handler: async ({ input }) => readLocalTextFile(input.path, openRoots),
     }),
 

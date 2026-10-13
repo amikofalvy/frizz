@@ -17,7 +17,7 @@ import test from "node:test"
 const SRC = fileURLToPath(new URL("..", import.meta.url))
 
 // Every top-level route name the server mounts under the prefix (app.ts, app-socket.ts, index.ts).
-const ROUTE_NAMES = ["health", "control", "local-image", "project-icon", "local-visualization", "attach", "events", "rpc", "ws", "term"]
+const ROUTE_NAMES = ["health", "control", "local-image", "local-file", "project-icon", "local-visualization", "attach", "events", "rpc", "ws", "term"]
 const BARE_ROUTE = new RegExp(String.raw`["'\`]/(?:${ROUTE_NAMES.join("|")})(?:[/?"'\`]|$)`)
 
 // Comments talk about these routes by name constantly ("the gated `/local-image` route"), and a

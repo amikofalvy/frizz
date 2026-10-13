@@ -282,7 +282,9 @@ export interface Api {
   // A disk-local Markdown file's source, for the built-in reader drawer. Openable-root gated and
   // extension-locked server-side; `truncated` marks a file cut at the read ceiling.
   localMarkdown(input: { path: string }): Promise<{ path: string; markdown: string; truncated: boolean }>
-  localFile(input: { path: string }): Promise<{ path: string; text: string; truncated: boolean }>
+  // Any file's source, for the /full viewer and a phone's reader. `binary` (no text) says Frizz cannot show
+  // it as text, which a click routes on; `modifiedAt` is its mtime in ms.
+  localFile(input: { path: string }): Promise<{ path: string; text: string; truncated: boolean; binary: boolean; modifiedAt: number }>
   // Classify path references (as they appear in inline code) → canonical openable path, or null when the
   // candidate doesn't resolve to a real file under the server's openable roots. Drives clickable inline code.
   resolveLocalPaths(input: { paths: string[] }): Promise<{ resolved: { input: string; path: string | null }[] }>

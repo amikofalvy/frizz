@@ -438,6 +438,55 @@ test("/_frizz/local-image route plays a video: byte ranges, a HEAD with no body,
   assert.equal(past.headers.get("content-range"), "bytes */4096")
 })
 
+test("/_frizz/local-file serves a PDF inline, everything else as a sandboxed download, and nothing outside the roots", async () => {
+  const port = 49_236
+  const app = originTestApp(port)
+  const dir = mkdtempSync(join(tmpdir(), "frizz-local-file-route-"))
+  const headers = { host: `127.0.0.1:${port}`, "sec-fetch-site": "same-origin" }
+  const get = (path: string, init: RequestInit = {}) =>
+    app.request(`http://127.0.0.1:${port}/_frizz/local-file?path=${encodeURIComponent(path)}`, { headers, ...init })
+  const pdfBytes = Buffer.from("%PDF-1.7\n%âã\n1 0 obj\n<<>>\nendobj\n\u0000trailer\n%%EOF\n", "latin1")
+  writeFileSync(join(dir, "report (final).pdf"), pdfBytes)
+  // The case the gate exists for: a document the page could RUN, if it were served as one.
+  writeFileSync(join(dir, "page.html"), "<script>parent.document.title = 'owned'</script>")
+  writeFileSync(join(dir, "archive.zip"), Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00, 0x00]))
+  writeFileSync(join(dir, "empty.bin"), "")
+  // A `.pdf` name on bytes that are not one: the PDF shape needs the CANONICAL path to be a PDF too.
+  symlinkSync(join(dir, "page.html"), join(dir, "decoy.pdf"))
+
+  const pdf = await get(join(dir, "report (final).pdf"))
+  assert.equal(pdf.status, 200)
+  assert.equal(pdf.headers.get("content-type"), "application/pdf")
+  assert.equal(pdf.headers.get("content-disposition"), "inline; filename*=UTF-8''report%20%28final%29.pdf")
+  assert.equal(pdf.headers.get("x-content-type-options"), "nosniff")
+  assert.equal(pdf.headers.get("content-security-policy"), null, "a sandbox keeps Chrome's PDF viewer from loading")
+  assert.deepEqual(Buffer.from(await pdf.arrayBuffer()), pdfBytes)
+
+  for (const name of ["page.html", "archive.zip", "decoy.pdf"]) {
+    const download = await get(join(dir, name))
+    assert.equal(download.status, 200, name)
+    assert.equal(download.headers.get("content-type"), "application/octet-stream", name)
+    assert.match(download.headers.get("content-disposition") ?? "", /^attachment; filename\*=UTF-8''/u, name)
+    assert.equal(download.headers.get("content-security-policy"), "default-src 'none'; sandbox", name)
+    assert.equal(download.headers.get("x-content-type-options"), "nosniff", name)
+  }
+
+  const head = await get(join(dir, "report (final).pdf"), { method: "HEAD" })
+  assert.equal(head.status, 200)
+  assert.equal(head.headers.get("content-length"), String(pdfBytes.length))
+  assert.equal((await head.arrayBuffer()).byteLength, 0)
+  const empty = await get(join(dir, "empty.bin"))
+  assert.equal(empty.status, 200)
+  assert.equal((await empty.arrayBuffer()).byteLength, 0)
+
+  // One answer for every refusal: gone, relative, outside home and the temp trees, and no path at all.
+  for (const path of [join(dir, "gone.pdf"), "report.pdf", "/etc/hosts", ""]) {
+    assert.equal((await get(path)).status, 404, path)
+  }
+  // And the origin gate in front of it, like every route: a cross-site page cannot pull a file.
+  assert.equal((await get(join(dir, "report (final).pdf"), { headers: { host: `127.0.0.1:${port}`, origin: "https://evil.example" } })).status, 403)
+})
+
 test("/_frizz/local-visualization binds a directive basename to the owning thread session", async () => {
   const port = 49_234
   const projectDir = mkdtempSync(join(tmpdir(), "frizz-inline-vis-route-"))

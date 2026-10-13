@@ -100,7 +100,7 @@ const GENERIC = new Set([
  * namespace; the rest are today's hardcoded routes and static assets, kept until they move under it.
  */
 const RESERVED = new Set([
-  "_frizz", "rpc", "events", "ws", "term", "attach", "local-image", "local-visualization",
+  "_frizz", "rpc", "events", "ws", "term", "attach", "local-image", "local-file", "local-visualization",
   // `control` answers `/control/stop` and `/control/status` — the supervisor channel the board polls
   // every few seconds. It was missing from this list, so a directory called `control` could have taken
   // the segment and routed the whole machine's supervisor polling into one project's app, which has no
