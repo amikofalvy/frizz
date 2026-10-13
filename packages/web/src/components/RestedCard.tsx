@@ -12,15 +12,18 @@
 // card says that instead, beside the header's Retry. Both are last in ChatView's chain: every rung above
 // is a harder reading of the same slot and wins it.
 import { CircleDashed, TriangleAlert } from "lucide-react"
-import type { ThreadView } from "@frizz/shared"
+import { questionFencesLive, type ThreadView } from "@frizz/shared"
 import { splitFenceBlocks } from "../lib/fenceBlocks.ts"
-import { hasQuestionBlock } from "../lib/questionBlocks.ts"
+import { hasQuestionBlock, splitMessageQuestions } from "../lib/questionBlocks.ts"
 import { CARD_BODY, TranscriptCard } from "./TranscriptCard.tsx"
 
 export type RestedCardThread = Pick<
   ThreadView,
   "kind" | "foreign" | "runtime" | "needsYou" | "crashed" | "lastFence" | "questions" | "answersInFlight" | "pendingQuestion" | "pendingAsk" | "pendingInteraction" | "awaitingBackground" | "limitPause" | "providerFault" | "providerError" | "lastAssistantAt"
->
+> & {
+  /** Which ```question grammar the thread speaks (shared questionFencesLive) — see the last check below. */
+  spawnedAt?: ThreadView["spawnedAt"]
+}
 
 /** Does the chat show the residual card at the bottom of this thread? True only when the thread is at
  *  rest (or has exited) in the human's queue and NO other ending applies — every card-bearing state is
@@ -58,6 +61,13 @@ export function showsRestedCard(
   // Nothing said yet (a thread that has not produced an assistant record) is not a rest to describe.
   if (!thread.lastAssistantAt || lastAssistantText === undefined) return false
   if (splitFenceBlocks(lastAssistantText).some((seg) => seg.kind === "fence")) return false
+  // A QUESTION FENCE THAT DID NOT READ IS NOT A SIGN-OFF. On a thread that speaks the question fence, a
+  // fence that tried the grammar and failed (a missing `kind:`, two recommended options) registers nothing
+  // and draws as the code block it is (lib/questionBlocks splitMessageQuestions), so the rest under it IS
+  // a bare one, and this card is what says Frizz is nudging the worker. The legacy reader below still
+  // counted it whenever it had three backticks at the margin — the same broken fence showed this card with
+  // four backticks and hid it with three. A legacy thread keeps the reader its fences were written for.
+  if (!questionFencesLive(thread.spawnedAt)) return !splitMessageQuestions(lastAssistantText, true).some((seg) => seg.kind === "question")
   if (hasQuestionBlock(lastAssistantText)) return false
   return true
 }
