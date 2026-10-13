@@ -28,21 +28,6 @@ export const AWAITING_FALLBACK_TITLE = "Awaiting"
  *  less than a sentence does. */
 export const AWAITING_NO_PROSE = "Waiting for an external update."
 
-/** A COMMAND WATCH'S ROW NAME — its command, with every absolute path cut to its last segment.
- *
- *  A worker writes interpreter and script paths out in full, because the server runs the command from
- *  the project root with nothing on its PATH it can count on. The first one on the board was
- *  `/Users/…/node/26.11.1/bin/node /Users/…/.frizz/threads/<session>/others-idle.mjs`: 140 characters,
- *  every one of the row's visible ones spent on directories. `node others-idle.mjs` says what runs. The
- *  full command stays in the row's tooltip.
- *
- *  Only a path TWO directories deep or more is cut: `/dev/null` and `/tmp/x` are short already, and
- *  `> null` would read as a different command. A URL keeps its path — the `//` after its scheme is never
- *  at a word start, which is the only place a path is cut. */
-export function commandWatchName(command: string): string {
-  return command.trim().replace(/\s+/g, " ").replace(/(^|[\s'"=])\/(?:[^\s'"/]*\/){2,}(?=[^\s'"/])/g, "$1")
-}
-
 /** The KIND CHIP over a card handing the human `steps:` — the one fence shape whose wait is on the
  *  READER (TranscriptCard's KindChip). The worker's `title:` goes under it; with none, the chip alone
  *  heads the card.

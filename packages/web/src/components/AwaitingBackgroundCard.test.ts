@@ -4,6 +4,7 @@ import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 import { AgentRow, AwaitingBackgroundCard, AwaitingWaitTable, BgShellRow, awaitingBackgroundLabel, awaitingBackgroundSubject, hasAwaitingWaitRows, restingOnSteps, showsRestingCard } from "./AwaitingBackgroundCard.tsx"
 import { CHILD_STALE_DOT_CLASS, CHILD_STALE_SHELL_TITLE, CHILD_STALE_TITLE } from "../lib/childOps.ts"
+import { commandWatchName } from "./AwaitingBackgroundCard.tsx"
 import type { ThreadView } from "@frizz/shared"
 
 // One card, three surfaces, and since 2026-08-15 one TABLE: every kind of live work the thread declared
@@ -39,22 +40,6 @@ const timerWatch = (inMinutes = 34, prompt = "Re-check: tip quiet, install green
   state: "armed" as const,
   createdAt: "2026-07-28T09:00:00.000Z",
   timer: { fireAt: new Date(Date.now() + inMinutes * 60_000).toISOString(), prompt },
-})
-
-// An ARMED COMMAND WATCH — what a `command_watch` registration becomes server-side (board.fenceWatchViews).
-const commandWatch = () => ({
-  id: "command:demo:cmw_12f995833a5b",
-  kind: "command" as const,
-  target: "cmw_12f995833a5b",
-  state: "armed" as const,
-  createdAt: "2026-07-28T09:00:00.000Z",
-  command: {
-    command: "/Users/me/.cache/nub/node/26.11.1/bin/node /Users/me/repo/.frizz/threads/abc/others-idle.mjs",
-    every: "2m",
-    expiresAt: "2026-07-28T21:00:00.000Z",
-    runs: 24,
-    lastRun: { at: new Date(Date.now() - 5 * 60_000).toISOString(), outcome: "exit" as const, exitCode: 1, output: "active: Layout shift when a send ends a rest\n" },
-  },
 })
 
 const render = (t: Parameters<typeof AwaitingBackgroundCard>[0]["thread"]) =>
@@ -193,6 +178,22 @@ test("a card with no thread is still the card: its heading, no rows, no verb", (
   assert.doesNotMatch(rowed, /Waiting for an external update/)
 })
 
+// An ARMED COMMAND WATCH — what a `command_watch` registration becomes server-side (board.fenceWatchViews).
+const commandWatch = () => ({
+  id: "command:demo:cmw_12f995833a5b",
+  kind: "command" as const,
+  target: "cmw_12f995833a5b",
+  state: "armed" as const,
+  createdAt: "2026-07-28T09:00:00.000Z",
+  command: {
+    command: "/Users/me/.cache/nub/node/26.11.1/bin/node /Users/me/repo/.frizz/threads/abc/others-idle.mjs",
+    every: "2m",
+    expiresAt: "2026-07-28T21:00:00.000Z",
+    runs: 24,
+    lastRun: { at: new Date(Date.now() - 5 * 60_000).toISOString(), outcome: "exit" as const, exitCode: 1, output: "active: Layout shift when a send ends a rest\n" },
+  },
+})
+
 // The releaser's card on 2026-10-13: parked on a command watch and nothing else, with an empty fence
 // body. It had no row, so it said "Waiting for an external update." and nothing about what it waited on.
 test("a park on a command watch alone rows the command, its cadence and its last check", () => {
@@ -215,6 +216,20 @@ test("a park on a command watch alone rows the command, its cadence and its last
   assert.match(tip, /24 checks so far\. The last, [45]m ago, exited 1\./)
   assert.match(tip, /active: Layout shift when a send ends a rest/)
   assert.equal(hasAwaitingWaitRows(t), true)
+})
+
+test("a command watch's row name cuts long absolute paths to their last segment, and nothing else", () => {
+  assert.equal(
+    commandWatchName("/Users/me/.cache/nub/node/26.11.1/bin/node /Users/me/repo/.frizz/threads/abc/others-idle.mjs"),
+    "node others-idle.mjs",
+  )
+  // Short paths read as written: `> null` would be a different command.
+  assert.equal(commandWatchName("curl -sf https://registry.npmjs.org/frizz/0.13.14 > /dev/null"), "curl -sf https://registry.npmjs.org/frizz/0.13.14 > /dev/null")
+  assert.equal(commandWatchName("test -f /tmp/done"), "test -f /tmp/done")
+  assert.equal(commandWatchName("npm view frizz@0.13.12 version"), "npm view frizz@0.13.12 version")
+  // Quoted and assigned paths are cut at the quote or the `=`, and runs of whitespace fold to one.
+  assert.equal(commandWatchName(`grep -q done '/var/log/app/run.log'`), `grep -q done 'run.log'`)
+  assert.equal(commandWatchName("FILE=/srv/app/state/ready  test -s \"$FILE\""), "FILE=ready test -s \"$FILE\"")
 })
 
 // ---- ONE ROW PER THING, GROUPED BY KIND ----------------------------------------------------------

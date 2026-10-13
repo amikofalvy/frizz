@@ -31,7 +31,7 @@ import type { AwaitingHint, GithubIssueStatus, GithubWatchStatus, ThreadView, Th
 import { awaitingFenceTitle, awaitingSteps, commandRunClause, isDirectSubAgent } from "@frizz/shared"
 import { githubRefUrl } from "../lib/githubRef.ts"
 import { noteGithubRefs } from "../lib/githubHovercards.ts"
-import { AWAITING_FALLBACK_TITLE, AWAITING_NO_PROSE, awaitingDefersToQuestions, awaitingProseBlock, commandWatchName, prWatchRefs, STEPS_CHIP } from "../lib/awaitingPresentation.ts"
+import { AWAITING_FALLBACK_TITLE, AWAITING_NO_PROSE, awaitingDefersToQuestions, awaitingProseBlock, prWatchRefs, STEPS_CHIP } from "../lib/awaitingPresentation.ts"
 import { CHILD_DISMISS_NOUN, CHILD_DISMISS_TITLE, CHILD_DISMISS_VERB, CHILD_STALE_DOT_CLASS, CHILD_STALE_SHELL_TITLE, CHILD_STALE_TITLE, checksCounterLabel, issueCounterLabel } from "../lib/childOps.ts"
 import { compactElapsedSince, formatCompactElapsed } from "../lib/durationLabels.ts"
 import { useNowMs } from "../lib/liveClock.ts"
@@ -151,12 +151,13 @@ export function awaitingBackgroundLabel(
   return awaitingFenceTitle(hints) ?? (shellsAlone(thread) ? "Background shells running" : AWAITING_FALLBACK_TITLE)
 }
 
-/** Background shells and nothing else — the one shape with a title of its own. An armed timer or
- *  command watch disqualifies it the same way a PR watcher does: the card then holds that group too, and
- *  a kind-naming title over a mixed table names only half the wait. */
+/** Background shells and nothing else — the one shape with a title of its own. An armed timer
+ *  disqualifies it the same way a PR watcher does: the card then holds a Timers group too, and a
+ *  kind-naming title over a mixed table names only half the wait. */
 function shellsAlone(thread: Pick<ThreadView, "subAgents" | "bgShells" | "watches">): boolean {
   const shells = (thread.bgShells ?? []).filter((s) => s.state === "running").length
   return shells > 0 && !awaitsResults(thread) && prWatcherCount(thread) === 0 && armedTimerWatches(thread).length === 0 &&
+    // …and so does an armed command watch, for the same reason: its group shares the table.
     armedCommandWatches(thread).length === 0
 }
 
@@ -832,6 +833,20 @@ export function TimerRow({ watch, now }: { watch: ThreadWatchView; now: number }
 // which is the one place the human can read WHY it has not passed. The status is the cadence, the
 // reading that does not go stale between board deltas. NON-INTERACTIVE, as a timer row is: a check's
 // output has no drawer to open.
+/** A COMMAND WATCH'S ROW NAME — its command, with every long absolute path cut to its last segment.
+ *
+ *  A worker writes interpreter and script paths out in full, because the server runs the command from
+ *  the project root with nothing on its PATH it can count on. The first one on the board was
+ *  `/Users/…/node/26.11.1/bin/node /Users/…/.frizz/threads/<session>/others-idle.mjs`: 140 characters,
+ *  every visible one spent on directories. `node others-idle.mjs` says what runs.
+ *
+ *  Only a path TWO directories deep or more is cut: `/dev/null` and `/tmp/x` are short already, and
+ *  `> null` would read as a different command. A URL keeps its path — the `//` after its scheme is never
+ *  at a word start, which is the only place a path is cut. */
+export function commandWatchName(command: string): string {
+  return command.trim().replace(/\s+/g, " ").replace(/(^|[\s'"=])\/(?:[^\s'"/]*\/){2,}(?=[^\s'"/])/g, "$1")
+}
+
 export function CommandWatchRow({ watch, now }: { watch: ThreadWatchView; now: number }) {
   const spec = watch.command
   const command = spec?.command ?? watch.target
