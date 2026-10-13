@@ -72,10 +72,17 @@ test("the queue card holds its tail cards until the transcript window has loaded
 // THE CARD NEVER LEARNS ABOUT STALENESS. It used to: a `stale` branch stripped the frame and printed the
 // body as free-standing prose. That prose is what the whole block now drops with it, so a prop that can
 // only mean "draw a settled card" would be a card shape that no longer exists.
+//
+// The one thing that does follow the rest is the DONE card's verb (`pastRest`, the last test in this
+// file), and it changes no shape: the card is the same record without its button. The awaiting branch
+// never reads it.
 test("FenceCard has no settled branch to fall into", () => {
   const card = source.match(/export function FenceCard\([\s\S]*?\n}/)?.[0]
   assert.ok(card, "FenceCard must exist")
   assert.doesNotMatch(card, /\bstale\b/, "a settled fence never reaches the card, so it takes no `stale` prop")
+  const awaiting = card.slice(card.indexOf("AND THE ```awaiting FENCE IS THE RESTING CARD"))
+  assert.ok(awaiting.length > 200 && awaiting.length < card.length, "the awaiting branch must be found")
+  assert.doesNotMatch(awaiting, /pastRest/, "the awaiting card draws one shape whatever the thread has done since")
 })
 
 // The fence's prose has been BLOCK markdown since frontmatter landed (2026-08-17), but every body kept
@@ -237,3 +244,17 @@ test("the resting card owns the heading, the glyph, the prose and the chips", ()
   assert.doesNotMatch(code, /\.runtime\b/, "and nothing in the card reads the runtime directly")
 })
 
+
+// A DONE CARD KEEPS ITS CARD AND GIVES UP ITS VERB. The card is a record and stays (the first test above);
+// "Mark as done" belongs to the rest, so it is drawn only while the thread rests on that card. It used to
+// stay live on every earlier done card, and a reply to an ARCHIVED thread grew one on the card being
+// replied to, a frame after the reply's bubble: 3 geometry states for one send (2026-10-13,
+// scripts/layout-timeline.mjs), 2 with the verb gated here.
+test("a done card draws Mark as done only while the thread rests on it", () => {
+  assert.match(renderText(), /<FenceCard[\s\S]*?pastRest=\{staleAwaiting\}/, "the message tells the card the thread has moved past it")
+  const card = source.match(/export function FenceCard[\s\S]*?\n}\n/)?.[0]
+  assert.ok(card, "FenceCard must exist")
+  assert.match(card, /const markDone = doneThread && !isMobile && !pastRest \? \(/, "a card the thread has moved past draws no verb")
+  // The tail's own done card (a sign-off that came in as a tool call) is never stale: it is only drawn at rest.
+  assert.match(source, /case "registered-done":\n\s+return <FenceCard fenceKind="done" body=\{thread!\.lastFence!\.body\} hints=\{thread!\.lastFence!\.hints\} wrap=\{wrap\} \/>/)
+})

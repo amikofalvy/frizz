@@ -75,7 +75,7 @@ function CompactQuestion({ q, n }: { q: RegisteredQuestionView; n: number }) {
  *  preflight zeroes a paragraph's margins — with just enough block rhythm for a worker that wrote two
  *  paragraphs or a list. `md-inline` keeps inline code monospace. Shared with the sheet. */
 export const QUESTION_PROSE =
-  "md-inline break-words [&_p+*]:mt-2 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_li+li]:mt-1 [&_pre]:whitespace-pre-wrap [&_pre]:text-[0.85em] [&_code]:text-[0.9em] [&_a]:underline"
+  "md-inline break-words [&_p+*]:mt-2 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_li+li]:mt-1 [&_pre]:[white-space:var(--code-wrap,pre-wrap)] [&_pre]:overflow-x-auto [&_pre]:text-[0.85em] [&_code]:text-[0.9em] [&_a]:underline"
 
 /** THE BOTTOM BAR'S THIRD STATE (mockup v2 §2–3): on a thread with open questions the resting row is
  *  [keyboard] + "Answer N questions". The keyboard button is for a free reply instead — it switches the

@@ -176,40 +176,61 @@ This is the sanctioned exception to "never hand-write rows": the row is the fixt
 then exercises the REAL tailer → board → push → render pipeline end-to-end. Dozens of worked examples live
 in `scripts/seed-*.mjs`.
 
-### A scripted worker under the real broker (when the seam is DELIVERY)
+### A scripted worker behind the REAL broker
 
-Appended records prove what the server READS. They cannot show anything Frizz SENDS a worker arriving: a
-wake, a correction, an answer, a follow-up. For that, boot the stack with `scripts/scripted-claude.mjs` as
-the Claude binary. The real `dispatch` forks it under the real broker daemon, it writes the real transcript,
-and it holds no credential, so it is safe on a sandbox HOME:
+Appended records start at the tailer, so they skip everything before it: dispatch, the broker daemon, the
+delivery ledger, a steer's queue, runtime ingest. When the behavior lives THERE (the order in which a send,
+its echo and the board's delta reach a page; a steer handed over at a tool boundary; the instant a turn
+ends), boot the stack with `--claude-bin=$PWD/scripts/scripted-claude.mjs`. It is a stand-in `claude`
+binary: the real broker spawns it, it speaks the stream-json protocol and writes real transcript JSONL, and
+it holds no credentials, so it cannot raise a keychain dialog and its timings repeat.
+
+```js
+await api.mutate("dispatch", { prompt: "[script ending=steps paras=14] …", backend: "claude", model: "haiku", effort: "low" })
+```
+
+The first message's `[script …]` token is the whole script: how the turn ends
+(`ending=done|steps|needs|bare|question`, the last one registering a real question through `frizzctl ask`),
+how long it runs (`paras`, `tools`, `toolms`, `think`), and what each later turn does (`reply`,
+`replyparas`, `replytools`, `replythink`). A message that arrives mid-turn is a steer. The file's header
+lists every knob. The workers are still detached broker daemons: kill them by PID when the stack goes.
+
+`scripts/layout-timeline.mjs` records a thread page or a drawer on such a stack: every layout it paints
+around a send, an answer, a steer or a turn's end, with the event that committed each.
+
+#### Stating each turn, when the seam is DELIVERY
+
+The knobs generate a turn. To check anything Frizz SENDS a worker — a wake, a correction, an answer, a
+Goal's cancellation — a test has to say exactly what the worker writes back, so the same binary takes a
+file: `[script file=/abs/turns.json]` lists the turns, each with the shell commands it runs as real Bash
+tool calls (`frizzctl done`, `frizzctl timer set …`) and its final message verbatim (a ` ```question `
+fence, a broken one, a reference), optionally keyed to the message it answers (`"on": "…"`). Boot with the
+scheduler armed and a HOME that survives a stop:
 
 ```bash
 nub scripts/adhoc-stack.mjs --port=47611 --wakers --keep --project=/abs/throwaway-repo \
-  --claude-bin=/abs/path/to/scripts/scripted-claude.mjs > /tmp/stack.log 2>&1
+  --claude-bin=$PWD/scripts/scripted-claude.mjs > /tmp/stack.log 2>&1
 ```
 
-Its turns are generated from knobs in the dispatch prompt (`[script ending=steps paras=3]`), or stated one by
-one in a file (`[script file=/abs/turns.json]`): the shell commands a turn runs as real Bash tool calls
-(`frizzctl done`, `frizzctl timer set …`) and its final message verbatim, each entry optionally keyed to
-the message it answers. Its header documents both. `scripts/verify-question-fence-wakes.mjs` is the worked
-example, including a tool call that holds a turn open until the verifier releases it, and a restart of the
-stack by pid.
+`scripts/verify-question-fence-wakes.mjs` is the worked example, including a tool call that holds a turn
+open until the verifier releases it, and a restart of the stack by pid.
 
 - **`--wakers` arms every scheduler source**, the sign-off reminder included: a scripted rest with no
   sign-off is reminded within a tick (10s). Script a reply for it or end the turn on a fence.
 - **Boot it from a shell with no Frizz worker variables** (`env -u FRIZZ_STATE_DIR -u FRIZZ_SERVER_LOCK
-  -u FRIZZ_PROJECT_ID -u FRIZZ_NODE -u FRIZZ_THREAD -u FRIZZ_PERM_DIR -u FRIZZ_NATIVE_ASK …`). The
-  scripted worker puts its own `--plugin-dir`'s `bin/` first on PATH, as Claude Code does, so its `frizzctl`
-  is the checkout's own.
+  -u FRIZZ_PROJECT_ID -u FRIZZ_NODE -u FRIZZ_THREAD -u FRIZZ_PERM_DIR -u FRIZZ_NATIVE_ASK …`). A scripted
+  tool call puts its own `--plugin-dir`'s `bin/` first on PATH, as Claude Code does, so its `frizzctl` is
+  the checkout's own.
 - **`FRIZZ_LOG_PATH=/abs/server.log`** in the stack's environment is the only way to read the scheduler's
   log (`waker: queued …`, `waker: sent …`): the stack's stdout carries none of it.
 - **A wake to a Claude thread is never filed `delivered` on arrival.** It is `leased` when sent and settled
   later: `delivered` when its 60s confirmation window closes, or `superseded` once the worker's reply moves
   the rest it was bound to (a correction, a reminder). Assert a delivery on the worker's transcript, never
   on `wake_delivery.state`.
-- **Each scripted worker runs under a detached broker daemon that outlives the stack**, and the daemon's command
-  line names the checkout, not the sandbox HOME: `ps -Ao pid,command | grep '<checkout>/packages/server/src/backend/claude-agent-broker.ts'`,
-  kill each by pid, and check again.
+- **The daemon's command line names the checkout, not the sandbox HOME**:
+  `ps -Ao pid,command | grep '<checkout>/packages/server/src/backend/claude-agent-broker.ts'`, kill each
+  by pid, and check again.
+
 
 ---
 

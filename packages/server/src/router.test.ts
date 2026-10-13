@@ -1249,6 +1249,35 @@ test("a follow-up whose delivery throws keeps its full text on the server as a f
   h.storage.close()
 })
 
+// TWO SENDS A FEW MS APART ON A RESTED THREAD. The tailer still reads `idle` when the second arrives — the
+// first one's record is not on disk yet — so both used to open `delivered`, and the chat drew the second
+// as read, above the Working row, for the whole turn the worker actually kept it queued behind. The bridge
+// knows it took an input the transcript has not shown, and that is what makes the second one wait.
+test("a send that arrives behind another the transcript has not shown yet opens enqueued, not delivered", async () => {
+  let folded: string | undefined
+  const tailer = { ...noopTailer, get: () => ({ turn: "idle", subAgents: [], lastActivityAt: folded }) as never }
+  const h = harness(tailer)
+  const slug = "two-at-once"
+  h.storage.upsertSession(row(slug))
+  h.storage.setBackend(slug, "claude")
+  h.storage.setClaudeRuntime(slug, "broker")
+  let handedAt: number | undefined
+  ;(h.ctx as { claudeBroker?: unknown }).claudeBroker = {
+    followUp: async () => { handedAt = Date.now() },
+    lastInputAt: () => handedAt,
+  }
+  const states = () => parseDeliveryLedger(h.storage.getSession(slug)?.delivery_ledger).map((i) => [i.id, i.state])
+  folded = new Date(Date.now() - 60_000).toISOString() // the rest's own last record, a minute old
+  await h.router.followUp.handler({ input: { slug, sessionId: `sid-${slug}`, message: "go on", deliveryId: "d-first" } })
+  await h.router.followUp.handler({ input: { slug, sessionId: `sid-${slug}`, message: "and also this", deliveryId: "d-second" } })
+  assert.deepEqual(states(), [["d-first", "delivered"], ["d-second", "enqueued"]], "the first opens the turn; the second is behind it")
+  // Once the tailer has folded past that input its own reading stands again: at rest, a send opens the turn.
+  folded = new Date(Date.now() + 1_000).toISOString()
+  await h.router.followUp.handler({ input: { slug, sessionId: `sid-${slug}`, message: "next", deliveryId: "d-third" } })
+  assert.deepEqual(states().at(-1), ["d-third", "delivered"])
+  h.storage.close()
+})
+
 test("a refusal BEFORE the write-ahead records nothing — the send never started", async () => {
   const { h, slug } = restartHarness()
   await assert.rejects(

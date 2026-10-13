@@ -449,13 +449,23 @@ function newestLandedEntry(entries: readonly ToolActivityMessage[]): ToolActivit
  *
  * The newest landed entry supplies it: a live run's own opening batch (`runStartedAt`, which survives the
  * coalescing that walks `at` forward), or otherwise that block's `at` — the prose the model is reasoning past,
- * the dispatch it just made, the turn's own opening message. Undefined only for an empty transcript or a
- * pre-restart record with no timestamp, where the caller falls back to the turn.
+ * the dispatch it just made, the turn's own opening message (or the rest above it, when that is later).
+ * Undefined only for an empty transcript or a pre-restart record with no timestamp, where the caller falls
+ * back to the turn.
  */
 export function liveRuntimeStartedAt(entries: readonly ToolActivityMessage[]): string | undefined {
   const entry = newestLandedEntry(entries)
   if (!entry) return undefined
-  return messageToolTail(entry.message) ? entry.runStartedAt ?? entry.message.at : entry.message.at
+  if (messageToolTail(entry.message)) return entry.runStartedAt ?? entry.message.at
+  // A MESSAGE THAT WAITED OUT A TURN OPENS ITS STRETCH AT THAT TURN'S REST, NOT WHEN IT WAS SENT. A steer
+  // typed four seconds into a six-second answer carries the instant it was typed; drawn under the rest it
+  // waited for (lib/restReply), it made the clock read `5s`, then `3s` for the 40-70ms until its delivery
+  // re-stamped it, then `0s` (measured 2026-10-13, every text-turn steer recording). Nothing the worker does
+  // for a message can begin before the rest that message sits under.
+  const above = entries[entries.indexOf(entry) - 1]?.message
+  const restAt = entry.message.role === "user" && above?.kind === "event" && above.boundary === "rest" ? above.at : undefined
+  const at = Date.parse(entry.message.at ?? "")
+  return restAt !== undefined && Number.isFinite(at) && Date.parse(restAt) > at ? restAt : entry.message.at
 }
 
 function withoutLiveToolTail(message: ChatMessage): ChatMessage {

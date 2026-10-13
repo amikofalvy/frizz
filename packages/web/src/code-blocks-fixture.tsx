@@ -134,7 +134,7 @@ function Fixture() {
       <button type="button" data-chip-hit className="absolute inset-0" aria-label="Pick this option" />
       <div className="md-body" data-case="chip" dangerouslySetInnerHTML={{ __html: mdToHtml(sample) }} />
     </div>
-    {/* The Queue's narrow column: code wraps here whatever the Wrap code setting says (TranscriptCard QUEUE_WRAP). */}
+    {/* The Queue's narrow column (TranscriptCard QUEUE_WRAP): 300px for a block to wrap in, or to scroll inside with Wrap code off. */}
     <div className={`md-body mt-6 w-[300px] text-[14px] ${QUEUE_WRAP}`}
       data-case="narrow" dangerouslySetInnerHTML={{ __html: mdToHtml(sample) }} />
     {/* The Edit card: the same rows drawn from a tool call rather than a fence, and wrapped the same way. */}

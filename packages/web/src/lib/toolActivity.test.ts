@@ -474,6 +474,14 @@ test("the runtime clock counts the live stretch, not the turn", () => {
     "2026-07-30T12:00:00.000Z",
   )
 
+  // A steer that waited out the turn is drawn under that turn's rest: the stretch it opens begins at the
+  // rest, not four seconds earlier when it was typed. A send that answers an older rest keeps its own instant.
+  const rest: ChatMessage = { sourceId: "rest", role: "assistant", kind: "event", boundary: "rest", text: "Agent rested", tools: [], at: "2026-07-30T12:00:15.000Z" }
+  const waited: ChatMessage = { ...queued, restReply: true }
+  assert.equal(liveRuntimeStartedAt(coalesceToolActivityMessages([prose, rest, waited])), "2026-07-30T12:00:15.000Z")
+  assert.equal(liveRuntimeStartedAt(coalesceToolActivityMessages([prose, rest, { ...waited, queued: false, restReply: undefined }])), "2026-07-30T12:00:15.000Z")
+  assert.equal(liveRuntimeStartedAt(coalesceToolActivityMessages([prose, rest, { ...waited, at: "2026-07-30T12:00:40.000Z" }])), "2026-07-30T12:00:40.000Z")
+
   assert.equal(liveRuntimeStartedAt([]), undefined)
 })
 
