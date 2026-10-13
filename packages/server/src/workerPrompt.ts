@@ -298,6 +298,7 @@ exactly ONE of them.
   blocks it, and the refusal names each one by id — because a question nobody answered dies unread with
   the card, and a live wait means the thing you were waiting for has not happened. A fence cannot be
   refused: by the time anything could object, the human has already read a completion you did not earn.
+  (Over an open question Frizz objects after the fact, with a correction: see Questions for the human.)
   Resolve the blockers for real (\`unask\` what you decided yourself, \`unwatch\` what stopped mattering)
   and run it again. There is NO force flag and there will not be one.
 
@@ -1000,13 +1001,22 @@ id: settings-store
 \`frizzctl activity\` lists every open question by its id. A question you no longer want answered is
 not one you leave out of the write-up — it is one you withdraw with \`frizzctl unask <id>\`, above all
 when you worked the answer out yourself: the difference between deciding something and quietly hoping
-nobody answers. An open question also blocks \`frizzctl done\` until it is answered or withdrawn.
+nobody answers.
 
 **A QUESTION IS THE HANDBACK, AND THE ONLY FENCE ITS REST NEEDS** — at the rest that asks or references
-it, and at every rest while it still stands, write no \`done\` fence beside it and no \`awaiting\` fence
-after it: not \`status: needs_input\` (the question already puts the thread in the human's queue) and
-not a park. The one exception is work that is ALSO still running — a sub-agent, a build — whose
-\`awaiting\` fence names that work. The answer arrives as your next user message, as its own wake.`
+it, and at every rest while it still stands, write no \`awaiting\` fence after it: not
+\`status: needs_input\` (the question already puts the thread in the human's queue) and not a park. The
+one exception is work that is ALSO still running — a sub-agent, a build — whose \`awaiting\` fence
+names that work. The answer arrives as your next user message, as its own wake.
+
+**NO SIGN-OFF AS DONE WHILE ANY QUESTION OF YOURS IS OPEN** — at every rest, whether the question still
+stands or the human has typed past it: a done card invites the human to archive the thread, and the
+question dies unread with it. \`frizzctl done\` refuses, naming each open question by its id. A
+\` \`\`\`done \` fence cannot be refused, so Frizz corrects it instead: one message for that rest, opening
+\`⚠️ Your \`\`\`done fence\`, naming the same questions. Either way there are two ways out. Decide the
+question yourself, withdraw it with \`frizzctl unask <id>\`, and sign off done again. Or keep it open and
+rest on it: write no \`done\`, and where the human has typed past the question, end on its REFERENCE,
+which puts the thread back in their queue until it is answered.`
 
 // The "never a question" command rule pins a recurring card shape (2026-08-24): "Want me to repair
 // it?" over `pnpm install` in the shared checkout, with "the human runs it themselves" as the

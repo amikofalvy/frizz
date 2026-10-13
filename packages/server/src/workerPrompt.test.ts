@@ -101,7 +101,10 @@ test("the contract teaches the structured question fence, and none of the gramma
     assert.match(c, /ON A THREAD CARRYING A GOAL, FRIZZ REFUSES THE QUESTION/)
     assert.match(c, /a correction opening `⚠️ Your ```question fence` names the fault/)
     assert.match(c, /`frizzctl unask <id>`/)
-    assert.match(c, /An open question also blocks `frizzctl done`/)
+    // One gate for both sign-offs: the command is refused, the fence is corrected (scheduler SOURCE 15).
+    assert.match(c, /\*\*NO SIGN-OFF AS DONE WHILE ANY QUESTION OF YOURS IS OPEN\*\* — at every rest, whether the question still stands or the human has typed past it/)
+    assert.match(c, /`frizzctl done` refuses, naming each open question by its id\. A ` ```done ` fence cannot be refused, so Frizz corrects it instead: one message for that rest, opening `⚠️ Your ```done fence`/)
+    assert.doesNotMatch(c, /write no `done` fence beside it/, "the done rule is its own paragraph now, and reaches past the rest that asked")
     // Question QUALITY survives the move intact.
     assert.match(c, /NO "I" AND NO "you" ANYWHERE IN A QUESTION/)
     assert.match(c, /Write the question in the human's OWN vocabulary/)
