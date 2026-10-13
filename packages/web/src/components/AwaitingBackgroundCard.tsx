@@ -31,7 +31,7 @@ import type { AwaitingHint, GithubIssueStatus, GithubWatchStatus, ThreadView, Th
 import { awaitingFenceTitle, awaitingSteps, commandRunClause, isDirectSubAgent } from "@frizz/shared"
 import { githubRefUrl } from "../lib/githubRef.ts"
 import { noteGithubRefs } from "../lib/githubHovercards.ts"
-import { AWAITING_FALLBACK_TITLE, AWAITING_NO_PROSE, awaitingDefersToQuestions, awaitingProseBlock, prWatchRefs, STEPS_CHIP } from "../lib/awaitingPresentation.ts"
+import { AWAITING_CHIP, AWAITING_NO_PROSE, awaitingDefersToQuestions, awaitingProseBlock, prWatchRefs, SHELLS_CHIP, STEPS_CHIP } from "../lib/awaitingPresentation.ts"
 import { CHILD_DISMISS_NOUN, CHILD_DISMISS_TITLE, CHILD_DISMISS_VERB, CHILD_STALE_DOT_CLASS, CHILD_STALE_SHELL_TITLE, CHILD_STALE_TITLE, checksCounterLabel, issueCounterLabel } from "../lib/childOps.ts"
 import { compactElapsedSince, formatCompactElapsed } from "../lib/durationLabels.ts"
 import { useNowMs } from "../lib/liveClock.ts"
@@ -110,7 +110,10 @@ function hasUnrowedWork(thread: Pick<ThreadView, "subAgents" | "bgShells">): boo
   return awaitsResults(thread) || liveShellCount(thread) > 0
 }
 
-// The title, and it is CONDITIONAL for the same reason the body sentence is. "Background shells running"
+// The KIND CHIP (TranscriptCard's KindChip), and it is CONDITIONAL for the same reason the body sentence
+// is. Everything below was written about the card's TITLE, which is what these words were until
+// 2026-10-13; they moved into the chip unchanged when every signal card took the chipped head, and the
+// title under the chip is now only ever the worker's own `title:`. "Background shells running"
 // is the maintainer's own name for the shell-only rest (2026-08-04) and it is the shape that now carries
 // a queue card, so that is the title the human meets in the queue. A rest on a live SUB-AGENT is a
 // different state on a different surface — it is genuinely awaiting a result, and calling it "background
@@ -136,19 +139,24 @@ function hasUnrowedWork(thread: Pick<ThreadView, "subAgents" | "bgShells">): boo
 // launch, and no new kind gets a heading of its own. The sentence beneath is where the specifics live.
 //
 // THE WORKER MAY NAME IT ITSELF (maintainer 2026-08-26: "let's let the agent specify its own title for
-// these awaiting cards"). A `title:` in the fence frontmatter wins over both derived headings, because
-// only the worker knows what this particular wait IS — "Awaiting" is true of every park and specific to
-// none. It WRAPS, and it is capped at parse time (AWAITING_TITLE_MAX) only so a worker cannot write a
-// paragraph into a heading: the card already carries its full prose one line below.
+// these awaiting cards"), because only the worker knows what this particular wait IS — "Awaiting" is true
+// of every park and specific to none. A `title:` in the fence frontmatter REPLACED the derived heading
+// until 2026-10-13; it now rides UNDER the chip as the card's title (awaitingFenceTitle, read by the card
+// itself), so the kind and the specifics are each said once. It WRAPS, and it is capped at parse time
+// (AWAITING_TITLE_MAX) only so a worker cannot write a paragraph into a heading: the card already
+// carries its full prose one line below.
+//
+// STEPS TAKE A THIRD CHIP, "Awaiting human", and only because their wait is of a different kind: the
+// reader is the one being waited on, so the card is a to-do rather than a status.
 //
 // THE HINTS ARE A PARAMETER, not `thread.lastFence`, and that is what lets ONE card state a fence the
 // BOARD no longer holds: the tailer clears `lastFence` on the user record that bumps the thread, and
 // this card is still the one drawn at that rest (see the `fence` prop below).
-export function awaitingBackgroundLabel(
+export function awaitingBackgroundChip(
   thread: Pick<ThreadView, "subAgents" | "bgShells" | "watches">,
   hints: readonly AwaitingHint[],
 ): string {
-  return awaitingFenceTitle(hints) ?? (shellsAlone(thread) ? "Background shells running" : AWAITING_FALLBACK_TITLE)
+  return awaitingSteps(hints).length > 0 ? STEPS_CHIP : shellsAlone(thread) ? SHELLS_CHIP : AWAITING_CHIP
 }
 
 /** Background shells and nothing else — the one shape with a title of its own. An armed timer
@@ -1225,7 +1233,7 @@ export function AwaitingBackgroundCard({ thread, fence, onSnooze, onSnoozeFailed
   // `steps:` — the fence is waiting on the HUMAN to perform these (2026-10-03). Drawn under the prose on
   // every surface; the verbs that answer them only while the thread rests on them (restingOnSteps).
   const steps = awaitingSteps(hints)
-  const stepsTitle = steps.length > 0 ? awaitingFenceTitle(hints) : null
+  const title = awaitingFenceTitle(hints)
   const stepsLive = thread !== undefined && restingOnSteps(thread, steps)
   const waiting = awaitsResults(work)
   // THE WORKER'S OWN HANDOFF, opening the card (maintainer 2026-08-24: "the rendered message at the
@@ -1269,27 +1277,27 @@ export function AwaitingBackgroundCard({ thread, fence, onSnooze, onSnoozeFailed
     // smaller radius, a washed-out fill, its own padding, no kind header — for the same job.
     <TranscriptCard
       data-awaiting-background
-      // THE GLYPH FOLLOWS THE TITLE, and there are exactly two of each. The terminal square goes with
-      // the one kind-naming heading ("Background shells running"); everything else takes the generic
-      // heading and the hourglass, which is honest for it — a thread holding a sub-agent or a PR
-      // watcher genuinely IS waiting on something to come back. A per-kind glyph would rebuild the
-      // per-kind card the consolidation removed, exactly as a per-kind title did.
-      // STEPS TAKE A THIRD, and only because their wait is of a different kind: the reader is the one
-      // being waited on, so the card is a to-do rather than a status. It rides a KIND CHIP rather than
-      // the title (2026-10-05, TranscriptCard's KindChip): "Awaiting human" over the worker's own title, which is
-      // left out when the worker named none — the chip already says what the card is for.
+      // THE GLYPH FOLLOWS THE CHIP, and there are exactly three of each. The terminal square goes with
+      // the one kind-naming chip ("Background shells running"); the steps' list goes with "Awaiting
+      // human"; everything else takes the generic chip and the hourglass, which is honest for it — a
+      // thread holding a sub-agent or a PR watcher genuinely IS waiting on something to come back. A
+      // per-kind glyph would rebuild the per-kind card the consolidation removed, exactly as a per-kind
+      // title did.
+      //
+      // EVERY SHAPE RIDES A KIND CHIP (TranscriptCard's KindChip) — the steps card since 2026-10-05, every
+      // other one since 2026-10-13, when the done card took the same head and the family became one shape.
+      // The worker's own `title:` goes under the chip, and is left out when the worker named none: the
+      // chip already says what the card is for.
       icon={steps.length > 0 ? ListTodo : shellsAlone(work) ? TerminalSquare : Hourglass}
-      chip={steps.length > 0 ? STEPS_CHIP : undefined}
-      // WRAPPED AT ANY CHARACTER, because this heading can now be WORKER-AUTHORED. Every other card in
-      // the family carries a code-authored label, so the header's wrap-don't-truncate rule never had to
-      // survive an unbreakable token; a `title:` naming a branch, a URL or a base64 id is one. Measured
-      // at the queue card's narrowest (368px content box, sans): a 40-character single token bled 135.64px
-      // PAST the card's right edge without this, and wraps inside it with it.
-      label={steps.length > 0
-        ? (stepsTitle ? <span className="[overflow-wrap:anywhere]">{stepsTitle}</span> : null)
-        : <span className="[overflow-wrap:anywhere]">{awaitingBackgroundLabel(work, hints)}</span>}
-      // ONE watched PR the table does not already row rides the title, as the GitHub wake card's ref
-      // does; SEVERAL take a row of their own under the prose (see unrowedWatchRefs).
+      chip={awaitingBackgroundChip(work, hints)}
+      // WRAPPED AT ANY CHARACTER, because this heading is WORKER-AUTHORED. Every other card in the family
+      // carries a code-authored label, so the header's wrap-don't-truncate rule never had to survive an
+      // unbreakable token; a `title:` naming a branch, a URL or a base64 id is one. Measured at the queue
+      // card's narrowest (368px content box, sans): a 40-character single token bled 135.64px PAST the
+      // card's right edge without this, and wraps inside it with it.
+      label={title ? <span className="[overflow-wrap:anywhere]">{title}</span> : null}
+      // ONE watched PR the table does not already row rides the chip row's far right, as the GitHub wake
+      // card's ref rides its title row; SEVERAL take a row of their own under the prose (see unrowedWatchRefs).
       aside={unrowed.length === 1 ? <WatchedRef watch={unrowed[0]} /> : undefined}
     >
       {/* THE WORKER'S PROSE — the fence's whole Markdown body, block-rendered, exactly as the old

@@ -1,7 +1,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import type { ThreadView } from "@frizz/shared"
-import { isOptimisticallySteering, optimisticallySteered, steeredSinceRest, STEER_OPTIMISM_MS } from "./steering.ts"
+import { isOptimisticallySteering, optimisticallySteered, steeredSinceRest, STEER_OPTIMISM_MS, transcriptBehindRest } from "./steering.ts"
 import { isActivelyRunning, isSnoozed, orderActive, partitionActive, sectionOf, sessionIndicatorKind } from "../groups.ts"
 
 const at = (lastActivityAt?: string) => ({ id: "t", lastActivityAt } as unknown as ThreadView)
@@ -174,3 +174,35 @@ test("the Working clock starts at the send: this tab's stamp, else the server's 
   const projected = { role: "user", queued: true, deliveryState: "pending", at: new Date(SENT + 50).toISOString() } as const
   assert.equal(steeredSinceRest(atRest(), [rest, projected], 0, undefined, SENT + 200)!.lastUserAt, projected.at)
 })
+
+// ── the rest the transcript has not reached ─────────────────────────────────────────────────────────
+// The board's turn-idle leads the transcript push carrying the reply by ~20ms; in between the view must
+// not draw a rest that has nothing under it.
+{
+  const rested = (lastAssistantAt: string, runtime: ThreadView["runtime"] = "turn-idle") => ({ id: "t", runtime, lastAssistantAt } as unknown as ThreadView)
+  const said = (at: string) => ({ role: "assistant" as const, at })
+  const human = (at: string) => ({ role: "user" as const, at })
+  const restAt = (at: string) => ({ role: "assistant" as const, kind: "event" as const, boundary: "rest" as const, at })
+  const T = (s: number) => new Date(Date.UTC(2026, 9, 13, 11, 0, s)).toISOString()
+
+  test("a rest whose reply the transcript does not carry yet is ahead of it", () => {
+    assert.equal(transcriptBehindRest(rested(T(9)), [said(T(0)), restAt(T(1)), human(T(5))]), true)
+    // …a turn that had already said something, too: the board's newest record is newer still.
+    assert.equal(transcriptBehindRest(rested(T(9)), [said(T(0)), restAt(T(1)), human(T(5)), said(T(7))]), true)
+  })
+
+  test("the reply landing catches it up — by its instant, or by the rest boundary that closes the turn", () => {
+    assert.equal(transcriptBehindRest(rested(T(9)), [human(T(5)), said(T(9)), restAt(T(9))]), false)
+    // A coalesced message can carry its FIRST record's instant while the board names its last one: the
+    // projection's own rest boundary still says the transcript has reached the rest.
+    assert.equal(transcriptBehindRest(rested(T(9)), [human(T(5)), said(T(8)), restAt(T(8))]), false)
+    // A rest guessed without a boundary is caught up once the record itself is there.
+    assert.equal(transcriptBehindRest(rested(T(9)), [human(T(5)), said(T(9))]), false)
+  })
+
+  test("a running thread, or a rest with no instant, is never held", () => {
+    assert.equal(transcriptBehindRest(rested(T(9), "running"), [human(T(5))]), false)
+    assert.equal(transcriptBehindRest({ id: "t", runtime: "turn-idle" } as unknown as ThreadView, [human(T(5))]), false)
+    assert.equal(transcriptBehindRest(undefined, []), false)
+  })
+}

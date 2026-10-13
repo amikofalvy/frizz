@@ -1,4 +1,5 @@
 import type { ChatMessage } from "../hooks.ts"
+import { inQueuedTail } from "./restReply.ts"
 
 // USER_TAIL_EXTRA lived here for one reason — ChatView imports this module, so it could not be declared
 // beside STEP in ChatView — and that reason ended when the rhythm moved into components/rhythm.tsx,
@@ -111,7 +112,7 @@ export function buildVirtualTranscriptMessageRows(
   let previous: ChatMessage | null = null
 
   messages.forEach((message, messageIndex) => {
-    if (message.queued || rendersNothing(message)) return
+    if (inQueuedTail(message) || rendersNothing(message)) return
     const baseKey = message.sourceId ?? legacyMessageKey(message)
     const duplicate = keyCounts.get(baseKey) ?? 0
     keyCounts.set(baseKey, duplicate + 1)
