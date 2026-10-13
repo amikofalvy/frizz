@@ -5,7 +5,7 @@ import { promisify } from "node:util"
 import { basename, join, win32 } from "node:path"
 import { homedir, tmpdir } from "node:os"
 import type { AskQuestion, AwaitingHint, CodexModel, LiveTool } from "@frizz/shared"
-import { insideFence, isAllInjectedNoise, isInterruptMarker, parseAskUserQuestionInput, parseCrossSessionMessage, PermissionMode, questionFencesLive, saysAllDone, splitAwaitingFrontmatter } from "@frizz/shared"
+import { insideFence, isAllInjectedNoise, isInterruptMarker, parseAskUserQuestionInput, parseCrossSessionMessage, PermissionMode, questionFencesLive, saysAllDone, splitAwaitingFrontmatter, splitDoneFrontmatter } from "@frizz/shared"
 import type { Bus } from "./bus.ts"
 import { permMarkerPath, type Project } from "./project.ts"
 import { isBrokerClaudeRow, isHeadlessRow } from "./storage.ts"
@@ -1308,7 +1308,7 @@ function capFenceBody(s: string): string {
 // Parse the done/awaiting signal fence out of an assistant text, or undefined if none. Pure and
 // defensive (never throws) so it is unit-testable and degrades on any surprise. For `awaiting`,
 // `<kind>: <value>` lines become `hints` in file order and the remaining lines are the prose `body`;
-// for `done`, the whole body is the message and hints are empty.
+// for `done`, the body is the message and the only hint is an optional leading `title:` (2026-10-13).
 export function parseSignalFence(text: string | undefined): FenceView | undefined {
   if (typeof text !== "string") return undefined
   const norm = text.replace(/\r\n/g, "\n")
@@ -1326,7 +1326,12 @@ export function parseSignalFence(text: string | undefined): FenceView | undefine
   // End-anchor: the fence only signals when it closes the message (trailing whitespace tolerated).
   // Prose after the last fence means it was quoted/explanatory, not a signal — no excusal.
   if (norm.slice(end).trim() !== "") return undefined
-  if (kind === "done") return { kind, body: capFenceBody(raw.trim()), hints: [] }
+  // done: an optional leading `title:` (the card's heading), then the ledger. Split by the same shared
+  // function the client renders with, for the reason the awaiting branch below spells out.
+  if (kind === "done") {
+    const { body, hints } = splitDoneFrontmatter(raw)
+    return { kind, body: capFenceBody(body), hints }
+  }
   // awaiting: YAML frontmatter, then Markdown. The split lives in @frizz/shared because the CLIENT parses
   // the same fence to decide how it RENDERS while this decides whether the thread PARKS — and those were
   // two implementations, each with a comment asking the next reader to keep them in step. The 2026-08-24

@@ -8,7 +8,7 @@ import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import watcher from "@parcel/watcher"
 import type { BoardSnapshot, ClaudeModel, ThreadView, RuntimeState, ThreadRecurringPrompt, ProviderError } from "@frizz/shared"
-import { AskedQuestionSchema, BoardDiffer, PermissionMode, SnoozeUntil, ThreadSlug, awaitingNeedsInput, formatElapsed, awaitingStatus, awaitingSteps, isDirectSubAgent, needsInputRequired, questionAnswerMessage, questionsCancelledWakeMessage, type AskedQuestion, type PermissionMode as PermissionModeValue, type QuestionAnswer, type QuestionDismissal } from "@frizz/shared"
+import { AskedQuestionSchema, BoardDiffer, PermissionMode, SnoozeUntil, ThreadSlug, awaitingNeedsInput, formatElapsed, awaitingStatus, awaitingSteps, isDirectSubAgent, splitDoneFrontmatter, needsInputRequired, questionAnswerMessage, questionsCancelledWakeMessage, type AskedQuestion, type PermissionMode as PermissionModeValue, type QuestionAnswer, type QuestionDismissal } from "@frizz/shared"
 import type { Bus } from "./bus.ts"
 import type { Project } from "./project.ts"
 import { isHeadlessRow, isBrokerClaudeRow, sessionTitleLocked, type ThreadQuestionRow } from "./storage.ts"
@@ -1586,7 +1586,11 @@ export function registeredDoneFence(
   // `registered` is the one thing the transcript needs that the fence it replaces never carried: a fenced
   // done is drawn from the message that holds it, and this one is in no message, so the client draws it
   // at the bottom of the thread itself (ChatView, showsRegisteredDoneCard). Every predicate ignores it.
-  return { kind: "done", body: done.body, hints: [], registered: true }
+  // The stored body is in the fence's own grammar — `frizzctl done --title` writes `title: …` and `---`
+  // above the ledger — so it is split by the fence's own splitter, and the title reaches the card as the
+  // same hint a fenced done carries instead of printing as the ledger's first line (2026-10-13).
+  const { body, hints } = splitDoneFrontmatter(done.body)
+  return { kind: "done", body, hints, registered: true }
 }
 
 // Every per-thread REGISTRY the row builder needs, read whole ONCE per build and indexed by slug.

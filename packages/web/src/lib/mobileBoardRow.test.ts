@@ -38,6 +38,15 @@ test("a rested row reads the handoff's real first line, and the preview only whe
   // A first line that is only a fence opener strips to nothing: the preview's approximation stands in.
   const fenced = thread({ lastAssistantLine: "```done", lastAssistant: "```done - The meter reads codex tokens. - Tests green. ```" })
   assert.deepEqual(rowSecondLine(fenced, "rest", false), { text: "The meter reads codex tokens." })
+  // A done fence that opens on `title:` (2026-10-13): the row reads the worker's heading, never the
+  // preview's "title: … ---", and without a title it reads the ledger's first line as before.
+  const titled = thread({
+    lastFence: { kind: "done", body: "- The meter reads codex tokens.\n- Tests green.", hints: [{ kind: "title", value: "Codex `token` counts in the meter" }] },
+    lastAssistantLine: "```done",
+    lastAssistant: "```done title: Codex `token` counts in the meter --- - The meter reads codex tokens. - Tests green. ```",
+  })
+  assert.deepEqual(rowSecondLine(titled, "rest", false), { text: "Codex token counts in the meter" })
+  assert.deepEqual(rowSecondLine({ ...titled, lastFence: { ...titled.lastFence!, hints: [] } }, "rest", false), { text: "The meter reads codex tokens." })
 })
 
 test("an ask's line is its question, or the count when there are several", () => {
