@@ -1896,34 +1896,6 @@ export const SIGNOFF_NUDGE_MESSAGE = signoffNudgeText(false)
  *  which it teaches as `status:` since 2026-10-05. */
 export const SIGNOFF_NUDGE_MESSAGE_NEEDS_INPUT = signoffNudgeText(true)
 
-/** The reminder for a fenceless rest that leaves questions from an EARLIER rest open (2026-10-05). A
- *  question asked at THIS rest is the rest's own sign-off; one carried from before is not, because its
- *  card is no longer drawn under the newest handoff — it stays where it was asked — so a rest that says
- *  nothing about it reads as a bare stop while the thread sits in the queue on an ask nobody can see at
- *  the bottom. The worker settles each one: name it, or withdraw it. Same marker as the reminder above,
- *  so it folds out of the chat the same way. */
-export function carriedQuestionsNudgeMessage(questions: readonly { id: string; question: string }[], ops?: SignoffLiveOps, needsInput = false): string {
-  const one = questions.length === 1
-  const lines = [
-    `${SIGNOFF_NUDGE_MARKER} Nothing about your task has changed, and no new work is being asked of you.`,
-    "",
-    `${one ? "A question you registered at an EARLIER rest is" : "Questions you registered at EARLIER rests are"} still open, and this rest neither names ${one ? "it" : "them"} nor withdraws ${one ? "it" : "them"}:`,
-    "",
-    ...questions.map((q) => `- \`${q.id}\` — ${q.question}`),
-    "",
-    "Frizz does not draw an earlier rest's question under your newest handoff: its card stays where you",
-    `asked it. So say where ${one ? "it stands" : "each one stands"}:`,
-    "",
-    "- STILL NEED THE ANSWER → end with an ```awaiting fence naming it, `questions: [qst_…]`. A fence on",
-    "  questions needs no other name and no `for:`, and the thread stays in the human's queue. The card is",
-    "  drawn at this rest, under the reasoning you write below the `---` — what changed since you asked,",
-    "  if anything did.",
-    "- NO LONGER NEED IT → withdraw it with `frizzctl unask <id>`, then sign off as you otherwise would.",
-    ...liveOpsLines(ops, needsInput),
-  ]
-  return lines.join("\n")
-}
-
 // ---- THE FENCE CORRECTIONS (scheduler SOURCE 12) -------------------------------------------------
 // Frizz refusing a park and telling the worker why: a fence naming something that is not running, a
 // fence naming nothing at all, a fence written in a line kind that no longer exists.

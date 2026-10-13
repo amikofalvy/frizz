@@ -284,15 +284,16 @@ for (const [what, arrange] of [
   })
 }
 
-// A QUESTION IS A SIGN-OFF ONLY AT THE REST THAT ASKED IT (2026-10-05). Until then any open question
-// silenced the nudge at every later rest too, and the web drew the old card under the newest handoff as
-// if it were that rest's ask — superseding what the worker actually said (maintainer 2026-10-05). A
-// question carried past a human turn or a wake is now the worker's to restate under `questions:` or to
-// withdraw, and a later rest that does neither is told so.
+// A QUESTION SIGNS OFF ONLY THE REST IT STANDS AT (2026-10-05, narrowed 2026-10-13): the rest that asked
+// it, or a later one that references it with an `id:`-only ```question fence. From 2026-10-05 a question
+// carried past a human turn or a wake drew its own nudge telling the worker to name it or withdraw it; the
+// maintainer dropped that obligation with the fence ("questions may get registered and never answered, and
+// then they just sort of fade away"), so an old question nobody referenced says nothing about this rest —
+// and a rest that says nothing else is an ordinary bare rest, nudged like any other.
 const ASKED_EARLIER = Date.parse("2026-08-11T23:00:00.000Z")
 const LAST_TURN = "2026-08-11T23:59:00.000Z" // a CI wake or a reply, before the rest at 00:00
 
-test("a question carried from an EARLIER rest is not this rest's sign-off — the worker is told to name it or withdraw it", async () => {
+test("a question carried from an EARLIER rest fades: the rest gets the plain sign-off nudge, not a demand to settle it", async () => {
   const h = nudger({ lastUserAt: LAST_TURN })
   try {
     h.storage.askThreadQuestion({ id: "qst_old1", slug: h.slug, spec: JSON.stringify({ question: "SQLite or a JSON file?", kind: "question" }), askedAtMs: ASKED_EARLIER })
@@ -300,10 +301,19 @@ test("a question carried from an EARLIER rest is not this rest's sign-off — th
     const nudges = h.nudges()
     assert.equal(nudges.length, 1)
     assert.ok(nudges[0].message.startsWith(SIGNOFF_NUDGE_MARKER), "the nudge's own marker, so it folds like every reminder")
-    assert.match(nudges[0].message, /A question you registered at an EARLIER rest is still open/)
-    assert.match(nudges[0].message, /- `qst_old1` — SQLite or a JSON file\?/, "named, with its own words")
-    assert.match(nudges[0].message, /`questions: \[qst_…\]`/)
-    assert.match(nudges[0].message, /`frizzctl unask <id>`/)
+    assert.doesNotMatch(nudges[0].message, /qst_old1|SQLite or a JSON file/, "the old question is not this rest's business")
+  } finally { h.close() }
+})
+
+test("a question REFERENCED at this rest with an id: fence is its sign-off again", async () => {
+  const h = nudger({
+    lastUserAt: LAST_TURN,
+    questionSightings: [{ at: "2026-08-11T23:59:30.000Z", text: "```question\nid: settings-store\n```" }],
+  })
+  try {
+    h.storage.askThreadQuestion({ id: "qst_old1", slug: h.slug, handle: "settings-store", spec: JSON.stringify({ handle: "settings-store", question: "SQLite or a JSON file?", kind: "question" }), askedAtMs: ASKED_EARLIER })
+    await h.s.tick()
+    assert.deepEqual(h.nudges(), [])
   } finally { h.close() }
 })
 
@@ -316,16 +326,13 @@ test("a question asked at THIS rest is still its sign-off, even after an earlier
   } finally { h.close() }
 })
 
-test("a new question does not cover an old one: the nudge lists only the carried question", async () => {
+test("a new question at this rest signs it off, whatever older questions are still open", async () => {
   const h = nudger({ lastUserAt: LAST_TURN })
   try {
     h.storage.askThreadQuestion({ id: "qst_old1", slug: h.slug, spec: JSON.stringify({ question: "SQLite or a JSON file?", kind: "question" }), askedAtMs: ASKED_EARLIER })
     h.storage.askThreadQuestion({ id: "qst_new1", slug: h.slug, spec: JSON.stringify({ question: "Which dist-tag?", kind: "question" }), askedAtMs: Date.parse("2026-08-11T23:59:30.000Z") })
     await h.s.tick()
-    const nudges = h.nudges()
-    assert.equal(nudges.length, 1)
-    assert.match(nudges[0].message, /qst_old1/)
-    assert.doesNotMatch(nudges[0].message, /qst_new1/)
+    assert.deepEqual(h.nudges(), [])
   } finally { h.close() }
 })
 
