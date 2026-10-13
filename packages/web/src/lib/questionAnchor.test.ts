@@ -172,3 +172,37 @@ test("no open questions produces no groups", () => {
   const messages = [msg("user", 0), said(1, fence("questions: [qst_a]"))]
   assert.equal(questionsByAnchor(messages, []).size, 0)
 })
+
+// ---- THE QUESTION FENCE'S CLAIM (2026-10-13) ----
+// A ```question fence carrying a question's `id:` — a reference, or the ask restated — claims its card to
+// that rest, the way `questions:` does. The name is the worker's handle, matched on the root or any
+// follow-up of the row's tree.
+
+const ref = (id: string) => `Still need this one:\n\n\`\`\`question\nid: ${id}\n\`\`\``
+const fenced = { id: "qst_f1", askedAt: at(2), spec: { handle: "settings-store", question: "Which store?", kind: "question" as const, options: [{ label: "SQLite", followUps: [{ handle: "sqlite-path", question: "Where?", kind: "question" as const }] }, { label: "JSON" }] } }
+
+test("an `id:` reference fence in a later rest claims the card to that rest, by the worker's handle", () => {
+  const messages = [msg("user", 0), msg("assistant", 2), msg("user", 3), said(4, ref("settings-store")), msg("assistant", 5)]
+  assert.equal(questionClaims(messages).get("settings-store"), 3)
+  assert.deepEqual([...questionsByAnchor(messages, [fenced]).keys()], [4], "the end of the referencing rest")
+  assert.deepEqual([...questionsByAnchor(messages, [fenced], { claims: false }).keys()], [1], "the asking rest, unclaimed")
+})
+
+test("a reference to a FOLLOW-UP's handle claims the whole card", () => {
+  const messages = [msg("user", 0), msg("assistant", 2), msg("user", 3), said(4, ref("sqlite-path"))]
+  assert.deepEqual([...questionsByAnchor(messages, [fenced]).keys()], [3])
+})
+
+test("`questions:` keeps claiming beside the fence, and the newer of two claims wins", () => {
+  const messages = [msg("user", 0), msg("assistant", 2), msg("user", 3), said(4, fence("questions: [qst_f1]")), msg("user", 5), said(6, ref("settings-store"))]
+  assert.deepEqual([...questionsByAnchor(messages, [fenced]).keys()], [5])
+  const older = [msg("user", 0), msg("assistant", 2), msg("user", 3), said(4, ref("settings-store")), msg("user", 5), said(6, fence("questions: [qst_f1]"))]
+  assert.deepEqual([...questionsByAnchor(older, [fenced]).keys()], [5])
+})
+
+test("a quoted reference claims nothing", () => {
+  const quoted = `The form:\n\n\`\`\`\`md\n${ref("settings-store")}\n\`\`\`\``
+  const messages = [msg("user", 0), msg("assistant", 2), msg("user", 3), said(4, quoted)]
+  assert.equal(questionClaims(messages).has("settings-store"), false)
+  assert.deepEqual([...questionsByAnchor(messages, [fenced]).keys()], [1])
+})

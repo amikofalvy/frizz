@@ -104,3 +104,23 @@ test("the card stays above the rest divider that closes its rest, not below it",
   const { anchored } = settledQuestionPositions(messages, [settled("qst_a", "2026-09-25T10:01:30Z", "2026-09-25T10:05:00Z")])
   assert.deepEqual([...anchored.keys()], [1])
 })
+
+// ---- THE QUESTION FENCE (2026-10-13) ----
+// The open card was placed and claimed by the worker's handle, so the replay must match it too.
+
+test("a fence-asked question answered after a later reference stays in the reference's slot", () => {
+  const spec = { handle: "settings-store", question: "Which store?", kind: "question" as const }
+  const messages = [
+    msg("user", "2026-10-13T10:00:00Z"),
+    msg("assistant", "2026-10-13T10:02:00Z", "```question\nid: settings-store\nkind: text\nquestion: Which store?\n```"),
+    msg("user", "2026-10-13T10:03:00Z"), // replied past it
+    msg("assistant", "2026-10-13T10:04:00Z", "Still needed:\n\n```question\nid: settings-store\n```"),
+    msg("user", "2026-10-13T10:09:00Z"), // the answer
+  ]
+  const { placed, anchored } = settledQuestionPositions(messages, [{ ...settled("qst_a", "2026-10-13T10:02:00Z", "2026-10-13T10:08:00Z"), spec }])
+  assert.deepEqual([...placed.keys()], [3])
+  assert.equal(anchored.size, 0)
+  // Negative control: without the handle the replay cannot see the fence, and the card falls to the anchor.
+  const blind = settledQuestionPositions(messages, [settled("qst_a", "2026-10-13T10:02:00Z", "2026-10-13T10:08:00Z")])
+  assert.equal(blind.placed.size, 0)
+})

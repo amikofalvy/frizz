@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { splitQuestionBlocks, hasQuestionBlock, parseQuestionBlock, composeBlockAnswer, optionId, optionNumber, recommendedIndex, splitOptionId } from "./questionBlocks.ts"
+import { splitQuestionBlocks, splitMessageQuestions, questionFenceIdsIn, hasQuestionBlock, parseQuestionBlock, composeBlockAnswer, optionId, optionNumber, recommendedIndex, splitOptionId } from "./questionBlocks.ts"
 
 // ---- splitQuestionBlocks ----
 
@@ -729,4 +729,91 @@ test("splitOptionId: the identifier comes off the label for the keycap, the rest
   // No identifier, or a word that merely starts like one, is left alone.
   assert.deepEqual(splitOptionId("SQLite. Transactional"), { rest: "SQLite. Transactional" })
   assert.deepEqual(splitOptionId("just prose"), { rest: "just prose" })
+})
+
+// ---- THE QUESTION FENCE (2026-10-13): splitMessageQuestions ----
+// A thread dispatched after QUESTION_FENCE_RETIRED_AT asks with a structured fence whose `id:` names a row.
+// The shared reader decides what is a fence; this module only turns its blocks into segments.
+
+const ASK = [
+  "```question",
+  "id: settings-store",
+  "kind: choice",
+  "question: Should the settings store use SQLite or a JSON file?",
+  "options:",
+  "  - label: SQLite",
+  "    recommended: true",
+  "  - label: JSON file",
+  "---",
+  "| Store | Crash-safe |",
+  "|---|---|",
+  "| SQLite | yes |",
+  "```",
+].join("\n")
+const FOLLOW_UP = ["```question", "id: sqlite-path", "kind: choice", "when: settings-store = SQLite", "question: Where should the database live?", "options:", "  - Beside the sessions database", "  - In the project's `.frizz/`", "```"].join("\n")
+const REF = (id: string) => `\`\`\`question\nid: ${id}\n\`\`\``
+
+test("fence grammar OFF is the legacy splitter, byte for byte — a legacy thread renders exactly as before", () => {
+  const text = `Lead.\n\n${ASK}\n\nTail.`
+  assert.deepEqual(splitMessageQuestions(text, false), splitQuestionBlocks(text))
+})
+
+test("an ask fence is ONE question segment carrying its read, with the prose either side kept in place", () => {
+  const segs = splitMessageQuestions(`Lead paragraph.\n\n${ASK}\n\nWhat happens either way.`, true)
+  assert.deepEqual(segs.map((s) => s.kind), ["prose", "question", "prose"])
+  const q = segs[1]
+  assert.ok(q.kind === "question" && q.fence?.form === "ask")
+  assert.equal(q.fence.id, "settings-store")
+  assert.equal(q.fence.spec.context, "| Store | Crash-safe |\n|---|---|\n| SQLite | yes |")
+  assert.equal(segs[0].kind === "prose" && segs[0].text.trim(), "Lead paragraph.")
+  assert.equal(segs[2].kind === "prose" && segs[2].text.trim(), "What happens either way.")
+})
+
+test("a reference fence is a segment too; a follow-up keeps its `when:` so the renderer can draw nothing for it", () => {
+  const segs = splitMessageQuestions(`${ASK}\n\n${FOLLOW_UP}\n\nLater:\n\n${REF("settings-store")}`, true).filter((s) => s.kind === "question")
+  assert.deepEqual(segs.map((s) => (s.kind === "question" ? s.fence?.form : null)), ["ask", "ask", "ref"])
+  const follow = segs[1]
+  assert.ok(follow.kind === "question" && follow.fence?.form === "ask")
+  assert.deepEqual(follow.fence.when, { parent: "settings-store", option: "SQLite" })
+})
+
+test("a ````question fence whose context carries a code block is one segment — the legacy splitter never saw it", () => {
+  const four = ["````question", "id: retry-backoff", "kind: text", "question: Which backoff?", "---", "```diff", "-  await sleep(100)", "+  await sleep(2 ** attempt * 100)", "```", "````"].join("\n")
+  const segs = splitMessageQuestions(`Lead.\n\n${four}\n\nTail.`, true)
+  assert.deepEqual(segs.map((s) => s.kind), ["prose", "question", "prose"])
+  assert.ok(segs[1].kind === "question" && segs[1].fence?.form === "ask")
+  assert.match(segs[1].fence.spec.context ?? "", /```diff/)
+})
+
+test("a fence QUOTED inside a longer outer fence is the worker documenting the grammar — prose, and it names nothing", () => {
+  const quoted = `Here is the grammar:\n\n\`\`\`\`md\n${ASK}\n\`\`\`\`\n`
+  assert.deepEqual(splitMessageQuestions(quoted, true), splitQuestionBlocks(quoted))
+  assert.ok(splitMessageQuestions(quoted, true).every((s) => s.kind === "prose"))
+  assert.deepEqual(questionFenceIdsIn(quoted), [])
+})
+
+test("an INVALID read keeps the rendering it had — a free-form fence in a post-cutover thread's history is unchanged", () => {
+  const freeForm = "Lead.\n\n```question\nShould we ship?\n\n- A. Yes\n- B. No\n```\n"
+  assert.deepEqual(splitMessageQuestions(freeForm, true), splitQuestionBlocks(freeForm))
+  const segs = splitMessageQuestions(freeForm, true)
+  assert.ok(segs.every((s) => s.kind !== "question" || s.fence === undefined))
+})
+
+test("the legacy empty marker still places by its minted id beside a fence in the same message", () => {
+  const text = `${ASK}\n\nAnd the older one:\n\n\`\`\`question qst_ab12cd34\n\`\`\`\n`
+  const qs = splitMessageQuestions(text, true).filter((s) => s.kind === "question")
+  assert.equal(qs.length, 2)
+  assert.ok(qs[0].kind === "question" && qs[0].fence?.form === "ask")
+  assert.ok(qs[1].kind === "question" && qs[1].registeredId === "qst_ab12cd34" && qs[1].fence === undefined)
+})
+
+test("questionFenceIdsIn names asks and references, never a follow-up, in order", () => {
+  assert.deepEqual(questionFenceIdsIn(`${ASK}\n\n${FOLLOW_UP}\n\n${REF("Older-Question")}`), ["settings-store", "older-question"])
+  assert.deepEqual(questionFenceIdsIn("no fence"), [])
+})
+
+test("hasQuestionBlock counts a ````question fence, so a message that asks with one is never a bare rest", () => {
+  const four = ["````question", "id: retry-backoff", "kind: text", "question: Which backoff?", "---", "```ts", "x()", "```", "````"].join("\n")
+  assert.equal(hasQuestionBlock(four), true)
+  assert.equal(hasQuestionBlock(`\`\`\`\`\`md\n${four}\n\`\`\`\`\``), false, "quoted, it asks nothing")
 })

@@ -115,6 +115,8 @@ function QuestionStep({ a, step, writing, onWrite, onPick }: {
   onPick: (optIdx: number) => void
 }) {
   const html = useMarkdownHtml(step.spec.question)
+  // A ```question fence's context below its `---` — the table or diff the human needs to answer cold.
+  const contextHtml = useMarkdownHtml(step.spec.context?.trim() ?? "")
   const answer = a.answerFor(step.q, step.path)
   const options = step.spec.options ?? []
   const multi = step.spec.kind === "multi"
@@ -124,6 +126,14 @@ function QuestionStep({ a, step, writing, onWrite, onPick }: {
   return (
     <div data-answer-question>
       <LinkedHtml className={`px-[18px] pb-3 pt-1 text-[17px] font-semibold leading-[23px] text-fg ${QUESTION_PROSE}`} html={html} />
+      {/* The context at the card body's scale and strength (`card-md` makes the markdown inherit both), so
+          the question above stays the ask. Scrolls sideways rather than widening the sheet: a table is
+          the commonest thing a worker puts here. */}
+      {contextHtml && (
+        <div data-question-context className="card-md min-w-0 overflow-x-auto px-[18px] pb-3 text-fg/75">
+          <LinkedHtml className="md-body" html={contextHtml} />
+        </div>
+      )}
       {options.length > 0 && (
         <div role={multi ? "group" : "radiogroup"} className="border-b border-border">
           {options.map((option, i) => (

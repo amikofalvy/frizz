@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { allFencesShadowed, fenceRestatesRegistered, fenceStandsFor, markerIdsIn, placedFrom, placeQuestions, questionsAtCurrentRest, registeredStandingAt } from "./questionShadow.ts"
+import { allFencesShadowed, fenceRestatesRegistered, fenceStandsFor, markerIdsIn, placedFrom, placementNamesIn, placeQuestions, questionNames, questionsAtCurrentRest, registeredStandingAt, resolveQuestionName } from "./questionShadow.ts"
 import { type MessageSegment, splitQuestionBlocks } from "./questionBlocks.ts"
 
 // The pair from the 2026-08-28 report, verbatim: the registration (a plain string — the `ask` schema
@@ -225,4 +225,88 @@ test("a claiming rest that also writes the marker places the card in its own pro
   const claimed = STALE.map((m, i) => (i === 3 ? { ...m, text: `${MARKER(QUESTION.id)}${CLAIM(QUESTION.id)}` } : m))
   const { placed } = placeQuestions(claimed, [QUESTION])
   assert.deepEqual([...placed.keys()], [3])
+})
+
+// ---- THE QUESTION FENCE (2026-10-13) ----
+// A ```question fence's `id:` names a row by the WORKER's id — its handle, on the root and on every
+// follow-up — so it places and claims exactly as a legacy marker does by the minted one.
+
+const FENCED_ROW = {
+  id: "qst_f00dfeed0001",
+  askedAt: at(5),
+  spec: {
+    handle: "settings-store",
+    question: "Should the settings store use SQLite or a JSON file?",
+    kind: "question" as const,
+    options: [
+      { label: "SQLite", followUps: [{ handle: "sqlite-path", question: "Where should the database live?", kind: "question" as const, options: [{ label: "Beside the sessions database" }, { label: "In .frizz/" }] }] },
+      { label: "JSON file" },
+    ],
+  },
+}
+const ASK_FENCE = [
+  "```question",
+  "id: settings-store",
+  "kind: choice",
+  "question: Should the settings store use SQLite or a JSON file?",
+  "options:",
+  "  - SQLite",
+  "  - JSON file",
+  "```",
+].join("\n")
+const FOLLOW_FENCE = ["```question", "id: sqlite-path", "kind: choice", "when: settings-store = SQLite", "question: Where should the database live?", "options:", "  - Beside the sessions database", "  - In .frizz/", "```"].join("\n")
+const REF_FENCE = (id: string) => `\`\`\`question\nid: ${id}\n\`\`\``
+const ASKED = [
+  { role: "user", at: at(0), text: "Add a settings store." },
+  { role: "assistant", at: at(5), text: `The store is the one hard-to-reverse call:\n\n${ASK_FENCE}\n\n${FOLLOW_FENCE}\n\nEither way the rest is done.` },
+]
+
+test("a row answers to its minted id and to every handle in its tree; a follow-up's handle resolves to the ROOT", () => {
+  assert.deepEqual(questionNames(FENCED_ROW), ["qst_f00dfeed0001", "settings-store", "sqlite-path"])
+  assert.equal(resolveQuestionName("Settings-Store", [FENCED_ROW]), FENCED_ROW, "case-insensitive")
+  assert.equal(resolveQuestionName("sqlite-path", [FENCED_ROW]), FENCED_ROW)
+  assert.equal(resolveQuestionName("qst_f00dfeed0001", [FENCED_ROW]), FENCED_ROW, "an `id: qst_…` reference names the row id")
+  assert.equal(resolveQuestionName("npm-scope", [FENCED_ROW]), undefined)
+  assert.equal(resolveQuestionName("settings-store", [QUESTION]), undefined, "a row `ask` registered has no handle to match")
+})
+
+test("placementNamesIn reads legacy markers AND fence ids, but not a follow-up's", () => {
+  assert.deepEqual(placementNamesIn(ASKED[1].text), ["settings-store"])
+  assert.deepEqual(placementNamesIn(`${fenced("", "qst_aaaa")}\n\n${REF_FENCE("settings-store")}`), ["qst_aaaa", "settings-store"])
+})
+
+test("the fence that ASKED a question places its row in that slot — drawn once, in the asking message", () => {
+  const { placed, placedIds } = placeQuestions(ASKED, [FENCED_ROW])
+  assert.deepEqual([...placed.keys()], [1])
+  assert.deepEqual([...placedIds], [FENCED_ROW.id])
+})
+
+test("a follow-up's fence alone places nothing — it lives in its parent's card", () => {
+  const messages = [ASKED[0], { ...ASKED[1], text: `Only the branch:\n\n${FOLLOW_FENCE}` }]
+  assert.equal(placeQuestions(messages, [FENCED_ROW]).placed.size, 0)
+})
+
+test("a fence QUOTED in an outer fence places nothing — the worker is showing the grammar", () => {
+  const messages = [ASKED[0], { ...ASKED[1], text: `The form:\n\n\`\`\`\`md\n${ASK_FENCE}\n\`\`\`\`` }]
+  assert.equal(placeQuestions(messages, [FENCED_ROW]).placed.size, 0)
+})
+
+test("a LATER rest's `id:` reference claims the card: it leaves the asking prose and renders in the reference's slot", () => {
+  const later = [
+    ...ASKED,
+    { role: "user", at: at(8), text: "Do the docs first." },
+    { role: "assistant", at: at(12), text: `Docs are in. The store still decides the migration:\n\n${REF_FENCE("settings-store")}` },
+  ]
+  const { placed } = placeQuestions(later, [FENCED_ROW])
+  assert.deepEqual([...placed.keys()], [3])
+  assert.equal(questionsAtCurrentRest(later, [FENCED_ROW]), true, "the referencing rest is the current one, and the card is its ending")
+  // A follow-up's handle is a name for the whole card.
+  const byBranch = later.map((m, i) => (i === 3 ? { ...m, text: `Still need it:\n\n${REF_FENCE("sqlite-path")}` } : m))
+  assert.deepEqual([...placeQuestions(byBranch, [FENCED_ROW]).placed.keys()], [3])
+})
+
+test("a later rest that says nothing about a fenced question leaves its card in the asking prose", () => {
+  const later = [...ASKED, { role: "user", at: at(8), text: "Do the docs first." }, { role: "assistant", at: at(12), text: "Docs are in." }]
+  assert.deepEqual([...placeQuestions(later, [FENCED_ROW]).placed.keys()], [1])
+  assert.equal(questionsAtCurrentRest(later, [FENCED_ROW]), false)
 })

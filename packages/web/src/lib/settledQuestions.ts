@@ -16,6 +16,7 @@
 // A question whose rest is older than the loaded window (anchor -1) draws nothing here. An OPEN one
 // renders at the top of the window in that case, because it is still owed an answer and must not be out
 // of reach; a settled one owes nothing, and it renders in its real slot once the earlier page is loaded.
+import type { AskedQuestion } from "@frizz/shared"
 import { questionsByAnchor, type AnchorMessage } from "./questionAnchor.ts"
 import { placeQuestions } from "./questionShadow.ts"
 
@@ -23,6 +24,9 @@ export interface SettledPositionable {
   id: string
   askedAt: string
   settledAt: string
+  /** The row's tree, read for its HANDLES: a question fence placed and claimed the open card by the
+   *  worker's id, so the replay has to match that name as well as the minted one (lib/questionShadow). */
+  spec?: AskedQuestion
   /** Sent from THIS tab and not yet read back from the server. Its `settledAt` is the browser's clock,
    *  which need not agree with the transcript's; the answer was sent against the whole loaded
    *  transcript, so the prefix is all of it. */

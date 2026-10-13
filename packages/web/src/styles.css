@@ -1268,6 +1268,14 @@ a[href] {
   --md-step: 12px;
   font-size: 12px;
 }
+/* A question fence's CONTEXT that ENDS ON A BOX — a table, a callout's rule, a quote, a code block —
+   puts that box's edge 8px (the grid's mt-2) above the first option's border, closer than the 6px
+   between two options reads apart: the context ran into the choices (measured 2026-10-13 on a context
+   ending in a `> [!NOTE]`). A paragraph's ink already sits ~4px inside its line box, so the 8px reads
+   ~12px there; a box gets the 12px outright, and both endings then leave the same air above the choices. */
+[data-question-context]:has(> .md-body > :is(table, blockquote, pre, details, div):last-child) + [data-question-grid] {
+  margin-top: 12px;
+}
 [data-question-option] .md-body table,
 [data-question-option] .md-body th,
 [data-question-option] .md-body td {

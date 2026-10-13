@@ -58,7 +58,10 @@ export function toParsedQuestion(spec: AskedQuestion): { question: ParsedQuestio
       kind: spec.kind,
       danger: spec.danger === true,
       ...(spec.secret ? { secret: true } : {}),
+      // The ask, alone, at full strength; a fence's context below its `---` rides beneath it (detailMd).
+      // The answer restates only the ask.
       contextMd: spec.question,
+      ...(spec.context?.trim() ? { detailMd: spec.context.trim() } : {}),
       options: parts.map((p) => p.line),
       recommendedIdxs: options.flatMap((o, i) => (o.recommended ? [i] : [])),
       ...(parts.some((p) => p.body) ? { optionBodies: parts.map((p) => p.body) } : {}),

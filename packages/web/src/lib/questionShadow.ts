@@ -20,9 +20,9 @@
 // the human has not seen elsewhere on the page. The text rule is deliberately loose about markup (the
 // fence wraps `code` and [links](…) that the registration's plain string cannot carry) and about
 // trailing prose (the worker appends a parenthetical), and strict about the question itself.
-import type { RegisteredQuestionView } from "@frizz/shared"
+import { type AskedQuestion, questionHandles, type RegisteredQuestionView } from "@frizz/shared"
 import { type AnchorMessage, questionsByAnchor, restEnd } from "./questionAnchor.ts"
-import { type MessageSegment, parseQuestionBlock, splitQuestionBlocks } from "./questionBlocks.ts"
+import { type MessageSegment, parseQuestionBlock, questionFenceIdsIn, splitQuestionBlocks } from "./questionBlocks.ts"
 
 /** The rest a question's anchor closes: the index of its first message — the one after the previous
  *  human turn — or 0 for an anchor above the loaded window, whose rest is off the page entirely. */
@@ -156,6 +156,13 @@ export function allFencesShadowed(
 // And the placement is NOT confined to the asking rest: a worker that rests again after the human
 // replied past the question writes its marker into THAT handoff, and the marker takes there.
 //
+// THE QUESTION FENCE IS A MARKER TOO (2026-10-13). A worker now ASKS by writing a structured ```question
+// fence whose `id:` is its own handle for the question (shared question-fence.ts); the server registers
+// that fence as a row, and a later fence carrying `id:` alone references the row. Both name the row, so
+// both place it, by the same rule as the empty marker: the newest message naming it from its claiming rest
+// on is where its card draws, answerable, with the rest's one Send. The name is matched against the row's
+// minted id and every handle in its tree (questionNames) — a follow-up's handle names the whole card.
+//
 // THE SCAN STARTS AT THE NEWEST REST THAT CLAIMS THE QUESTION (2026-10-05) — lib/questionAnchor: the
 // rest that asked it, or a later one whose ```awaiting fence names it under `questions:`. A marker in the
 // asking handoff therefore keeps the card in that prose for as long as no later rest claims it, which is
@@ -174,6 +181,36 @@ export function fenceStandsFor<Q extends Pick<RegisteredQuestionView, "id" | "sp
 ): Q | undefined {
   if (seg.registeredId) return registered.find((q) => q.id.toLowerCase() === seg.registeredId)
   return registered.find((q) => fenceRestatesRegistered(seg.text, [q]))
+}
+
+// ---- NAMES: what a fence may call a registered question ----
+//
+// A row answers to its minted id (`qst_…`, what a legacy marker and an `id: qst_…` reference write) and,
+// when a ```question fence registered it, to every HANDLE in its tree — the worker's own id on the root and
+// on each follow-up (shared questionHandles). A follow-up's handle names the ROOT: the follow-up has no
+// card of its own, it opens inside its parent's. Handles are unique in a thread for good (the server
+// refuses a reuse), so a name resolves to one row however many are open or settled.
+
+/** Every name this row answers to, lowercased. */
+export function questionNames(q: { id: string; spec?: AskedQuestion }): string[] {
+  const names = [q.id.toLowerCase()]
+  if (q.spec) for (const h of questionHandles(q.spec)) names.push(h.toLowerCase())
+  return names
+}
+
+/** The row a fence's id names — by minted id or by any handle in its tree — or undefined. */
+export function resolveQuestionName<Q extends { id: string; spec?: AskedQuestion }>(name: string, rows: readonly Q[]): Q | undefined {
+  const n = name.toLowerCase()
+  return rows.find((q) => questionNames(q).includes(n))
+}
+
+/** Every name a message PLACES, lowercased, in order: its legacy empty markers' `qst_…` ids, and the ids
+ *  of its question fences that ask or reference (lib/questionBlocks questionFenceIdsIn). On a legacy
+ *  thread the second list is empty in practice — those workers never learned the grammar, and no row of
+ *  theirs carries a handle for it to match. */
+export function placementNamesIn(text: string): string[] {
+  if (!text.includes("```question")) return []
+  return [...markerIdsIn(text), ...questionFenceIdsIn(text)]
 }
 
 export interface QuestionPlacement<Q> {
@@ -196,7 +233,7 @@ export function markerIdsIn(text: string): string[] {
  *  onward whose empty marker names its id. A question no loaded message names is absent from `placed`
  *  and renders at its anchor. Human turns never place anything — a wake carries no marker of the
  *  worker's. */
-export function placeQuestions<Q extends Pick<RegisteredQuestionView, "id"> & { askedAt: string }>(
+export function placeQuestions<Q extends Pick<RegisteredQuestionView, "id"> & { askedAt: string; spec?: AskedQuestion }>(
   messages: readonly AnchorMessage[],
   questions: readonly Q[],
 ): QuestionPlacement<Q> {
@@ -209,18 +246,18 @@ export function placeQuestions<Q extends Pick<RegisteredQuestionView, "id"> & { 
     let ids = markersAt.get(i)
     if (ids === undefined) {
       const m = messages[i]
-      ids = m.role === "assistant" && m.text ? markerIdsIn(m.text) : []
+      ids = m.role === "assistant" && m.text ? placementNamesIn(m.text) : []
       markersAt.set(i, ids)
     }
     return ids
   }
   for (const [anchor, group] of questionsByAnchor(messages, questions)) {
     for (const q of group) {
-      const id = q.id.toLowerCase()
+      const names = questionNames(q)
       let placedAt = -1
       for (let i = restStart(messages, anchor); i < messages.length; i++) {
         if (isTurn(messages[i])) continue
-        if (markersOf(i).includes(id)) placedAt = i
+        if (markersOf(i).some((n) => names.includes(n))) placedAt = i
       }
       if (placedAt < 0) continue
       const at = placed.get(placedAt)
@@ -236,7 +273,7 @@ export function placeQuestions<Q extends Pick<RegisteredQuestionView, "id"> & { 
  *  `questions:`, or placed there by a marker? Only then is a question that rest's ending. One asked at an
  *  earlier rest that nothing here names stays where it was asked (questionAnchor), so a bare rest beside
  *  it is still a bare rest and says so (RestedCard). */
-export function questionsAtCurrentRest<Q extends Pick<RegisteredQuestionView, "id"> & { askedAt: string }>(
+export function questionsAtCurrentRest<Q extends Pick<RegisteredQuestionView, "id"> & { askedAt: string; spec?: AskedQuestion }>(
   messages: readonly AnchorMessage[],
   questions: readonly Q[],
 ): boolean {
