@@ -1974,10 +1974,67 @@ export const PARK_CORRECTION_NEEDS_INPUT_LEAD = "⚠️ Your ```awaiting fence g
  *  every fence after the fact, so this is the only way a worker hears that its question never reached the
  *  human (server question-fences.ts). */
 export const QUESTION_FENCE_CORRECTION_LEAD = "⚠️ Your ```question fence "
+/** The sixth (2026-10-13): a ```done fence that signed a rest off while a question of the thread was still
+ *  open. `frizzctl done` refuses there and a fence cannot be refused, so this is the same gate applied
+ *  after the fact (scheduler SOURCE 15). */
+export const DONE_FENCE_CORRECTION_LEAD = "⚠️ Your ```done fence "
 /** Is this delivered wake one of frizz's fence corrections? */
 export function isParkCorrection(text: string): boolean {
   const t = text.trimStart()
-  return t.startsWith(PARK_CORRECTION_NAMES_LEAD) || t.startsWith(PARK_CORRECTION_RETIRED_LEAD) || t.startsWith(PARK_CORRECTION_QUESTION_LEAD) || t.startsWith(PARK_CORRECTION_NEEDS_INPUT_LEAD) || t.startsWith(QUESTION_FENCE_CORRECTION_LEAD)
+  return t.startsWith(PARK_CORRECTION_NAMES_LEAD) || t.startsWith(PARK_CORRECTION_RETIRED_LEAD) || t.startsWith(PARK_CORRECTION_QUESTION_LEAD) || t.startsWith(PARK_CORRECTION_NEEDS_INPUT_LEAD) || t.startsWith(QUESTION_FENCE_CORRECTION_LEAD) || t.startsWith(DONE_FENCE_CORRECTION_LEAD)
+}
+
+// ---- SIGNING OFF AS DONE OVER AN OPEN QUESTION: ONE GATE, TWO SIGN-OFFS ----------------------------
+// A worker finishes by command (`frizzctl done`) or by fence (```done), and an open question blocks both:
+// the command is refused on the spot, the fence is corrected at the rest it closed (scheduler SOURCE 15).
+// The two were taught as one thing and enforced as two until 2026-10-13: the gate bound only the workers
+// that used the better command, and a fence left the thread showing a question with a live "Mark as done"
+// under it.
+//
+// THE WORDS ARE HERE SO THE TWO CANNOT DRIFT. `cc-worker/lib/frizz-tools.mjs` is dependency-free on
+// purpose (it ships to a worker as plain .mjs and imports nothing but node), so it holds its own copy of
+// this function under the same name, and server `question-done.test.ts` pins the two outputs equal.
+/** An open question as either refusal names it: the worker's own id (the one `frizzctl unask` takes) and
+ *  the question's text. */
+export interface DoneBlockingQuestion {
+  id: string
+  question: string
+}
+
+/** The paragraph both refusals share: how many questions are open, each by id with its first line, and
+ *  the two ways out. */
+export function doneOpenQuestionsRefusal(questions: readonly DoneBlockingQuestion[]): string {
+  const lines = questions.map((q) => `  ${q.id}  ${(q.question ?? "").split("\n")[0]}`)
+  return (
+    `${lines.length} question${lines.length === 1 ? "" : "s"} the human has not answered:\n${lines.join("\n")}\n` +
+    "Each one dies unread with a done card. Decide it yourself and withdraw it (`frizzctl unask <id>`), or leave it " +
+    "open and keep working until it is answered."
+  )
+}
+
+/** What follows a correction's lead when a ```done fence closed a rest over open questions. The lead is
+ *  the caller's: alone it is DONE_FENCE_CORRECTION_LEAD, and beside a ```question fence that could not
+ *  register it rides under that correction as a second paragraph, so one rest draws one message.
+ *
+ *  The command's refusal can stop at the two ways out, because nothing was recorded. A fence already was:
+ *  the message that carries it is the thread's rest, so the last paragraph says what the NEXT message has
+ *  to be for each way out. The reference is asked for whether or not the question has faded: it is right
+ *  in both cases, and a bare rest behind a question the human has typed past would be nudged for a missing
+ *  sign-off, a second correction earned by following the first. */
+export function doneOverOpenQuestionsBody(questions: readonly DoneBlockingQuestion[]): string {
+  const one = questions.length === 1
+  return [
+    `closed a rest while ${one ? "a question" : "questions"} of this thread ${one ? "is" : "are"} still open, so the human is shown a finished thread and ${one ? "an unanswered question" : "unanswered questions"} at once, and archiving on the done card ends ${one ? "the question" : "them"} unread.`,
+    "",
+    doneOpenQuestionsRefusal(questions),
+    "",
+    "Your next message is the rest that counts, and it takes one of two shapes:",
+    "",
+    `- You withdrew ${one ? "it" : "every one"}: sign off done again, and it stands.`,
+    one
+      ? "- You still need the answer: write no ```done fence. End on a ```question fence carrying its `id:` alone, which keeps the thread in the human's queue on it, and sign off done once it is answered."
+      : "- You still need an answer: write no ```done fence. End on a ```question fence for each one you still need, carrying its `id:` alone, which keeps the thread in the human's queue on them, and sign off done once they are answered.",
+  ].join("\n")
 }
 
 export function timerPromptMessage(prompt: string, fireAt: string): string {

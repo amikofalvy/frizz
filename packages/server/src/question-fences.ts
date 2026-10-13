@@ -558,8 +558,13 @@ export function standingQuestions(
 }
 
 /** The correction a worker gets when a fence of its current rest could not register. Its lead folds it out
- *  of the chat like every other fence correction (isParkCorrection). */
-export function questionFenceCorrection(faults: readonly QuestionFenceFault[]): string {
+ *  of the chat like every other fence correction (isParkCorrection).
+ *
+ *  `closedOnDone`: the rest signed off with a ```done fence and no question of the thread is open yet.
+ *  The worker's natural fix is the same message with the fence repaired — and the done fence still under
+ *  it, which the scheduler then corrects at the next rest (SOURCE 15): two turns for one message's worth of
+ *  news. One sentence here saves the second. Every other rest gets the text as it has always read. */
+export function questionFenceCorrection(faults: readonly QuestionFenceFault[], opts: { closedOnDone?: boolean } = {}): string {
   const asks = faults.some((f) => f.faults.some((x) => !/alone references|nothing left to reference/.test(x)))
   const lines = [
     `${QUESTION_FENCE_CORRECTION_LEAD}could not register, so ${asks ? "the human has NOT been asked" : "it placed nothing"}:`,
@@ -572,8 +577,14 @@ export function questionFenceCorrection(faults: readonly QuestionFenceFault[]): 
     "`description:`, `recommended: true` and an indented `detail: |` block. Anything else the human needs",
     "goes below a `---` line as markdown. A fence with `id:` alone references a question you already asked.",
   ]
+  if (opts.closedOnDone) lines.push("", QUESTION_FENCE_UNDER_DONE_HINT)
   return lines.join("\n")
 }
+
+/** The sentence SOURCE 14's correction gains when the rest it corrects closed on a ```done fence. */
+export const QUESTION_FENCE_UNDER_DONE_HINT =
+  "This rest also closed on a ```done fence, and a done fence cannot stand beside a question once it registers: " +
+  "the message that carries the fixed fence carries no ```done fence, and the sign-off as done comes once the question is answered."
 
 /** The thread's armed Goal when it runs autonomously — the same reading the router's `ask` refused on. */
 export function autonomousGoalOf(row: { recurring_on_rest?: number | null; recurring_prompt?: string | null }): string | undefined {

@@ -8,7 +8,7 @@ import assert from "node:assert/strict"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { boardAskThread, formatThreadMessage, humanGapNote, limitResumeSteer, mergedWakeMessage, needsAction, PARK_CORRECTION_NAMES_LEAD, parkExpiredWakeMessage, prWatchWakeMessage, questionAnswerMessage, restPromptMessage, RETRY_FOLLOW_UP, sectionOf, shellDoneMessage, signoffNudgeMessage, timerPromptMessage, wakeDeliveryToken } from "@frizz/shared"
+import { boardAskThread, DONE_FENCE_CORRECTION_LEAD, formatThreadMessage, humanGapNote, limitResumeSteer, mergedWakeMessage, needsAction, PARK_CORRECTION_NAMES_LEAD, parkExpiredWakeMessage, prWatchWakeMessage, questionAnswerMessage, restPromptMessage, RETRY_FOLLOW_UP, sectionOf, shellDoneMessage, signoffNudgeMessage, timerPromptMessage, wakeDeliveryToken } from "@frizz/shared"
 import { Bus } from "./bus.ts"
 import { createBoard } from "./board.ts"
 import type { Project } from "./project.ts"
@@ -212,7 +212,9 @@ test("a reference brings a faded question back to the rest, and a question beats
     assert.deepEqual(t.questions.map((q) => q.standing), [true])
     assert.equal(t.needsYou, true)
     assert.equal(needsAction(t), true, "the question is this rest's ask, whatever the fence below it says")
-    assert.deepEqual(w.deliveries(), [], "no correction and no nudge")
+    // No nudge, and nothing wrong with the reference. The done fence beside an open question is corrected
+    // on its own account (SOURCE 15, pinned in question-done.test.ts).
+    assert.deepEqual(w.deliveries(), [`park:done-open-question:${at(4)}`])
   } finally { w.close() }
 })
 
@@ -234,8 +236,11 @@ test("answering a faded question wakes the worker at a done rest and at a watchi
         w.storage.setState("t", "open")
         await w.tick(8)
       }
-      assert.equal(w.sent.length, 1, `${shape}: one wake`)
-      assert.match(w.sent[0], /^Answers to earlier questions:\n1\. “SQLite or a JSON file\?” → SQLite/)
+      // (The done rest also drew SOURCE 15's correction at minute 5, for signing off over the open
+      // question. The answer is what this test is about, and it arrives whatever became of that.)
+      const wakes = w.sent.filter((m) => !m.startsWith(DONE_FENCE_CORRECTION_LEAD))
+      assert.equal(wakes.length, 1, `${shape}: one wake`)
+      assert.match(wakes[0], /^Answers to earlier questions:\n1\. “SQLite or a JSON file\?” → SQLite/)
     } finally { w.close() }
   }
 })
@@ -245,10 +250,12 @@ test("dismissing a faded question wakes nobody and takes it off the view", async
   try {
     w.say(4, fence("done", "- Landed the migration on main."))
     await w.tick(5)
+    // (The done fence over the open question has drawn SOURCE 15's correction by now.)
+    const before = w.sent.length
     const [q] = w.storage.listThreadQuestions("t")
     w.storage.dismissThreadQuestion(q.id, Date.parse(at(6)))
     await w.tick(7)
-    assert.deepEqual(w.sent, [])
+    assert.equal(w.sent.length, before, "the dismissal sends nothing")
     assert.deepEqual(w.view().questions, [])
     assert.equal(w.view().lastFence?.kind, "done")
   } finally { w.close() }
@@ -455,7 +462,9 @@ test("a question asked mid-turn outranks a ```done fence many machine wakes late
     assert.equal(needsAction(t), true, "the row is the question's, not the done's")
     assert.equal(boardAskThread(t), true)
     // And the bare rests on the way never drew the sign-off reminder: a standing question signs a rest off.
-    assert.deepEqual(w.deliveries(), [], "SOURCE 9 stayed quiet at every bare rest behind the question")
+    assert.deepEqual(w.deliveries().filter((id) => id.startsWith("signoff:")), [], "SOURCE 9 stayed quiet at every bare rest behind the question")
+    // The done fence itself is another matter: it signed off over an open question (SOURCE 15).
+    assert.deepEqual(w.deliveries(), [`park:done-open-question:${at(9)}`])
   } finally { w.close() }
 })
 
