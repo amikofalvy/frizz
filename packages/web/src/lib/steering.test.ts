@@ -175,6 +175,23 @@ test("the Working clock starts at the send: this tab's stamp, else the server's 
   assert.equal(steeredSinceRest(atRest(), [rest, projected], 0, undefined, SENT + 200)!.lastUserAt, projected.at)
 })
 
+// A steer that waited out a turn: the board reports the rest ~20ms before the transcript carries the reply.
+// The ghost there has ended no rest — the turn on screen is still the one it is waiting on — so the overlay
+// (and the Working clock it would re-base on the steer's own instant) stays out of it.
+test("a ghost waiting on a turn whose end the transcript has not reached ends nothing", () => {
+  const at = (s: number) => new Date(SENT + s * 1000).toISOString()
+  const opener = { role: "user", at: at(0) } as const
+  const waiting = { role: "user", queued: true, at: at(2) } as const
+  const justRested = atRest({ lastAssistantAt: at(6), deliveryInFlight: true })
+  assert.equal(steeredSinceRest(justRested, [{ role: "assistant", at: at(-9) }, opener, waiting], 0, SENT + 2_000, SENT + 6_050), justRested)
+  // Once the reply and its rest boundary are there, the same ghost is the send that ends that rest — even
+  // where the coalesced reply carries an earlier instant than the board's, and the ghost none at all.
+  const reply = { role: "assistant", at: at(5) } as const
+  const boundary = { role: "assistant", kind: "event", boundary: "rest", at: at(5) } as const
+  assert.equal(steeredSinceRest(justRested, [opener, reply, boundary, waiting], 1, undefined, SENT + 6_100)!.runtime, "running")
+  assert.equal(steeredSinceRest(justRested, [opener, reply, boundary, { role: "user", queued: true }], 1, undefined, SENT + 6_100)!.runtime, "running")
+})
+
 // ── the rest the transcript has not reached ─────────────────────────────────────────────────────────
 // The board's turn-idle leads the transcript push carrying the reply by ~20ms; in between the view must
 // not draw a rest that has nothing under it.
@@ -198,6 +215,12 @@ test("the Working clock starts at the send: this tab's stamp, else the server's 
     assert.equal(transcriptBehindRest(rested(T(9)), [human(T(5)), said(T(8)), restAt(T(8))]), false)
     // A rest guessed without a boundary is caught up once the record itself is there.
     assert.equal(transcriptBehindRest(rested(T(9)), [human(T(5)), said(T(9))]), false)
+  })
+
+  test("a ghost says nothing about how far the transcript has got", () => {
+    // Typed in the turn's last 50ms: newer than the worker's final record, and the reply is still not there.
+    assert.equal(transcriptBehindRest(rested(T(9)), [said(T(0)), restAt(T(1)), human(T(5)), { role: "user" as const, at: T(10), queued: true }]), true)
+    assert.equal(transcriptBehindRest(rested(T(9)), [human(T(5)), said(T(9)), restAt(T(9)), { role: "user" as const, queued: true }]), false)
   })
 
   test("a running thread, or a rest with no instant, is never held", () => {

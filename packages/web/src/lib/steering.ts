@@ -102,7 +102,7 @@ function steeredFields(t: ThreadView, lastUserAt: string | undefined): ThreadVie
 }
 
 // What steeredSinceRest reads off a transcript message.
-export type SteerEvidence = Pick<TranscriptMessage, "role" | "queued" | "deliveryState" | "at" | "wake" | "peerFrom" | "agentInstruction" | "sessionPeer">
+export type SteerEvidence = Pick<TranscriptMessage, "role" | "kind" | "boundary" | "queued" | "deliveryState" | "at" | "wake" | "peerFrom" | "agentInstruction" | "sessionPeer">
 
 // THE THREAD VIEW'S READING OF THE SAME STEER, keyed to the transcript it draws rather than to the stamp.
 //
@@ -128,6 +128,12 @@ export function steeredSinceRest(
   nowMs = Date.now(),
 ): ThreadView | undefined {
   if (!t || (t.runtime !== "turn-idle" && t.runtime !== "exited")) return t
+  // A rest the transcript has not reached is not one a send can have ended: the ghost after `restIndex`
+  // there is a steer that waited out the turn whose end the board has just reported, and for the ~20ms
+  // until the reply lands the turn on screen is still that turn (useTurnHeldForTranscript keeps it). Read
+  // as "a send ended the rest", it re-based the Working clock on the steer's own instant for one frame:
+  // `5s`, `3s`, then `0s` when the reply landed (measured 2026-10-13, 12 of 12 text-turn steers).
+  if (transcriptBehindRest(t, messages)) return t
   let human = false
   let ghost = false
   let ghostAt: string | undefined
@@ -170,15 +176,18 @@ export function steeredSinceRest(
 // REST_CATCH_UP_MS, so a transcript that never catches up cannot keep a rested thread spinning.
 export const REST_CATCH_UP_MS = 1_500
 
-export type RestEvidence = Pick<TranscriptMessage, "role" | "kind" | "boundary" | "at">
+export type RestEvidence = Pick<TranscriptMessage, "role" | "kind" | "boundary" | "at" | "queued">
 
 export function transcriptBehindRest(t: ThreadView | undefined, messages: readonly RestEvidence[]): boolean {
   if (!t || (t.runtime !== "turn-idle" && t.runtime !== "exited")) return false
   const said = Date.parse(t.lastAssistantAt ?? "")
   if (!Number.isFinite(said)) return false
-  for (const m of messages) if (Date.parse(m.at ?? "") >= said) return false
+  // Asked of what has LANDED. A ghost carries the instant it was typed, or none, and says nothing about how
+  // far the transcript has got: one typed in a turn's last 50ms is newer than that turn's final record.
+  for (const m of messages) if (!m.queued && Date.parse(m.at ?? "") >= said) return false
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]
+    if (m.queued) continue
     if (m.kind === "event" && m.boundary === "rest") return false
     if (m.role === "user") break
   }
@@ -221,7 +230,7 @@ export function transcriptBehindTurn(t: ThreadView | undefined, messages: readon
 // row for a frame or two before Working arrived and pushed the tail 37px (lv-turns' recordings,
 // 2026-10-13: `rpc< threadTranscript` +32ms, bubble without Working +49ms, Working +72ms). A wake's
 // divider counts as an opener there too.
-export function transcriptPastRest(t: ThreadView | undefined, messages: readonly (RestEvidence & Pick<TranscriptMessage, "queued" | "deliveryState">)[]): boolean {
+export function transcriptPastRest(t: ThreadView | undefined, messages: readonly HoldEvidence[]): boolean {
   if (!t || (t.runtime !== "turn-idle" && t.runtime !== "exited")) return false
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]
@@ -242,7 +251,7 @@ export function transcriptPastRest(t: ThreadView | undefined, messages: readonly
   return false
 }
 
-type HoldEvidence = RestEvidence & Pick<TranscriptMessage, "queued" | "deliveryState">
+type HoldEvidence = RestEvidence & Pick<TranscriptMessage, "deliveryState">
 
 /** What the view's LAST COMMIT showed for this thread: which side of the turn's edge was on screen, and
  *  whether its transcript had already moved past the rest. */
