@@ -191,16 +191,16 @@ test("what the server keeps of a message — each fence's own source — reads t
 
 // ── Server against web ─────────────────────────────────────────────────────────────────────────────────
 
-// The one way the two differ: the web reads each fence ALONE, and the server refuses some for what the whole
-// message makes of them. A `when:` follow-up draws nothing of its own, so the only such fence the web still
-// cuts a slot for is a ROOT whose tree the server refused. ChatView draws it read-only from the fence's own
-// spec ("an ask with no row yet … never registers a fence it refused"), and it stays that way: a card the
-// human can read and never answer, until the worker's correction lands a new one.
-// A follow-up whose parent is not in its message is the other: the web cuts the parent's slot there (the
-// parent may be an open question of an earlier message — only the thread's rows can say), while this
-// message alone gives the server's assembly nothing to register.
+// The web reads each fence ALONE, and the server refuses some for what the whole message makes of them. A
+// `when:` follow-up draws nothing of its own beside its parent, and a follow-up never takes its parent down
+// (since 2026-10-13 a fourth level is refused on its own fence, and the three sound levels above it
+// register), so a root's slot and its row agree on every message below.
+//
+// The one way the two differ: a follow-up whose parent is NOT in its message. The web cuts the PARENT's slot
+// there (lib/questionBlocks followUpParentsIn — the parent may be an open question of an earlier message,
+// which only the thread's rows can say), while this message alone gives the assembly nothing to register:
+// it hands the follow-up to the registrar unjudged.
 const WEB_ONLY: Record<string, string[]> = {
-  "a tree four deep": ["a"],
   "an orphan follow-up": ["p"],
 }
 
@@ -213,8 +213,11 @@ test("the web cuts a card slot for exactly the ids the server registers or refer
     if (ids(v.server) !== ids(v.web)) differing[name] = { server: v.server, web: v.web }
   }
   assert.deepEqual(differing, Object.fromEntries(Object.entries(WEB_ONLY).map(([name, web]) => [name, { server: [], web }])))
-  // The control: the harness can see a difference — the server refuses the four-deep tree, with a fault.
-  assert.equal(view(inputs["a tree four deep"]).faults, 1)
+  // The four-deep tree: its root registers with three levels, and the fourth is refused by name.
+  assert.deepEqual([view(inputs["a tree four deep"]).server, view(inputs["a tree four deep"]).faults], [["a"], 1])
+  // The control: the harness can see a difference — a root the server refuses whole is still cut by the web.
+  const refusedRoot = view("```question\nid: m\nkind: choice\nquestion: Q?\noptions:\n  - label: A\n    recommended: true\n  - label: B\n    recommended: true\n```")
+  assert.deepEqual([refusedRoot.server, refusedRoot.web.length > 0 || refusedRoot.faults > 0], [[], true])
   assert.deepEqual(view(inputs.plain), { server: ["x"], faults: 0, web: ["x"], legacyCards: 0, marked: ["code"] })
 })
 
@@ -226,11 +229,14 @@ test("a follow-up is the server's through its root and the web's through its par
   // …and a loop hangs off nothing: refused by the server and drawn nowhere.
   const lost = view(inputs["a loop of follow-ups"])
   assert.deepEqual([lost.server, lost.web], [[], []])
-  assert.ok(lost.faults > 0, "the worker is told")
-  // An orphan names a parent outside the message. This message alone registers nothing; the web keeps the
-  // slot for that parent's card, which draws only if the thread has an open row by that name.
-  const orphan = view(inputs["an orphan follow-up"])
-  assert.deepEqual([orphan.server, orphan.web], [[], ["p"]])
+  assert.ok(lost.faults > 0, "a loop of follow-ups: the worker is told")
+  // A follow-up whose parent is NOT in its message is no longer refused here: it may hang off a question
+  // the thread already has open, so the reader hands it to the server unjudged (the registrar attaches it
+  // or refuses it by name — server question-fences.test.ts). The web cuts no slot of ITS own for it, and
+  // keeps the slot for its parent's card, which draws there only if the thread has a row by that name.
+  const late = view(inputs["an orphan follow-up"])
+  assert.deepEqual([late.server, late.web, late.faults], [[], ["p"], 0])
+  assert.equal(questionFencesIn(inputs["an orphan follow-up"]).followUps.length, 1)
 })
 
 test("a question holding a code block: the server registers it whole and the web cuts the same span", () => {

@@ -2995,6 +2995,14 @@ export type UnaskInput = z.infer<typeof UnaskInput>
 
 export const UnaskResult = z.object({
   withdrawn: z.boolean(),
+  /** The question the id resolved to, by the name the WORKER knows it by (its fence's `id:`, or the
+   *  `qst_…` an `ask` minted) — absent when the id names nothing on this thread. It is the ROOT's: a
+   *  follow-up rides inside its parent's row and is withdrawn with it, so `unask sqlite-path` answers
+   *  `settings-store` here, and the worker must be told the question it did not name is the one that went. */
+  id: z.string().optional(),
+  /** What that question was when the call arrived. `open` beside `withdrawn: true` is the ordinary
+   *  withdrawal; anything else is why nothing was withdrawn — and `answered` means a wake is on its way. */
+  state: z.enum(["open", "answered", "withdrawn", "dismissed"]).optional(),
   open: z.array(RegisteredQuestionView),
 }).strict()
 export type UnaskResult = z.infer<typeof UnaskResult>
@@ -3125,10 +3133,12 @@ export function answerPicksText(chosen: readonly string[], text: string | undefi
  *  the × already said it and the row can arrive several rests after the click. */
 export const DISMISSED_ANSWER = "(dismissed — decide it yourself; do not re-ask)"
 
-/** A question the human waved away, as the answer message needs it: the TEXT, never the id. The worker
- *  never saw an id — frizz minted it — so a list of ids names nothing it can act on. */
+/** A question the human waved away, as the answer message needs it: the TEXT, never the minted id. The
+ *  worker never saw that id — frizz minted it — so a list of them names nothing it can act on. Its OWN
+ *  id for the question (`handle`, the fence's `id:`) is another matter, and rides along when there is one. */
 export interface QuestionDismissal {
   question: string
+  handle?: string
 }
 
 /** The answer as it reaches the worker — one message, composed here so the RPC, the delivery and any
@@ -3160,7 +3170,7 @@ export function questionAnswerMessage(answers: readonly QuestionAnswer[], dismis
   // which has no next steer for them to ride (scheduler.evalQuestionAnswers). Wording it as "answers"
   // would tell that worker the human replied, when the whole point is that nobody is going to. Frizz is
   // speaking here rather than the human, so the chat draws it as a hairline — see questionsCancelledWake.
-  if (answers.length === 0) return questionsCancelledWakeMessage(dismissed.length)
+  if (answers.length === 0) return questionsCancelledWakeMessage(dismissed.length, dismissed)
   const rows: string[] = []
   const push = (a: QuestionAnswer, followUp: boolean): void => {
     const said = answerPicksText(a.chosen, a.text)
@@ -3200,11 +3210,18 @@ export function splitAnswersNote(text: string): { answers: string; note: string 
  *  hairline instead of a card (FrizzWake's rule: frizz's own news is a line, someone else's prose keeps
  *  the card). It says nobody is coming — the thread went autonomous while questions were still open, so
  *  they were cancelled wholesale and there is no next steer for them to ride. */
-export function questionsCancelledWakeMessage(count: number): string {
-  return (
+export function questionsCancelledWakeMessage(count: number, cancelled: readonly QuestionDismissal[] = []): string {
+  const lead =
     `${count} question${count === 1 ? "" : "s"} you registered ${count === 1 ? "was" : "were"} CANCELLED without an answer. ` +
     `Decide ${count === 1 ? "it" : "them"} yourself and carry on — say which way you went in your write-up. Do not re-ask.`
-  )
+  // WHICH ONES, below the lead. A count alone named nothing: a `danger: true` question and a secret both
+  // survive the cancellation (router cancelQuestionsForAutonomy), so a worker told "2 were cancelled"
+  // with three open could not tell which one it is still owed. Each is named by the worker's own id
+  // when it has one and by its text always. The chat reads only the lead (parseQuestionsCancelledWake
+  // anchors on it and draws a count), so these lines are the worker's alone.
+  if (cancelled.length === 0) return lead
+  const names = cancelled.map((q) => `- ${q.handle ? `\`${q.handle}\` — ` : ""}“${q.question.replace(/\s+/g, " ").trim()}”`)
+  return `${lead}\n\n${names.join("\n")}`
 }
 
 const QUESTIONS_CANCELLED_WAKE = /^(\d+) questions? you registered (?:was|were) CANCELLED without an answer\./

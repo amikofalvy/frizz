@@ -161,16 +161,51 @@ test("a follow-up attaches to its parent's option in the same message, and the w
   assert.deepEqual(questionHandles(root), ["settings-store", "sqlite-path"])
 })
 
-test("a follow-up whose parent or option is missing is refused, and never takes its parent down with it", () => {
+test("a follow-up whose option is missing is refused with its parent's real labels, and never takes its parent down with it", () => {
   const parent = fence("id: p\nkind: choice\nquestion: P?\noptions:\n  - Yes\n  - No")
-  const orphan = questionFencesIn(fence("id: c\nkind: text\nwhen: elsewhere = Yes\nquestion: C?"))
-  assert.deepEqual(orphan.asks, [])
-  assert.match(orphan.faults[0].faults[0], /names no question in this message/)
   const wrongOption = questionFencesIn(`${parent}\n${fence("id: c\nkind: text\nwhen: p = Maybe\nquestion: C?")}`)
   assert.deepEqual(wrongOption.asks.map((a) => a.id), ["p"])
-  assert.match(wrongOption.faults[0].faults[0], /only `Yes`, `No`/)
+  // The labels are what lets the worker FIX the line rather than guess at it (the dead end found
+  // 2026-10-13: `when: prefs-store = SQLite` against an option labelled `SQLite (better-sqlite3)`).
+  assert.deepEqual(wrongOption.faults, [{ id: "c", faults: ["`when:` names the option `Maybe`, and `p` has only `Yes`, `No` — write the label exactly as the option has it"] }])
   const underMulti = questionFencesIn(`${fence("id: m\nkind: multi\nquestion: M?\noptions:\n  - a\n  - b")}\n${fence("id: c\nkind: text\nwhen: m = a\nquestion: C?")}`)
   assert.match(underMulti.faults[0].faults[0], /a multi's options cannot open follow-ups/)
+  const underText = questionFencesIn(`${fence("id: t\nkind: text\nquestion: T?")}\n${fence("id: c\nkind: text\nwhen: t = anything\nquestion: C?")}`)
+  assert.deepEqual(underText.asks.map((a) => a.id), ["t"])
+  assert.match(underText.faults[0].faults[0], /`t` is a free-text question with no options to follow — ask this as its own question, without the `when:` line/)
+})
+
+test("a follow-up whose parent is not asked in its message is handed over unattached, for the server to place", () => {
+  // Not a fault here: the parent may be a question the thread already has open, and only the server has
+  // the rows. A follow-up of the follow-up, written beside it, rides inside it.
+  const late = fence("id: c\nkind: choice\nwhen: elsewhere = Yes\nquestion: C?\noptions:\n  - One\n  - Two")
+  const under = fence("id: d\nkind: text\nwhen: c = two\nquestion: D?")
+  const out = questionFencesIn(`${fence("id: elsewhere")}\n${late}\n${under}`)
+  assert.deepEqual(out.faults, [])
+  assert.deepEqual(out.asks, [])
+  assert.deepEqual(out.refs, ["elsewhere"])
+  assert.deepEqual(out.followUps.map((f) => [f.id, f.parent, f.option]), [["c", "elsewhere", "Yes"]])
+  assert.deepEqual(questionHandles(out.followUps[0].spec), ["c", "d"])
+  assert.equal(out.followUps[0].spec.options?.[1].followUps?.[0].question, "D?")
+})
+
+test("a fence under a refused fence is named too, and a `when:` that circles back reaches nothing", () => {
+  const parent = fence("id: p\nkind: choice\nquestion: P?\noptions:\n  - Yes\n  - No")
+  const child = fence("id: c\nkind: choice\nwhen: p = Maybe\nquestion: C?\noptions:\n  - One\n  - Two")
+  const grandchild = fence("id: g\nkind: text\nwhen: c = One\nquestion: G?")
+  const out = questionFencesIn([parent, child, grandchild].join("\n\n"))
+  assert.deepEqual(out.asks.map((a) => questionHandles(a.spec)), [["p"]])
+  assert.deepEqual(out.faults.map((f) => f.id), ["c", "g"], "the grandchild is not simply missing from the correction")
+  assert.equal(out.faults[1].faults[0], "`when: c = One` hangs this question off `c`, which could not register — it goes with it, so write both again")
+  const loop = questionFencesIn([
+    fence("id: a\nkind: choice\nwhen: b = x\nquestion: A?\noptions:\n  - x\n  - y"),
+    fence("id: b\nkind: choice\nwhen: a = x\nquestion: B?\noptions:\n  - x\n  - y"),
+    fence("id: self\nkind: choice\nwhen: self = x\nquestion: S?\noptions:\n  - x\n  - y"),
+  ].join("\n\n"))
+  assert.deepEqual([loop.asks, loop.followUps], [[], []])
+  assert.deepEqual(loop.faults.map((f) => f.id), ["a", "b", "self"])
+  assert.match(loop.faults[0].faults[0], /is part of a loop of follow-ups \(`a` → `b` → `a`\) — one of them has to be a question with no `when:`/)
+  assert.match(loop.faults[2].faults[0], /makes this question a follow-up of itself/)
 })
 
 test("the same fence twice in one message is one ask; two different fences on one id are a collision", () => {
@@ -180,15 +215,18 @@ test("the same fence twice in one message is one ask; two different fences on on
   assert.match(out.faults[0].faults[0], /two different questions in this message use `id: x`/)
 })
 
-test("a tree deeper than three levels is refused by the shared validator", () => {
+test("a fourth level is refused on the fence that goes too deep — the three sound levels above it still register", () => {
   const out = assembleQuestionFences([
     { form: "ask", id: "a", spec: { handle: "a", question: "A?", kind: "question", options: [{ label: "go" }, { label: "no" }] } },
     { form: "ask", id: "b", spec: { handle: "b", question: "B?", kind: "question", options: [{ label: "go" }, { label: "no" }] }, when: { parent: "a", option: "go" } },
     { form: "ask", id: "c", spec: { handle: "c", question: "C?", kind: "question", options: [{ label: "go" }, { label: "no" }] }, when: { parent: "b", option: "go" } },
     { form: "ask", id: "d", spec: { handle: "d", question: "D?", kind: "question" }, when: { parent: "c", option: "go" } },
   ])
-  assert.deepEqual(out.asks, [])
-  assert.match(out.faults[0].faults.join("\n"), /4 levels deep; the limit is 3/)
+  // Refusing the whole tree here (as the shared validator would) took a sound question down with its
+  // fourth level — and a follow-up never takes its parent down.
+  assert.deepEqual(out.asks.map((a) => questionHandles(a.spec)), [["a", "b", "c"]])
+  assert.deepEqual(out.faults.map((f) => f.id), ["d"])
+  assert.equal(out.faults[0].faults[0], "`when: c = go` puts this question 4 levels deep, and follow-ups go 3 levels deep at most — past that you are asking the human to fill in a form; ask it as its own question, without the `when:` line, or decide it yourself")
 })
 
 // ── Adversarial review, 2026-10-13 ─────────────────────────────────────────────────────────────────────
@@ -322,7 +360,7 @@ test("a fence with no closing line under either reading is ignored: a turn inter
     "````question\nid: x\nkind: text\nquestion: Q?\n---\n```sql\nSELECT 1\n```\nstill writing",
   ]) {
     assert.deepEqual(questionFenceBlocks(`Lead.\n\n${tail}`), [], tail)
-    assert.deepEqual(questionFencesIn(`Lead.\n\n${tail}`), { asks: [], refs: [], faults: [] }, tail)
+    assert.deepEqual(questionFencesIn(`Lead.\n\n${tail}`), { asks: [], followUps: [], refs: [], faults: [] }, tail)
   }
 })
 
@@ -530,14 +568,18 @@ test("whatever the fence reads as an ask, the stored schema and the tree validat
   assert.ok(asks > 200 && refused > 200, `asks ${asks}, refused ${refused}`)
 })
 
-test("a follow-up chain of any length is refused for its depth — the reader never runs out of stack on it", () => {
-  // The registrar calls this from the tailer's change hook with nothing around it to catch a throw; the tree
-  // validator recurses, and a chain some 3,000 fences long (about 250KB of message) overflowed it.
+test("a follow-up chain of any length is refused past its third level — the reader never runs out of stack on it", () => {
+  // The registrar calls this from the tailer's change hook; the tree validator recurses, and a chain some
+  // 3,000 fences long (about 250KB of message) overflowed it. The chain is now measured by counting, three
+  // steps at most per fence, so nothing deeper than three levels is ever built — and the three sound
+  // levels at the top register, because a follow-up never takes its parent down.
   const chain = (n: number) => Array.from({ length: n }, (_, i) => fence(`id: q${i}\nkind: choice\n${i ? `when: q${i - 1} = a\n` : ""}question: Q?\noptions:\n  - a\n  - b`)).join("\n")
   const out = questionFencesIn(chain(4000))
-  assert.deepEqual(out.asks, [])
-  assert.deepEqual(out.faults, [{ id: "q0", faults: ["the follow-up tree is 4000 levels deep; the limit is 3 — past that you are asking the human to fill in a form"] }])
-  // The edge, on both sides: three levels register, four are refused with the validator's own words.
+  assert.deepEqual(out.asks.map((a) => questionHandles(a.spec)), [["q0", "q1", "q2"]])
+  assert.equal(out.faults.length, 3997, "every fence past the third level is refused by id")
+  assert.deepEqual(out.faults[0], { id: "q3", faults: ["`when: q2 = a` puts this question 4 levels deep, and follow-ups go 3 levels deep at most — past that you are asking the human to fill in a form; ask it as its own question, without the `when:` line, or decide it yourself"] })
+  assert.match(out.faults[3996].faults[0], /puts this question more than 3 levels deep/)
+  // The edge, on both sides: three levels register whole, a fourth is refused alone.
   assert.deepEqual(questionFencesIn(chain(3)).faults, [])
-  assert.deepEqual(questionFencesIn(chain(4)).faults.map((f) => f.faults[0]), ["the follow-up tree is 4 levels deep; the limit is 3 — past that you are asking the human to fill in a form"])
+  assert.deepEqual(questionFencesIn(chain(4)).faults.map((f) => f.id), ["q3"])
 })

@@ -20,12 +20,20 @@
 
 import { randomUUID } from "node:crypto"
 import {
+  ASK_MAX_DEPTH,
+  askedQuestionDepth,
+  askedQuestionFaults,
   assembleQuestionFences,
   awaitingQuestions,
+  followUpMultiFault,
+  followUpOption,
+  followUpOptionFault,
+  followUpRiderFault,
   questionFenceBlocks,
   questionFencesLive,
   questionHandles,
   QUESTION_FENCE_CORRECTION_LEAD,
+  type AskedOption,
   type AskedQuestion,
 } from "@frizz/shared"
 import type { QuestionSighting } from "./backend/types.ts"
@@ -47,6 +55,9 @@ export interface QuestionFenceFault {
 
 export interface QuestionFenceSync {
   registered: ThreadQuestionRow[]
+  /** Follow-ups a LATER message hung under an option of a question that was still open: the row whose
+   *  tree grew, and the ids it gained. */
+  attached: { at: string; rowId: string; handles: string[] }[]
   faults: QuestionFenceFault[]
   /** Questions a message named at an instant — a reference fence, or a fence restating its own ask. */
   refs: { at: string; rowId: string }[]
@@ -73,14 +84,26 @@ function parseSpec(spec: string): AskedQuestion | undefined {
   }
 }
 
-/** Is a fence the SAME question its row registered? Compared without follow-ups: a worker restating its
- *  question in a later message writes the parent fence and rarely its branches again, and the branches
- *  were fixed when the tree registered — a restatement can place the card, never change what it asks. */
-function sameQuestion(rowSpec: string, spec: AskedQuestion): boolean {
-  const stored = parseSpec(rowSpec)
-  if (!stored) return false
-  const root = (q: AskedQuestion) => JSON.stringify({ ...q, options: q.options?.map(({ followUps: _followUps, ...o }) => o) })
-  return root(stored) === root(spec)
+/** One node of a tree WITHOUT its follow-ups — what a fence itself says, whatever hangs under it. */
+const bare = (q: AskedQuestion) => JSON.stringify({ ...q, options: q.options?.map(({ followUps: _followUps, ...o }) => o) })
+
+/** Is a fence the SAME question as a stored node? Compared without follow-ups: a worker restating its
+ *  question in a later message writes the parent fence and rarely its branches again, so a restatement
+ *  can place the card and ADD a branch (see `grow` below), never change what a node asks. */
+function sameNode(stored: AskedQuestion, spec: AskedQuestion): boolean {
+  return bare(stored) === bare(spec)
+}
+
+/** The node of a tree carrying `handle`, and how deep it sits (the root is level 1). */
+function nodeByHandle(spec: AskedQuestion, handle: string, level = 1): { node: AskedQuestion; level: number } | undefined {
+  if (spec.handle?.toLowerCase() === handle) return { node: spec, level }
+  for (const o of spec.options ?? []) {
+    for (const child of o.followUps ?? []) {
+      const hit = nodeByHandle(child, handle, level + 1)
+      if (hit) return hit
+    }
+  }
+  return undefined
 }
 
 const SETTLED_WORD: Record<ThreadQuestionRow["state"], string> = {
@@ -92,11 +115,21 @@ const SETTLED_WORD: Record<ThreadQuestionRow["state"], string> = {
 
 /**
  * Register every new question the sightings carry and report what could not register. Pure apart from
- * the inserts: a thread on the legacy contract, an archived thread and a sighting older than
+ * the writes: a thread on the legacy contract, an archived thread and a sighting older than
  * QUESTION_FENCES_REGISTER_FROM are skipped before anything is read.
+ *
+ * EVERY FENCE IS ACCOUNTED FOR. Each one in a message registers a question, attaches under an open one,
+ * references one, or is refused BY ID with its reason — none is dropped without a word, because a worker
+ * corrects only what the correction names (the dead end of 2026-10-13: a follow-up whose `when:` label
+ * was wrong on the first try could not be asked again in any shape, and one shape of the retry vanished).
+ *
+ * A FOLLOW-UP MAY ARRIVE LATER, while its parent is still open. Written beside its parent it registers
+ * as part of the parent's tree; written in a later message — alone, beside a reference to its parent, or
+ * under a restatement of it — it is attached into the open row's stored tree (`grow`), and the row
+ * counts as referenced at that message. Once the parent is settled there is nothing to hang it from.
  */
 export function syncQuestionFences(
-  storage: Pick<Storage, "listThreadQuestions" | "askThreadQuestion" | "clearThreadDone" | "resetParkBumps">,
+  storage: Pick<Storage, "listThreadQuestions" | "askThreadQuestion" | "growThreadQuestionSpec" | "clearThreadDone" | "resetParkBumps">,
   input: {
     slug: string
     spawnedAt: string | number | null | undefined
@@ -105,50 +138,155 @@ export function syncQuestionFences(
     autonomousGoal?: string
   },
 ): QuestionFenceSync {
-  const out: QuestionFenceSync = { registered: [], faults: [], refs: [] }
+  const out: QuestionFenceSync = { registered: [], attached: [], faults: [], refs: [] }
   if (!input.sightings?.length || questionFencesLive(input.spawnedAt)) return out
   const rows = storage.listThreadQuestions(input.slug)
   const index = handleIndex(rows)
+  // The newest instant each id was written as a question that HELD — registered, attached, or restated
+  // as it stands. A fault on that id from an earlier message has been fixed by the worker itself.
+  const heldAt = new Map<string, number>()
+  const autonomousFault = input.autonomousGoal
+    ? "this thread is running autonomously, so the question was not asked — decide it yourself and proceed, and say which way you went in your write-up. " +
+      `Its standing instruction is: ${input.autonomousGoal.replace(/\s+/g, " ").slice(0, 400)}`
+    : undefined
   for (const sighting of input.sightings) {
     const atMs = Date.parse(sighting.at)
     if (!Number.isFinite(atMs) || atMs < REGISTER_FROM_MS) continue
+    const at = sighting.at
     const assembled = assembleQuestionFences(questionFenceBlocks(sighting.text).map((b) => b.read))
-    for (const f of assembled.faults) out.faults.push({ at: sighting.at, ...f })
-    for (const id of assembled.refs) {
-      const row = index.get(id)
-      if (!row) {
-        out.faults.push({ at: sighting.at, id, faults: [`\`id: ${id}\` alone references a question, and no question of yours uses that id — to ask a new one, give the fence a \`kind:\` and a \`question:\``] })
-      } else if (row.state !== "open" && (row.settled_at ?? 0) < atMs) {
-        out.faults.push({ at: sighting.at, id, faults: [`\`${id}\` was already ${SETTLED_WORD[row.state]}, so there is nothing left to reference`] })
-      } else out.refs.push({ at: sighting.at, rowId: row.id })
+    const fault = (id: string, text: string) => out.faults.push({ at, id, faults: [text] })
+    /** Refuse a fence and name every fence riding under it, so none is missing from the correction. */
+    const refuse = (spec: AskedQuestion, id: string, text: string) => {
+      fault(id, text)
+      for (const h of questionHandles(spec)) if (h !== id) fault(h, followUpRiderFault(id))
     }
+    const held = (spec: AskedQuestion) => {
+      for (const h of questionHandles(spec)) heldAt.set(h, Math.max(heldAt.get(h) ?? 0, atMs))
+    }
+    const usedFault = (handle: string) => `\`id: ${handle}\` is already used by a different question on this thread — choose a new id (an id is never reused, even once its question is settled)`
+    // Was the row settled BEFORE this message was written? A message from while it was still open is a
+    // restatement of an open question whatever has happened since — a refold after the human answered
+    // must not turn it into a re-ask and correct the worker for it.
+    const settledBefore = (row: ThreadQuestionRow) => row.state !== "open" && (row.settled_at ?? 0) < atMs
+    const ref = (row: ThreadQuestionRow) => out.refs.push({ at, rowId: row.id })
+
+    // THE MESSAGE THAT REGISTERED A QUESTION IS NEVER JUDGED AGAINST IT AGAIN. A row's `asked_at` is its
+    // message's own instant, so a sighting at exactly that instant IS that message — replayed by a refold,
+    // or by the next tick. Whatever its fence reads as NOW is beside the point: the parser has changed
+    // since rows were written (a quoted `"a\nb"` value, a bare `- Label` over a `description:`, a fence
+    // indented in a list item), and comparing the stored spec with today's reading of the same bytes
+    // earned the registering message "id already used by a different question" — a correction for a
+    // fence that had worked. `registeredHere` is the id's row when this message is the one that made it.
+    const registeredHere = (id: string): ThreadQuestionRow | undefined => {
+      const row = index.get(id)
+      return row && row.asked_at === atMs ? row : undefined
+    }
+    const readable = new Set([...assembled.asks.map((a) => a.id), ...assembled.followUps.map((f) => f.id)])
+    for (const f of assembled.faults) {
+      // …including a fence today's parser refuses outright. (With a readable fence of the same id beside
+      // it, the fault is about something else — two different questions on one id — and stands.)
+      if (f.id && registeredHere(f.id) && !readable.has(f.id)) continue
+      out.faults.push({ at, ...f })
+    }
+
+    // ── growing an open row ──
+    // Every follow-up this message adds to one row is collected on a COPY of its tree and written once.
+    const growing = new Map<string, { row: ThreadQuestionRow; root: AskedQuestion; added: string[] }>()
+    const treeOf = (row: ThreadQuestionRow): { row: ThreadQuestionRow; root: AskedQuestion; added: string[] } | undefined => {
+      const known = growing.get(row.id)
+      if (known) return known
+      const root = parseSpec(row.spec)
+      if (!root) return undefined
+      const entry = { row, root, added: [] as string[] }
+      growing.set(row.id, entry)
+      return entry
+    }
+    /** A new subtree with every node whose id is already spent cut out of it (and named). */
+    const pruned = (node: AskedQuestion): AskedQuestion => ({
+      ...node,
+      ...(node.options ? {
+        options: node.options.map((o): AskedOption => {
+          const kept = (o.followUps ?? []).filter((child) => {
+            if (!child.handle || !index.has(child.handle.toLowerCase())) return true
+            refuse(child, child.handle, usedFault(child.handle))
+            return false
+          }).map(pruned)
+          const { followUps: _followUps, ...rest } = o
+          return kept.length > 0 ? { ...rest, followUps: kept } : rest
+        }),
+      } : {}),
+    })
+    /** Hang `child` under `option` of a node at `level` of an OPEN row's tree — or find it already there. */
+    const grow = (entry: { row: ThreadQuestionRow; root: AskedQuestion; added: string[] }, option: AskedOption, level: number, child: AskedQuestion): void => {
+      const id = child.handle ?? ""
+      const existing = option.followUps?.find((f) => f.handle === child.handle)
+      if (existing) {
+        // (The registering message's own reading of a branch is never compared — see `registeredHere`.)
+        if (!sameNode(existing, child) && entry.row.asked_at !== atMs) return void refuse(child, id, usedFault(id))
+        // Already in the tree, as written: a restatement — and any NEW branch it carries grows the tree too.
+        heldAt.set(id, Math.max(heldAt.get(id) ?? 0, atMs))
+        for (const o of child.options ?? []) {
+          const under = existing.options?.find((x) => x.label === o.label)
+          for (const grandchild of o.followUps ?? []) if (under) grow(entry, under, level + 1, grandchild)
+        }
+        return
+      }
+      if (index.has(id.toLowerCase())) return void refuse(child, id, usedFault(id))
+      const subtree = pruned(child)
+      if (level + askedQuestionDepth(subtree) > ASK_MAX_DEPTH) {
+        return void refuse(child, id, `it would reach level ${level + askedQuestionDepth(subtree)} under \`${entry.row.handle ?? entry.row.id}\`, and follow-ups go ${ASK_MAX_DEPTH} levels deep at most — past that you are asking the human to fill in a form; ask it as its own question, without the \`when:\` line, or decide it yourself`)
+      }
+      option.followUps = [...(option.followUps ?? []), subtree]
+      entry.added.push(...questionHandles(subtree))
+      for (const h of questionHandles(subtree)) index.set(h.toLowerCase(), entry.row)
+      held(subtree)
+    }
+
     for (const ask of assembled.asks) {
       const spent = questionHandles(ask.spec).map((h) => [h, index.get(h.toLowerCase())] as const).find(([, row]) => row)
-      if (spent) {
-        const [handle, row] = spent as readonly [string, ThreadQuestionRow]
-        const same = row.handle === ask.id && sameQuestion(row.spec, ask.spec)
-        // THE SAME FENCE AGAIN: the message that asked it, replayed by a refold, or the worker restating
-        // its own open question — which places the card again, exactly as a reference does.
-        if (same && (row.state === "open" || atMs <= row.asked_at)) out.refs.push({ at: sighting.at, rowId: row.id })
-        else if (same) {
-          out.faults.push({ at: sighting.at, id: ask.id, faults: [`\`${ask.id}\` was already asked and ${SETTLED_WORD[row.state]} — an id is never reused; ask again under a new id if you still need an answer`] })
+      const rootRow = index.get(ask.id)
+      if (rootRow) {
+        const entry = treeOf(rootRow)
+        const same = rootRow.handle === ask.id && entry !== undefined && (sameNode(entry.root, ask.spec) || rootRow.asked_at === atMs)
+        if (!same) {
+          refuse(ask.spec, ask.id, usedFault(ask.id))
+        } else if (settledBefore(rootRow)) {
+          fault(ask.id, `\`${ask.id}\` was already asked and ${SETTLED_WORD[rootRow.state]} — an id is never reused; ask again under a new id if you still need an answer`)
+          // …and a branch written under it has nothing to hang from, which is its own news.
+          for (const o of ask.spec.options ?? []) {
+            for (const child of o.followUps ?? []) {
+              if (child.handle && !nodeByHandle(entry.root, child.handle)) refuse(child, child.handle, settledParentFault(ask.id, rootRow.state))
+            }
+          }
         } else {
-          out.faults.push({ at: sighting.at, id: ask.id, faults: [`\`id: ${handle}\` is already used by a different question on this thread — choose a new id (an id is never reused, even once its question is settled)`] })
+          // THE SAME FENCE AGAIN: the message that asked it, replayed by a refold, or the worker restating
+          // its own open question — which places the card again, exactly as a reference does. A branch it
+          // carries that the tree does not have yet is a follow-up arriving late.
+          ref(rootRow)
+          heldAt.set(ask.id, Math.max(heldAt.get(ask.id) ?? 0, atMs))
+          for (const o of ask.spec.options ?? []) {
+            const under = entry.root.options?.find((x) => x.label === o.label)
+            for (const child of o.followUps ?? []) {
+              if (!under) continue
+              if (rootRow.state === "open") {
+                if (autonomousFault && !nodeByHandle(entry.root, child.handle ?? "")) refuse(child, child.handle ?? "", autonomousFault)
+                else grow(entry, under, 1, child)
+              } else if (child.handle && nodeByHandle(entry.root, child.handle)) heldAt.set(child.handle, Math.max(heldAt.get(child.handle) ?? 0, atMs))
+            }
+          }
         }
         continue
+      }
+      if (spent) {
+        // The root is new and something UNDER it is not. A follow-up never takes its parent down, so the
+        // spent branches are cut out (each named) and the rest registers.
+        ask.spec = pruned(ask.spec)
       }
       // AUTONOMOUS MODE DECLINES THE ASK — the rule `ask` enforced at the moment of temptation, kept for
       // the fence: the thread was told to decide for itself. A secret is exempt, as it was there: a
       // credential is a value only the human holds, not a call the worker can make.
-      if (input.autonomousGoal && !ask.spec.secret) {
-        out.faults.push({
-          at: sighting.at,
-          id: ask.id,
-          faults: [
-            "this thread is running autonomously, so the question was not asked — decide it yourself and proceed, and say which way you went in your write-up. " +
-            `Its standing instruction is: ${input.autonomousGoal.replace(/\s+/g, " ").slice(0, 400)}`,
-          ],
-        })
+      if (autonomousFault && !ask.spec.secret) {
+        refuse(ask.spec, ask.id, autonomousFault)
         continue
       }
       const row = storage.askThreadQuestion({
@@ -165,10 +303,123 @@ export function syncQuestionFences(
       storage.resetParkBumps(input.slug)
       for (const h of questionHandles(ask.spec)) index.set(h.toLowerCase(), row)
       index.set(row.id.toLowerCase(), row)
+      rows.push(row)
+      held(ask.spec)
       out.registered.push(row)
     }
+
+    // ── follow-ups whose parent is not asked in this message ──
+    for (const f of assembled.followUps) {
+      const when = { parent: f.parent, option: f.option }
+      // Registered by this very message as part of a tree (and read as a late follow-up only by a parser
+      // newer than the row): the row stands as it is.
+      const own = registeredHere(f.id)
+      if (own) {
+        ref(own)
+        continue
+      }
+      const row = index.get(f.parent)
+      if (!row) {
+        refuse(f.spec, f.id, index.has(f.id) ? usedFault(f.id) : `\`when: ${f.parent} = ${f.option}\` names \`${f.parent}\`, which is neither a question in this message nor an open question of this thread — a follow-up hangs off a question that is still waiting for its answer; to ask this on its own, drop the \`when:\` line`)
+        continue
+      }
+      const entry = treeOf(row)
+      const target = entry ? nodeByHandle(entry.root, f.parent) ?? { node: entry.root, level: 1 } : undefined
+      const option = target ? followUpOption(target.node, f.option) : undefined
+      const already = entry ? nodeByHandle(entry.root, f.id) : undefined
+      if (already) {
+        // Its id is in this tree. Under the option it names and worded the same, it is the follow-up
+        // itself written again; anything else is a second question on a spent id.
+        const inPlace = option?.followUps?.some((x) => x === already.node) && sameNode(already.node, f.spec)
+        if (!inPlace) refuse(f.spec, f.id, usedFault(f.id))
+        else if (settledBefore(row)) refuse(f.spec, f.id, `\`${f.id}\` was already asked and ${SETTLED_WORD[row.state]} with the question it follows — an id is never reused; ask again under a new id, without the \`when:\` line, if you still need an answer`)
+        else {
+          ref(row)
+          if (row.state === "open" && entry && option && target) grow(entry, option, target.level, f.spec)
+          else heldAt.set(f.id, Math.max(heldAt.get(f.id) ?? 0, atMs))
+        }
+        continue
+      }
+      if (index.has(f.id)) {
+        refuse(f.spec, f.id, usedFault(f.id))
+        continue
+      }
+      if (row.state !== "open") {
+        refuse(f.spec, f.id, settledParentFault(f.parent, row.state))
+        continue
+      }
+      if (!entry || !target) {
+        refuse(f.spec, f.id, `\`when: ${f.parent} = ${f.option}\` names \`${f.parent}\`, whose stored question could not be read — ask this as its own question, without the \`when:\` line`)
+        continue
+      }
+      if (autonomousFault) {
+        refuse(f.spec, f.id, autonomousFault)
+        continue
+      }
+      if (target.node.kind === "multi") {
+        refuse(f.spec, f.id, followUpMultiFault(f.parent))
+        continue
+      }
+      if (!option) {
+        refuse(f.spec, f.id, followUpOptionFault(when, target.node))
+        continue
+      }
+      const before = entry.added.length
+      grow(entry, option, target.level, f.spec)
+      // The parent is named by this message as surely as an `id:` fence names it: it stands at this rest.
+      if (entry.added.length > before) ref(row)
+    }
+
+    // Write each tree that grew, once. The shared validator has the last word on the whole tree: a shape
+    // it refuses is not stored, and every fence that would have joined it is told why.
+    for (const entry of growing.values()) {
+      if (entry.added.length === 0) continue
+      const treeFaults = askedQuestionFaults(entry.root)
+      const grown = treeFaults.length === 0 && storage.growThreadQuestionSpec(input.slug, entry.row.id, JSON.stringify(entry.root))
+      if (!grown) {
+        for (const h of entry.added) {
+          index.delete(h.toLowerCase())
+          heldAt.delete(h)
+          fault(h, treeFaults.length > 0 ? treeFaults.join("; ") : settledParentFault(entry.row.handle ?? entry.row.id, "answered"))
+        }
+        continue
+      }
+      entry.row.spec = JSON.stringify(entry.root)
+      // A question newly put to the human trumps a done and gives the correction allowance back, exactly
+      // as a registration does.
+      storage.clearThreadDone(input.slug)
+      storage.resetParkBumps(input.slug)
+      out.attached.push({ at, rowId: entry.row.id, handles: entry.added })
+    }
+
+    // References last, so an `id:` fence written beside the ask it names finds the row that ask made.
+    for (const id of assembled.refs) {
+      const row = index.get(id)
+      if (!row) {
+        fault(id, `\`id: ${id}\` alone references a question, and no question of yours uses that id — to ask a new one, give the fence a \`kind:\` and a \`question:\``)
+      } else if (!settledBefore(row)) ref(row)
+      // AN ANSWERED QUESTION REFERENCED AGAIN IS NOT A MISTAKE WORTH A TURN. Its answer reaches the worker
+      // as its own message (or already did), so the reference simply places nothing — where a fault here
+      // bumped a thread that had already signed off done, to tell it something it was about to be told.
+      else if (row.state === "answered") continue
+      // One the worker WITHDREW, or the human DISMISSED, is different: the worker is still waiting on an
+      // answer nobody is going to give, and has to be told.
+      else if (row.state === "withdrawn") {
+        fault(id, `\`${id}\` is a question you withdrew, so there is nothing left to reference and the human is not being asked — if you still need it answered, ask it again under a new id`)
+      } else {
+        fault(id, `\`${id}\` was dismissed by the human without an answer, so there is nothing left to reference and no answer is coming — decide it yourself, or ask it again under a new id if the work cannot go on without one`)
+      }
+    }
   }
+  // A fault the worker has since FIXED is not news: the same id, written again later as a question that
+  // held. (The scheduler's own check reads a row's root handle; a follow-up's id lives inside the tree.)
+  out.faults = out.faults.filter((f) => !(f.id && (heldAt.get(f.id) ?? 0) > Date.parse(f.at)))
   return out
+}
+
+/** A follow-up cannot hang from a question the human has finished with — and the fault names the way out. */
+function settledParentFault(parent: string, state: ThreadQuestionRow["state"]): string {
+  return `it follows \`${parent}\`, which was already ${SETTLED_WORD[state]}, so there is no open question to hang it from — ask it as its own question, without the \`when:\` line`
 }
 
 /**
@@ -244,7 +495,7 @@ export function autonomousGoalOf(row: { recurring_on_rest?: number | null; recur
  * anything registered, though the caller refreshes the board either way.
  */
 export function createQuestionRegistrar(deps: {
-  storage: Pick<Storage, "allSessions" | "listThreadQuestions" | "askThreadQuestion" | "clearThreadDone" | "resetParkBumps">
+  storage: Pick<Storage, "allSessions" | "listThreadQuestions" | "askThreadQuestion" | "growThreadQuestionSpec" | "clearThreadDone" | "resetParkBumps">
   tailer: { get(slug: string): { questionSightings?: QuestionSighting[] } | undefined }
   log?: (message: string) => void
 }): { sweep(): boolean } {
@@ -260,15 +511,29 @@ export function createQuestionRegistrar(deps: {
         const signature = `${row.session_id}|${sightings.length}|${newest.at}|${newest.text.length}`
         if (seen.get(row.slug) === signature) continue
         seen.set(row.slug, signature)
-        const sync = syncQuestionFences(deps.storage, {
-          slug: row.slug,
-          spawnedAt: row.spawned_at,
-          sightings,
-          autonomousGoal: autonomousGoalOf(row),
-        })
+        // ONE THREAD'S FAILURE IS ITS OWN. A throw here used to leave the loop, so every thread after
+        // this one in the registry waited for the next change to reach it. The signature is recorded
+        // first on purpose: a failure that repeats is logged once per change rather than on every poll,
+        // and the scheduler's own pass (evalQuestionFences, every tick, no memo) is the retry.
+        let sync: QuestionFenceSync
+        try {
+          sync = syncQuestionFences(deps.storage, {
+            slug: row.slug,
+            spawnedAt: row.spawned_at,
+            sightings,
+            autonomousGoal: autonomousGoalOf(row),
+          })
+        } catch (err) {
+          deps.log?.(`questions: ${row.slug} sweep failed: ${err instanceof Error ? err.message : String(err)}`)
+          continue
+        }
         if (sync.registered.length > 0) {
           registered = true
           deps.log?.(`questions: ${row.slug} registered ${sync.registered.map((q) => q.handle).join(", ")}`)
+        }
+        if (sync.attached.length > 0) {
+          registered = true
+          deps.log?.(`questions: ${row.slug} attached follow-up(s) ${sync.attached.flatMap((a) => a.handles).join(", ")}`)
         }
       }
       return registered

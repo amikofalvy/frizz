@@ -3573,7 +3573,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         if (q.state === "dismissed") {
           dismissedIds.push(q.id)
           const spec = safeQuestionSpec(q.spec)
-          if (spec) dismissed.push({ question: spec.question })
+          if (spec) dismissed.push({ question: spec.question, ...(q.handle ? { handle: q.handle } : {}) })
           continue
         }
         const parsed = safeQuestionAnswer(q.answer)
@@ -3612,7 +3612,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         fenceId,
         hintKey: fenceId,
         message: withClock(
-          answers.length === 0 ? questionsCancelledWakeMessage(cancelledCount) : questionAnswerMessage(answers, dismissed),
+          answers.length === 0 ? questionsCancelledWakeMessage(cancelledCount, dismissed) : questionAnswerMessage(answers, dismissed),
           deps.tailer.get(row.slug)?.lastAssistantAt,
         ),
         reason: (answers.length === 0

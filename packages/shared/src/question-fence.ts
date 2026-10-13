@@ -509,20 +509,65 @@ export interface QuestionFenceFault {
   faults: string[]
 }
 
+/** A follow-up whose parent is not asked in its own message: `when:` names a question the THREAD may
+ *  already hold. Only the server can say — it has the rows — so assembly hands it over unjudged. */
+export interface LateFollowUp {
+  id: string
+  /** The follow-up's own node, with any follow-ups of ITS options this message carried already attached. */
+  spec: AskedQuestion
+  /** The id `when:` names, and the option under it. */
+  parent: string
+  option: string
+}
+
 export interface AssembledQuestionFences {
   /** Root questions to register, follow-ups attached, in the order written. */
   asks: { id: string; spec: AskedQuestion }[]
+  /** Follow-ups whose parent this message does not ask, in the order written (see LateFollowUp). */
+  followUps: LateFollowUp[]
   /** Ids named by a reference fence, in the order written. */
   refs: string[]
   /** Every fence that cannot register, with its reasons. */
   faults: QuestionFenceFault[]
 }
 
-/** One message's fences as what they ask for. A follow-up (`when:`) is attached to its parent's option
- *  here, so it must sit in the SAME message as its parent: the parent's card is registered as one tree,
- *  and a branch added after the human could already see the card would open under an answer in progress. */
+/** `when:` named an option its parent does not have. The parent's REAL labels are the whole point of the
+ *  message: a worker that wrote `SQLite` for an option labelled `SQLite (better-sqlite3)` can fix the
+ *  label from this, and could only guess without it. One wording for the two places that can find it —
+ *  assembly (the parent is in the message) and the server (the parent is a row). */
+export function followUpOptionFault(when: { parent: string; option: string }, parent: AskedQuestion): string {
+  const labels = (parent.options ?? []).map((o) => `\`${o.label}\``).join(", ")
+  return labels
+    ? `\`when:\` names the option \`${when.option}\`, and \`${when.parent}\` has only ${labels} — write the label exactly as the option has it`
+    : `\`when:\` names the option \`${when.option}\`, and \`${when.parent}\` is a free-text question with no options to follow — ask this as its own question, without the \`when:\` line`
+}
+
+/** A `multi` cannot open a follow-up — the same fault wherever the parent is found. */
+export function followUpMultiFault(parent: string): string {
+  return `\`${parent}\` is a \`multi\`, and a multi's options cannot open follow-ups — several picks would open several at once`
+}
+
+/** The option of `parent` a `when:` names, matched the way a label is compared everywhere here. */
+export function followUpOption(parent: AskedQuestion, label: string): AskedOption | undefined {
+  return parent.options?.find((o) => o.label.toLowerCase() === label.toLowerCase())
+}
+
+/** A fence that was never judged on its own, because the question it hangs off could not register. Named,
+ *  so it is not simply missing from the correction: every fence in a message either registers, attaches,
+ *  references, or is refused BY ID. (Before 2026-10-13 such a fence vanished without a word: no row, no
+ *  card — the web draws a follow-up inside its parent's — and no correction.) */
+export function followUpRiderFault(refused: string, when?: { parent: string; option: string }): string {
+  return `${when ? `\`when: ${when.parent} = ${when.option}\`` : "its `when:`"} hangs this question off \`${refused}\`, which could not register — it goes with it, so write both again`
+}
+
+/** One message's fences as what they ask for. A follow-up (`when:`) whose parent is asked in the SAME
+ *  message is attached to that parent's option here, so the tree registers as one card. One whose parent
+ *  is not in the message is returned unattached (`followUps`): it may hang off a question the thread
+ *  already has open, which only the server can check (maintainer-approved 2026-10-13, after a follow-up
+ *  whose `when:` label was wrong on the first try could never be asked again — its parent had registered,
+ *  and no later message could carry both). */
 export function assembleQuestionFences(reads: readonly QuestionFenceRead[]): AssembledQuestionFences {
-  const out: AssembledQuestionFences = { asks: [], refs: [], faults: [] }
+  const out: AssembledQuestionFences = { asks: [], followUps: [], refs: [], faults: [] }
   const asks = new Map<string, { spec: AskedQuestion; when?: { parent: string; option: string } }>()
   for (const r of reads) {
     if (r.form === "invalid") out.faults.push({ ...(r.id ? { id: r.id } : {}), faults: r.faults })
@@ -538,64 +583,96 @@ export function assembleQuestionFences(reads: readonly QuestionFenceRead[]): Ass
   // Attach every follow-up to its parent. A copy of each spec, so attaching never mutates a read the
   // caller still holds.
   const specs = new Map([...asks].map(([id, a]) => [id, structuredClone(a.spec)]))
+  // THE CHAIN each follow-up hangs from, read off the `when:` lines alone before anything is attached:
+  // the fences above it, nearest first, up to the first one that is not a follow-up of a question in this
+  // message. Walked UP the `when:` lines rather than down the attached tree, because a loop's tree is
+  // circular — and never further than the depth limit: a chain that has not ended by then is too deep (or
+  // a loop longer than any tree may be), and refusing on the count is what keeps a message of some 3,000
+  // chained fences from being walked 3,000 times over, or recursed into by the shared validator until it
+  // runs out of stack in the tailer's change hook.
+  type Chain = { chain: string[]; ends: "root" | "late" | "self" | "loop" | "under-loop" | "deep" }
+  const chainOf = (id: string): Chain => {
+    const chain: string[] = []
+    let at = id
+    for (;;) {
+      const parent = asks.get(at)?.when?.parent
+      if (parent === undefined) return { chain, ends: "root" }
+      if (!asks.has(parent)) return { chain, ends: "late" }
+      if (parent === id) return { chain, ends: chain.length === 0 ? "self" : "loop" }
+      if (chain.includes(parent)) return { chain, ends: "under-loop" }
+      if (chain.length >= ASK_MAX_DEPTH) return { chain, ends: "deep" }
+      chain.push(parent)
+      at = parent
+    }
+  }
+  // What became of each fence that names a parent: `failed` (refused here, by name), `late` (its parent is
+  // not asked in this message), or attached — in neither set.
   const failed = new Set<string>()
+  const late = new Set<string>()
   for (const [id, a] of asks) {
     if (!a.when) continue
-    const parent = specs.get(a.when.parent)
     const fail = (fault: string) => {
       failed.add(id)
       out.faults.push({ id, faults: [fault] })
     }
+    const said = `\`when: ${a.when.parent} = ${a.when.option}\``
+    const { chain, ends } = chainOf(id)
+    if (ends === "self") {
+      fail(`${said} makes this question a follow-up of itself — \`when:\` names the EARLIER question whose option opens this one`)
+      continue
+    }
+    if (ends === "loop") {
+      fail(`${said} is part of a loop of follow-ups (${[id, ...chain].map((w) => `\`${w}\``).join(" → ")} → \`${id}\`) — one of them has to be a question with no \`when:\``)
+      continue
+    }
+    if (ends === "under-loop") {
+      fail(followUpRiderFault(a.when.parent, a.when))
+      continue
+    }
+    // DEPTH, refused on the fence that goes too deep rather than on the tree: a follow-up never takes its
+    // parent down, and the three sound levels above a fourth still register. A chain that ends at a LATE
+    // follow-up starts at level 2 at best, so it has one level less to spend here; where exactly it lands
+    // is measured by the server, against the row.
+    const level = chain.length + (ends === "late" ? 2 : 1)
+    if (ends === "deep" || (chain.length > 0 && level > ASK_MAX_DEPTH)) {
+      fail(`${said} puts this question ${ends === "deep" ? `more than ${ASK_MAX_DEPTH}` : level} levels deep, and follow-ups go ${ASK_MAX_DEPTH} levels deep at most — past that you are asking the human to fill in a form; ask it as its own question, without the \`when:\` line, or decide it yourself`)
+      continue
+    }
+    const parent = specs.get(a.when.parent)
     if (!parent) {
-      fail(`\`when: ${a.when.parent} = ${a.when.option}\` names no question in this message — a follow-up is written in the same message as the question it follows`)
+      late.add(id)
       continue
     }
     if (parent.kind === "multi") {
-      fail(`\`${a.when.parent}\` is a \`multi\`, and a multi's options cannot open follow-ups — several picks would open several at once`)
+      fail(followUpMultiFault(a.when.parent))
       continue
     }
-    const option = parent.options?.find((o) => o.label.toLowerCase() === a.when!.option.toLowerCase())
+    const option = followUpOption(parent, a.when.option)
     if (!option) {
-      const labels = (parent.options ?? []).map((o) => `\`${o.label}\``).join(", ")
-      fail(`\`when:\` names the option \`${a.when.option}\`, and \`${a.when.parent}\` has ${labels ? `only ${labels}` : "no options"}`)
+      fail(followUpOptionFault(a.when, parent))
       continue
     }
     option.followUps = [...(option.followUps ?? []), specs.get(id)!]
   }
-  // A FOLLOW-UP THAT NEVER REACHES A ROOT REGISTERS NOTHING, so it is told why. Only a root registers, with
-  // its tree. A follow-up whose chain of `when:` parents ends at one that failed goes down with it, and one
-  // whose chain never ends — its own follow-up, or two that follow each other — hangs off nothing at all.
-  // Neither was ever a root or a failure, so before this check both vanished without a word: no row, no
-  // card (the web draws a follow-up inside its parent's), and no correction. Walked up the `when:` chain
-  // rather than down the attached tree, because a loop's tree is circular.
-  //
-  // The same walk measures each root's tree, so its DEPTH is refused here, by counting, before the shared
-  // validator is asked: that one recurses, and on a chain some 3,000 fences long it ran out of stack —
-  // thrown from the tailer's change hook, where nothing catches it.
-  const depth = new Map<string, number>()
+  // Emit what stands on its own: a root, or a late follow-up, each with the follow-ups attached under it.
+  const refused = new Set(failed)
   for (const [id, a] of asks) {
-    if (!a.when || failed.has(id)) continue
-    const walked = new Set([id])
-    let at = a.when.parent
-    while (!walked.has(at) && !failed.has(at) && asks.get(at)?.when) {
-      walked.add(at)
-      at = asks.get(at)!.when!.parent
-    }
-    if (!walked.has(at) && !failed.has(at)) depth.set(at, Math.max(depth.get(at) ?? 1, walked.size + 1))
-    if (failed.has(at)) out.faults.push({ id, faults: [`\`when: ${a.when.parent} = ${a.when.option}\` hangs this question off \`${at}\`, which could not register — it goes with it, so write both again`] })
-    else if (at === id && walked.size === 1) out.faults.push({ id, faults: [`\`when: ${a.when.parent} = ${a.when.option}\` makes this question a follow-up of itself — \`when:\` names the EARLIER question whose option opens this one`] })
-    else if (walked.has(at)) out.faults.push({ id, faults: [`\`when: ${a.when.parent} = ${a.when.option}\` is part of a loop of follow-ups (${[...walked].slice(0, 6).map((w) => `\`${w}\``).join(" → ")} → ${walked.size > 6 ? "… → " : ""}\`${at}\`) — one of them has to be a question with no \`when:\``] })
-  }
-  // A failed follow-up takes its own subtree with it, but never its parent: the parent stands on its own.
-  for (const [id, a] of asks) {
-    if (a.when || failed.has(id)) continue
+    if (failed.has(id) || (a.when && !late.has(id))) continue
     const spec = specs.get(id)!
-    const deep = depth.get(id) ?? 1
-    const treeFaults = deep > ASK_MAX_DEPTH
-      ? [`the follow-up tree is ${deep} levels deep; the limit is ${ASK_MAX_DEPTH} — past that you are asking the human to fill in a form`]
-      : askedQuestionFaults(spec)
-    if (treeFaults.length > 0) out.faults.push({ id, faults: treeFaults })
+    const treeFaults = askedQuestionFaults(spec)
+    if (treeFaults.length > 0) {
+      refused.add(id)
+      out.faults.push({ id, faults: treeFaults })
+    } else if (late.has(id)) out.followUps.push({ id, spec, parent: a.when!.parent, option: a.when!.option })
     else out.asks.push({ id, spec })
+  }
+  // A REFUSED FENCE TAKES THE FENCES UNDER IT WITH IT, but never its parent — the parent stands on its
+  // own. Each one under it is named, by the nearest refusal above it, so none is simply missing from the
+  // correction.
+  for (const [id, a] of asks) {
+    if (refused.has(id) || !a.when) continue
+    const nearest = chainOf(id).chain.find((x) => refused.has(x))
+    if (nearest) out.faults.push({ id, faults: [followUpRiderFault(nearest, a.when)] })
   }
   return out
 }
