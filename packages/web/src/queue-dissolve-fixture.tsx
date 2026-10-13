@@ -161,6 +161,14 @@ const lagBoard = new Set<string>()
   sendEagerFollowUp(queryClient, slug, text)
 }
 
+// QA hook: the board does NOT drop this thread when its card's own send goes out. That is the real
+// sequence for a turn too short for the board to report it running: the thread never leaves the board,
+// only the steer overlay (lib/steering) takes it out of the queue, and `__endTurn` puts it back at rest
+// with newer activity, which is what makes the overlay yield.
+;(window as unknown as { __lagBoard: (slug: string) => void }).__lagBoard = (slug) => {
+  lagBoard.add(slug)
+}
+
 // …and the write that actually re-cut the card's window: the worker's own echo of that message, arriving
 // over /ws as a LANDED (un-`queued`) user record. api/transcript-live.ts publishes the push into this
 // same ["transcript", slug] cache entry, so writing it here is what the socket does.

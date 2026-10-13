@@ -263,6 +263,31 @@ export function TodosView() {
   const finalizeTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
   const fallbackTimedRef = useRef<Set<string>>(new Set()) // finalize timers that are the unarmed-departure safety, not a fade
   const reappearTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map()) // resolve()'s per-slug 8s guard
+  // A TURN THAT ENDED BEFORE ITS CARD FINISHED LEAVING. A send dismisses the card and the board drops the
+  // thread within ~100ms; a turn that is over before the 200ms fade is (a worker that answers at once, a
+  // send that fails as it starts) puts the thread straight back, and the board re-adds it under a card
+  // that is still fading. Nothing here expected that. Recorded with the scripted worker's reply at 0ms
+  // think (2026-10-13, three runs of three):
+  //   +107-144ms  the returning-card hold (lib/queueReturn) takes the re-added thread out of the list:
+  //               the card is cut off a third of the way through its fade and the cards below jump up
+  //   +141-184ms  the hold ends and the card mounts at the end of the queue still marked leaving — an
+  //               invisible slot the height of the card, there for 170-200ms
+  //   +348-365ms  the first fade's timer unmounts it again, and it stays out until resolve()'s guard
+  //               puts it back: a thread waiting on the human with no card for 8 seconds
+  // So a thread the board re-adds mid-exit is remembered here: its card goes on fading on the snapshot it
+  // left with, and when that fade ends the dismissal is over — the thread is an ordinary returning card.
+  //
+  // The board need not drop the thread in between. A tailer tick that sees the human's message and the
+  // reply together reports one row: still in the queue, at a NEWER rest. Then nothing departs, and the
+  // card being dismissed is handed the new rest mid-fade — it moves to the queue's end as an invisible
+  // slot and is hidden when the fade ends, with the reply nobody has read, until the 8s guard
+  // (reproduced on the dissolve fixture, whose board can be made to lag: 2 of 2). `dismissedRestRef`
+  // holds the rest each dismissal was made on, so a row at a different one is read as the same return.
+  const returnedRef = useRef<Set<string>>(new Set())
+  const dismissedRestRef = useRef<Map<string, string | undefined>>(new Map())
+  // Bumped when such a dismissal ends, and part of the card's key: the returning card is a fresh mount,
+  // like every other return, rather than the faded one moved and handed new props.
+  const cardEpochRef = useRef<Map<string, number>>(new Map())
   // A dismissed card is unmounted INSTANTLY (no height collapse). We pick an anchor card the instant
   // BEFORE the unmount (in the finalize callback) and adjust the viewport the instant AFTER (the layout
   // effect below). Two modes: "top" (user-initiated dismissal) lands the successor at the viewport-top
@@ -271,7 +296,24 @@ export function TodosView() {
   const pinRef = useRef<{ kind: "hold"; slug: string; top: number } | { kind: "top"; slug: string } | null>(null)
   const [exitTick, forceExitRender] = useState(0)
   {
+    // Back on the board while still fading from a dismissal (see returnedRef): it was not on the board
+    // last render, it is now, and its exit has not finished.
+    const before = new Set(prevItemsRef.current.map((it) => it.id))
+    for (const it of items) {
+      if (!before.has(it.id) && leaving.has(it.id) && !goneRef.current.has(it.id) && departedRef.current.has(it.id)) returnedRef.current.add(it.id)
+      // …or it never left the board, and is at a newer rest than the one it was dismissed on. The card
+      // keeps the row it was fading on, in the slot it had, exactly as a departed card would.
+      if (before.has(it.id) && leaving.has(it.id) && !goneRef.current.has(it.id) && !returnedRef.current.has(it.id) && dismissedRestRef.current.has(it.id) && dismissedRestRef.current.get(it.id) !== it.lastAssistantAt) {
+        const was = prevItemsRef.current.find((prev) => prev.id === it.id)!
+        const at = prevRenderRef.current.indexOf(it.id)
+        if (!departedRef.current.has(it.id)) departedRef.current.set(it.id, { view: was, index: at >= 0 ? at : prevRenderRef.current.length })
+        armedRef.current.add(it.id) // already fading: it stays so if the board drops the row after all
+        returnedRef.current.add(it.id)
+      }
+    }
     prevItemsRef.current.forEach((it) => {
+      // …and dropped again before that fade ended: a plain departure once more, on the snapshot it has.
+      if (!presentIds.has(it.id) && returnedRef.current.delete(it.id)) return
       // A board departure snapshots the card so its fade still plays even though the board dropped it.
       // Skip a slug that already finished its exit (goneRef) — it must not be resurrected as a held card.
       // …but not one that was HELD out of the list (a returning card the board took back before its
@@ -350,9 +392,11 @@ export function TodosView() {
   // splice work on a tiny list; the memoized CardSlot/QueueCard boundary (JSON-compare on thread) is what
   // actually prevents re-render churn, and it only passes threads that genuinely changed.
   const renderItems = useMemo(() => {
-    const list = items.filter((it) => !goneRef.current.has(it.id) && !holds.has(it.id))
+    // A thread back on the board mid-exit (returnedRef) is drawn as the snapshot it is fading on, like a
+    // departed card, and not as the live row the board re-added.
+    const list = items.filter((it) => !goneRef.current.has(it.id) && !holds.has(it.id) && !returnedRef.current.has(it.id))
     const held = [...departedRef.current.entries()]
-      .filter(([s]) => !presentIds.has(s) && !goneRef.current.has(s))
+      .filter(([s]) => (!presentIds.has(s) || returnedRef.current.has(s)) && !goneRef.current.has(s))
       .map(([, v]) => v)
       .sort((a, b) => a.index - b.index)
     for (const { view, index } of held) list.splice(Math.min(index, list.length), 0, view)
@@ -395,6 +439,26 @@ export function TodosView() {
       } else {
         const pin = captureNeighborPin(slug)
         pinRef.current = pin ? { kind: "hold", ...pin } : null
+      }
+      // The thread came back while this card was fading (returnedRef): the fade was the whole of the
+      // dismissal. Nothing is left hidden and no guard is left armed; from the next render it is a card
+      // entering the queue, held for its reply like any other (lib/queueReturn).
+      if (returnedRef.current.delete(slug)) {
+        departedRef.current.delete(slug)
+        armedRef.current.delete(slug)
+        dismissedRestRef.current.delete(slug)
+        cardEpochRef.current.set(slug, (cardEpochRef.current.get(slug) ?? 0) + 1)
+        knownRef.current?.ids.delete(slug) // …so the next render reads it as entering, and holds it if its reply is not in yet
+        const guard = reappearTimersRef.current.get(slug)
+        if (guard) { clearTimeout(guard); reappearTimersRef.current.delete(slug) }
+        setLeaving((prev) => {
+          if (!prev.has(slug)) return prev
+          const next = new Set(prev)
+          next.delete(slug)
+          return next
+        })
+        forceExitRender((n) => n + 1)
+        return
       }
       goneRef.current.add(slug) // exclude from render → unmount, regardless of whether the board dropped it
       armedRef.current.delete(slug)
@@ -515,6 +579,10 @@ export function TodosView() {
   // this user-initiated path) auto-scrolls the next card to the viewport top once the fade completes.
   const resolve = useCallback((slug: string) => {
     setLeaving((prev) => new Set(prev).add(slug))
+    // The rest this dismissal is made on (see returnedRef): a row at a later one is a turn that has
+    // already come and gone.
+    const row = itemsRef.current.find((t) => t.id === slug)
+    if (row) dismissedRestRef.current.set(slug, row.lastAssistantAt)
     // Reappear if the board still insists it needs action after the exit + a grace window. 8s (not
     // 4s): a replied card only clears once the agent's turn STARTS (humanBlocked+running → not
     // actionable, per needsAction), and message-paste → turn-start can lag a couple seconds through the
@@ -555,6 +623,7 @@ export function TodosView() {
     if (finalize) { clearTimeout(finalize); finalizeTimersRef.current.delete(slug); fallbackTimedRef.current.delete(slug) }
     goneRef.current.delete(slug)
     armedRef.current.delete(slug)
+    dismissedRestRef.current.delete(slug)
     setLeaving((prev) => {
       if (!prev.has(slug)) return prev
       const next = new Set(prev)
@@ -606,7 +675,7 @@ export function TodosView() {
       {renderItems.length > 0 && (
         <div className="flex flex-col">
           {renderItems.map((item, i) => (
-            <Fragment key={item.id}>
+            <Fragment key={`${item.id}:${cardEpochRef.current.get(item.id) ?? 0}`}>
               <CardSlot slug={item.id} leaving={isLeaving(item.id)}>
                 {/* A Console card belongs to its thread's project: everything in it that asks a project
                     — a file it links, the models its composer offers — asks that one (lib/projectScope). */}
