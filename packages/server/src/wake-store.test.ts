@@ -58,6 +58,7 @@ test("quiet window: an answer and a limit resume are not held; the exemption is 
   assert.equal(isQuietWindowExempt("park:retired:2026-09-25T21:59:41.787Z"), true)
   assert.equal(isQuietWindowExempt("park:nameless:2026-09-25T21:59:41.787Z"), true)
   assert.equal(isQuietWindowExempt("park:question:2026-09-25T21:59:41.787Z"), true)
+  assert.equal(isQuietWindowExempt("park:done-open-question:2026-10-20T10:04:00.000Z"), true)
   assert.equal(isQuietWindowExempt("park:expired:2026-09-25T21:59:41.787Z"), false)
   assert.equal(isQuietWindowExempt("prwatch:prw_1"), false)
   assert.equal(isQuietWindowExempt("timer:tmr_1"), false)

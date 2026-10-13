@@ -39,10 +39,15 @@ export const WAKE_QUIET_WINDOW_MS = 5 * 60_000
  *  maintainer had opened it and asked how it stopped without a sign-off. Neither can burst, which is what
  *  the window rations: both are capped per consecutive rest (scheduler SIGNOFF_NUDGE_MAX, PARK_BUMP_MAX).
  *  An EXPIRED park stays held — it is a scheduled re-check, uncapped, and a `for: 30s` re-park would
- *  otherwise wake every 30 seconds. */
+ *  otherwise wake every 30 seconds.
+ *
+ *  A ```done FENCE OVER AN OPEN QUESTION (`park:done-open-question:`, 2026-10-13) is the same case with a
+ *  shorter fuse: its usual rest comes a minute or two after the wake that let the worker finish, so the
+ *  window would hold the correction for most of five minutes while the human looks at a done card with a
+ *  live "Mark as done" over a question nobody answered. Archiving there is what the correction is for. */
 export const WAKE_QUIET_EXEMPT_HINT_PREFIXES = [
   "answers:", "limit:", "interrupt-ended:",
-  "signoff:", "park:question:", "park:retired:", "park:nameless:", "park:dead:",
+  "signoff:", "park:question:", "park:retired:", "park:nameless:", "park:dead:", "park:done-open-question:",
 ] as const
 
 export function isQuietWindowExempt(hintKey: string): boolean {

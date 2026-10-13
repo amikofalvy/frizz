@@ -872,8 +872,9 @@ export interface Storage {
   // Give the allowance back. Called when the thread SIGNS OFF — the only event that proves the nudge
   // worked, and the only one frizz cannot cause by nudging.
   resetSignoffNudges(slug: string): void
-  // The same pair for SOURCE 12's corrective bumps. Counted on delivery; the allowance comes back only
-  // when the thread rests on a park frizz can actually honour.
+  // The same pair for the fence corrections' bumps (scheduler SOURCES 12, 14 and 15). `anchor` is the REST
+  // being corrected, and counting the same one twice is a no-op: one rest spends one bump. The allowance
+  // comes back when the thread rests on a park Frizz can honour, or a ```question fence registers.
   countParkBump(slug: string, anchor: string | null): void
   resetParkBumps(slug: string): void
   // Stamp a delivered ON REST prompt, guarded on the generation so one settling after an edit cannot
@@ -1861,9 +1862,12 @@ export function createStorage(source: string | Database, projectId: string): Sto
     UPDATE session SET signoff_nudges = 0, signoff_nudge_anchor = NULL
     WHERE project_id = @project_id AND slug = ? AND signoff_nudges > 0
   `)
+  // IDEMPOTENT PER ANCHOR, like the nudge's count above, and the anchor is the REST being corrected
+  // (2026-10-13). It incremented unconditionally while each correction passed its own delivery id, so a
+  // rest with two things wrong spent two of the three bumps (scheduler parkCapSpent).
   const countParkBumpStmt = scope.prepare(`
     UPDATE session SET park_bumps = park_bumps + 1, park_bump_anchor = ?
-    WHERE project_id = @project_id AND slug = ?
+    WHERE project_id = @project_id AND slug = ? AND park_bump_anchor IS NOT ?
   `)
   const resetParkBumpsStmt = scope.prepare(`
     UPDATE session SET park_bumps = 0, park_bump_anchor = NULL
@@ -2731,7 +2735,7 @@ export function createStorage(source: string | Database, projectId: string): Sto
       recurringBySlugStmt.run(...recurringArgs(write), slug).changes === 1,
     countSignoffNudge: (slug, anchor) => void countNudgeStmt.run(anchor, slug, anchor),
     resetSignoffNudges: (slug) => void resetNudgesStmt.run(slug),
-    countParkBump: (slug, anchor) => void countParkBumpStmt.run(anchor, slug),
+    countParkBump: (slug, anchor) => void countParkBumpStmt.run(anchor, slug, anchor),
     resetParkBumps: (slug) => void resetParkBumpsStmt.run(slug),
     armPrWatch: (watch) => void armPrWatchStmt.run({ ...watch, kind: watch.kind ?? "pull" }),
     listPrWatches: (slug, opts) =>

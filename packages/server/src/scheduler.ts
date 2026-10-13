@@ -1,8 +1,8 @@
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 import { createHash, randomUUID } from "node:crypto"
-import { awaitingNeedsInput, needsInputRequired, PARK_CORRECTION_NAMES_LEAD, PARK_CORRECTION_NEEDS_INPUT_LEAD, PARK_CORRECTION_RETIRED_LEAD, interruptEndedSubAgentsMessage, type InterruptEndedSubAgent, parkExpiredWakeMessage, parkFinishedWakeMessage, prWatchExpiredWakeMessage, ownWatchExpiredWakeMessage, commandWatchPassedWakeMessage, commandWatchExpiredWakeMessage, commandWatchCancelledWakeMessage, questionAnswerMessage, questionsCancelledWakeMessage, type QuestionAnswer, type QuestionDismissal, RETIRED_AWAITING_REPLACEMENT, retiredAwaitingKindsIn, compactionPromptMessage, limitResumeSteer, limitModelSwitchSteer, formatGithubWakeSteer, GithubWakeItem, type GithubWatchStatus, type GithubIssueStatus, prWatchWakeMessage, issueWatchWakeMessage, shellDoneMessage, restPromptMessage, schedulePromptMessage, timerPromptMessage, signoffNudgeMessage, type SignoffLiveOps, liveOpsLines, mergedWakeMessage, wakeDeliveryToken, wakeTimeHeader, stripWakeTimeHeader, type QuotaSnapshot } from "@frizz/shared"
-import { autonomousGoalOf, questionFenceCorrection, standingQuestions, syncQuestionFences, type QuestionFaultBook } from "./question-fences.ts"
+import { awaitingNeedsInput, needsInputRequired, DONE_FENCE_CORRECTION_LEAD, doneOverOpenQuestionsBody, type DoneBlockingQuestion, questionFencesLive, PARK_CORRECTION_NAMES_LEAD, PARK_CORRECTION_NEEDS_INPUT_LEAD, PARK_CORRECTION_RETIRED_LEAD, interruptEndedSubAgentsMessage, type InterruptEndedSubAgent, parkExpiredWakeMessage, parkFinishedWakeMessage, prWatchExpiredWakeMessage, ownWatchExpiredWakeMessage, commandWatchPassedWakeMessage, commandWatchExpiredWakeMessage, commandWatchCancelledWakeMessage, questionAnswerMessage, questionsCancelledWakeMessage, type QuestionAnswer, type QuestionDismissal, RETIRED_AWAITING_REPLACEMENT, retiredAwaitingKindsIn, compactionPromptMessage, limitResumeSteer, limitModelSwitchSteer, formatGithubWakeSteer, GithubWakeItem, type GithubWatchStatus, type GithubIssueStatus, prWatchWakeMessage, issueWatchWakeMessage, shellDoneMessage, restPromptMessage, schedulePromptMessage, timerPromptMessage, signoffNudgeMessage, type SignoffLiveOps, liveOpsLines, mergedWakeMessage, wakeDeliveryToken, wakeTimeHeader, stripWakeTimeHeader, type QuotaSnapshot } from "@frizz/shared"
+import { autonomousGoalOf, questionFenceCorrection, QUESTION_FENCES_REGISTER_FROM, standingQuestions, syncQuestionFences, type QuestionFaultBook } from "./question-fences.ts"
 import { GITHUB_ISSUE_STATUS_SETTING, GITHUB_STATUS_SETTING, liveActivityOf, parkExpiresAt, parkIsHonoured, parkOnHuman, readAwaitingPark, unaccountedItems } from "./awaiting.ts"
 import type { CommandWatchRow, PrWatchRow, SessionRow, Storage, ThreadQuestionRow } from "./storage.ts"
 import type { CommandRunResult, CommandWatchService } from "./command-watch.ts"
@@ -1070,11 +1070,34 @@ const PARK_FENCE_PREFIX = "park"
 /** The cause a ```question fence correction rides under: `park:question-fence:<rest>`. A park cause so it
  *  shares the corrective cap and the superseded-by-a-newer-rest check every fence correction has. */
 const QUESTION_FENCE_CAUSE = "question-fence"
+/** The cause a ```done fence's correction rides under when it closed a rest over an open question
+ *  (SOURCE 15): `park:done-open-question:<rest>`. A park cause for the same two reasons. */
+const DONE_OVER_QUESTION_CAUSE = "done-open-question"
+/** No ```done fence written before this instant is corrected for an open question. The gate arrived with
+ *  the ```question fence's own cutover, and a refold of an older transcript must not wake a thread that
+ *  has rested on a done card for a week to tell it about a rule it was never under. */
+const DONE_GATE_FROM_MS = Date.parse(QUESTION_FENCES_REGISTER_FROM)
 function parkFenceId(cause: string, spokeAt: string): string {
   return `${PARK_FENCE_PREFIX}:${cause}:${spokeAt}`
 }
 function isParkFenceId(fenceId: string): boolean {
   return fenceId.startsWith(`${PARK_FENCE_PREFIX}:`)
+}
+/**
+ * Is this thread's corrective allowance spent, as far as a correction for `restedAt` is concerned?
+ *
+ * ONE REST SPENDS ONE BUMP (2026-10-13). Every counted correction anchors its count on the REST it
+ * corrects (storage countParkBump is a no-op for an anchor it has already counted), so a rest with two
+ * things wrong costs what a rest with one does. Until then each correction counted for itself: a broken
+ * ```question fence beside an ```awaiting fence naming a dead shell drew SOURCE 14's correction and
+ * SOURCE 12's, spent two of the three bumps, and a second such rest silenced the thread.
+ *
+ * The rest that took the LAST bump is therefore not spent for its own second correction: the count says
+ * three rests were corrected, and this is still the third. A rest draws at most one correction per cause
+ * (the delivery id), so that is bounded by the handful of causes there are.
+ */
+function parkCapSpent(row: Pick<SessionRow, "park_bumps" | "park_bump_anchor">, restedAt: string): boolean {
+  return (row.park_bumps ?? 0) >= PARK_BUMP_MAX && row.park_bump_anchor !== restedAt
 }
 /** The rest instant a correction was minted for. Sliced past the SECOND colon, never `split(":")[2]` —
  *  the value is an ISO instant and carries colons of its own. */
@@ -1527,6 +1550,12 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     // tests still pass. Any new wake source needs its branch here and a test that asserts `resume` ran.
     if (isParkFenceId(item.fenceId)) {
       if (parkFenceRestOf(item.fenceId) !== (tele.lastAssistantAt ?? "")) return "superseded"
+      // THE ONE CORRECTION WHOSE FAULT CAN END WITHOUT THE WORKER (SOURCE 15). A ```done fence is wrong only
+      // while a question is open, and the human closes a question from the card: an answer is its own wake,
+      // a press of the × is no record at all. Told afterwards that a question is open, a finished thread
+      // would be woken to withdraw something that is no longer there. Re-reading the rows cannot race the
+      // worker's own fix, which takes a turn and so a new rest, caught by the line above.
+      if (item.fenceId === parkFenceId(DONE_OVER_QUESTION_CAUSE, tele.lastAssistantAt ?? "") && !deps.storage.listThreadQuestions(item.slug).some((q) => q.state === "open")) return "superseded"
       return tele.turn === "idle" ? "current-idle" : "current-busy"
     }
     // NOTHING ROUTES TO THE TAIL ANY MORE, so everything that reaches it supersedes. Every live source
@@ -2043,6 +2072,18 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       // A FENCE THAT COULD NOT REGISTER is answered by its own correction (evalQuestionFences, which runs
       // first in the tick), not by this: telling the worker it signed off with nothing while its question
       // is being corrected would be two contradictory messages about one rest.
+      //
+      // …AND BY NOTHING ONCE THAT CORRECTION'S CAP IS SPENT (2026-10-13). This used to stand down only for
+      // a correction that was actually in the outbox, so the rest the cap silenced fell through to here:
+      // a worker that kept writing the same broken ```question fence got three corrections and then this
+      // reminder twice, opening "You rested without a fence" to a worker whose message was a fence. The
+      // sentence was false, and the two extra wakes were the cap being spent a second time under another
+      // name. Keyed on the FAULT (questionFaultRests, rebuilt by evalQuestionFences just before this pass,
+      // whether or not it could still correct), exactly as SOURCE 12's reset is. Saying something true
+      // instead was the alternative, and it is a fourth and fifth correction: the worker has been told
+      // three times what is wrong with that fence. The thread stays where the board already has it, a
+      // rest with its refused fence drawn as the code block it is, for the human to read. (Below the
+      // sign-off test on purpose: a rest that ALSO carries a fence Frizz honours is signed off as before.)
       const needsInput = needsInputRequired(row.spawned_at)
       const questionRows = deps.storage.listThreadQuestions(row.slug)
       const standing = standingQuestions(questionRows, tele, deps.questionFaults?.of(row.slug))
@@ -2058,6 +2099,8 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         if ((row.signoff_nudges ?? 0) > 0) deps.storage.resetSignoffNudges(row.slug)
         continue
       }
+      // The rest's ```question fence failed and its correction is capped: nothing to say (see above).
+      if (questionFaultRests.get(row.slug) === spokeAt) continue
       // A native ask is a question by another route: the thread is frozen on a modal the human has to
       // answer, and telling it to write a ```question fence is telling it to do what it already did.
       if (tele.pendingAsk || tele.permPrompt) continue
@@ -2206,8 +2249,126 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       // Only a fault written at THIS rest withholds the allowance: that is the worker repeating the
       // mistake. An older one still waiting to be told (the cap silenced it) must not also pin the count.
       if (faults.some((f) => Date.parse(f.at) > instant(tele.lastUserAt))) questionFaultRests.set(row.slug, spokeAt)
-      if ((row.park_bumps ?? 0) >= PARK_BUMP_MAX) continue
+      if (parkCapSpent(row, spokeAt)) continue
       const fenceId = parkFenceId(QUESTION_FENCE_CAUSE, spokeAt)
+      const deliveryId = wakeDeliveryId(row.slug, row.session_id, fenceId)
+      if (outbox.get(deliveryId)) continue
+      // A ```done FENCE OVER A QUESTION THAT IS OPEN RIDES IN THIS MESSAGE (SOURCE 15), as a second
+      // paragraph, when the same rest has both wrong: a fence that could not register, and a done fence
+      // signing off over another question that did. One rest, one message, one bump — SOURCE 15 stands
+      // down for a rest this correction took, and this is why it can.
+      const underDone = doneCorrectionAllowed(row.slug, tele) ? questionsUnderDoneFence(row, tele, rows) : []
+      const correction = underDone.length > 0
+        ? `${questionFenceCorrection(faults)}\n\nSeparately, your \`\`\`done fence ${doneOverOpenQuestionsBody(underDone)}`
+        : questionFenceCorrection(faults)
+      const item = outbox.enqueue({
+        id: deliveryId,
+        slug: row.slug,
+        sessionId: row.session_id,
+        fenceId,
+        hintKey: fenceId,
+        message: `${correction}\n\n${wakeTimeHeader(nowMs, spokeAt)}`,
+        reason: `${faults.length} question fence(s) could not register`,
+      }, nowMs).delivery
+      deps.storage.countParkBump(row.slug, spokeAt)
+      if (underDone.length > 0) noteDoneCorrection(row.slug, tele)
+      log(`waker: queued ${row.slug} — ${item.reason}`)
+      checkpoint("after-enqueue", item)
+    }
+  }
+
+  // ---- SOURCE 15: A ```done FENCE OVER AN OPEN QUESTION ----------------------------------------------
+  //
+  // A worker signs off as finished two ways. `frizzctl done` is REFUSED while any question of the thread
+  // is open (router markOwnDone), each one named by the worker's own id. The ```done fence cannot be
+  // refused — it is a sentence in a message already written — so until 2026-10-13 the gate bound only the
+  // workers that used the better command. With the fence the question still outranked the done on the
+  // board, in the queue and on the mark, and the page drew the question with a done card and a live "Mark
+  // as done" under it. Two outcomes, both bad: the worker had decided the question itself and forgotten to
+  // withdraw it, so the human was asked something moot; or the human archived on the done card and the
+  // question died unread. A question standing across every Frizz wake made the sequence ordinary: asked,
+  // woken by a finished build, finished the rest, signed off done.
+  //
+  // So the fence is held to the same gate after the fact: ONE correction for the rest, naming each open
+  // question by the worker's own id, with the two ways out the command's refusal gives (the paragraph is
+  // one function in @frizz/shared, read by both). Nothing the board or the page draws changes.
+  //
+  // WHICH QUESTIONS: EVERY OPEN ONE, as the command — a question the human has typed past included. The two
+  // sign-offs are taught as one thing, and "dies unread with a done card" is as true of a faded question
+  // as of a standing one: it is still answerable on the page, and archiving still ends it. (Blocking only
+  // on standing questions was the alternative. It would let a worker that was told "leave that for now"
+  // finish and leave the question open under a done card for good, which is the first bad outcome above
+  // with nobody left to notice.) A question written in the SAME message as the done fence is the same
+  // case: the sync registers it before this reads the rows.
+  //
+  // WHICH RESTS: an idle rest whose sign-off is a done FENCE (`lastFence`: the fence that closes the
+  // agent's last message — a done fence with a question fence under it is not a sign-off to Frizz and never
+  // was), on a thread past the ```question cutover, in a message written since registration began. A
+  // registered done cannot be here: `done` refuses while a question is open, and a question registering
+  // clears the row.
+  //
+  // ON AN AUTONOMOUS (GOAL) THREAD a non-secret question is cancelled on the record, so the only question
+  // that can be open is a `secret`, and the correction is as right there: a credential nobody supplied is
+  // not a call the worker made by signing off. The Goal's own rest prompt already declines a rest that
+  // said done; where it has been re-armed since, it stands down for this correction (evalRestPrompts).
+  //
+  // ONE VOICE PER REST. The sign-off reminder (SOURCE 9) never fires on a rest that carries a fence, and
+  // park integrity (SOURCE 12) reads only an ```awaiting fence, so neither can share this rest. A
+  // ```question fence that could not register (SOURCE 14) can: that correction runs first and carries this
+  // one as its second paragraph, and this pass stands down for the rest it took. An ANSWER on its way
+  // takes the rest too — its wake ends the rest by itself, and the worker's next sign-off is judged then.
+  //
+  // CAPPED TWICE. It counts against PARK_BUMP_MAX with every other fence correction. But the count comes
+  // back whenever a ```question fence registers (syncQuestionFences), and a worker can answer this
+  // correction with a NEW question and another done fence: reset, correct, reset, correct, without end,
+  // the closed loop the cap exists to stop. So this cause also stops at PARK_BUMP_MAX corrections since
+  // the human last typed to the thread (`restFromAt`, the one boundary nothing Frizz delivers can move).
+  // In memory: a restart hands back three, which is still a bound.
+  const doneCorrections = new Map<string, { since: string; count: number }>()
+  function doneCorrectionAllowed(slug: string, tele: Pick<SessionTelemetry, "restFromAt">): boolean {
+    const sent = doneCorrections.get(slug)
+    return !(sent && sent.since === (tele.restFromAt ?? "") && sent.count >= PARK_BUMP_MAX)
+  }
+  function noteDoneCorrection(slug: string, tele: Pick<SessionTelemetry, "restFromAt">): void {
+    const since = tele.restFromAt ?? ""
+    const sent = doneCorrections.get(slug)
+    doneCorrections.set(slug, { since, count: sent?.since === since ? sent.count + 1 : 1 })
+  }
+
+  /** The open questions a ```done fence closed this rest over, by the worker's own ids — empty unless the
+   *  rest is that shape. The caller has already established an idle rest the agent ended. */
+  function questionsUnderDoneFence(row: SessionRow, tele: SessionTelemetry, rows: readonly ThreadQuestionRow[]): DoneBlockingQuestion[] {
+    if (tele.lastFence?.kind !== "done") return []
+    // A thread on the legacy contract keeps the free-form question fence and was never under this gate.
+    if (questionFencesLive(row.spawned_at)) return []
+    const spokeAt = tele.lastAssistantAt
+    if (!spokeAt || !(Date.parse(spokeAt) >= DONE_GATE_FROM_MS)) return []
+    if (answersInFlight(rows, tele.lastUserAt, autonomousGoalOf(row) !== undefined) !== undefined) return []
+    // Named as `frizzctl done` names them (router markOwnDone), unreadable rows left out as there.
+    return rows.flatMap((q) => {
+      if (q.state !== "open") return []
+      const spec = safeQuestionSpec(q.spec)
+      return spec ? [{ id: q.handle ?? q.id, question: spec.question }] : []
+    })
+  }
+
+  function evalDoneOverQuestions(nowMs: number): void {
+    for (const row of deps.storage.allSessions()) {
+      if (row.state === "archived" || row.archived === 1) continue
+      const tele = deps.tailer.get(row.slug)
+      if (!tele || tele.turn !== "idle" || tele.lastFence?.kind !== "done") continue
+      // The agent must have spoken last, and the turn must have reached the model — SOURCE 9's guards.
+      const spokeAt = tele.lastAssistantAt
+      if (!spokeAt) continue
+      if (tele.lastUserAt && Date.parse(tele.lastUserAt) >= Date.parse(spokeAt)) continue
+      if (tele.authFault || tele.apiFault) continue
+      const blocking = questionsUnderDoneFence(row, tele, deps.storage.listThreadQuestions(row.slug))
+      if (blocking.length === 0) continue
+      // SOURCE 14 took this rest, and its message carried this one (see there). Whatever became of that
+      // delivery, the rest has had its correction.
+      if (outbox.get(wakeDeliveryId(row.slug, row.session_id, parkFenceId(QUESTION_FENCE_CAUSE, spokeAt)))) continue
+      if (parkCapSpent(row, spokeAt) || !doneCorrectionAllowed(row.slug, tele)) continue
+      const fenceId = parkFenceId(DONE_OVER_QUESTION_CAUSE, spokeAt)
       const deliveryId = wakeDeliveryId(row.slug, row.session_id, fenceId)
       if (outbox.get(deliveryId)) continue
       const item = outbox.enqueue({
@@ -2216,10 +2377,11 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         sessionId: row.session_id,
         fenceId,
         hintKey: fenceId,
-        message: `${questionFenceCorrection(faults)}\n\n${wakeTimeHeader(nowMs, spokeAt)}`,
-        reason: `${faults.length} question fence(s) could not register`,
+        message: `${DONE_FENCE_CORRECTION_LEAD}${doneOverOpenQuestionsBody(blocking)}\n\n${wakeTimeHeader(nowMs, spokeAt)}`,
+        reason: `done fence over ${blocking.length} open question(s)`,
       }, nowMs).delivery
-      deps.storage.countParkBump(row.slug, fenceId)
+      deps.storage.countParkBump(row.slug, spokeAt)
+      noteDoneCorrection(row.slug, tele)
       log(`waker: queued ${row.slug} — ${item.reason}`)
       checkpoint("after-enqueue", item)
     }
@@ -2327,7 +2489,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         // told about that first — adding `status:` would not make it a park, and a worker waiting on
         // nothing should end in ```done or a question, not be taught one more line of a fence it should
         // not be writing. Counted against PARK_BUMP_MAX like every other correction, keyed on the rest.
-        if (!unanswered || (row.park_bumps ?? 0) >= PARK_BUMP_MAX) continue
+        if (!unanswered || parkCapSpent(row, spokeAt)) continue
         const fenceId = parkFenceId("needs-input", spokeAt)
         const deliveryId = wakeDeliveryId(row.slug, row.session_id, fenceId)
         if (outbox.get(deliveryId)) continue
@@ -2359,7 +2521,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
           message: `${message}\n\n${wakeTimeHeader(nowMs, spokeAt)}`,
           reason: "awaiting fence gives no status answer",
         }, nowMs).delivery
-        deps.storage.countParkBump(row.slug, fenceId)
+        deps.storage.countParkBump(row.slug, spokeAt)
         log(`waker: queued ${row.slug} — ${item.reason}`)
         checkpoint("after-enqueue", item)
         continue
@@ -2557,7 +2719,8 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       // `expired` is exempt because it is not a correction: the fence was right, the clock ran out, and
       // re-parking on still-running work is unlimited by explicit decision (maintainer 2026-08-15, "a
       // three-hour build under a one-hour estimate is a bad estimate, not a failure").
-      if (cause !== "expired" && (row.park_bumps ?? 0) >= PARK_BUMP_MAX) continue
+      // (`parkCapSpent`: a rest that already took a bump for another correction is not spent for this one.)
+      if (cause !== "expired" && parkCapSpent(row, spokeAt)) continue
       // Keyed on the REST plus which failure it is, so one fence gets one bump per cause: a park that is
       // bumped for a dead id and later expires is two different pieces of news.
       const fenceId = parkFenceId(cause, spokeAt)
@@ -2578,7 +2741,9 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       // correction is enqueued whenever a bad fence is seen, and that can outrun the delivery loop. Pinned
       // by the loop test: settling on delivery left the cap unreached and 12 unlearning rests drew 12
       // bumps, which is the runaway this exists to stop.
-      if (cause !== "expired") deps.storage.countParkBump(row.slug, fenceId)
+      // ANCHORED ON THE REST, not on this correction: one rest spends one bump however many things are
+      // wrong with it (see parkCapSpent).
+      if (cause !== "expired") deps.storage.countParkBump(row.slug, spokeAt)
       log(`waker: queued ${row.slug} — ${item.reason}`)
       checkpoint("after-enqueue", item)
     }
@@ -3895,6 +4060,11 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       // is the voice that says what went wrong; the Goal speaks at the worker's next rest.
       const questionCorrection = outbox.get(wakeDeliveryId(row.slug, row.session_id, parkFenceId(QUESTION_FENCE_CAUSE, restedAt)))
       if (questionCorrection && questionCorrection.state !== "superseded" && questionCorrection.state !== "exhausted") continue
+      // …AND A ```done FENCE'S (SOURCE 15), which reaches this line only on a Goal re-armed after the done
+      // it corrects (a done that still stands has already ended the Goal's business with the rest, above).
+      // The question open there is a secret, and the correction is about exactly that.
+      const doneCorrection = outbox.get(wakeDeliveryId(row.slug, row.session_id, parkFenceId(DONE_OVER_QUESTION_CAUSE, restedAt)))
+      if (doneCorrection && doneCorrection.state !== "superseded" && doneCorrection.state !== "exhausted") continue
       const fenceId = stopHookFenceId(armed.armedAt, restedAt)
       const deliveryId = wakeDeliveryId(row.slug, row.session_id, fenceId)
       // Terminal rows stay in the store, so this alone is what makes a rest bump EXACTLY once: the same
@@ -4326,6 +4496,9 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       // SOURCE 14 first: a rest whose question fence failed is answered by that correction, and the
       // sign-off nudge reads the outbox to stand down for it.
       evalQuestionFences(now())
+      // SOURCE 15 after it, for the same reason: a rest that has both wrong gets SOURCE 14's message with
+      // this one's paragraph in it, and this pass reads the outbox to stand down.
+      evalDoneOverQuestions(now())
       evalSignoffNudges(now())
       // SOURCE 12, beside the nudge because they are the same job from two directions: the nudge catches
       // a rest that declared NOTHING, this catches one whose declaration stopped being true.
