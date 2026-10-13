@@ -11,7 +11,7 @@ import type { QuestionSighting } from "./backend/types.ts"
 import type { BoardManager } from "./board.ts"
 import type { AppContext } from "./context.ts"
 import type { Project } from "./project.ts"
-import { createQuestionRegistrar, QUESTION_FENCES_REGISTER_FROM, questionFenceCorrection, standingQuestions, syncQuestionFences } from "./question-fences.ts"
+import { createQuestionFaultBook, createQuestionRegistrar, QUESTION_FENCES_REGISTER_FROM, questionFenceCorrection, standingQuestions, syncQuestionFences } from "./question-fences.ts"
 import { createRouter } from "./router.ts"
 import { createStorage, type SessionRow } from "./storage.ts"
 import type { Tailer } from "./tailer.ts"
@@ -172,6 +172,89 @@ test("the registrar sweep reads only threads whose sightings moved, and skips ar
     assert.equal(registrar.sweep(), true)
     assert.deepEqual(h.storage.listThreadQuestions("t").map((q) => q.handle), ["a", "c"])
     assert.deepEqual(h.storage.listThreadQuestions("gone"), [])
+  } finally { h.close() }
+})
+
+// ── What a sync REFUSED, kept for the board ──────────────────────────────────────────────────────────
+//
+// A refused fence has no row, and neither does one the registrar has not reached yet, so the web could not
+// tell them apart: a fence reusing a spent id drew as a question for good (and moved the old question's
+// card under itself). Every sync records its faults in one book, which the board reads.
+
+test("every sync records what it refused in the one book, whichever caller ran it — and the whole ring, not one rest", () => {
+  const h = storageHarness()
+  try {
+    h.storage.upsertSession(row("t"))
+    const book = createQuestionFaultBook()
+    const sightings: QuestionSighting[] = [
+      { at: at(0), text: choice("store") },
+      // A later rest: the SAME id on a different question (refused), and a reference to nothing (refused).
+      { at: at(5), text: `${choice("store", "Which region?")}\n\n${fence("id: ghost")}` },
+      // …and a rest after that which is fine, so the faults above are no longer "the current rest's".
+      { at: at(9), text: choice("later") },
+    ]
+    const registrar = createQuestionRegistrar({ storage: h.storage, tailer: { get: () => ({ questionSightings: sightings }) }, faultBook: book })
+    registrar.sweep()
+    const faults = book.of("t") ?? []
+    assert.deepEqual(faults.map((f) => [f.at, f.id]), [[at(5), "store"], [at(5), "ghost"]], "both refusals, each at its own message's instant")
+    assert.match(faults[0].faults[0], /already used by a different question/)
+    assert.match(faults[1].faults[0], /alone references a question/)
+    assert.deepEqual(h.storage.listThreadQuestions("t").map((q) => q.handle), ["store", "later"])
+
+    // The scheduler's pass (and the router's catch-up) run the same function over the same book, so a
+    // second caller rewrites the entry with the same reading — never a second, different list.
+    const other = syncQuestionFences(h.storage, { slug: "t", spawnedAt: "2026-10-01T00:00:00.000Z", sightings, faultBook: book })
+    assert.deepEqual(book.of("t"), other.faults)
+    assert.deepEqual(other.faults.map((f) => f.id), ["store", "ghost"])
+
+    // The worker fixes one: `ghost` asked properly in a later message. That fault is no longer news to the
+    // scheduler (heldAt), so it leaves the book in the same pass; the reused id is still refused.
+    sightings.push({ at: at(12), text: choice("ghost", "Is the ghost real?") })
+    registrar.sweep()
+    assert.deepEqual((book.of("t") ?? []).map((f) => f.id), ["store"])
+  } finally { h.close() }
+})
+
+test("a sync that refuses nothing forgets the thread, and a thread with no fence left is forgotten too", () => {
+  const h = storageHarness()
+  try {
+    h.storage.upsertSession(row("t"))
+    const book = createQuestionFaultBook()
+    let sightings: QuestionSighting[] = [{ at: at(0), text: fence("id: ghost") }]
+    const registrar = createQuestionRegistrar({ storage: h.storage, tailer: { get: () => ({ questionSightings: sightings }) }, faultBook: book })
+    registrar.sweep()
+    assert.equal(book.of("t")?.length, 1)
+    sightings = [{ at: at(0), text: fence("id: ghost") }, { at: at(1), text: choice("ghost") }]
+    registrar.sweep()
+    assert.equal(book.of("t"), undefined, "the reference now names a question that held")
+
+    sightings = [{ at: at(0), text: fence("id: nothing") }]
+    registrar.sweep()
+    assert.equal(book.of("t")?.length, 1)
+    sightings = []
+    registrar.sweep()
+    assert.equal(book.of("t"), undefined, "a new session: no fence in the fold, so nothing refused on screen")
+  } finally { h.close() }
+})
+
+test("the scheduler's pass writes the same book, so the board shows exactly the refusal the worker is corrected for", async () => {
+  const { createScheduler } = await import("./scheduler.ts")
+  const h = storageHarness()
+  try {
+    h.storage.upsertSession(row("t"))
+    const book = createQuestionFaultBook()
+    const sightings: QuestionSighting[] = [{ at: at(0), text: choice("store") }, { at: at(5), text: choice("store", "Which region?") }]
+    const s = createScheduler({
+      wakeQuietWindowMs: 0, storage: h.storage, fetchPr: async () => undefined, fetchGithubReview: async () => [], questionFaults: book,
+      tailer: { get: () => ({ turn: "idle", lastAssistantAt: at(5), lastActivityAt: at(5), subAgents: [], bgShells: [], pendingQuestion: false, permPrompt: false, questionSightings: sightings }) } as never,
+      resume: async () => {}, log: () => {},
+    })
+    await s.tick()
+    assert.deepEqual((book.of("t") ?? []).map((f) => [f.at, f.id]), [[at(5), "store"]])
+    const wakes = (h.storage.db.prepare("SELECT message FROM wake_delivery WHERE thread_slug = 't'").all() as { message: string }[]).map((w) => w.message)
+    const correction = wakes.find((m) => /could not register/.test(m))
+    assert.ok(correction, `the worker is corrected for it (got: ${JSON.stringify(wakes)})`)
+    assert.ok(correction.includes(book.of("t")![0].faults[0]), "in the words the board carries")
   } finally { h.close() }
 })
 

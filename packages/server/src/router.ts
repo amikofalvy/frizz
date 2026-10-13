@@ -1566,6 +1566,7 @@ export function createRouter(ctx: AppContext) {
       spawnedAt: row.spawned_at,
       sightings: ctx.tailer.get(slug)?.questionSightings,
       autonomousGoal: autonomousGoal(row),
+      faultBook: ctx.questionFaults,
     })
   }
 

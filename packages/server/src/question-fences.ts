@@ -53,6 +53,42 @@ export interface QuestionFenceFault {
   faults: string[]
 }
 
+/**
+ * THE FAULTS OF EACH THREAD'S LATEST SYNC — the one place the board reads a refused fence from.
+ *
+ * Three callers sync a thread's fences: the registrar on the tailer's clock, the scheduler on every tick
+ * (evalQuestionFences) and the router before a call that reads the questions (catchUpQuestionFences). All
+ * three hand syncQuestionFences this book, which records what that pass refused, so the board can never
+ * show a refusal the scheduler is not also correcting, or miss one it is. The list is the whole sync's —
+ * every fault in the fold's ring of sightings, not only the current rest's — because the transcript still
+ * draws the older messages, and a fence refused three rests ago is as refused as one written just now.
+ *
+ * WHY THE BOARD CARRIES IT. A refused fence registers no row, and the web draws a fence with no row as the
+ * question it will become (a read-only card, for the second before the registrar reaches it). Without this
+ * the two were indistinguishable: a fence reusing a spent id, a follow-up written after its parent was
+ * answered, an `id:` naming nothing — each sat on the page as a card that looked askable for good, and a
+ * reused id's fence moved the OLD question's card under the new prose (reported 2026-10-13).
+ *
+ * In memory on purpose: a restart refolds the transcript and the first sync rebuilds it.
+ */
+export interface QuestionFaultBook {
+  /** Replace this thread's faults with one sync's. An empty list forgets the thread. */
+  note(slug: string, faults: readonly QuestionFenceFault[]): void
+  /** The thread's faults as of its latest sync, or undefined when that sync refused nothing. */
+  of(slug: string): readonly QuestionFenceFault[] | undefined
+}
+
+export function createQuestionFaultBook(): QuestionFaultBook {
+  const bySlug = new Map<string, readonly QuestionFenceFault[]>()
+  return {
+    note(slug, faults) {
+      if (faults.length === 0) bySlug.delete(slug)
+      else bySlug.set(slug, faults.map((f) => ({ ...f, faults: [...f.faults] })))
+    },
+    of: (slug) => bySlug.get(slug),
+  }
+}
+
 export interface QuestionFenceSync {
   registered: ThreadQuestionRow[]
   /** Questions an AUTONOMOUS thread wrote: recorded and cancelled at once, never put to the human. The
@@ -131,16 +167,28 @@ const SETTLED_WORD: Record<ThreadQuestionRow["state"], string> = {
  * under a restatement of it — it is attached into the open row's stored tree (`grow`), and the row
  * counts as referenced at that message. Once the parent is settled there is nothing to hang it from.
  */
-export function syncQuestionFences(
-  storage: Pick<Storage, "listThreadQuestions" | "askThreadQuestion" | "dismissThreadQuestion" | "growThreadQuestionSpec" | "clearThreadDone" | "resetParkBumps">,
-  input: {
-    slug: string
-    spawnedAt: string | number | null | undefined
-    sightings: readonly QuestionSighting[] | undefined
-    /** The thread's armed Goal, when it runs autonomously — a question there is refused (secrets aside). */
-    autonomousGoal?: string
-  },
-): QuestionFenceSync {
+export function syncQuestionFences(storage: QuestionFenceStorage, input: QuestionFenceSyncInput): QuestionFenceSync {
+  const out = readQuestionFences(storage, input)
+  // Recorded on EVERY return, the empty ones too: a thread whose worker fixed its fence stops being faulted
+  // on the board in the same pass that stops correcting it.
+  input.faultBook?.note(input.slug, out.faults)
+  return out
+}
+
+type QuestionFenceStorage = Pick<Storage, "listThreadQuestions" | "askThreadQuestion" | "dismissThreadQuestion" | "growThreadQuestionSpec" | "clearThreadDone" | "resetParkBumps">
+
+interface QuestionFenceSyncInput {
+  slug: string
+  spawnedAt: string | number | null | undefined
+  sightings: readonly QuestionSighting[] | undefined
+  /** The thread's armed Goal, when it runs autonomously — a question there is refused (secrets aside). */
+  autonomousGoal?: string
+  /** Where this pass's faults are recorded for the board (QuestionFaultBook). Every production caller
+   *  passes its context's one book. */
+  faultBook?: QuestionFaultBook
+}
+
+function readQuestionFences(storage: QuestionFenceStorage, input: QuestionFenceSyncInput): QuestionFenceSync {
   const out: QuestionFenceSync = { registered: [], cancelled: [], attached: [], faults: [], refs: [] }
   if (!input.sightings?.length || questionFencesLive(input.spawnedAt)) return out
   const rows = storage.listThreadQuestions(input.slug)
@@ -538,15 +586,24 @@ export function createQuestionRegistrar(deps: {
   storage: Pick<Storage, "allSessions" | "listThreadQuestions" | "askThreadQuestion" | "dismissThreadQuestion" | "growThreadQuestionSpec" | "clearThreadDone" | "resetParkBumps">
   tailer: { get(slug: string): { questionSightings?: QuestionSighting[] } | undefined }
   log?: (message: string) => void
+  /** The board's reading of what each thread's latest sync refused (QuestionFaultBook). */
+  faultBook?: QuestionFaultBook
 }): { sweep(): boolean } {
   const seen = new Map<string, string>()
   return {
     sweep() {
       let registered = false
       for (const row of deps.storage.allSessions()) {
+        // An archived thread is never synced again, and its book entry is left as its last sync wrote it:
+        // the Done transcript still draws the fence that was refused. (A restart loses that entry, since
+        // nothing folds an archived thread to rebuild it from.)
         if (row.state === "archived" || row.archived === 1) continue
         const sightings = deps.tailer.get(row.slug)?.questionSightings
-        if (!sightings?.length) continue
+        if (!sightings?.length) {
+          // No fence in the fold any more (a new session): nothing below will sync it, so forget here.
+          deps.faultBook?.note(row.slug, [])
+          continue
+        }
         const newest = sightings[sightings.length - 1]
         const signature = `${row.session_id}|${sightings.length}|${newest.at}|${newest.text.length}`
         if (seen.get(row.slug) === signature) continue
@@ -562,6 +619,7 @@ export function createQuestionRegistrar(deps: {
             spawnedAt: row.spawned_at,
             sightings,
             autonomousGoal: autonomousGoalOf(row),
+            faultBook: deps.faultBook,
           })
         } catch (err) {
           deps.log?.(`questions: ${row.slug} sweep failed: ${err instanceof Error ? err.message : String(err)}`)

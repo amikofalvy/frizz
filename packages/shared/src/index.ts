@@ -2957,6 +2957,18 @@ export const RegisteredQuestionView = z.object({
 }).strict()
 export type RegisteredQuestionView = z.infer<typeof RegisteredQuestionView>
 
+/** A ```question fence the server REFUSED to register, as the board reports it (server question-fences.ts
+ *  QuestionFenceFault). `at` is the instant of the transcript RECORD that carried the fence — for a message
+ *  written as several records, any instant from the message's own up to the next message's — and `id` is
+ *  the fence's own id, absent only when the fence was too broken to have one. `faults` is what the worker
+ *  is told, in the server's words. */
+export const QuestionFenceFaultView = z.object({
+  at: z.string(),
+  id: z.string().optional(),
+  faults: z.array(z.string()),
+}).strict()
+export type QuestionFenceFaultView = z.infer<typeof QuestionFenceFaultView>
+
 /** What a SECRET answer is stored and delivered as, in place of the value: where to read it, and the
  *  terms it is served on. It is the WORKER's text: the `secret` tool already handed it the recipe, so
  *  this stays short. Every card the human reads draws `SECRET_ANSWER_MASK` in its place. */
@@ -3458,6 +3470,13 @@ export const ThreadView = z.object({
   // outlive the message that carried it. These rows can, and they carry the question itself rather than
   // merely asserting one exists — the card renders from this instead of re-parsing prose.
   questions: z.array(RegisteredQuestionView).default([]),
+  /** The ```question fences of this thread that could NOT register, from its latest sync — every one in
+   *  the server's ring of fenced messages, not only the current rest's. Present only when there is one.
+   *  A refused fence has no row, and so does a fence the registrar has not reached yet; this is what
+   *  tells them apart, so the transcript draws the first as the code block it is and only the second as
+   *  the question it is about to become (web lib/questionFaults). Its other job is the reused id: a fence
+   *  refused for naming a spent id must not move that id's card, which a name match alone would do. */
+  questionFaults: z.array(QuestionFenceFaultView).optional(),
   /** The answer the human has already SENT that the worker has not received yet, as the exact message
    *  the delivery will carry (board.answersInFlight → questionAnswerMessage). The chat parses it with
    *  the same reader it uses on the delivered turn, so the in-flight card and the landed one are the

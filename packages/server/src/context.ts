@@ -76,7 +76,7 @@ import {
   type ShutdownDiagnostic,
 } from "./shutdown.ts"
 import { log as frizzLog } from "./logging.ts"
-import { createQuestionRegistrar } from "./question-fences.ts"
+import { createQuestionFaultBook, createQuestionRegistrar, type QuestionFaultBook } from "./question-fences.ts"
 import { projectScopedEnvironment } from "./project-launch.ts"
 import { homedir } from "node:os"
 
@@ -162,6 +162,10 @@ export interface AppContext {
   claudeBroker?: ClaudeAgentBrokerBridge
   board: BoardManager
   tailer: Tailer
+  /** What each thread's latest question-fence sync refused — written by every sync (the registrar, the
+   *  scheduler, the router's catch-up) and read by the board (question-fences.ts QuestionFaultBook).
+   *  Optional so a hand-built test context need not carry one. */
+  questionFaults?: QuestionFaultBook
   dispatcher: Dispatcher
   // Per-session agent-backend resolver behind the spawn/resume/transcript seam (Codex-support epic).
   // Maps a row's `backend` column (claude|codex) to its AgentBackend; DEFAULTS to claude for any unset/
@@ -949,6 +953,8 @@ function createContextUnchecked(opts: ContextOptions, resources: PartialContextR
   // Registers the ```question fences the tailer just folded, before the board rebuild it triggers —
   // see createQuestionRegistrar for why this rides the tailer's clock and not the scheduler's.
   let questionRegistrar: ReturnType<typeof createQuestionRegistrar> | undefined
+  // One book for all three syncs and the board: see QuestionFaultBook.
+  const questionFaults = createQuestionFaultBook()
   const tailer = createTailer({
     project,
     storage,
@@ -988,13 +994,14 @@ function createContextUnchecked(opts: ContextOptions, resources: PartialContextR
     codexBackgroundExecs: codexAppServer ? (slug, sessionId) => codexAppServer.backgroundExecs(slug, sessionId) : undefined,
   })
   resources.tailer = tailer
-  questionRegistrar = createQuestionRegistrar({ storage, tailer, log: (message) => frizzLog.info("server", message) })
+  questionRegistrar = createQuestionRegistrar({ storage, tailer, log: (message) => frizzLog.info("server", message), faultBook: questionFaults })
   opts.startup?.afterPhase?.("tailer")
   permissionAnswered = (slug) => tailer.permissionAnswered?.(slug)
   // The bridge is the authority on whether a codex app-server TURN is actually running — a rollout
   // frozen by a dead app-server reads "in-flight" forever on its own. Without this the board spins
   // such a thread on `running` and never queues it (live stall 2026-07-22).
   board = createBoard(project, storage, bus, tailer, bootId, {
+    questionFaults: (slug) => questionFaults.of(slug),
     codexTurnLiveness: (slug, sessionId) => codexAppServer?.turnLiveness(slug, sessionId),
     // Headless-stall signal for a broker row: the ownerless daemon's record. Absent bridge ⇒ default
     // "alive" so a bridge-less server never falsely crash-cards a broker row (there are none anyway).
@@ -1060,6 +1067,7 @@ function createContextUnchecked(opts: ContextOptions, resources: PartialContextR
   const scheduler = createScheduler({
     storage,
     tailer,
+    questionFaults,
     commandWatches,
     // Second wake source: every thread a subscription window cut off mid-turn gets its own "continue"
     // once that window rolls, over this same delivery path. The quota reader supplies the fallback
@@ -1203,6 +1211,7 @@ function createContextUnchecked(opts: ContextOptions, resources: PartialContextR
     claudeBroker,
     board,
     tailer,
+    questionFaults,
     dispatcher,
     scheduler,
     probePr: probePrReadable,

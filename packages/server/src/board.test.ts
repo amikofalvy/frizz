@@ -2490,3 +2490,39 @@ test("a Claude thread on an older edition of its family carries its running labe
   storage.close()
   rmSync(dir, { recursive: true, force: true })
 })
+
+// ── A REFUSED question fence reaches the thread view ─────────────────────────────────────────────────
+//
+// The registrar's faults ride the board as `questionFaults` so the web can draw a refused fence as the
+// code block it is (shared ThreadView.questionFaults). Absent — not an empty array — when nothing was
+// refused, which is every thread but a handful: the field costs a snapshot nothing.
+test("the thread view carries the question fences its latest sync refused, and no field when there are none", () => {
+  const dir = mkdtempSync(join(tmpdir(), "frizz-board-qfaults-"))
+  const project: Project = { dir, id: "project-qf", name: "fixture", label: "fixture", stateDir: dir, cwdSlug: "fixture" }
+  const storage = createStorage(join(dir, "ui.db"), "p")
+  storage.upsertSession(row({ slug: "refused", session_id: "sess-refused", thread_name: "frizz-refused" }))
+  storage.upsertSession(row({ slug: "clean", session_id: "sess-clean", thread_name: "frizz-clean" }))
+  const tailer = {
+    get: () => tele({ turn: "idle" }),
+    foreignIds: () => [], subAgent: () => undefined, forget: () => {},
+    start: () => {}, stop: () => {}, tick: () => {},
+  } satisfies Tailer
+  const faults = [
+    { at: "2026-10-20T10:05:00.000Z", id: "store", faults: ["`id: store` is already used by a different question on this thread"] },
+    { at: "2026-10-20T10:05:00.000Z", faults: ["no `id:`"] },
+  ]
+  const board = createBoard(project, storage, new Bus(), tailer, "qf", { questionFaults: (slug) => (slug === "refused" ? faults : []) })
+  const threads = board.refresh().threads
+  const refused = threads.find((t) => t.id === "refused")!
+  assert.deepEqual(refused.questionFaults, faults, "each fault whole: the message's instant, the fence's id when it had one, the server's words")
+  assert.notEqual(refused.questionFaults, faults, "a copy — the snapshot never aliases the registrar's list")
+  const clean = threads.find((t) => t.id === "clean")!
+  assert.equal("questionFaults" in clean, false)
+
+  // Without the reader wired at all (a test board, a bridge-less server) the field is simply absent.
+  const bare = createBoard(project, storage, new Bus(), tailer, "qf-bare")
+  assert.equal("questionFaults" in bare.refresh().threads.find((t) => t.id === "refused")!, false)
+
+  storage.close()
+  rmSync(dir, { recursive: true, force: true })
+})

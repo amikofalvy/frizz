@@ -2,7 +2,7 @@ import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 import { createHash, randomUUID } from "node:crypto"
 import { awaitingNeedsInput, needsInputRequired, PARK_CORRECTION_NAMES_LEAD, PARK_CORRECTION_NEEDS_INPUT_LEAD, PARK_CORRECTION_RETIRED_LEAD, interruptEndedSubAgentsMessage, type InterruptEndedSubAgent, parkExpiredWakeMessage, parkFinishedWakeMessage, prWatchExpiredWakeMessage, ownWatchExpiredWakeMessage, commandWatchPassedWakeMessage, commandWatchExpiredWakeMessage, commandWatchCancelledWakeMessage, questionAnswerMessage, questionsCancelledWakeMessage, type QuestionAnswer, type QuestionDismissal, RETIRED_AWAITING_REPLACEMENT, retiredAwaitingKindsIn, compactionPromptMessage, limitResumeSteer, limitModelSwitchSteer, formatGithubWakeSteer, GithubWakeItem, type GithubWatchStatus, type GithubIssueStatus, prWatchWakeMessage, issueWatchWakeMessage, shellDoneMessage, restPromptMessage, schedulePromptMessage, timerPromptMessage, signoffNudgeMessage, type SignoffLiveOps, liveOpsLines, mergedWakeMessage, wakeDeliveryToken, wakeTimeHeader, stripWakeTimeHeader, type QuotaSnapshot } from "@frizz/shared"
-import { autonomousGoalOf, questionFenceCorrection, standingQuestions, syncQuestionFences } from "./question-fences.ts"
+import { autonomousGoalOf, questionFenceCorrection, standingQuestions, syncQuestionFences, type QuestionFaultBook } from "./question-fences.ts"
 import { GITHUB_ISSUE_STATUS_SETTING, GITHUB_STATUS_SETTING, liveActivityOf, parkExpiresAt, parkIsHonoured, parkOnHuman, readAwaitingPark, unaccountedItems } from "./awaiting.ts"
 import type { CommandWatchRow, PrWatchRow, SessionRow, Storage, ThreadQuestionRow } from "./storage.ts"
 import type { CommandRunResult, CommandWatchService } from "./command-watch.ts"
@@ -1209,6 +1209,10 @@ const REVIEW_STEER_CAP = 10
 export interface SchedulerDeps {
   storage: Storage
   tailer: Tailer
+  /** Where every question-fence sync records what it refused, for the board (question-fences.ts
+   *  QuestionFaultBook) — the same book the registrar and the router write, so the correction this
+   *  scheduler sends and the refusal the board shows are one reading. */
+  questionFaults?: QuestionFaultBook
   // Resume/steer a thread (prod: the shared resumeThread; tests: a spy). `deliveryId` is a stable
   // idempotency key for the exact session + awaiting-fence generation. Implementations must carry it
   // through durable downstream queues and append wakeDeliveryToken(id) to terminal input so transcript
@@ -2178,6 +2182,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         spawnedAt: row.spawned_at,
         sightings: tele.questionSightings,
         autonomousGoal: autonomousGoalOf(row),
+        faultBook: deps.questionFaults,
       })
       if (sync.registered.length > 0) log(`waker: ${row.slug} registered question(s) ${sync.registered.map((q) => q.handle).join(", ")}`)
       if (sync.faults.length === 0 || tele.turn !== "idle") continue

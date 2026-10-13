@@ -8,7 +8,7 @@ import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import watcher from "@parcel/watcher"
 import type { BoardSnapshot, ClaudeModel, ThreadView, RuntimeState, ThreadRecurringPrompt, ProviderError } from "@frizz/shared"
-import { standingQuestions } from "./question-fences.ts"
+import { standingQuestions, type QuestionFenceFault } from "./question-fences.ts"
 import { AskedQuestionSchema, BoardDiffer, PermissionMode, SnoozeUntil, ThreadSlug, awaitingNeedsInput, formatElapsed, awaitingStatus, awaitingSteps, isDirectSubAgent, splitDoneFrontmatter, needsInputRequired, questionAnswerMessage, questionsCancelledWakeMessage, type AskedQuestion, type PermissionMode as PermissionModeValue, type QuestionAnswer, type QuestionDismissal } from "@frizz/shared"
 import type { Bus } from "./bus.ts"
 import type { Project } from "./project.ts"
@@ -1655,6 +1655,9 @@ function sessionThreadView(
   // The pinned Claude runtime's resolved catalogue (claude-models.ts peekClaudeModels), for the edition a
   // thread runs against the one its family now resolves to. Undefined until the first probe lands.
   claudeCatalogue: readonly ClaudeModel[] | undefined = undefined,
+  // The ```question fences this thread's latest sync REFUSED (question-fences.ts QuestionFaultBook), so
+  // the web can draw each as the code block it is instead of a card. Undefined when it refused nothing.
+  questionFaults: readonly QuestionFenceFault[] | undefined = undefined,
 ): ThreadView {
   // A REGISTERED completion is presented to everything below as the ```done fence it replaces — same
   // shape, same three predicates, same card — so the two cannot render as two different endings while
@@ -1869,6 +1872,10 @@ function sessionThreadView(
     pendingAsk: tele?.pendingAsk ? { questions: tele.pendingAsk.questions } : undefined,
     pendingQuestion: tele?.pendingQuestion ?? false,
     questions,
+    // Absent unless something was refused.
+    ...(questionFaults && questionFaults.length > 0
+      ? { questionFaults: questionFaults.map((f) => ({ at: f.at, ...(f.id ? { id: f.id } : {}), faults: [...f.faults] })) }
+      : {}),
     answersInFlight: inFlightAnswers,
     deliveryInFlight: deliveryInFlight || undefined,
     lastUserAt: tele?.lastUserAt,
@@ -2070,6 +2077,8 @@ export interface BoardManagerDeps {
   claudeBrokerDaemonAlive?: ClaudeBrokerLivenessReader
   /** The pinned Claude runtime's resolved catalogue, read synchronously per build (peekClaudeModels). */
   claudeModels?: () => readonly ClaudeModel[] | undefined
+  /** What a thread's latest question-fence sync refused (question-fences.ts QuestionFaultBook). */
+  questionFaults?: (slug: string) => readonly QuestionFenceFault[] | undefined
 }
 
 export function createBoard(
@@ -2085,6 +2094,7 @@ export function createBoard(
   const codexTurnLiveness = deps.codexTurnLiveness ?? (() => undefined)
   const claudeBrokerDaemonAlive = deps.claudeBrokerDaemonAlive ?? (() => true)
   const claudeModels = deps.claudeModels ?? (() => undefined)
+  const questionFaults = deps.questionFaults ?? (() => undefined)
   let cached: BoardSnapshot | null = null
   let parcelSub: watcher.AsyncSubscription | null = null
   let watchSetup: Promise<void> | null = null
@@ -2190,6 +2200,7 @@ export function createBoard(
         github,
         issueBook,
         claudeModels(),
+        questionFaults(row.slug),
       ))
     }
     for (const key of pendingInteractionCache.keys()) {
