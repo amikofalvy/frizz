@@ -2302,7 +2302,7 @@ function MinimalToolActivity({ tools, at }: { tools: CollapsedTool[]; at?: strin
         // `-my-0.5`, so the row is the same 20px line as the reasoning label and as the live Working row
         // it replaces when a run settles — with the padding counted, the settle grew the tail 3px and
         // moved this label 2px below where the shimmer had it (measured on real workers, 2026-10-13).
-        className={`group -my-0.5 flex w-full min-w-0 items-baseline gap-1.5 rounded py-0.5 text-left outline-none transition-colors hover:text-fg focus-visible:ring-1 focus-visible:ring-focus-ink-60 ${TRANSCRIPT_META_LABEL_CLASS}`}
+        className={`group flex w-full min-w-0 items-baseline gap-1.5 rounded -my-0.5 py-0.5 text-left outline-none transition-colors hover:text-fg focus-visible:ring-1 focus-visible:ring-focus-ink-60 ${TRANSCRIPT_META_LABEL_CLASS}`}
       >
         <span
           data-tool-activity-label
