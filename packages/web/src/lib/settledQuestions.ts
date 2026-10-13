@@ -28,8 +28,8 @@ export interface SettledPositionable {
    *  worker's id, so the replay has to match that name as well as the minted one (lib/questionShadow). */
   spec?: AskedQuestion
   /** Sent from THIS tab and not yet read back from the server. Its `settledAt` is the browser's clock,
-   *  which need not agree with the transcript's; the answer was sent against the whole loaded
-   *  transcript, so the prefix is all of it. */
+   *  which need not agree with the transcript's; the answer was sent against the whole LANDED transcript,
+   *  so the prefix is all of it up to the first optimistic send (`landedLength`). */
   pending?: true
 }
 
@@ -60,8 +60,24 @@ function aboveTrailingEvents(messages: readonly AnchorMessage[], anchor: number)
   return at
 }
 
+/** How many leading messages had LANDED: the index of the first optimistic send (`queued`), which is
+ *  the answer itself, or a send still behind it. The answer's own ghost bubble is in the list from the
+ *  render that sends it (lib/restReply draws it under the rest's "Agent rested" hairline), carrying no
+ *  server instant; counted into the prefix it is the tail, so the card anchored AFTER the human's own
+ *  answer, under the hairline, and moved back above it ~45ms later when the echo landed stamped — the
+ *  card and the Answers bubble swapping places on every answer (12 of 12 runs on the thread page,
+ *  2026-10-13, scripted worker). */
+function landedLength(messages: readonly SettledAnchorMessage[]): number {
+  const i = messages.findIndex((m) => m.queued === true)
+  return i < 0 ? messages.length : i
+}
+
+/** A transcript message as this reader needs it: the anchor readers' fields, and whether it is still an
+ *  optimistic send. */
+export type SettledAnchorMessage = AnchorMessage & { queued?: boolean }
+
 export function settledQuestionPositions<S extends SettledPositionable>(
-  messages: readonly AnchorMessage[],
+  messages: readonly SettledAnchorMessage[],
   settled: readonly S[],
 ): SettledPlacement<S> {
   const placed = new Map<number, S[]>()
@@ -83,7 +99,7 @@ export function settledQuestionPositions<S extends SettledPositionable>(
   }
   for (const [key, batch] of batches) {
     const settledAtMs = key === "pending" ? Number.POSITIVE_INFINITY : Date.parse(key)
-    const cut = Number.isFinite(settledAtMs) ? prefixLength(messages, settledAtMs) : messages.length
+    const cut = Number.isFinite(settledAtMs) ? prefixLength(messages, settledAtMs) : landedLength(messages)
     if (cut === 0) continue
     const prefix = messages.slice(0, cut)
     const placement = placeQuestions(prefix, batch)

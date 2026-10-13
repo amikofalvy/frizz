@@ -77,6 +77,23 @@ test("a card just sent from this tab sits at the tail whatever the browser clock
   assert.equal(stale.anchored.size, 0)
 })
 
+test("a card just sent stays above its own answer's ghost bubble, not under it", () => {
+  // The render that sends the answer already draws its ghost under the rest's hairline (lib/restReply),
+  // with no server instant. The card stood above that hairline when it was clicked, and stays there:
+  // the same slot the echo will give it, so the two never trade places.
+  const messages = [
+    msg("user", "2026-09-25T10:00:00Z"),
+    msg("assistant", "2026-09-25T10:02:00Z"),
+    msg("assistant", "2026-09-25T10:02:00Z", "Agent rested", "event"),
+    { role: "user", text: "Answers to earlier questions", queued: true },
+  ]
+  const ghost = settledQuestionPositions(messages, [settled("qst_a", "2026-09-25T10:01:30Z", "2026-09-25T10:05:00Z", true)])
+  assert.deepEqual([...ghost.anchored.keys()], [1])
+  // …and once the echo lands stamped, the server's copy puts it in the same slot.
+  const landed = settledQuestionPositions([...messages.slice(0, 3), msg("user", "2026-09-25T10:05:01Z", "Answers to earlier questions")], [settled("qst_a", "2026-09-25T10:01:30Z", "2026-09-25T10:05:00Z")])
+  assert.deepEqual([...landed.anchored.keys()], [1])
+})
+
 test("a question answered before the loaded window draws nothing rather than hoisting to the top", () => {
   const messages = [msg("user", "2026-09-25T11:00:00Z"), msg("assistant", "2026-09-25T11:01:00Z")]
   const { anchored, placed } = settledQuestionPositions(messages, [settled("qst_a", "2026-09-25T10:01:30Z", "2026-09-25T10:05:00Z")])
