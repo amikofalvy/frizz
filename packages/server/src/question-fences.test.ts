@@ -251,3 +251,64 @@ test("restating a question without its follow-up places the card — it is still
     assert.deepEqual(out.refs.map((r) => r.at), [at(5)], "the restatement is a reference to the registered tree")
   } finally { h.close() }
 })
+
+// ── SOURCE 14: the correction for a fence that could not register ─────────────────────────────────────
+
+async function correctionHarness(sightings: QuestionSighting[], tele: { lastUserAt?: string; lastAssistantAt?: string; turn?: string } = {}) {
+  const { createScheduler } = await import("./scheduler.ts")
+  const h = storageHarness()
+  h.storage.upsertSession(row("t"))
+  const sent: string[] = []
+  const restedAt = tele.lastAssistantAt ?? sightings[sightings.length - 1]?.at ?? at(0)
+  const s = createScheduler({
+    wakeQuietWindowMs: 0,
+    storage: h.storage,
+    fetchPr: async () => undefined,
+    fetchGithubReview: async () => [],
+    tailer: {
+      get: () => ({
+        turn: tele.turn ?? "idle", lastAssistantAt: restedAt, lastActivityAt: restedAt, lastUserAt: tele.lastUserAt,
+        subAgents: [], bgShells: [], pendingQuestion: false, permPrompt: false, questionSightings: sightings,
+      }),
+    } as never,
+    resume: async (_slug, message) => { sent.push(message) },
+    log: () => {},
+  })
+  const queued = () => h.storage.db.prepare("SELECT fence_id, message FROM wake_delivery WHERE thread_slug = 't'").all() as { fence_id: string; message: string }[]
+  return { ...h, s, sent, queued }
+}
+
+test("a fence that could not register is corrected at rest, once, and the sign-off nudge stands down for it", async () => {
+  const h = await correctionHarness([{ at: at(1), text: fence("id: settings-store\nkind: choice\nquestion: SQLite?") }])
+  try {
+    await h.s.tick()
+    await h.s.tick()
+    const rows = h.queued()
+    assert.equal(rows.length, 1, "one correction, and no 'rested without a fence' beside it")
+    assert.equal(rows[0].fence_id, `park:question-fence:${at(1)}`)
+    assert.match(rows[0].message, /^⚠️ Your ```question fence could not register/)
+    assert.match(rows[0].message, /`settings-store` — `kind: choice` needs two or more options/)
+    assert.equal(h.sent.length, 1, "and it reached the worker")
+    assert.equal(h.storage.getSession("t")?.park_bumps, 1, "counted against the corrective cap")
+  } finally { h.close() }
+})
+
+test("no correction mid-turn, none for an older rest's fence, and none once the same id registered later in the rest", async () => {
+  const bad = { at: at(1), text: fence("id: settings-store\nkind: choice\nquestion: SQLite?") }
+  const midTurn = await correctionHarness([bad], { turn: "in-flight" })
+  try {
+    await midTurn.s.tick()
+    assert.deepEqual(midTurn.queued(), [])
+  } finally { midTurn.close() }
+  const olderRest = await correctionHarness([bad], { lastUserAt: at(2), lastAssistantAt: at(3) })
+  try {
+    await olderRest.s.tick()
+    assert.deepEqual(olderRest.queued().filter((r) => r.fence_id.startsWith("park:")), [], "the human spoke since; that rest is over")
+  } finally { olderRest.close() }
+  const fixed = await correctionHarness([bad, { at: at(2), text: choice("settings-store") }])
+  try {
+    await fixed.s.tick()
+    assert.deepEqual(fixed.queued(), [], "the worker fixed it in the same rest; the registered question signs the rest off")
+    assert.equal(fixed.storage.listThreadQuestions("t").length, 1)
+  } finally { fixed.close() }
+})

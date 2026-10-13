@@ -35,7 +35,7 @@ import type { Storage, ThreadQuestionRow } from "./storage.ts"
 /** No fence written before this instant registers or is corrected. Before it a ```question fence with a
  *  body was prose on every thread dispatched after QUESTION_FENCE_RETIRED_AT, so a refold of an old
  *  transcript must not turn one into a question, or bump a worker that has been idle for a week. */
-export const QUESTION_FENCES_REGISTER_FROM = "2026-10-13T21:00:00Z"
+export const QUESTION_FENCES_REGISTER_FROM = "2026-10-13T20:00:00Z"
 const REGISTER_FROM_MS = Date.parse(QUESTION_FENCES_REGISTER_FROM)
 
 /** A fence that could not register, with the instant of the message that carried it. */
