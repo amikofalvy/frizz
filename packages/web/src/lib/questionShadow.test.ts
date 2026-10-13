@@ -310,3 +310,13 @@ test("a later rest that says nothing about a fenced question leaves its card in 
   assert.deepEqual([...placeQuestions(later, [FENCED_ROW]).placed.keys()], [1])
   assert.equal(questionsAtCurrentRest(later, [FENCED_ROW]), false)
 })
+
+// The human replies PAST the open card (the composer is right there). Their bubble is optimistic for a
+// few frames — no instant yet — and in those frames the card must stay in the fence's slot, not drop out
+// of the prose to the tail under the bubble and come back when the server stamps it.
+test("an unstamped send at the tail leaves a fenced card in its slot", () => {
+  const optimistic = [...ASKED, { role: "user", text: "Do the docs first." }]
+  assert.deepEqual([...placeQuestions(optimistic, [FENCED_ROW]).placed.keys()], [1])
+  // Negative control: the stamped copy of the same send always did.
+  assert.deepEqual([...placeQuestions([...ASKED, { role: "user", at: at(8), text: "Do the docs first." }], [FENCED_ROW]).placed.keys()], [1])
+})
