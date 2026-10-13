@@ -783,7 +783,7 @@ The API call is the unit of cost, not the tokens you type: each message re-reads
 //     off mid-block. The example only had code in an indented `detail`, which three backticks survive.
 //     "Leave the code block inside on its usual three" is from the run after that: three outside, FOUR
 //     on the SQL block, whose closing line ends a three-backtick question just the same.
-//   - "THE ONLY FENCE ITS REST NEEDS": Sonnet ended three of nine question rests with an `awaiting` fence
+//   - "THE ONLY FENCE ITS REST NEEDS": Sonnet ended three of twelve question rests with an `awaiting` fence
 //     and nothing running — `status: needs_input` twice, restating the question in `steps:` once — and
 //     `status: working` once, which it then disowned in prose it could not take back.
 //   - The follow-up's "label EXACTLY as written", and "or in a later one while the parent is still
