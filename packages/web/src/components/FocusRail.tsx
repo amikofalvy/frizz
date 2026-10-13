@@ -14,7 +14,7 @@ import { useNowMs } from "../lib/liveClock.ts"
 import { tildePath } from "../lib/paths.ts"
 import { prefs } from "../lib/prefs.ts"
 import { PRIMER } from "../lib/primer.ts"
-import { AgentRow, BgShellRow, GithubWatchRow, ON_CAP, ROW_INSET, TimerRow, WaitGrid, WaitRow, type WaitGroup } from "./AwaitingBackgroundCard.tsx"
+import { AgentRow, BgShellRow, CommandWatchRow, GithubWatchRow, ON_CAP, ROW_INSET, TimerRow, WaitGrid, WaitRow, type WaitGroup } from "./AwaitingBackgroundCard.tsx"
 import { transcriptBackgroundShells } from "./ChatView.tsx"
 
 // THE FULLSCREEN PAGE'S OPERATIONAL RAIL — what is going on in this thread, listed beside the transcript
@@ -244,6 +244,7 @@ export function FocusRail({ thread }: { thread: ThreadView }) {
   const prs = github.filter((w) => w.subject !== "issue")
   const issues = github.filter((w) => w.subject === "issue")
   const timers = (thread.watches ?? []).filter((w) => watching && w.kind === "timer" && w.state === "armed")
+  const commands = (thread.watches ?? []).filter((w) => watching && w.kind === "command" && w.state === "armed")
   const { railFilesCollapsed } = useSnapshot(prefs)
   // The card's order — most-alive first — then the files, which are not a wait at all. The files are
   // also the one group that FOLDS (maintainer 2026-09-03): a worker that touched 22 files fills the
@@ -254,6 +255,7 @@ export function FocusRail({ thread }: { thread: ThreadView }) {
     { head: "Background shells", rows: shells.map((s) => <BgShellRow key={s.id ?? s.label} shell={s} slug={thread.id} now={now} onDismiss={childOpDismisser(thread.id, s, "SHELL")} />) },
     { head: "Pull requests", rows: prs.map((w) => <GithubWatchRow key={w.id} watch={w} />) },
     { head: "Issues", rows: issues.map((w) => <GithubWatchRow key={w.id} watch={w} />) },
+    { head: "Command watches", rows: commands.map((w) => <CommandWatchRow key={w.id} watch={w} now={now} />) },
     { head: "Timers", rows: timers.map((w) => <TimerRow key={w.id} watch={w} now={now} />) },
     // Saved references, not waits, so they follow every live row. Ahead of the edited files, though:
     // the worker chose these for the human to keep at hand, and the tree can run to dozens of rows.

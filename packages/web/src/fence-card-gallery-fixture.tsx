@@ -101,6 +101,9 @@ const fences: { slug: string; label: string; kind: "done" | "awaiting"; body: st
     body: "- Fixed the cache collision in `src/resolver.ts` — the lookup now keys on the normalized id.\n- Added a regression test; `npm test` green.",
     hints: [],
   },
+  // A BARE ```done — no body, so the card is its chip and its Mark-as-done band. The chip head rules a body
+  // off; with none, the band's own border is the only seam, and a rule above it would draw two around nothing.
+  { slug: "g-done-empty", label: "```done · empty body", kind: "done", body: "", hints: [] },
   // FRONTMATTER + MARKDOWN — the shape a worker writes since 2026-08-17. The prose is arbitrary and
   // renders as BLOCKS, so a handoff with a list stays a list instead of being flattened into one run.
   {
@@ -236,9 +239,9 @@ setBoard(board)
 
 const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
-function Section({ label, children }: { label: string; children: React.ReactNode }) {
+function Section({ label, slug, children }: { label: string; slug?: string; children: React.ReactNode }) {
   return (
-    <div className="flex flex-col gap-1.5">
+    <div data-fence-section={slug} className="flex flex-col gap-1.5">
       <p className="text-[11px] text-muted">{label}</p>
       {children}
     </div>
@@ -285,7 +288,7 @@ function Fixture() {
       <main className="mx-auto flex min-h-screen w-full max-w-xl flex-col gap-5 px-4 py-8">
         <p className="petite-caps text-[10px] text-accent">Signal fences</p>
         {fences.map((f) => (
-          <Section key={f.slug} label={f.label}>
+          <Section key={f.slug} slug={f.slug} label={f.label}>
             <ThreadSlugContext.Provider value={f.slug}>
               <FenceCard fenceKind={f.kind} body={f.body} hints={f.hints} />
             </ThreadSlugContext.Provider>

@@ -85,7 +85,7 @@ test("a queued steer is transparent to the activity run, and label rows keep the
     await page.waitForSelector("[data-tool-activity] button")
     const settled = await column(page)
     assert.deepEqual(settled.digests, ["Expand 10 tool calls: Ran 10 tool calls"], "one digest for the whole run")
-    assert.deepEqual(settled.order, ["m0", "m1", "m8", "m11"], "the queued bubbles still render last, below the settled column")
+    assert.deepEqual(settled.order, ["m0", "m1", "m8"], "the queued bubble still renders last, below the settled column")
 
     // 3. CONTROL — the steer LANDED, so it genuinely ends the run: it sits inline and the calls above it
     //    settle into their own digest, which is exactly what must NOT happen while it is still queued.

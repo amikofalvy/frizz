@@ -163,7 +163,10 @@ const messages = [
     ],
     at: AGO(130),
   },
-  ...(THREE_STACK
+  // Not in the SETTLED state: a queued send AFTER the turn's last message on a rested thread is a send
+  // that has ended the rest (lib/steering.ts steeredSinceRest), so the view rightly reads it as running
+  // again and withholds the run behind the shimmer. The settled control keeps only the mid-run steer.
+  ...(THREE_STACK || SETTLED
     ? []
     : ([{
         sourceId: "m11",

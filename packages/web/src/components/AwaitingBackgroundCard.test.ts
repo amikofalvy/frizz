@@ -2,8 +2,9 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
-import { AgentRow, AwaitingBackgroundCard, AwaitingWaitTable, BgShellRow, awaitingBackgroundLabel, awaitingBackgroundSubject, hasAwaitingWaitRows, restingOnSteps, showsRestingCard } from "./AwaitingBackgroundCard.tsx"
+import { AgentRow, AwaitingBackgroundCard, AwaitingWaitTable, BgShellRow, awaitingBackgroundChip, awaitingBackgroundSubject, hasAwaitingWaitRows, restingOnSteps, showsRestingCard } from "./AwaitingBackgroundCard.tsx"
 import { CHILD_STALE_DOT_CLASS, CHILD_STALE_SHELL_TITLE, CHILD_STALE_TITLE } from "../lib/childOps.ts"
+import { commandWatchName } from "./AwaitingBackgroundCard.tsx"
 import type { ThreadView } from "@frizz/shared"
 
 // One card, three surfaces, and since 2026-08-15 one TABLE: every kind of live work the thread declared
@@ -45,6 +46,12 @@ const render = (t: Parameters<typeof AwaitingBackgroundCard>[0]["thread"]) =>
   renderToStaticMarkup(createElement(AwaitingBackgroundCard, { thread: t }))
 const text = (t: Parameters<typeof AwaitingBackgroundCard>[0]["thread"]) =>
   render(t).replace(/<[^>]+>/g, "").replace(/&#x27;|&rsquo;/g, "’")
+// The card's HEAD, read apart: the kind chip, and the worker's title under it (null when it named none).
+const head = (t: Parameters<typeof AwaitingBackgroundCard>[0]["thread"]) => {
+  const out = render(t)
+  const strip = (m: RegExpMatchArray | null) => m ? m[1].replace(/<[^>]+>/g, "") : null
+  return { chip: strip(out.match(/<span data-card-chip[^>]*>(.*?)<\/span>/)), title: strip(out.match(/<div data-card-title[^>]*>(.*?)<\/div>/)) }
+}
 
 test("awaitingBackgroundSubject names exactly the work that is RUNNING", () => {
   assert.equal(awaitingBackgroundSubject(thread([agent("running")], [])), "1 sub-agent")
@@ -92,42 +99,49 @@ test("a thread nobody can park draws no snooze — foreign or archived", () => {
   assert.doesNotMatch(render(archived), /Snooze/)
 })
 
-// THE TITLE NAMES THE SHAPE, and there are two of them (maintainer 2026-08-04: 'the card that says
-// "awaiting background work" should be renamed to "background shells running"'). The rename is scoped to
-// the rest it describes: a shell-only rest is the one that queues, and it is not awaiting anything.
-test("the card's title names the shape: shells running vs awaiting a dispatched result", () => {
-  const shellsOnly = text(thread([], [shell("running"), shell("running")]))
-  assert.match(shellsOnly, /Background shells running/)
-  assert.doesNotMatch(shellsOnly, /Awaiting/)
-
-  const withChild = text(thread([agent("running")], [shell("running")]))
-  assert.match(withChild, /Awaiting/)
-  assert.doesNotMatch(withChild, /Background shells running/)
+// THE CHIP NAMES THE SHAPE, and there are two of them outside steps (maintainer 2026-08-04: 'the card
+// that says "awaiting background work" should be renamed to "background shells running"'). The rename is
+// scoped to the rest it describes: a shell-only rest is the one that queues, and it is not awaiting
+// anything. These were the card's TITLE until 2026-10-13, when every signal card took the kind chip.
+test("the card's chip names the shape: shells running vs awaiting a dispatched result", () => {
+  assert.deepEqual(head(thread([], [shell("running"), shell("running")])), { chip: "Background shells running", title: null })
+  assert.doesNotMatch(text(thread([], [shell("running"), shell("running")])), /Awaiting/)
+  assert.deepEqual(head(thread([agent("running")], [shell("running")])), { chip: "Awaiting", title: null })
+  assert.doesNotMatch(text(thread([agent("running")], [shell("running")])), /Background shells running/)
 })
 
-// …AND THE WORKER MAY OVERRIDE BOTH (maintainer 2026-08-26: "let's let the agent specify its own title
+// …AND THE WORKER MAY NAME THIS ONE (maintainer 2026-08-26: "let's let the agent specify its own title
 // for these awaiting cards"). "Awaiting" is true of every park on the board and specific to none, and the
 // worker is the only party that knows what THIS wait is. Capped at parse time, so the card renders the
-// hint verbatim and cannot draw a heading longer than the grammar allows.
+// hint verbatim and cannot draw a heading longer than the grammar allows. It REPLACED the derived heading
+// until 2026-10-13; it now goes under the chip, so the kind and the specifics are each said once.
 const titled = (value: string) => ({ kind: "awaiting" as const, body: "", hints: [{ kind: "title" as const, value }] })
 
-test("a title: in the fence replaces the derived heading, on either shape", () => {
+test("a title: in the fence heads the card under its chip, on either shape", () => {
   const declared = { ...thread([agent("running")], []), lastFence: titled("Three-platform CI run") } as Parameters<typeof AwaitingBackgroundCard>[0]["thread"]
-  assert.match(text(declared), /Three-platform CI run/)
-  assert.doesNotMatch(text(declared), /Awaiting/)
-  // The shell-only shape has a kind-naming heading of its own, and a declared title beats that too.
+  assert.deepEqual(head(declared), { chip: "Awaiting", title: "Three-platform CI run" })
   const shells = { ...thread([], [shell("running")]), lastFence: titled("Nightly bench, arm 3 of 3") } as Parameters<typeof AwaitingBackgroundCard>[0]["thread"]
-  assert.match(text(shells), /Nightly bench, arm 3 of 3/)
-  assert.doesNotMatch(text(shells), /Background shells running/)
+  assert.deepEqual(head(shells), { chip: "Background shells running", title: "Nightly bench, arm 3 of 3" })
 })
 
-test("an empty or absent title falls back to the derived heading", () => {
+test("an empty or absent title leaves the chip alone at the head", () => {
   const blank = { ...thread([agent("running")], []), lastFence: titled("   ") } as Parameters<typeof AwaitingBackgroundCard>[0]["thread"]
-  assert.match(text(blank), /Awaiting/)
+  assert.deepEqual(head(blank), { chip: "Awaiting", title: null })
   // A DONE fence's hints are never a heading — only a standing awaiting park may name this card.
   const done = { ...thread([agent("running")], []), lastFence: { kind: "done" as const, body: "", hints: [{ kind: "title" as const, value: "Landed" }] } } as Parameters<typeof AwaitingBackgroundCard>[0]["thread"]
-  assert.match(text(done), /Awaiting/)
+  assert.deepEqual(head(done), { chip: "Awaiting", title: null })
   assert.doesNotMatch(text(done), /Landed/)
+})
+
+// Every awaiting shape is ruled off under its chip, as the steps card and the done card are: one head shape
+// for every signal card (2026-10-13).
+test("every awaiting shape rules its head off from its body", () => {
+  for (const t of [thread([agent("running")], []), thread([], [shell("running")])]) {
+    const out = render(t)
+    assert.ok(out.indexOf("data-card-chip") < out.indexOf("data-card-rule"), "chip, then the rule")
+    assert.ok(out.indexOf("data-card-rule") < out.indexOf("data-wait-kind") || !out.includes("data-wait-kind"), "…then the body")
+  }
+  assert.equal(awaitingBackgroundChip(thread([], []), [{ kind: "step", value: "Run `npm login`" }]), "Awaiting human")
 })
 
 // ---- ONE CARD, EVERY RUNTIME (2026-09-04) --------------------------------------------------------
@@ -177,6 +191,60 @@ test("a card with no thread is still the card: its heading, no rows, no verb", (
   assert.doesNotMatch(rowed, /Waiting for an external update/)
 })
 
+// An ARMED COMMAND WATCH — what a `command_watch` registration becomes server-side (board.fenceWatchViews).
+const commandWatch = () => ({
+  id: "command:demo:cmw_12f995833a5b",
+  kind: "command" as const,
+  target: "cmw_12f995833a5b",
+  state: "armed" as const,
+  createdAt: "2026-07-28T09:00:00.000Z",
+  command: {
+    command: "/Users/me/.cache/nub/node/26.11.1/bin/node /Users/me/repo/.frizz/threads/abc/others-idle.mjs",
+    every: "2m",
+    expiresAt: "2026-07-28T21:00:00.000Z",
+    runs: 24,
+    lastRun: { at: new Date(Date.now() - 5 * 60_000).toISOString(), outcome: "exit" as const, exitCode: 1, output: "active: Layout shift when a send ends a rest\n" },
+  },
+})
+
+// The releaser's card on 2026-10-13: parked on a command watch and nothing else, with an empty fence
+// body. It had no row, so it said "Waiting for an external update." and nothing about what it waited on.
+test("a park on a command watch alone rows the command, its cadence and its last check", () => {
+  const t = {
+    ...thread([], []),
+    watches: [commandWatch()],
+    lastFence: { kind: "awaiting", body: "", hints: [{ kind: "command", value: "cmw_12f995833a5b" }, { kind: "status", value: "watching" }] },
+  } as Parameters<typeof AwaitingBackgroundCard>[0]["thread"]
+  const html = render(t)
+  assert.doesNotMatch(html, /Waiting for an external update/)
+  assert.match(html, /data-wait-row="cmw_12f995833a5b" data-wait-kind="command"/)
+  const shown = html.replace(/<[^>]+>/g, " ")
+  assert.match(shown, /Command watches/)
+  assert.match(shown, /node others-idle\.mjs/, "the command, its long paths cut")
+  assert.doesNotMatch(shown, /\.cache\/nub/, "…not the directories")
+  assert.match(shown, /every 2m/)
+  // The tooltip is where the full command and the reason it has not passed live.
+  const tip = /data-wait-kind="command"[\s\S]*?title="([^"]*)"/.exec(html)?.[1] ?? ""
+  assert.match(tip, /\/Users\/me\/\.cache\/nub\/node\/26\.11\.1\/bin\/node/)
+  assert.match(tip, /24 checks so far\. The last, [45]m ago, exited 1\./)
+  assert.match(tip, /active: Layout shift when a send ends a rest/)
+  assert.equal(hasAwaitingWaitRows(t), true)
+})
+
+test("a command watch's row name cuts long absolute paths to their last segment, and nothing else", () => {
+  assert.equal(
+    commandWatchName("/Users/me/.cache/nub/node/26.11.1/bin/node /Users/me/repo/.frizz/threads/abc/others-idle.mjs"),
+    "node others-idle.mjs",
+  )
+  // Short paths read as written: `> null` would be a different command.
+  assert.equal(commandWatchName("curl -sf https://registry.npmjs.org/frizz/0.13.14 > /dev/null"), "curl -sf https://registry.npmjs.org/frizz/0.13.14 > /dev/null")
+  assert.equal(commandWatchName("test -f /tmp/done"), "test -f /tmp/done")
+  assert.equal(commandWatchName("npm view frizz@0.13.12 version"), "npm view frizz@0.13.12 version")
+  // Quoted and assigned paths are cut at the quote or the `=`, and runs of whitespace fold to one.
+  assert.equal(commandWatchName(`grep -q done '/var/log/app/run.log'`), `grep -q done 'run.log'`)
+  assert.equal(commandWatchName("FILE=/srv/app/state/ready  test -s \"$FILE\""), "FILE=ready test -s \"$FILE\"")
+})
+
 // ---- ONE ROW PER THING, GROUPED BY KIND ----------------------------------------------------------
 test("every kind the thread declared gets a row, under its own heading", () => {
   const t = {
@@ -215,11 +283,11 @@ test("an armed timer gets a row: named by its prompt, counting down, non-interac
   assert.match(text({ ...thread([], []), watches: [timerWatch(-1)] } as Parameters<typeof AwaitingBackgroundCard>[0]["thread"]), /firing…/)
 })
 
-// The kind-naming title is for background shells and NOTHING else: with a timer beside them the card
+// The kind-naming chip is for background shells and NOTHING else: with a timer beside them the card
 // holds a Timers group too, and "Background shells running" would name only half the wait.
-test("a timer beside running shells takes the generic title", () => {
+test("a timer beside running shells takes the generic chip", () => {
   const t = { ...thread([], [shell("running")]), watches: [shellWatch("bzvtnt3ig"), timerWatch()] } as Parameters<typeof AwaitingBackgroundCard>[0]["thread"]
-  assert.match(text(t), /Awaiting/)
+  assert.deepEqual(head(t), { chip: "Awaiting", title: null })
   assert.doesNotMatch(text(t), /Background shells running/)
 })
 
@@ -243,7 +311,7 @@ test("a declared shell gets a row; an undeclared one running beside it does not"
   assert.match(body, /vite dev/, "the declared shell is named by its label, resolved off its taskId")
   assert.doesNotMatch(body, /some other server/, "an undeclared shell says nothing")
 
-  // NO DECLARATION AT ALL ⇒ no shell rows, whatever is running. (The card still TITLES itself
+  // NO DECLARATION AT ALL ⇒ no shell rows, whatever is running. (The card still CHIPS itself
   // "Background shells running" for that shape — the assertion has to be on the row, not the word.)
   assert.doesNotMatch(render(thread([], [shell("running")])), /data-wait-kind="shell"/)
 })
