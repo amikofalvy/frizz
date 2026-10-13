@@ -14,8 +14,8 @@
       .fixture-surface { min-width: 0; border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-panel); padding: 18px; }
       .fixture-label { margin-bottom: 12px; color: var(--color-muted); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
       .fixture-queue { padding: 14px; }
-      /* TranscriptCard QUEUE_WRAP by hand: a card's column wraps code whatever the Wrap code setting says. */
-      .fixture-queue .md-body { overflow-wrap: anywhere; --code-wrap: pre-wrap; }
+      /* TranscriptCard QUEUE_WRAP by hand. */
+      .fixture-queue .md-body { overflow-wrap: anywhere; }
       @media (max-width: 700px) {
         .fixture-shell { width: calc(100% - 20px); margin-top: 12px; }
         .fixture-grid { grid-template-columns: minmax(0, 1fr); gap: 14px; }
@@ -27,7 +27,7 @@
     <main class="fixture-shell">
       <header class="fixture-head">
         <h1>Shared message renderer — fenced code</h1>
-        <p>The thread's width and the Queue's, rendered from the same sanitized markdown path. Code wraps in both by default; with Wrap code off, only the Queue's still does.</p>
+        <p>The thread's width and the Queue's, rendered from the same sanitized markdown path. Code wraps in both by default; with Wrap code off, each block scrolls sideways inside itself.</p>
       </header>
       <div class="fixture-grid">
         <section class="fixture-surface" aria-labelledby="thread-label">

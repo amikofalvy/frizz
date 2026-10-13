@@ -1287,14 +1287,15 @@ a[href] {
 /* CODE WRAPS BY DEFAULT, the way the prompt box does: a line breaks at its spaces, and a token longer
    than the line breaks wherever it has to (maintainer 2026-10-13: "code blocks should auto-wrap, just
    like the prompt box"). It is a SETTING — "Wrap code", a browser preference that lib/codeWrap.ts
-   mirrors onto <html> as `data-code-wrap` — and Off is what every surface but the Queue's column did
-   until that day: each line stays on one line and its block scrolls sideways.
+   mirrors onto <html> as `data-code-wrap` — and Off is what the thread view did until that day: each
+   line stays on one line and its block scrolls sideways. One switch for every surface, a Queue card's
+   column included; that column had its own always-wrap rule (TranscriptCard QUEUE_WRAP) only while
+   the thread view had no way to wrap at all.
 
-   The choice travels as ONE custom property, read here and by the Edit card's rows (lib/diff/diff.css).
-   A surface that wraps whatever the setting says — a card's narrow column, TranscriptCard QUEUE_WRAP —
-   sets the property on itself and wins by inheritance, with no selector to out-rank. `anywhere` rather
-   than `break-word` so a wrapped block's longest token never counts toward the width of whatever holds
-   it. `overflow-x` is the sideways scroll when the setting is off, and a backstop when it is on. */
+   The choice travels as ONE custom property, read here and by the Edit card's rows (lib/diff/diff.css),
+   so the two cannot disagree. `anywhere` rather than `break-word` so a wrapped block's longest token
+   never counts toward the width of whatever holds it. `overflow-x` is the sideways scroll when the
+   setting is off, and a backstop when it is on. */
 html[data-code-wrap="off"] {
   --code-wrap: pre;
 }
@@ -1920,10 +1921,10 @@ html[data-code-wrap="off"] {
   padding-left: 0;
   padding-right: 0;
 }
-/* Where code WRAPS (the default, and always in a card's column) every line is as wide as the block,
-   and a band under a line that wraps runs border to border under each line it wraps to. With Wrap code
-   off the block scrolls sideways, and this is as wide as its longest line, so a band reaches the end of
-   the line it colours and not just the edge of the viewport; never narrower than the block. */
+/* Where code WRAPS (the default) every line is as wide as the block, and a band under a line that
+   wraps runs border to border under each line it wraps to. With Wrap code off the block scrolls
+   sideways, and this is as wide as its longest line, so a band reaches the end of the line it colours
+   and not just the edge of the viewport; never narrower than the block. */
 .md-body pre:is(.md-code-lined, .md-diff) > code {
   display: block;
   width: fit-content;

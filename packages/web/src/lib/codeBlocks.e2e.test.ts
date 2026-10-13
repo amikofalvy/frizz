@@ -333,6 +333,7 @@ test("marked lines, rendered diffs and long blocks draw, copy and open on the sh
         git: scrolls(document.querySelector("[data-case=diff-git] pre")!),
         editCard: scrolls(document.querySelector("[data-case=edit-card] .frizz-diff-body")!),
         narrow: [...document.querySelectorAll("[data-case=narrow] pre")].map(scrolls),
+        narrowSpills: scrolls(document.querySelector("[data-case=narrow]")!),
       }
     })
     assert.ok(unwrapped.scrolls > 100, `with wrapping off the long marked line scrolls its block, by ${unwrapped.scrolls}px`)
@@ -343,7 +344,10 @@ test("marked lines, rendered diffs and long blocks draw, copy and open on the sh
     assert.ok(unwrapped.editCard > 100, "the Edit card's body scrolls sideways")
     // A hunk header longer than the code under it is still cut, rather than being what makes a block scroll.
     assert.equal(unwrapped.git, 0)
-    assert.deepEqual(unwrapped.narrow, [0, 0, 0], "a card's narrow column wraps whatever the setting says")
+    // One switch for every surface: the Queue's column scrolls its blocks too, each inside itself, and
+    // none of them widens the column.
+    assert.ok(unwrapped.narrow.every((px) => px > 0), `every block in the 300px column scrolls: ${unwrapped.narrow}`)
+    assert.equal(unwrapped.narrowSpills, 0, "a scrolling block stays inside its column")
     // And back on, the same blocks wrap again.
     await page.click("[data-wrap-code]")
     await page.waitForFunction(() => document.documentElement.dataset.codeWrap === "on")

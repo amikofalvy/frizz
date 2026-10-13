@@ -8,12 +8,12 @@ import { mdToHtml } from "../lib/markdown.ts"
 // Queue cards live in the narrow needs-you rail, so a worker message carrying a long UNBREAKABLE token
 // — a Windows path, a box-drawing error dump — must wrap at the character level rather than bleed past
 // the card edge (maintainer 2026-07-10: it "looks so bad"). Applied ONLY in the dense (queue) surface:
-// `overflow-wrap:anywhere` breaks unbreakable PROSE runs to fit, and `--code-wrap` pins code fences to
-// wrapping here WHATEVER the "Wrap code" setting says: it is the property `.md-body pre` reads
-// (styles.css), so with the setting off the roomier thread view scrolls a long line sideways while a
-// narrow card still wraps it inside the <pre>. Until 2026-10-13 this was `whitespace-pre-wrap` +
-// `break-all`; a card's code now breaks at its spaces, like every other wrapped block.
-export const QUEUE_WRAP = "[overflow-wrap:anywhere] [--code-wrap:pre-wrap]"
+// `overflow-wrap:anywhere` breaks unbreakable PROSE runs to fit. Code fences needed their own pair here
+// (`whitespace-pre-wrap` + `break-all`) while the thread view scrolled them sideways. Since 2026-10-13
+// whether code wraps is ONE setting for every surface, a card included ("Wrap code", styles.css
+// `.md-body pre`): on, a fence breaks at its spaces here like anywhere else; off, it scrolls inside its
+// own <pre>, which never widens the card.
+export const QUEUE_WRAP = "[overflow-wrap:anywhere]"
 
 // ── The shared card chrome ────────────────────────────────────────────────────────────────────────
 // Every card the transcript sets off from the prose — the ```done / ```awaiting signal fences, a

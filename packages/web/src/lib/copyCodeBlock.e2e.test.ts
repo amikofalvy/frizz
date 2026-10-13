@@ -125,12 +125,16 @@ test("a fenced code block copies its own source, minus the renderer's trailing n
     // THE REASON THE WRAPPER EXISTS. With Wrap code off (lib/codeWrap.ts puts the setting on <html>, and
     // the stylesheet reads it there) the thread's block scrolls sideways instead, and `pre` is the scroll
     // container: a button anchored inside it would ride the content out of view. The Queue's column
-    // wraps whatever the setting says.
+    // follows the same setting, and its block scrolls inside itself without widening the column.
     const held = await page.evaluate(() => {
       document.documentElement.dataset.codeWrap = "off"
       const wrap = [...document.querySelectorAll<HTMLElement>("#thread .md-code")]
         .find((w) => { const p = w.querySelector("pre")!; return p.scrollWidth > p.clientWidth + 20 })
-      const queue = [...document.querySelectorAll<HTMLElement>("#queue .md-code pre")].map((p) => p.scrollWidth - p.clientWidth)
+      const column = document.querySelector<HTMLElement>("#queue")!
+      const queue = {
+        scrolling: [...column.querySelectorAll<HTMLElement>(".md-code pre")].filter((p) => p.scrollWidth > p.clientWidth + 20).length,
+        spills: column.scrollWidth - column.clientWidth,
+      }
       if (!wrap) return { found: false, before: 0, after: 0, scrolled: 0, queue }
       const pre = wrap.querySelector("pre")!, btn = wrap.querySelector(".md-code-copy")!
       const offset = () => +(btn.getBoundingClientRect().right - pre.getBoundingClientRect().right).toFixed(2)
@@ -141,7 +145,8 @@ test("a fenced code block copies its own source, minus the renderer's trailing n
     assert.equal(held.found, true, "with wrapping off the thread's long line should scroll its block")
     assert.ok(held.scrolled > 100, `the block scrolled ${held.scrolled}px`)
     assert.equal(held.after, held.before)
-    assert.deepEqual(held.queue.filter((px) => px !== 0), [], "the Queue's column still wraps")
+    assert.ok(held.queue.scrolling > 0, "the Queue's long line scrolls its block too")
+    assert.equal(held.queue.spills, 0, "and the block stays inside the Queue's column")
 
     assert.deepEqual(pageErrors, [])
   } finally {
