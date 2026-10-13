@@ -106,19 +106,47 @@ test("a fenced code block copies its own source, minus the renderer's trailing n
     await page.waitForFunction((i: number) => document.querySelectorAll(".md-code-copy")[i]?.classList.contains("is-copied"), {}, second.index)
     assert.equal(await page.evaluate(() => navigator.clipboard.readText()), second.text.replace(/\n$/, ""))
 
-    // THE REASON THE WRAPPER EXISTS. `pre` is the scroll container, so a button anchored inside it rides
-    // the content and slides out of view the moment a long line is scrolled sideways.
+    // CODE WRAPS by default, so no block scrolls sideways. The fixture's 455-character token is the
+    // case that would: it breaks across lines inside its block, at the thread's width and the Queue's.
+    const wrapped = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>(".md-code pre")].map((pre) => {
+      const style = getComputedStyle(pre)
+      return {
+        text: (pre.textContent ?? "").slice(0, 7),
+        scrolls: pre.scrollWidth - pre.clientWidth,
+        lines: Math.round((pre.clientHeight - parseFloat(style.paddingTop) * 2) / parseFloat(style.lineHeight)),
+      }
+    }))
+    assert.deepEqual(wrapped.filter((pre) => pre.scrolls !== 0), [], "no code block scrolls sideways")
+    const longThread = wrapped.find((pre) => pre.text === "thread_")!
+    const longQueue = wrapped.find((pre) => pre.text === "queue_0")!
+    assert.ok(longThread.lines > 2, `the thread's one long line is drawn on ${longThread.lines}`)
+    assert.ok(longQueue.lines > 2, `the Queue's one long line is drawn on ${longQueue.lines}`)
+
+    // THE REASON THE WRAPPER EXISTS. With Wrap code off (lib/codeWrap.ts puts the setting on <html>, and
+    // the stylesheet reads it there) the thread's block scrolls sideways instead, and `pre` is the scroll
+    // container: a button anchored inside it would ride the content out of view. The Queue's column
+    // follows the same setting, and its block scrolls inside itself without widening the column.
     const held = await page.evaluate(() => {
+      document.documentElement.dataset.codeWrap = "off"
       const wrap = [...document.querySelectorAll<HTMLElement>("#thread .md-code")]
-        .find((w) => { const p = w.querySelector("pre")!; return p.scrollWidth > p.clientWidth + 20 })!
+        .find((w) => { const p = w.querySelector("pre")!; return p.scrollWidth > p.clientWidth + 20 })
+      const column = document.querySelector<HTMLElement>("#queue")!
+      const queue = {
+        scrolling: [...column.querySelectorAll<HTMLElement>(".md-code pre")].filter((p) => p.scrollWidth > p.clientWidth + 20).length,
+        spills: column.scrollWidth - column.clientWidth,
+      }
+      if (!wrap) return { found: false, before: 0, after: 0, scrolled: 0, queue }
       const pre = wrap.querySelector("pre")!, btn = wrap.querySelector(".md-code-copy")!
       const offset = () => +(btn.getBoundingClientRect().right - pre.getBoundingClientRect().right).toFixed(2)
       const before = offset()
       pre.scrollLeft = pre.scrollWidth
-      return { before, after: offset(), scrolled: pre.scrollLeft }
+      return { found: true, before, after: offset(), scrolled: pre.scrollLeft, queue }
     })
-    assert.ok(held.scrolled > 100, "the fixture should hold a block wide enough to scroll")
+    assert.equal(held.found, true, "with wrapping off the thread's long line should scroll its block")
+    assert.ok(held.scrolled > 100, `the block scrolled ${held.scrolled}px`)
     assert.equal(held.after, held.before)
+    assert.ok(held.queue.scrolling > 0, "the Queue's long line scrolls its block too")
+    assert.equal(held.queue.spills, 0, "and the block stays inside the Queue's column")
 
     assert.deepEqual(pageErrors, [])
   } finally {

@@ -508,6 +508,11 @@ export function completionConfirmationHold(telemetry: SessionTelemetry | undefin
   }
 }
 
+// How long an input the broker bridge took may stand in for a turn the tailer has not folded yet (see
+// `inputAhead` in the Claude follow-up). An input's record reaches the JSONL in tens of ms on a live
+// daemon and in a few seconds through a cold resume; past this the transcript is the better witness.
+const INPUT_AHEAD_MAX_MS = 30_000
+
 // Worker-authored labels, so cap both the list and each string before they cross the wire — the same
 // defensive discipline every other foreign-payload surface here follows. The untruncated counts ride
 // alongside (see CompletionHold), so a capped list is reported as "+N more", never silently shortened.
@@ -1071,7 +1076,25 @@ export function createRouter(ctx: AppContext) {
         // already folds in the runtime's own liveness. Unknown telemetry (a row not yet primed after a
         // server boot) defaults to mid-turn — the conservative direction, since the gray bubble is
         // honest for a queued send and merely late for a delivered one.
-        const midTurn = (ctx.tailer.get(input.slug)?.turn ?? "in-flight") === "in-flight"
+        //
+        // …OR SOMETHING ELSE JUST OPENED THE TURN AND THE TRANSCRIPT HAS NOT SAID SO YET. The tailer reads
+        // the turn off the JSONL, and for the tens of ms between an input being handed to the broker and
+        // its record landing it still reads `idle`. A send that arrives in that gap — the human pressing
+        // Send on a rested thread as a wake fires, or as another tab's send goes out — is queued by the
+        // worker behind the turn the first input opened, yet it opened `delivered` here, and
+        // projectDeliveryLedger un-grays a `delivered` send's bubble: for the whole of that turn the chat
+        // drew a message the worker had not read as read, and placed it above the Working row, then moved
+        // it under the reply at the handover (measured 2026-10-13, 11 of 12 scripted-broker recordings of
+        // a send 10ms behind another). The bridge knows when it last took an input for this session, so
+        // an input newer than anything the tailer has folded means this message has one ahead of it.
+        // Bounded, so an input whose record never lands cannot gray every later send.
+        const telemetry = ctx.tailer.get(input.slug)
+        const inputAheadAt = bridge.lastInputAt?.(row.session_id)
+        const foldedThroughMs = Date.parse(telemetry?.lastActivityAt ?? "")
+        const inputAhead = inputAheadAt !== undefined
+          && Date.now() - inputAheadAt < INPUT_AHEAD_MAX_MS
+          && !(Number.isFinite(foldedThroughMs) && foldedThroughMs >= inputAheadAt)
+        const midTurn = (telemetry?.turn ?? "in-flight") === "in-flight" || inputAhead
         // THE UPGRADE AT COMPACTION (claude-model-upgrade.ts): a thread that compacted on an edition its
         // family has since moved past takes this message in a fresh process, forked from the current pin.
         // Only at rest — the gate refuses a turn in flight, a sub-agent, a shell, an approval or an
@@ -1566,6 +1589,7 @@ export function createRouter(ctx: AppContext) {
       spawnedAt: row.spawned_at,
       sightings: ctx.tailer.get(slug)?.questionSightings,
       autonomousGoal: autonomousGoal(row),
+      faultBook: ctx.questionFaults,
     })
   }
 
@@ -3643,9 +3667,22 @@ export function createRouter(ctx: AppContext) {
         // Slug-scoped in storage, so one thread can never withdraw another's question. Named by the
         // worker's own fence id since 2026-10-13, or by a legacy `qst_…`.
         const target = findOwnQuestion(input.slug, input.id)
-        const withdrawn = target ? ctx.storage.withdrawThreadQuestion(input.slug, target.id, Date.now()) : false
+        // A FOLLOW-UP'S ID WITHDRAWS NOTHING. It rides inside its parent's row, so the only thing this
+        // call could take back is the whole parent — a question the worker did not name and may still
+        // want answered. It did exactly that until 2026-10-13, and the first fix only said so afterwards;
+        // refusing costs the worker one more command and loses nobody's question.
+        const want = input.id.trim().toLowerCase()
+        const named = target !== undefined && (target.id.toLowerCase() === want || target.handle?.toLowerCase() === want)
+        const withdrawn = target && named ? ctx.storage.withdrawThreadQuestion(input.slug, target.id, Date.now()) : false
         if (withdrawn) ctx.board.refresh()
-        return { withdrawn, open: openQuestionViews(input.slug) }
+        // NAMED BACK, by the worker's own id for the row: `sqlite-path` resolves to the `settings-store`
+        // it is a follow-up of, which is the id the worker has to pass to withdraw the pair. The state is
+        // the row's as the call found it — why nothing was withdrawn, when nothing was.
+        return {
+          withdrawn,
+          ...(target ? { id: target.handle ?? target.id, state: target.state } : {}),
+          open: openQuestionViews(input.slug),
+        }
       },
     }),
 

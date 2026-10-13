@@ -326,6 +326,45 @@ test("integration: the fold catches up when the provider's event beats its own d
   }
 })
 
+test("integration: the chase outlives an earlier record — a `result` is caught up with only when the fold rests", async () => {
+  // The turn-END variant of the case above (2026-10-13, scripts/scripted-claude.mjs with `disklag=40
+  // resultlag=10` and a tool call before the final message): the final `assistant` event and its
+  // `result` arrive together with an EARLIER record's write, so the tick they nudge does advance the
+  // fold — by the wrong record. The chase used to stop there, and the end_turn record that landed 30ms
+  // later, announced by nothing, waited out the 1s poll: the board said running for ~900ms while the
+  // transcript push already showed the reply and its rest.
+  const h = createIntegrationHarness()
+  try {
+    const OUT = childTranscript(h)
+    const s = h.dispatch("mu")
+    h.telemetry("mu")
+
+    // The opening record is on disk when the turn's last events arrive…
+    s.play(
+      record(userRecord("go", T0)),
+      event(userEvent("go", s.sessionId)),
+      event(assistantEvent("all done", s.sessionId)),
+      event(resultEvent(s.sessionId)),
+    )
+    await h.ingest.drain()
+    // …the nudged tick folds it (the fold ADVANCED, and still reads in-flight)…
+    await new Promise((r) => setTimeout(r, 80))
+    assert.equal(h.tailer.get("mu")?.turn, "in-flight")
+    // …and the final record lands with no event left to announce it.
+    s.play(record(assistantRecord("all done", "end_turn", T1)))
+
+    // Well inside the poll: the chase covers ~500ms of write lag from the events it was told about.
+    const deadline = Date.now() + 300
+    while (h.tailer.get("mu")?.turn !== "idle" && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 5))
+    }
+    assert.equal(h.tailer.get("mu")?.lastAssistant, "all done", "the chase kept looking past the earlier record")
+    assert.equal(h.tailer.get("mu")?.turn, "idle")
+  } finally {
+    h.close()
+  }
+})
+
 test("integration: the chase is bounded — events that never produce a record stop nudging", async () => {
   // The other half of the contract: `init` and the system sidecars bump the provider's event count
   // without ever writing a record the fold can consume. Chasing those forever would turn a quiet

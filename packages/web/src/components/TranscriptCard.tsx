@@ -8,10 +8,12 @@ import { mdToHtml } from "../lib/markdown.ts"
 // Queue cards live in the narrow needs-you rail, so a worker message carrying a long UNBREAKABLE token
 // — a Windows path, a box-drawing error dump — must wrap at the character level rather than bleed past
 // the card edge (maintainer 2026-07-10: it "looks so bad"). Applied ONLY in the dense (queue) surface:
-// `overflow-wrap:anywhere` breaks unbreakable PROSE runs to fit, and code fences additionally get
-// `whitespace-pre-wrap` + `break-all` so their long lines wrap INSIDE the <pre> instead of forcing the
-// horizontal scroll/overflow. The roomier thread view keeps its scroll-on-overflow default (wrap=false).
-export const QUEUE_WRAP = "[overflow-wrap:anywhere] [&_pre]:whitespace-pre-wrap [&_pre]:break-all"
+// `overflow-wrap:anywhere` breaks unbreakable PROSE runs to fit. Code fences needed their own pair here
+// (`whitespace-pre-wrap` + `break-all`) while the thread view scrolled them sideways. Since 2026-10-13
+// whether code wraps is ONE setting for every surface, a card included ("Wrap code", styles.css
+// `.md-body pre`): on, a fence breaks at its spaces here like anywhere else; off, it scrolls inside its
+// own <pre>, which never widens the card.
+export const QUEUE_WRAP = "[overflow-wrap:anywhere]"
 
 // ── The shared card chrome ────────────────────────────────────────────────────────────────────────
 // Every card the transcript sets off from the prose — the ```done / ```awaiting signal fences, a
@@ -123,8 +125,8 @@ const CARD_ICON_OFFSET = "card-icon-offset"
 // space, cancelled with an equal negative margin before paint. The ink then starts on the card's own
 // content edge like every other line in it, and `gap-2` means 8px of INK to the title on every kind.
 //
-// The kind chip's glyph is trimmed the same way (KindChip): four card kinds share that chip, each with a
-// different glyph, and one padding cannot sit four different dead spaces at one inset.
+// The kind line's glyph is trimmed the same way (KindLabel): every block type shares that line, each with
+// a different glyph, and one gap cannot sit their different dead spaces at one ink distance from the word.
 function useInkTrim(Icon: LucideIcon | undefined) {
   const ref = useRef<SVGSVGElement>(null)
   useLayoutEffect(() => {
@@ -200,56 +202,54 @@ export function CardHead({
   )
 }
 
-// THE KIND CHIP — the second head shape (2026-10-05). A card that names its KIND in a small filled chip
-// carries its glyph INSIDE that chip, at chip size, with the title on its own line under it and a rule
-// between that header and the body (maintainer, of the steps card: "we should have a little icon … then
-// a label that says just says to do, like a chip basically. Then underneath that can be the title … I
-// think it would help if we had another horizontal rule dividing the title and chip from the actual
-// body"). The 16px glyph beside a 16px title read as two headings side by side; a chip says what KIND
-// of card this is once, small, and leaves the title to say what THIS one is about.
+// THE KIND HEAD — the second head shape. A card that names its KIND does it in a small line of its own: a
+// 12px glyph and the kind's word, muted, with the title on its own line under it and a rule between that
+// header and the body. It is what EVERY block type wears since 2026-10-13 — the done card, every awaiting
+// shape and the question card — with the worker's own title under the kind, or the kind alone when the
+// worker named none (maintainer, picking it off the second round of mockups: "a small icon followed by a
+// small word over the title will look good"; and before that, "all block types should have a header").
 //
-// EVERY SIGNAL CARD WEARS IT since 2026-10-13 — the done card and every awaiting shape, not the steps card
-// alone (maintainer: "it's weird that the done blocks still don't have a visually separate header, the
-// way that the awaiting blocks do. We need consistency here in our … block types"). The chip carries the
-// kind the glyph-beside-title head used to spell as its title ("Done", "Awaiting"); a title under it is
-// only ever the worker's own. The runtime banners and the question card keep the plain head: neither is a
-// fence the worker signs off with, and the question card's tinted surface already sets it apart.
+// HOW IT GOT HERE, because each step is a thing not to undo. The steps card took a filled CHIP with the
+// glyph inside it on 2026-10-05 (maintainer: "a little icon … then a label that says just says to do, like
+// a chip basically. Then underneath that can be the title … another horizontal rule dividing the title and
+// chip from the actual body"): the 16px glyph beside a 16px title had read as two headings side by side.
+// On 2026-10-13 every done and awaiting card took that chip too, and with no title the result was "a giant
+// header, but it just contains a single, pretty useless chip". So the kind stays small and says itself
+// once, but as a LINE rather than an object: no fill to read as a control, no box to sit empty.
 //
-// FILLED, NEVER OUTLINED: the code chip's own translucent fill (styles.css, `.card-md .md-body code`),
-// so the two chip kinds on one card are one family on any card fill. An outlined pill was the
-// secondary button's treatment, and that border was the first thing the maintainer struck off this
-// card ("There should be no border around the 'couldn't do it' button").
-//
-// THE GLYPH IS TRIMMED TO ITS INK (useInkTrim), so the padding and the gap are INK distances on every
-// kind. They were box distances tuned to ListTodo alone until 2026-10-13 (`pl-[7px]` + `gap-1`), and the
-// moment four kinds shared the chip that tuning drifted per glyph — fill to glyph ink 8.5px on ListTodo,
-// 9.0px on Check, 9.5px on Hourglass, and glyph ink to label 5.5 / 6.0 / 6.5px. The numbers below put
-// every glyph where ListTodo already sat: 8px of fill before its painted ink (8.5px to its stroke-less
-// geometry, the 2026-10-05 reading) and 5px of ink to the label's box. The label's last letter inks ~0.6px
-// in from its advance, so `pr-2` reads 8.6px. Measured 2026-10-13 (sans, 11px, dsf 2).
-const CARD_CHIP = "inline-flex shrink-0 items-center gap-[5px] rounded-full bg-fg/[0.08] px-2 py-0.5 text-[11px] font-medium leading-4 text-fg/85"
+// Muted, not full-strength: the title says what THIS card is about and must be the loudest thing in the
+// head; the kind is a label for it. A tone that has something to say (a destructive question) colours the
+// kind line instead, which is where the eye now looks first.
+const CARD_KIND = "flex min-w-0 items-center gap-[5px] text-[12px] font-medium leading-4"
 
-export function KindChip({ icon: Icon, children }: { icon?: LucideIcon; children: ReactNode }) {
+export function KindLabel({ icon: Icon, children, className = "text-muted" }: { icon?: LucideIcon; children: ReactNode; className?: string }) {
   const ref = useInkTrim(Icon)
   return (
-    <span data-card-chip className={CARD_CHIP}>
+    <span data-card-kind className={`${CARD_KIND} ${className}`}>
       {Icon && <Icon ref={ref} aria-hidden="true" size={12} className="shrink-0" />}
-      {children}
+      <span className="min-w-0">{children}</span>
     </span>
   )
 }
 
-// The chipped head: the chip row (with any aside at its far right), then the title when there is one —
-// a steps card whose worker named no `title:` is headed by its chip alone, which already says what the
-// card is for.
+// The kind line (with any aside at its far right), then the title when there is one, then the rule.
 //
-// THE RULE UNDER IT sits the same INK distance from what is above it as from the body's first line
-// below — 17px each way, measured on the steps card (sans). The title's line box carries 3px of its own
-// air under the ink, so the rule takes 14px of margin under a title and the full 17px under a bare chip,
-// whose fill IS its ink.
-function ChipHead({ icon, chip, label, head, aside, ruled }: {
+// An aside here is a 16px control (a question's ×) whose own `card-icon-offset` centres it on a 16px
+// TITLE's cap block; on this 12px line that offset put it 4.63px low, so the head zeroes the variable the
+// class reads (the class itself is unlayered CSS, which no utility can outrank) and the row's
+// `items-center` places it instead.
+//
+// THE NUMBERS, measured 2026-10-13 (sans, dsf 2) across Check, Hourglass, TerminalSquare, ListTodo,
+// CircleHelp and ListChecks: every glyph's ink centres within 0.23px of the word's cap band, so none takes
+// a nudge; `gap-[5px]` puts 5.4–6.1px of ink between glyph and word, the 5.5px the steps chip was approved
+// at. The title sits flush under the kind line (no margin): the word's baseline to the title's cap top
+// reads 10.7px, close enough to read as one label and its subject, where the 4px first tried read 14.7px
+// and floated. The rule then sits 18px under a bare kind's baseline and 20px under a title's, against
+// 18.84px from the rule to the body's first cap top.
+function KindHead({ icon, kind, kindClass, label, head, aside, ruled }: {
   icon?: LucideIcon
-  chip: ReactNode
+  kind: ReactNode
+  kindClass: string
   label?: ReactNode
   head: string
   aside?: ReactNode
@@ -260,14 +260,14 @@ function ChipHead({ icon, chip, label, head, aside, ruled }: {
     <>
       <div className="min-w-0">
         <div className="flex min-w-0 items-center gap-2">
-          <KindChip icon={icon}>{chip}</KindChip>
-          {aside && <span className="ml-auto shrink-0">{aside}</span>}
+          <KindLabel icon={icon} className={kindClass}>{kind}</KindLabel>
+          {aside && <span className="ml-auto flex shrink-0 items-center [--card-icon-offset:0px]">{aside}</span>}
         </div>
         {titled && (
-          <div data-card-title className={`mt-1.5 min-w-0 text-[16px] font-semibold leading-6 tracking-tight ${head}`}>{label}</div>
+          <div data-card-title className={`min-w-0 text-[16px] font-semibold leading-6 tracking-tight ${head}`}>{label}</div>
         )}
       </div>
-      {ruled && <div aria-hidden data-card-rule className={`-mx-4 border-t border-border ${titled ? "mt-3.5" : "mt-[17px]"}`} />}
+      {ruled && <div aria-hidden data-card-rule className="-mx-4 mt-3.5 border-t border-border" />}
     </>
   )
 }
@@ -277,16 +277,16 @@ function ChipHead({ icon, chip, label, head, aside, ruled }: {
 // bullet list renders at the transcript's 14px prose scale and is visibly larger than the identical
 // sentence in the card above it.
 //
-// UNDER A CHIPPED HEAD the body opens past a full-bleed rule (ChipHead draws it) — the same rule the
-// wait table's divider and the action footer draw (`-mx-4 … border-t border-border`), so a chipped card
-// reads as three bands: what it is, what it says, what to do.
+// UNDER A KIND HEAD the body opens past a full-bleed rule (KindHead draws it) — the same rule the wait
+// table's divider and the action footer draw (`-mx-4 … border-t border-border`), so the card reads as
+// three bands: what it is, what it says, what to do.
 //
-// A CHIPPED CARD WITH NOTHING BUT ITS ACTION BAND (a bare ```done) draws no rule, and the band's own border
-// takes the rule's place at the rule's own distance — 17px under the chip's fill — so the head reads the
-// same height on every card whether a rule or a band closes it. `mt-[17px]` is the whole gap: the band's
-// `mt-3` collapses into it.
+// A KIND-HEADED CARD WITH NOTHING BUT ITS ACTION BAND (a bare ```done) draws no rule, and the band's own
+// border takes the rule's place at the rule's own distance, so the head reads the same height on every
+// card whether a rule or a band closes it. The `band` gap is the whole gap: the band's `mt-3` collapses
+// into it.
 export function CardContent({ children, gap = "plain" }: { children: ReactNode; gap?: "plain" | "ruled" | "band" }) {
-  return <div className={`card-md ${gap === "ruled" ? "mt-3" : gap === "band" ? "mt-[17px]" : "mt-1"} min-w-0 text-fg/75`}>{children}</div>
+  return <div className={`card-md ${gap === "ruled" ? "mt-3" : gap === "band" ? "mt-3.5" : "mt-1"} min-w-0 text-fg/75`}>{children}</div>
 }
 
 // Part one: the SHELL. One rounded panel-2 card at one padding for every kind. Cards used to disagree
@@ -319,7 +319,7 @@ export function CardContent({ children, gap = "plain" }: { children: ReactNode; 
 export function TranscriptCard({
   tone = "neutral",
   icon,
-  chip,
+  kind,
   label,
   ruled,
   aside,
@@ -331,12 +331,12 @@ export function TranscriptCard({
   tone?: CardTone
   /** Optional — see CardHead. A question card carries no corner glyph; every other kind still does. */
   icon?: LucideIcon
-  /** The card's KIND as a small chip over the title — the second head shape (KindChip). The glyph rides
-   *  inside the chip, and the body opens past a rule. Absent, the card keeps the glyph-beside-title head. */
-  chip?: ReactNode
-  /** The title. Under a chip it may be absent: the chip alone heads the card. */
+  /** The card's KIND as a small line over the title — the second head shape (KindLabel). The glyph leads
+   *  that line, and the body opens past a rule. Absent, the card keeps the glyph-beside-title head. */
+  kind?: ReactNode
+  /** The title. Under a kind it may be absent: the kind alone heads the card. */
   label: ReactNode
-  /** Whether a chipped head rules its body off. Defaults to whether the card HAS a body; a card whose only
+  /** Whether a kind head rules its body off. Defaults to whether the card HAS a body; a card whose only
    *  content is its CardActions band passes false, or the rule and the band's own border draw two seams
    *  around nothing (a ```done fence with an empty body, under its Mark-as-done). The band's border then
    *  sits where the rule would have (CardContent's `band` gap). */
@@ -354,13 +354,13 @@ export function TranscriptCard({
   surface?: "inset" | "question"
 } & Omit<ComponentPropsWithoutRef<"div">, "children" | "className">) {
   const { border, head } = CARD_TONES[tone]
-  const rule = chip != null && (ruled ?? children != null)
+  const rule = kind != null && (ruled ?? children != null)
   return (
     <div {...rest} className={`min-w-0 ${BLOCK_RADIUS} border ${surface === "question" ? "border-question-border bg-question" : `${border} bg-panel-2`} p-4 ${className}`}>
-      {chip != null
-        ? <ChipHead icon={icon} chip={chip} label={label} head={head} aside={aside} ruled={rule} />
+      {kind != null
+        ? <KindHead icon={icon} kind={kind} kindClass={tone === "neutral" ? "text-muted" : head} label={label} head={tone === "neutral" ? head : CARD_TONES.neutral.head} aside={aside} ruled={rule} />
         : <CardHead icon={icon} label={label} head={head} aside={aside} />}
-      {children != null && <CardContent gap={chip == null ? "plain" : rule ? "ruled" : "band"}>{children}</CardContent>}
+      {children != null && <CardContent gap={kind == null ? "plain" : rule ? "ruled" : "band"}>{children}</CardContent>}
     </div>
   )
 }

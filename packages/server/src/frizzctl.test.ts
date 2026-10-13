@@ -292,6 +292,38 @@ test("a body through a quoted heredoc reaches Frizz byte for byte — backticks,
   }
 })
 
+// `--title` rides INSIDE the body, in the ```done fence's own grammar, so the server's one splitter
+// heads a registered card exactly as it heads a fenced one (2026-10-13).
+test("`done --title` sends the body as `title:`, `---`, then the ledger — and the flag replaces a title the body opens with", async () => {
+  const fake = await fakeFrizz()
+  try {
+    const ran = await run(["done", "--title", "Resolver cache\n  keyed on the normalized id ", "--body-file", "-"], { env: worker(fake), stdin: "- **Fixed** the lookup.\n" })
+    assert.equal(ran.code, 0, ran.stderr)
+    assert.deepEqual(fake.seen, [{ url: "/_frizz/proj-1/rpc/markOwnDone", body: { slug: "the-caller", body: "title: Resolver cache keyed on the normalized id\n---\n- **Fixed** the lookup." } }])
+
+    // The body's own heading block goes; one written lower down is the ledger's prose and stays.
+    fake.seen.length = 0
+    const both = await run(["done", "--title", "From the flag", "--body-file", "-"], { env: worker(fake), stdin: "title: From the body\n  continued\n---\n- Fixed.\ntitle: a sentence\n" })
+    assert.equal(both.code, 0, both.stderr)
+    assert.equal(fake.seen[0]?.body.body, "title: From the flag\n---\n- Fixed.\ntitle: a sentence")
+
+    // `--title-file` comes free with the string property, as for every text argument.
+    fake.seen.length = 0
+    const dir = mkdtempSync(join(tmpdir(), "frizzctl-title-"))
+    writeFileSync(join(dir, "title.txt"), "From a file\n")
+    const file = await run(["done", "--title-file", join(dir, "title.txt"), "--body", "- Fixed."], { env: worker(fake) })
+    assert.equal(file.code, 0, file.stderr)
+    assert.equal(fake.seen[0]?.body.body, "title: From a file\n---\n- Fixed.")
+
+    // No title, or a blank one, sends the body exactly as before.
+    fake.seen.length = 0
+    await run(["done", "--title", "  ", "--body", "---\n- Fixed."], { env: worker(fake) })
+    assert.equal(fake.seen[0]?.body.body, "---\n- Fixed.")
+  } finally {
+    fake.close()
+  }
+})
+
 test("the caller is the environment's thread and nothing a command line can say", async () => {
   const fake = await fakeFrizz()
   try {
@@ -359,6 +391,31 @@ test("exit 0 is done, 1 is a failure, and 2 is a gate that held", async () => {
     const ok = await run(["unask", "settings-store"], { env: worker(fake) })
     assert.equal(ok.code, 0)
     assert.match(ok.stdout, /^Question settings-store withdrawn\./)
+  } finally {
+    fake.close()
+  }
+})
+
+test("unask reports the question that actually went, and why nothing did when nothing did", async () => {
+  // The server resolves a follow-up's id to the root it rides in (router `unask`); each reading below is
+  // what the worker is told for one answer of that call.
+  const answers: Record<string, unknown> = {
+    "sqlite-path": { withdrawn: false, id: "settings-store", state: "open", open: [] },
+    "settings-store": { withdrawn: true, id: "settings-store", state: "open", open: [] },
+    "npm-scope": { withdrawn: false, id: "npm-scope", state: "answered", open: [] },
+    "retry-backoff": { withdrawn: false, id: "retry-backoff", state: "dismissed", open: [] },
+    "no-such-id": { withdrawn: false, open: [] },
+  }
+  const fake = await fakeFrizz((procedure, body) => (procedure === "unask" ? { result: answers[body.id] } : undefined))
+  try {
+    const out = async (id: string) => (await run(["unask", id], { env: worker(fake) })).stdout
+    const viaFollowUp = await out("sqlite-path")
+    assert.match(viaFollowUp, /^Nothing was withdrawn: sqlite-path is a follow-up of settings-store/)
+    assert.match(viaFollowUp, /run `frizzctl unask settings-store`/)
+    assert.match(await out("settings-store"), /^Question settings-store withdrawn\./)
+    assert.match(await out("npm-scope"), /^Question npm-scope was already answered, so nothing was withdrawn — the answer reaches you as its own message\./)
+    assert.match(await out("retry-backoff"), /^Question retry-backoff was already dismissed by the human/)
+    assert.match(await out("no-such-id"), /^No OPEN question no-such-id on this thread/)
   } finally {
     fake.close()
   }

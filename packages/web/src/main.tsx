@@ -9,6 +9,7 @@ import { initConsoleFeed } from "./api/consoleFeed.ts"
 import { initTranscriptLive } from "./api/transcript-live.ts"
 import { initSupervisorStatus } from "./api/supervisorStatus.ts"
 import { initFont } from "./lib/font.ts"
+import { initCodeWrap } from "./lib/codeWrap.ts"
 import { initTheme } from "./lib/theme.ts"
 import { installExternalLinkInterceptor } from "./lib/external-links.ts"
 import { installLocalFileLinkInterceptor } from "./lib/local-file-links.ts"
@@ -68,6 +69,7 @@ if (!settingsFixture) {
   // rather than one per surface reading the supervisor — see api/supervisorStatus.ts.
   initSupervisorStatus(queryClient)
   initFont()
+  initCodeWrap()
   installExternalLinkInterceptor()
   installLocalFileLinkInterceptor(queryClient)
   installCodeCopyInterceptor()

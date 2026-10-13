@@ -130,7 +130,7 @@ function steeredFields(t: ThreadView, lastUserAt: string | undefined, answered?:
 }
 
 // What steeredSinceRest reads off a transcript message.
-export type SteerEvidence = Pick<TranscriptMessage, "role" | "queued" | "deliveryState" | "at" | "wake" | "peerFrom" | "agentInstruction" | "sessionPeer">
+export type SteerEvidence = Pick<TranscriptMessage, "role" | "kind" | "boundary" | "queued" | "deliveryState" | "at" | "wake" | "peerFrom" | "agentInstruction" | "sessionPeer">
 
 // THE THREAD VIEW'S READING OF THE SAME STEER, keyed to the transcript it draws rather than to the stamp.
 //
@@ -156,6 +156,12 @@ export function steeredSinceRest(
   nowMs = Date.now(),
 ): ThreadView | undefined {
   if (!t || (t.runtime !== "turn-idle" && t.runtime !== "exited")) return t
+  // A rest the transcript has not reached is not one a send can have ended: the ghost after `restIndex`
+  // there is a steer that waited out the turn whose end the board has just reported, and for the ~20ms
+  // until the reply lands the turn on screen is still that turn (useTurnHeldForTranscript keeps it). Read
+  // as "a send ended the rest", it re-based the Working clock on the steer's own instant for one frame:
+  // `5s`, `3s`, then `0s` when the reply landed (measured 2026-10-13, 12 of 12 text-turn steers).
+  if (transcriptBehindRest(t, messages)) return t
   let human = false
   let ghost = false
   let ghostAt: string | undefined
@@ -198,42 +204,145 @@ export function steeredSinceRest(
 // REST_CATCH_UP_MS, so a transcript that never catches up cannot keep a rested thread spinning.
 export const REST_CATCH_UP_MS = 1_500
 
-export type RestEvidence = Pick<TranscriptMessage, "role" | "kind" | "boundary" | "at">
+export type RestEvidence = Pick<TranscriptMessage, "role" | "kind" | "boundary" | "at" | "queued">
 
 export function transcriptBehindRest(t: ThreadView | undefined, messages: readonly RestEvidence[]): boolean {
   if (!t || (t.runtime !== "turn-idle" && t.runtime !== "exited")) return false
   const said = Date.parse(t.lastAssistantAt ?? "")
   if (!Number.isFinite(said)) return false
-  for (const m of messages) if (Date.parse(m.at ?? "") >= said) return false
+  // Asked of what has LANDED. A ghost carries the instant it was typed, or none, and says nothing about how
+  // far the transcript has got: one typed in a turn's last 50ms is newer than that turn's final record.
+  for (const m of messages) if (!m.queued && Date.parse(m.at ?? "") >= said) return false
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]
+    if (m.queued) continue
     if (m.kind === "event" && m.boundary === "rest") return false
     if (m.role === "user") break
   }
   return true
 }
 
-/** The thread as the thread view should present it: the board's, unless it reports a rest the transcript
- *  has not reached while the view was showing the turn — then the turn, for at most REST_CATCH_UP_MS.
- *  Returned by identity whenever nothing is held. */
-export function useTurnHeldForTranscript(t: ThreadView | undefined, messages: readonly RestEvidence[]): ThreadView | undefined {
-  const behind = transcriptBehindRest(t, messages)
-  const key = behind ? t!.lastAssistantAt : undefined
+// THE TURN THE TRANSCRIPT HAS NOT REACHED YET — the same race at the turn's OPENING, when the turn was
+// started from outside this tab: another tab's or device's send, `frizzctl steer`, a scheduler wake, a
+// background shell finishing. The board delta saying `running` again goes out ahead of the transcript push
+// carrying the message that opened the turn, by 40-60ms (measured 2026-10-13 on scripted broker workers,
+// 12 of 12 runs), and for those frames the view drew its Working row straight under the rest card, with a
+// clock counting from the PREVIOUS turn's opening ("Thinking… 58s"), before the opening message and its
+// rest divider landed above it and pushed it down 97px.
+//
+// "Not reached": the board reports a turn and the transcript still ENDS on the last turn's rest boundary —
+// nothing at all after it. Whatever opened the turn lands after that boundary when it lands, a human's
+// bubble, a wake's bubble or divider, a peer's message, so its arrival is what releases the hold, whatever
+// kind it is. A send from THIS tab never matches: its ghost bubble already sits after the rest in the same
+// render that sent it (lib/restReply.ts, steeredSinceRest), so the transcript does not end on the rest.
+export function transcriptBehindTurn(t: ThreadView | undefined, messages: readonly RestEvidence[]): boolean {
+  if (!t || (t.runtime !== "running" && t.runtime !== "spawning")) return false
+  const last = messages[messages.length - 1]
+  return last?.kind === "event" && last.boundary === "rest"
+}
+
+// …and the same race the other way round at a turn's END, when the next turn is already waiting: a steer
+// that waited out a turn with no tool call is handed over the instant that turn ends, so the worker's
+// `result` and the next turn's opening record reach the server a few ms apart. The board's tick reads the
+// file before the opening record is on disk and reports the rest; the transcript push reads it ~20ms
+// later and already carries the delivered steer; the board says `running` again one tick after that. For
+// those 40-60ms the view dropped its Working row under a steer the worker had already been handed, then
+// drew it back (measured 2026-10-13 on scripted broker workers: 10 of 12 two-steer recordings). The
+// transcript is right: a message that LANDED after the turn's rest boundary has opened the next turn, so
+// while the board catches up the view keeps the turn it was showing. Queued ghosts are steeredSinceRest's,
+// and a failed, unconfirmed or held send has not been handed to anyone, so none of those counts.
+//
+// The same evidence opens a turn FROM A REST, when the transcript gets there first: this tab's own
+// `threadTranscript` refetch (the one ~1.5s after a rest) can land between the JSONL write of another
+// tab's message and the board delta, and then the view drew the hairline and the bubble with no Working
+// row for a frame or two before Working arrived and pushed the tail 37px (lv-turns' recordings,
+// 2026-10-13: `rpc< threadTranscript` +32ms, bubble without Working +49ms, Working +72ms). A wake's
+// divider counts as an opener there too.
+export function transcriptPastRest(t: ThreadView | undefined, messages: readonly HoldEvidence[]): boolean {
+  if (!t || (t.runtime !== "turn-idle" && t.runtime !== "exited")) return false
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (m.kind === "event" && m.boundary === "rest") return false
+    // A reply after the message means the rest the board reports is that message's own turn ending.
+    if (m.role === "assistant" && m.kind !== "event") return false
+    const woke = m.kind === "event" && m.boundary === "wake"
+    if (!woke && (m.role !== "user" || m.queued)) continue
+    if (m.deliveryState === "failed" || m.deliveryState === "unconfirmed" || m.deliveryState === "held") continue
+    // A landed message: it opened a turn only if the turn before it had ended — a rest boundary above it.
+    for (let j = i - 1; j >= 0; j--) {
+      const above = messages[j]
+      if (above.kind === "event" && above.boundary === "rest") return true
+      if (above.role === "assistant" && above.kind !== "event") return false
+    }
+    return false
+  }
+  return false
+}
+
+type HoldEvidence = RestEvidence & Pick<TranscriptMessage, "deliveryState">
+
+/** What the view's LAST COMMIT showed for this thread: which side of the turn's edge was on screen, and
+ *  whether its transcript had already moved past the rest. */
+export interface HoldPrior {
+  running: boolean
+  /** The thread the last commit presented at rest, if it did. */
+  restedId?: string
+  /** transcriptPastRest at the last commit; undefined while no transcript was loaded. */
+  pastRest?: boolean
+}
+
+/** WHICH SIDE OF A TURN'S EDGE TO KEEP ON SCREEN while the board and the transcript disagree about it. The
+ *  two channels report the same edge in either order, at either end of a turn, so there are four cases and
+ *  each holds only when the view was showing the side being kept:
+ *  · turn END, board first (transcriptBehindRest): the view showed the turn → keep the turn;
+ *  · turn END, transcript first and already into the next turn (transcriptPastRest): showed the turn → keep it;
+ *  · turn START, board first (transcriptBehindTurn): the view showed this thread's rest → keep that rest;
+ *  · turn START, transcript first (transcriptPastRest again): the view showed this thread's rest and SAW the
+ *    opening message arrive → present the turn now, since the board is about to. A thread OPENED on a
+ *    transcript that already ends in an unanswered message (a worker that died on it) saw nothing arrive
+ *    and reads as the board says.
+ *  `key` names the episode, for the cap. */
+export function transcriptHold(t: ThreadView | undefined, messages: readonly HoldEvidence[], prior: HoldPrior): { present: "turn" | "rest"; key: string } | undefined {
+  if (transcriptBehindRest(t, messages)) return prior.running ? { present: "turn", key: `rest:${t!.lastAssistantAt}` } : undefined
+  const last = messages[messages.length - 1]
+  if (transcriptBehindTurn(t, messages)) {
+    return !prior.running && prior.restedId === t!.id ? { present: "rest", key: `turn:${last!.at ?? ""}` } : undefined
+  }
+  if (transcriptPastRest(t, messages)) {
+    const sawItArrive = prior.restedId === t!.id && prior.pastRest === false
+    return prior.running || sawItArrive ? { present: "turn", key: `next:${last!.at ?? ""}` } : undefined
+  }
+  return undefined
+}
+
+/** The thread as the thread view should present it: the board's, unless transcriptHold says the other
+ *  side of a turn's edge stays on screen until the lagging channel catches up — for at most
+ *  REST_CATCH_UP_MS, so a channel that never catches up cannot pin the view. ONE hook for both ends and
+ *  both orders, so there is one place that reconciles the two channels. A held rest is the thread exactly
+ *  as it was last presented, so the resting card and the reply slot do not change either. Returned by
+ *  identity whenever nothing is held. */
+export function useTurnHeldForTranscript(t: ThreadView | undefined, messages: readonly HoldEvidence[]): ThreadView | undefined {
   // What the LAST COMMIT presented: read during render, written after commit, so the first render that
-  // finds the transcript behind asks whether the frame on screen was the running one.
-  const shownRunning = useRef(false)
+  // finds the channels disagreeing asks what the frame on screen was showing.
+  const prior = useRef<HoldPrior>({ running: false })
+  const shownRested = useRef<ThreadView | undefined>(undefined)
   const [expired, setExpired] = useState<string | undefined>(undefined)
+  const hold = transcriptHold(t, messages, prior.current)
+  // Each held episode has its own key, so its expiry never cancels a later one.
+  const key = hold?.key
   useEffect(() => {
     if (key === undefined) return
     const timer = setTimeout(() => setExpired(key), REST_CATCH_UP_MS)
     return () => clearTimeout(timer)
   }, [key])
-  const held = key !== undefined && expired !== key && shownRunning.current
-  const presented = held ? steeredFields(t!, t!.lastUserAt) : t
+  let presented = t
+  if (hold && expired !== hold.key) presented = hold.present === "turn" ? steeredFields(t!, t!.lastUserAt) : shownRested.current ?? t
   const running = presented?.runtime === "running" || presented?.runtime === "spawning"
+  const pastRest = messages.length > 0 ? transcriptPastRest(t, messages) : undefined
   useEffect(() => {
-    shownRunning.current = running
-  }, [running])
+    prior.current = { running, restedId: running ? undefined : presented?.id, pastRest }
+    shownRested.current = running ? undefined : presented
+  }, [running, presented, pastRest])
   return presented
 }
 

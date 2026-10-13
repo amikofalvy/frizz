@@ -29,6 +29,10 @@ export interface Prefs {
   // operator who dictates with a system-wide tool and does not want a second microphone in the box
   // (maintainer 2026-10-10, using Wispr Flow).
   dictation: boolean
+  // Long lines in code blocks and Edit diffs wrap (the default, maintainer 2026-10-13: "code blocks
+  // should auto-wrap, just like the prompt box") or keep to one line and scroll their block sideways.
+  // lib/codeWrap.ts mirrors it onto <html>, where the stylesheet reads it.
+  wrapCode: boolean
 }
 
 function coerceQueueOrder(v: unknown, fallback: QueueDirection): QueueDirection {
@@ -51,6 +55,7 @@ export function parseStoredPrefs(raw: string | null): Prefs {
     queueOrder: "fifo",
     railFilesCollapsed: false,
     dictation: true,
+    wrapCode: true,
     diffsRedefaulted: true,
   }
   try {
@@ -71,6 +76,7 @@ export function parseStoredPrefs(raw: string | null): Prefs {
       queueOrder: coerceQueueOrder(stored.queueOrder, fallback.queueOrder),
       railFilesCollapsed: typeof stored.railFilesCollapsed === "boolean" ? stored.railFilesCollapsed : fallback.railFilesCollapsed,
       dictation: typeof stored.dictation === "boolean" ? stored.dictation : fallback.dictation,
+      wrapCode: typeof stored.wrapCode === "boolean" ? stored.wrapCode : fallback.wrapCode,
     }
   } catch {
     return fallback

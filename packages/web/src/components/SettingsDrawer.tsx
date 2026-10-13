@@ -133,6 +133,11 @@ export function SettingsDrawer({ offerUpdate = false }: {
               <DensityToggle />
             </SettingsField>
 
+            {/* Client-only (localStorage): whether a long line of code wraps or scrolls its block. */}
+            <SettingsField label="Wrap code" help={SETTINGS_HELP.wrapCode}>
+              <WrapCodeToggle />
+            </SettingsField>
+
             {/* Client-only VIEW preference (localStorage): applies immediately, wired to prefs. */}
             <SettingsField label="Queue order" help={SETTINGS_HELP.queueOrder}>
               <QueueOrderControl />
@@ -526,6 +531,13 @@ function OnOffToggle({ value, onChange }: { value: boolean; onChange: (v: boolea
 function DictationToggle() {
   const { dictation } = useSnapshot(prefs)
   return <OnOffToggle value={dictation} onChange={(on) => (prefs.dictation = on)} />
+}
+
+// Long lines of code: client-only (localStorage prefs proxy), applies live — lib/codeWrap.ts mirrors it
+// onto <html>, and the stylesheet re-flows every code block and Edit diff already on the page.
+function WrapCodeToggle() {
+  const { wrapCode } = useSnapshot(prefs)
+  return <OnOffToggle value={wrapCode} onChange={(on) => (prefs.wrapCode = on)} />
 }
 
 // Diff density: client-only (localStorage prefs proxy), applies live — diff blocks across the app

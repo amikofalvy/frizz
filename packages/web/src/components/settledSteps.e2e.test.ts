@@ -39,7 +39,7 @@ test("a steps card stays in the transcript after its rest, with no box", {
         const cards = [...document.querySelectorAll(sel)] as HTMLElement[]
         return {
           cards: cards.map((el) => ({
-            chip: (el.querySelector("[data-card-chip]") as HTMLElement | null)?.innerText.trim(),
+            kind: (el.querySelector("[data-card-kind]") as HTMLElement | null)?.innerText.trim(),
             title: (el.querySelector("[data-card-title]") as HTMLElement | null)?.innerText.trim(),
             steps: [...el.querySelectorAll("[data-awaiting-steps] .frizz-step-text")].map((li) => (li as HTMLElement).innerText.trim()),
             // The box answers only while the thread rests on these steps; a settled card is a record.
@@ -58,7 +58,7 @@ test("a steps card stays in the transcript after its rest, with no box", {
       }, CARD)
     }
 
-    const stepsCard = { chip: "Awaiting human", title: "Sign in to npm so the acme 4.2.0 release can publish", steps: STEPS }
+    const stepsCard = { kind: "Awaiting human", title: "Sign in to npm so the acme 4.2.0 release can publish", steps: STEPS }
 
     // AT REST on the steps: the tail's resting card states them, WITH the box — and the transcript does
     // not draw them a second time above it.

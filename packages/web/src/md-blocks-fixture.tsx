@@ -2,6 +2,7 @@ import { useState } from "react"
 import { createRoot } from "react-dom/client"
 import "./styles.css"
 import { QuestionBlockCard } from "./components/QuestionBlockCard.tsx"
+import { QUEUE_WRAP } from "./components/TranscriptCard.tsx"
 import { installCodeCopyInterceptor } from "./lib/copy-code.ts"
 import { installCodeTabInterceptor } from "./lib/switch-code-tab.ts"
 import { installDisclosureInterceptor } from "./lib/toggle-disclosure.ts"
@@ -185,7 +186,7 @@ function Fixture() {
         <RealChip />
       </div>
       {/* The Queue's narrow column. */}
-      <div className="md-body mt-6 w-[300px] text-[14px] [overflow-wrap:anywhere] [&_pre]:whitespace-pre-wrap [&_pre]:break-all"
+      <div className={`md-body mt-6 w-[300px] text-[14px] ${QUEUE_WRAP}`}
         data-case="narrow" dangerouslySetInnerHTML={{ __html: mdToHtml([md("callout-title"), md("callout-long-title"), INLINE, OUTPUT, md("details-long")].join("\n\n")) }} />
     </main>
   )

@@ -59,6 +59,21 @@ test("a message with no instant cannot end a rest", () => {
   assert.equal(questionAnchorIndex(messages, at(1)), 2)
 })
 
+// THE HUMAN'S OWN SEND, BEFORE THE SERVER HAS STAMPED IT. An optimistic bubble is appended to the tail with
+// no instant; skipped like the unreadable instant above, it left the anchor ON the bubble — so for the
+// frames until the server's copy landed, every card of the rest it replied to drew UNDER the human's
+// newest message (and a fence-placed card left its slot: lib/questionShadow). Driven on a real stack
+// 2026-10-13 with the send held 2.5s: the card sat below the Answers bubble for the whole hold.
+test("the human's own unstamped send at the tail ends the rest it replies to", () => {
+  const sent: AnchorMessage[] = [msg("user", 0), msg("assistant", 1), msg("assistant", 2), { role: "user" }]
+  assert.equal(questionAnchorIndex(sent, at(2)), 2, "the handoff, not the bubble")
+  assert.equal(questionAnchorIndex([...sent, { role: "user" }], at(2)), 2, "two sends in a row are still one tail")
+  // Negative control: stamped, the same bubble has always ended the rest.
+  assert.equal(questionAnchorIndex([msg("user", 0), msg("assistant", 1), msg("assistant", 2), msg("user", 3)], at(2)), 2)
+  // A transcript that is nothing but the bubble has no rest to go back to.
+  assert.equal(questionAnchorIndex([{ role: "user" }], at(2)), 0)
+})
+
 // One `ask` call registers several questions at ONE instant, and they must stay one stack.
 test("questions from one call group together; questions from two rests do not", () => {
   const messages = [msg("assistant", 1), msg("user", 2), msg("assistant", 3)]
@@ -205,4 +220,45 @@ test("a quoted reference claims nothing", () => {
   const messages = [msg("user", 0), msg("assistant", 2), msg("user", 3), said(4, quoted)]
   assert.equal(questionClaims(messages).has("settings-store"), false)
   assert.deepEqual([...questionsByAnchor(messages, [fenced]).keys()], [1])
+})
+
+// ---- A QUESTION THE HUMAN TYPED PAST IS NOT HOISTED (2026-10-13) ----
+// The server says which open questions still stand: asked or referenced since the human last TYPED to the
+// thread (`standing` on each row). A surface that cannot draw the message a card sits under hoists the
+// card to the top of what it shows. That keeps a STANDING question reachable from a queue card whose
+// window was cut below it — a shell finishing is not the human moving on — and until this date it also
+// headed the card with a question the human had replied past, above the newer handoff.
+test("from: a question that no longer stands is left out when its anchor is above the window, and a standing one is not", () => {
+  const messages = [
+    msg("user", 0),        // 0 the task
+    msg("assistant", 2),   // 1 the rest that asked
+    msg("user", 3),        // 2 whatever moved the thread on
+    msg("assistant", 4),   // 3 the newest rest
+  ]
+  const q = { id: "qst_a", askedAt: at(2) }
+  const faded = { ...q, standing: false }
+  const standing = { ...q, standing: true }
+  // The queue card's window starts at the turn that moved the thread on, so the asking rest is above it.
+  assert.equal(questionsByAnchor(messages, [faded], { from: 2 }).size, 0, "typed past, and its message is not drawn: no card")
+  assert.deepEqual([...questionsByAnchor(messages, [standing], { from: 2 }).keys()], [1], "still the ask: hoisted, as before")
+  assert.deepEqual([...questionsByAnchor(messages, [q], { from: 2 }).keys()], [1], "a row from before the flag reads as standing")
+  // Its message on screen — the reader clicked "View more", or this is the drawer: drawn in place.
+  assert.deepEqual([...questionsByAnchor(messages, [faded], { from: 1 }).keys()], [1])
+  assert.deepEqual([...questionsByAnchor(messages, [faded], { from: 0 }).keys()], [1])
+  assert.deepEqual([...questionsByAnchor(messages, [faded]).keys()], [1], "no window given: every question has an anchor")
+  // Above the drawer's LOADED window the anchor is -1, and the same rule drops it there.
+  const loaded = messages.slice(2)
+  assert.equal(questionsByAnchor(loaded, [faded], { from: 0 }).size, 0)
+  assert.deepEqual([...questionsByAnchor(loaded, [standing], { from: 0 }).keys()], [-1])
+  // One of each asked together: only the faded one leaves the group.
+  assert.deepEqual(questionsByAnchor(messages, [faded, { ...standing, id: "qst_b" }], { from: 2 }).get(1)?.map((x) => x.id), ["qst_b"])
+})
+
+// Both surfaces that hoist pass their window, so neither can head itself with a faded question again.
+test("the queue card and the drawer both tell questionsByAnchor where their window starts", () => {
+  const queue = readFileSync(new URL("../components/TodosView.tsx", import.meta.url), "utf8")
+  const drawer = readFileSync(new URL("../components/ChatView.tsx", import.meta.url), "utf8")
+  assert.ok(queue.includes("questionsByAnchor(messages, unplaced, { from: visibleStart })"))
+  assert.ok(drawer.includes("questionsByAnchor(messages, unplaced, { from: 0 })"))
+  for (const source of [queue, drawer]) assert.doesNotMatch(source, /questionsByAnchor\(messages, unplaced\)/)
 })

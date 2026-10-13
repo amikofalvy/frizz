@@ -76,14 +76,39 @@ test("marked lines, rendered diffs and long blocks draw, copy and open on the sh
     assert.ok(Math.abs(marked.textLeft - marked.plainTextLeft) < 0.5, `code starts at ${marked.textLeft}px, in a plain block at ${marked.plainTextLeft}px`)
     assert.notEqual(marked.bandFill, marked.lineFill)
 
-    // A line longer than the block: the band is as long as the line, not as wide as the viewport.
-    const wide = await page.$eval("[data-case=marked-wide] pre", (pre) => ({
-      scrolls: pre.scrollWidth - pre.clientWidth,
-      band: pre.querySelector(".is-marked")!.getBoundingClientRect().width,
-      scrollWidth: pre.scrollWidth,
-    }))
-    assert.ok(wide.scrolls > 100, "the fixture should hold a marked line wide enough to scroll")
-    assert.ok(Math.abs(wide.band - wide.scrollWidth) < 1, `band ${wide.band}px of ${wide.scrollWidth}px`)
+    // A line longer than the block WRAPS inside it, and its band covers every line it wraps to, border
+    // to border. Nothing scrolls sideways.
+    const wide = await page.$eval("[data-case=marked-wide] pre", (pre) => {
+      const band = pre.querySelector<HTMLElement>(".is-marked")!
+      const short = pre.querySelector<HTMLElement>(".md-line:not(.is-marked)")!
+      const box = pre.getBoundingClientRect(), bandBox = band.getBoundingClientRect()
+      return {
+        scrolls: pre.scrollWidth - pre.clientWidth,
+        lines: bandBox.height / short.getBoundingClientRect().height,
+        bandInset: [bandBox.left - box.left, box.right - bandBox.right],
+      }
+    })
+    assert.equal(wide.scrolls, 0, "a long line wraps rather than scrolling its block")
+    assert.ok(wide.lines > 1.9 && Math.abs(wide.lines - Math.round(wide.lines)) < 0.05, `the marked line is drawn on ${wide.lines} lines`)
+    assert.deepEqual(wide.bandInset.map((px) => Math.round(px)), [1, 1], "the band of a wrapped line reaches the block's border on both sides")
+
+    // The same on a diff row at the thread's width: it continues under its code, tinted the whole way.
+    const wideDiff = await page.$eval("[data-case=diff-wide] pre", (pre) => {
+      const del = pre.querySelector<HTMLElement>(".md-diff-del")!, add = pre.querySelector<HTMLElement>(".md-diff-add")!
+      const text = del.querySelector<HTMLElement>(".md-diff-text")!
+      const lines = [...text.getClientRects()]
+      return {
+        scrolls: pre.scrollWidth - pre.clientWidth,
+        lines: del.getBoundingClientRect().height / add.getBoundingClientRect().height,
+        hangs: lines.every((line) => line.left - text.getBoundingClientRect().left > -0.5),
+        rowWidth: del.getBoundingClientRect().width,
+        innerWidth: pre.clientWidth,
+      }
+    })
+    assert.equal(wideDiff.scrolls, 0)
+    assert.ok(wideDiff.lines > 1.9, `the long deleted row is drawn on ${wideDiff.lines} lines`)
+    assert.equal(wideDiff.hangs, true, "a wrapped row continues under its code, not under its sign")
+    assert.ok(Math.abs(wideDiff.rowWidth - wideDiff.innerWidth) < 1, `the wrapped row's tint spans the block: ${wideDiff.rowWidth}px of ${wideDiff.innerWidth}px`)
 
     // A title and marks on one fence.
     assert.equal(await page.$eval("[data-case=marked-titled] .md-code-title", (title) => title.textContent), "packages/server/src/retry.ts")
@@ -251,7 +276,7 @@ test("marked lines, rendered diffs and long blocks draw, copy and open on the sh
     // A long diff clamps like any other block.
     assert.deepEqual((await readLong("long-diff")).buttons, ["Show all 50 lines"])
 
-    // Where code wraps (the Queue's column) nothing scrolls sideways, and the clamp is still a height.
+    // In the Queue's 300px column every line wraps: nothing scrolls sideways, and the clamp is still a height.
     const narrow = await page.$$eval("[data-case=narrow] pre", (pres) => pres.map((pre) => pre.scrollWidth - pre.clientWidth))
     assert.deepEqual(narrow, [0, 0, 0])
     const narrowDiff = await page.$eval("[data-case=narrow] .md-diff", (pre) => {
@@ -263,6 +288,70 @@ test("marked lines, rendered diffs and long blocks draw, copy and open on the sh
     })
     assert.equal(narrowDiff.wraps, true)
     assert.equal(narrowDiff.hangs, true, "a wrapped row continues under its code, not under its sign")
+
+    // The Edit card draws the same rows from a tool call, and wraps them the same way: a long line
+    // continues under its own code, tinted the whole way, and the card's body never scrolls sideways.
+    await page.click("[data-case=edit-card] [aria-expanded=false]")
+    const editCard = await page.$eval("[data-case=edit-card] .frizz-diff-body", (body) => {
+      const del = body.querySelector<HTMLElement>(".frizz-diff-line[data-type=del]")!
+      const ctx = body.querySelector<HTMLElement>(".frizz-diff-line[data-type=context]")!
+      const code = del.querySelector<HTMLElement>(".frizz-diff-code")!
+      const range = document.createRange()
+      range.selectNodeContents(code)
+      const lines = [...range.getClientRects()]
+      return {
+        scrolls: body.scrollWidth - body.clientWidth,
+        lines: del.getBoundingClientRect().height / ctx.getBoundingClientRect().height,
+        hangs: lines.every((line) => line.left - code.getBoundingClientRect().left > -0.5),
+        rowWidth: del.getBoundingClientRect().width,
+        bodyWidth: body.clientWidth,
+      }
+    })
+    assert.equal(editCard.scrolls, 0, "the Edit card wraps a long line rather than scrolling its body")
+    assert.ok(editCard.lines > 1.9, `the long deleted line is drawn on ${editCard.lines} lines`)
+    assert.equal(editCard.hangs, true, "a wrapped line continues under its code, not under its number or sign")
+    assert.ok(Math.abs(editCard.rowWidth - editCard.bodyWidth) < 1, `the wrapped line's tint spans the card: ${editCard.rowWidth}px of ${editCard.bodyWidth}px`)
+
+    // ── Wrap code, off ────────────────────────────────────────────────────────────────────────────
+    // The setting is a browser preference that lib/codeWrap.ts mirrors onto <html>; the fixture's
+    // button writes the same preference the Settings row does. Blocks that are already drawn follow
+    // it: every line keeps to one line, and its block scrolls sideways instead.
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.codeWrap), "on")
+    await page.click("[data-wrap-code]")
+    await page.waitForFunction(() => document.documentElement.dataset.codeWrap === "off")
+    const unwrapped = await page.evaluate(() => {
+      const pre = document.querySelector<HTMLElement>("[data-case=marked-wide] pre")!
+      const band = pre.querySelector<HTMLElement>(".is-marked")!
+      const short = pre.querySelector<HTMLElement>(".md-line:not(.is-marked)")!
+      const scrolls = (el: Element) => el.scrollWidth - el.clientWidth
+      return {
+        scrolls: scrolls(pre),
+        lines: band.getBoundingClientRect().height / short.getBoundingClientRect().height,
+        band: band.getBoundingClientRect().width,
+        scrollWidth: pre.scrollWidth,
+        diff: scrolls(document.querySelector("[data-case=diff-wide] pre")!),
+        git: scrolls(document.querySelector("[data-case=diff-git] pre")!),
+        editCard: scrolls(document.querySelector("[data-case=edit-card] .frizz-diff-body")!),
+        narrow: [...document.querySelectorAll("[data-case=narrow] pre")].map(scrolls),
+        narrowSpills: scrolls(document.querySelector("[data-case=narrow]")!),
+      }
+    })
+    assert.ok(unwrapped.scrolls > 100, `with wrapping off the long marked line scrolls its block, by ${unwrapped.scrolls}px`)
+    assert.ok(Math.abs(unwrapped.lines - 1) < 0.05, `and is drawn on one line, not ${unwrapped.lines}`)
+    // The band is as long as the line, not as wide as the viewport.
+    assert.ok(Math.abs(unwrapped.band - unwrapped.scrollWidth) < 1, `band ${unwrapped.band}px of ${unwrapped.scrollWidth}px`)
+    assert.ok(unwrapped.diff > 100, "a wide diff fence scrolls sideways")
+    assert.ok(unwrapped.editCard > 100, "the Edit card's body scrolls sideways")
+    // A hunk header longer than the code under it is still cut, rather than being what makes a block scroll.
+    assert.equal(unwrapped.git, 0)
+    // One switch for every surface: the Queue's column scrolls its blocks too, each inside itself, and
+    // none of them widens the column.
+    assert.ok(unwrapped.narrow.every((px) => px > 0), `every block in the 300px column scrolls: ${unwrapped.narrow}`)
+    assert.equal(unwrapped.narrowSpills, 0, "a scrolling block stays inside its column")
+    // And back on, the same blocks wrap again.
+    await page.click("[data-wrap-code]")
+    await page.waitForFunction(() => document.documentElement.dataset.codeWrap === "on")
+    assert.equal(await page.$eval("[data-case=marked-wide] pre", (pre) => pre.scrollWidth - pre.clientWidth), 0)
 
     // Inside an answer chip the button is above the chip's stretched hit area, so the click reaches it.
     const hit = await page.$eval("[data-case=chip] .md-code-expand", (button) => {

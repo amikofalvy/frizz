@@ -24,7 +24,7 @@ import { prefersReducedMotion } from "../lib/sheet.ts"
 import { REST_CATCH_UP_MS } from "../lib/steering.ts"
 import { returningHolds } from "../lib/queueReturn.ts"
 import { questionsByAnchor } from "../lib/questionAnchor.ts"
-import { allFencesShadowed, placedFrom, placedRestEnds, placeQuestions, questionsAtCurrentRest, registeredStandingAt } from "../lib/questionShadow.ts"
+import { allFencesShadowed, placedFrom, placedRestEnds, placeQuestions, registeredStandingAt } from "../lib/questionShadow.ts"
 import { settledQuestionPositions } from "../lib/settledQuestions.ts"
 import { Message, PermPolicyDenialCard, TranscriptSyncFallbackBanner, transcriptBackgroundShells, withoutLiveTranscriptBackgroundTools, runtimeStatusGapFor, RuntimeStatusLadder, VSpace, STEP, PICTURE_STEP, runtimeStatusRung, type RuntimeStatusState, messageGap, messageHeadIsPicture, messageRendersNothing, messageHasRenderableText, lastAssistantIndex } from "./ChatView.tsx"
 import { BLOCK_RADIUS, BLOCK_RADIUS_TOP, BLOCK_RADIUS_INNER_BOTTOM } from "./TranscriptCard.tsx"
@@ -49,7 +49,7 @@ import { consoleCardOrder, useConsoleGroup } from "../lib/consoleBoard.ts"
 import { useConsoleProjectList } from "../lib/consoleProjects.ts"
 import { ProjectScope } from "../lib/projectScope.tsx"
 import { keyProject } from "../lib/threadKey.ts"
-import { RegisteredAnsweringProvider, RegisteredQuestionStack, SettledQuestionStack, openQuestionsOf, useFenceQuestions, useSettledQuestions } from "./RegisteredQuestionCards.tsx"
+import { RegisteredAnsweringProvider, RegisteredQuestionStack, SettledQuestionStack, openQuestionsOf, useArrivedQuestions, useFenceQuestions, useRefusedFences, useSettledQuestions } from "./RegisteredQuestionCards.tsx"
 import { DividerHint, WAKE_DIVIDER_WIDE_ONLY, WakeDivider } from "./WakeDivider.tsx"
 import {
   captureTranscriptViewportAnchor,
@@ -169,8 +169,6 @@ function resumeNativeAnchoring(): void {
 
 // A message as the queue's text-only render draws it: the prose, with its tool bands dropped. The gap
 // rule (messageGap) reads a row's edges, and a text-only row's edges are prose whatever the message held.
-// A stable empty list for a thread with no `questions` yet, so the memos keyed on it hold.
-const NO_QUESTIONS: readonly RegisteredQuestionView[] = []
 
 function proseOnly(m: ChatMessage): ChatMessage {
   return { ...m, tools: [], parts: m.parts?.filter((part) => part.kind !== "tools") }
@@ -902,7 +900,7 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
   // ANSWERED registered questions keep drawing, greyed, where their open card stood — the thread view's
   // rule (lib/settledQuestions). The open cards skip any id the settled list holds (openQuestionsOf).
   const settledQuestions = useSettledQuestions(thread)
-  const openQuestions = useMemo(() => openQuestionsOf(thread, settledQuestions), [thread, settledQuestions])
+  const boardQuestions = useMemo(() => openQuestionsOf(thread, settledQuestions), [thread, settledQuestions])
   // Tracks only vtReturnTarget (valtio re-renders on accessed keys alone), so the memo'd card
   // re-renders just when a /full exit primes or clears it — see the root div's viewTransitionName.
   const vtSnap = useSnapshot(store)
@@ -1041,7 +1039,13 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
   // the ops line counts are read off the RAW transcript, before they are taken out. Index-preserving, so
   // every global index below still addresses server truth.
   const liveTranscriptShells = useMemo(() => transcriptBackgroundShells(rawMessages), [rawMessages])
-  const messages = useMemo(() => withoutLiveTranscriptBackgroundTools(rawMessages), [rawMessages])
+  const shownMessages = useMemo(() => withoutLiveTranscriptBackgroundTools(rawMessages), [rawMessages])
+  // The open questions this card DRAWS: a fence-asked row waits for the message that asked it, as on the
+  // thread page (lib/questionArrival).
+  const openQuestions = useArrivedQuestions(boardQuestions, rawMessages)
+  // …with every question fence the server REFUSED marked on its message, as on the thread page
+  // (lib/questionFaults): a code block, which places and claims nothing. Index-preserving too.
+  const messages = useRefusedFences(shownMessages, thread, openQuestions, settledQuestions)
   // A RUNNING thread can hold a card (one with an open question keeps working), and it reads as the
   // drawer reads it: the Working… line with its live tool run at the tail, that run out of history, and
   // no awaiting fence in the window, since a spinning thread is not resting on anything.
@@ -1250,16 +1254,14 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
   // anchor group; its rest's stack still carries a Send for it (placedRestEnds). A marker ABOVE the
   // window places nothing here — that message is not drawn — so its card flushes first (placedFrom).
   const placement = useMemo(() => placedFrom(placeQuestions(messages, openQuestions), visibleStart), [messages, openQuestions, visibleStart])
-  // Whether an open question is THIS rest's ending, for the residual card below (RestedCard) — off the
-  // board's questions, not the locally answered-away list (ChatView's copy of this rung says why).
-  const boardQuestions = thread.questions ?? NO_QUESTIONS
-  const questionsHere = useMemo(() => questionsAtCurrentRest(messages, boardQuestions), [messages, boardQuestions])
   const questionAnchors = useMemo(() => {
     const tail: RegisteredQuestionView[] = []
     const byAnchor = new Map<number, RegisteredQuestionView[]>()
     const tailAnchor = messages.length - 1
     const unplaced = openQuestions.filter((q) => !placement.placedIds.has(q.id))
-    for (const [anchor, group] of questionsByAnchor(messages, unplaced)) {
+    // `from`: a question the human has typed past is not hoisted to the top of this card from a rest the
+    // window cut away — it is drawn only where its message is (lib/questionAnchor questionsByAnchor).
+    for (const [anchor, group] of questionsByAnchor(messages, unplaced, { from: visibleStart })) {
       if (anchor >= tailAnchor) { tail.push(...group); continue }
       const at = byAnchor.get(anchor)
       if (at) at.push(...group)
@@ -1273,14 +1275,14 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
       if (!byAnchor.has(end)) byAnchor.set(end, [])
     }
     return { byAnchor, tail, tailSend, sendAnchors }
-  }, [messages, openQuestions, placement])
+  }, [messages, openQuestions, placement, visibleStart])
   const settledPlacement = useMemo(() => settledQuestionPositions(messages, settledQuestions), [messages, settledQuestions])
   // A thread dispatched after the free-form fence was retired never gets a fence controller: a
   // ```question with a body is prose there, drawn read-only, and the registered card is the only
   // answerable thing (shared QUESTION_FENCE_RETIRED_AT). A legacy thread keeps the whole fence path.
   const fencesLive = questionFencesLive(thread.spawnedAt)
   // …and speaks THE QUESTION FENCE instead: every row it knows, which a fence's `id:` resolves against.
-  const fenceQuestions = useFenceQuestions(fencesLive, openQuestions, settledQuestions)
+  const fenceQuestions = useFenceQuestions(fencesLive, openQuestions, settledQuestions, thread)
   // The registered questions standing at each message — its rest and every later one — so a fence
   // restating or naming one folds into its card (lib/questionShadow), here exactly as on the thread page.
   const shadowedByMessage = useMemo(() => registeredStandingAt(messages, openQuestions), [messages, openQuestions])
@@ -1491,11 +1493,14 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
   // Working… rung included. `errorVisible` reads the window this card draws, where a provider-error row
   // survives the fold (lib/queueCollapse), so the card and that row never double up.
   const lastAgentText = lastAgentIdx >= 0 ? messages[lastAgentIdx]?.text : undefined
+  // …and the question fences of that same message the server refused (lib/questionFaults): code blocks,
+  // so a rest whose only fence was refused is a bare one here exactly as on the thread page.
+  const lastAgentRefused = lastAgentIdx >= 0 ? messages[lastAgentIdx]?.refusedFences : undefined
   const queueStatus: RuntimeStatusState = {
     thread,
     showWorking: running,
     registeredDone: showsRegisteredDoneCard(thread, lastAgentText),
-    restedCard: showsRestedCard(thread, lastAgentText, questionsHere),
+    restedCard: showsRestedCard(thread, lastAgentText, lastAgentRefused),
     errorVisible: providerErrorVisible(visible, thread.providerError),
   }
   const queueRung = runtimeStatusRung(queueStatus)
@@ -1778,7 +1783,7 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
                 // takes the collapse branch like an open ask — the ordinary path would render its tool
                 // band and defer this run's divider below the very work it summarizes (the 2026-08-13
                 // inversion). See lib/queueCollapse.carriesDoneRegistration.
-                const liftedWake = inSpan && !isFirst && !isLast && !hasQuestionBlock(m.text) && !carriesDoneRegistration(m) && survivesQueueCollapse(m, globalIdx, supersededAsks)
+                const liftedWake = inSpan && !isFirst && !isLast && !hasQuestionBlock(m.text, m.refusedFences) && !carriesDoneRegistration(m) && survivesQueueCollapse(m, globalIdx, supersededAsks)
                 // THIS RUN'S WAKER — the background task or sub-agent whose completion re-invoked the
                 // agent while it was at rest. It takes the ordinary path too, and it must be handled
                 // BEFORE the summary bar below: the bar is emitted at the first row after the opening

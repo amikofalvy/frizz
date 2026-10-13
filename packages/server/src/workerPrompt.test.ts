@@ -67,22 +67,35 @@ test("the contract teaches the structured question fence, and none of the gramma
   for (const backend of ["claude", "codex", "acp"] as const) {
     const prompt = buildWorkerPrompt(backend)
     const c = prompt.replace(/\s+/g, " ")
-    // Every fence in the contract is one a worker could copy, so every one must READ: five asks of every
+    // Every fence in the contract is one a worker could copy, so every one must READ: six asks of every
     // kind the examples need, one follow-up, and the reference form.
     const reads = questionFenceBlocks(prompt).map((b) => b.read)
     assert.deepEqual(reads.filter((r) => r.form === "invalid"), [], backend)
-    assert.deepEqual(reads.map((r) => r.form), ["ask", "ask", "ask", "ask", "ask", "ref"], backend)
+    assert.deepEqual(reads.map((r) => r.form), ["ask", "ask", "ask", "ask", "ask", "ask", "ref"], backend)
     const asked = questionFencesIn(prompt)
     // …and they assemble as one message would: the `when:` follow-up hangs on its parent's option.
     assert.deepEqual(asked.faults, [], backend)
     assert.ok(reads.some((r) => r.form === "ask" && r.spec.secret), `${backend}: the examples show a secret`)
+    // A free-text ask is shown too: with a table row and no example, a model asked for a name in prose.
+    assert.ok(reads.some((r) => r.form === "ask" && !r.spec.secret && !r.spec.options), `${backend}: the examples show a text question`)
     // The grammar's moving parts, each taught where a worker reads it.
     assert.match(c, /every value is read VERBATIM to the end of its line/)
     assert.match(c, /Below the `---` is the question's CONTEXT/)
     assert.match(c, /a table, a code block or a diff, a callout, a list, a `<details>` section, a `mermaid` diagram/)
-    assert.match(c, /A code block INSIDE the question needs a longer outer fence/)
+    assert.match(c, /\*\*A CODE BLOCK INSIDE THE QUESTION NEEDS A LONGER OUTER FENCE\*\*, in an option's `detail` and in the context alike/)
     assert.match(prompt, /^````question\n/m)
     assert.match(c, /`when:` naming the option it hangs on/)
+    // What real models got wrong against the first wording (2026-10-13; the reasons are beside QUESTIONS):
+    // a go-ahead asked in prose, the deciding diff left above the card, a four-backtick opener closed
+    // with three (or the reverse), an `awaiting` fence after a question, and a follow-up's label retyped.
+    assert.match(c, /ANYTHING YOU NEED BACK BEFORE YOU CAN GO ON IS A QUESTION/)
+    assert.match(c, /\*\*WHAT THE HUMAN MUST READ TO CHOOSE GOES INSIDE THE FENCE\*\*/)
+    assert.match(c, /open AND close the question with FOUR backticks, the same four on both lines/)
+    // The four-backtick example carries a code block in its CONTEXT too — the place three backticks break.
+    assert.match(prompt, /^````question\n[\s\S]*?\n---\n[\s\S]*?\n```\n[\s\S]*?\n```\n````$/m)
+    assert.match(c, /A QUESTION IS THE HANDBACK, AND THE ONLY FENCE ITS REST NEEDS/)
+    assert.match(c, /the text after `=` is that option's `label:` EXACTLY as written/)
+    assert.match(c, /in the same message as its parent `choice` or in a later one while the parent is still unanswered/)
     assert.match(c, /\*\*A VALUE ONLY THE HUMAN HOLDS IS `kind: secret`\*\*/)
     assert.match(c, /\*\*ASKING DOES NOT END YOUR TURN\.\*\* A fence in a message you send mid-turn registers the moment that message lands/)
     assert.match(c, /ON A THREAD CARRYING A GOAL, FRIZZ REFUSES THE QUESTION/)
@@ -97,9 +110,11 @@ test("the contract teaches the structured question fence, and none of the gramma
     // The card is drawn where the fence is written, so prose that restates it draws nothing.
     assert.match(c, /EVERY QUESTION DRAWS ITS OWN CARD WHERE YOU WROTE IT/)
     assert.match(c, /prose that repeats it draws NOTHING, one question is one card/)
-    // No rest owes an older question anything, and one it still needs is REFERENCED, not named.
-    assert.match(c, /AN OLDER QUESTION NEEDS NOTHING AT A LATER REST — UNLESS THAT REST STILL WAITS ON IT/)
-    assert.match(c, /A rest that still needs the answer writes its REFERENCE — a ` ```question ` fence carrying its `id:` alone/)
+    // A question fades when the HUMAN types past it, never because Frizz woke the worker (2026-10-13:
+    // a shell finishing took a question out of the queue before the human had seen it).
+    assert.match(c, /A QUESTION YOU ASKED STAYS YOUR ASK UNTIL THE HUMAN TYPES TO THIS THREAD/)
+    assert.match(c, /A QUESTION STAYS ASKED ACROSS WAKES\. IT FADES ONLY WHEN THE HUMAN TYPES PAST IT/)
+    assert.match(c, /A rest after that which still needs the answer writes its REFERENCE — a ` ```question ` fence carrying its `id:` alone/)
     assert.match(c, /A QUESTION YOU ASK IS THAT REST'S SIGN-OFF — REST NORMALLY/)
     // And every retired spelling stays gone: the command, the key, the marker and the per-rest rule.
     assert.doesNotMatch(prompt, /frizzctl (ask|secret)\b/, backend)

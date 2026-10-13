@@ -810,6 +810,11 @@ export interface Storage {
   /** Register one root question. Never idempotent, unlike a watch: two identically-worded questions are
    *  two things the human owes an answer to, and collapsing them would silently drop one. */
   askThreadQuestion(q: { id: string; slug: string; spec: string; askedAtMs: number; handle?: string | null }): ThreadQuestionRow
+  /** Replace an OPEN question's tree — the one write that changes what a registered question asks, and
+   *  it only ever GROWS it: a follow-up the worker wrote in a later message, attached under the option it
+   *  names (server question-fences.ts). Guarded on `state = 'open'` so a tree the human has already
+   *  answered, or the worker withdrew, is never rewritten under its answer; false when nothing changed. */
+  growThreadQuestionSpec(slug: string, id: string, spec: string): boolean
   listThreadQuestions(slug: string, opts?: { openOnly?: boolean }): ThreadQuestionRow[]
   /** Every thread's questions at once, keyed by slug — the board's read (see groupBySlug above).
    *  UNFILTERED, matching the board's own `listThreadQuestions(slug)` with no `openOnly`: the card
@@ -1978,6 +1983,9 @@ export function createStorage(source: string | Database, projectId: string): Sto
     INSERT INTO thread_question (project_id, id, thread_slug, spec, state, answer, delivered, handle, asked_at, settled_at)
     VALUES (@project_id, @id, @slug, @spec, 'open', NULL, 0, @handle, @askedAtMs, NULL)
   `)
+  const growThreadQuestionSpecStmt = scope.prepare(
+    "UPDATE thread_question SET spec = ? WHERE project_id = @project_id AND id = ? AND thread_slug = ? AND state = 'open'",
+  )
   // TIEBREAK ON ROWID, NOT ID. Every question of one `ask` call shares its `asked_at` — the router stamps
   // one `now` for the batch — and `qst_…` is random, so ordering by id read a batch back SHUFFLED: the
   // worker's own first/second was lost, on the card stack and in the `activity` readout alike. rowid is
@@ -2787,6 +2795,7 @@ export function createStorage(source: string | Database, projectId: string): Sto
       askThreadQuestionStmt.run({ ...q, handle: q.handle ?? null })
       return threadQuestionByIdStmt.get(q.id)!
     },
+    growThreadQuestionSpec: (slug, id, spec) => growThreadQuestionSpecStmt.run(spec, id, slug).changes === 1,
     listThreadQuestions: (slug, opts) =>
       (opts?.openOnly ? openThreadQuestionsBySlugStmt : threadQuestionsBySlugStmt).all(slug),
     threadQuestionsBySlug: () => groupBySlug(allThreadQuestionsStmt.all()),

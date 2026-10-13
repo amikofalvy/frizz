@@ -2,14 +2,14 @@ import { useContext, useEffect, useLayoutEffect, useRef, useState, type MouseEve
 import { Check } from "lucide-react"
 import type { AskedOption, RegisteredQuestionView } from "@frizz/shared"
 import { useBackDismiss } from "../lib/backDismiss.ts"
-import { answerSteps, answerSummary, firstOpenStep, oneLineDescription, stepAfter, stepAfterPick, type AnswerStep } from "../lib/answerSheet.ts"
+import { answerSteps, answerSummary, firstOpenStep, oneLineDescription, plainInline, stepAfter, stepAfterPick, type AnswerStep } from "../lib/answerSheet.ts"
 import { useKeyboardInset } from "../lib/keyboardInset.ts"
 import { nodeAnswered } from "../lib/registeredQuestion.ts"
 import { useMarkdownHtml } from "../lib/useMarkdown.ts"
 import { LinkedHtml } from "./LinkedHtml.tsx"
 import { SecretCaption } from "./SecretCaption.tsx"
 import { MobileBottomSheet } from "./MobileBottomSheet.tsx"
-import { QUESTION_PROSE } from "./PhoneQuestionCards.tsx"
+import { InlineLabel, QUESTION_PROSE } from "./PhoneQuestionCards.tsx"
 import { RegisteredAnsweringContext, type RegisteredAnswering } from "./RegisteredQuestionCards.tsx"
 
 // ANSWERING REGISTERED QUESTIONS ON A PHONE (mockup v2 §3): a bottom sheet, one question per step, then
@@ -187,7 +187,7 @@ function OptionRow({ option, multi, on, onClick }: { option: AskedOption; multi:
       <Mark multi={multi} on={on} />
       <span className="min-w-0 flex-1">
         <span className="block text-[15.5px] font-medium leading-[21px] text-fg">
-          {option.label}
+          <InlineLabel md={option.label} />
           {option.recommended && <span className="ml-1.5 text-[11px] font-bold tracking-[0.02em] text-accent">RECOMMENDED</span>}
         </span>
         {line && <span className="mt-px block text-[13px] leading-[18px] text-muted">{line}</span>}
@@ -417,6 +417,5 @@ function SheetFooter({ children }: { children: ReactNode }) {
 
 /** The question as one plain line for the review row: its first paragraph, markdown marks dropped. */
 function plainQuestion(md: string): string {
-  const first = md.trim().split(/\n\s*\n/)[0] ?? ""
-  return first.replace(/[`*_~]/g, "").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/\s+/g, " ").trim()
+  return plainInline(md.trim().split(/\n\s*\n/)[0] ?? "")
 }

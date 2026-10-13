@@ -4,7 +4,7 @@ import { useSnapshot } from "valtio"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useVirtualizer } from "@tanstack/react-virtual"
 import { AlertTriangle, ArrowDown, ArrowUp, Bot, Check, ChevronRight, FileText, HelpCircle, Hourglass, KeyRound, ListChecks, Loader2, Radar, TerminalSquare, type LucideIcon } from "lucide-react"
-import { awaitingFenceTitle, awaitingSteps, questionFencesLive } from "@frizz/shared"
+import { awaitingFenceTitle, awaitingSteps, questionFencesLive, RETRY_FOLLOW_UP } from "@frizz/shared"
 import type { AskQuestion, AwaitingHint, BgShellView, PendingAsk, RegisteredQuestionView, SubAgentView, ThreadView as ThreadViewData, TranscriptEdit, TranscriptMessage, TranscriptPart, TranscriptTodo, TranscriptToolCall } from "@frizz/shared"
 import { store, threadBySlug, pushDrawer, pushSubAgentDrawer, pushBackgroundShellDrawer, showToast } from "../store.ts"
 import { useBackgroundShellLines, useBoard, useProjectDir, useTranscript, type ChatMessage, type TranscriptData } from "../hooks.ts"
@@ -21,14 +21,14 @@ import { LinkedHtml } from "./LinkedHtml.tsx"
 import { CodeBody } from "./CodeBody.tsx"
 import { resolveFileLanguage } from "../lib/syntaxHighlight.ts"
 import { TodoBlock } from "./TodoBlock.tsx"
-import { splitMessageQuestions, parseQuestionBlock, type QuestionKind, type BlockAnswer, type MessageAnswering } from "../lib/questionBlocks.ts"
+import { followUpParentsIn, splitMessageQuestions, parseQuestionBlock, type QuestionKind, type BlockAnswer, type MessageAnswering } from "../lib/questionBlocks.ts"
 import { splitFenceBlocks, type FenceKind } from "../lib/fenceBlocks.ts"
 import { showsRegisteredDoneCard } from "../lib/registeredDone.ts"
 import { RestedCard, showsRestedCard } from "./RestedCard.tsx"
 import { ProviderErrorCard, providerErrorVisible } from "./ProviderErrorCard.tsx"
 import { answersNote, parseAnswersCard, pairAllAnswers, unrenderedAnswers, type PairedAnswer } from "../lib/answersMessage.ts"
 import { questionsByAnchor } from "../lib/questionAnchor.ts"
-import { fenceStandsFor, placedRestEnds, placeQuestions, questionsAtCurrentRest, registeredStandingAt, resolveQuestionName, type QuestionPlacement } from "../lib/questionShadow.ts"
+import { fenceStandsFor, placedRestEnds, placeQuestions, registeredStandingAt, resolveQuestionName, type QuestionPlacement } from "../lib/questionShadow.ts"
 import { settledQuestionPositions, type SettledPlacement } from "../lib/settledQuestions.ts"
 import { FrizzWake } from "./FrizzWake.tsx"
 import { LinkifiedText } from "./LinkifiedText.tsx"
@@ -51,6 +51,7 @@ import { SessionMessageLine } from "./SessionMessageLine.tsx"
 import { lastAskIndex, messagePresentationText } from "../lib/messagePresentation.ts"
 import { inQueuedTail, withRestReplyInline } from "../lib/restReply.ts"
 import { steeredSinceRest, useSteeredAt, useTurnHeldForTranscript } from "../lib/steering.ts"
+import { useTranscriptHeldForBoard } from "../lib/restAhead.ts"
 import { snoozePresetInstant, formatSnoozeWake } from "../lib/snooze.ts"
 import { noteGithubRefs } from "../lib/githubHovercards.ts"
 import { ICON_LABEL_NUDGE } from "../lib/iconAlign.ts"
@@ -84,7 +85,7 @@ import { ChildOpRow } from "./ChildOpRow.tsx"
 import { ThreadLinks } from "./ThreadLinks.tsx"
 import { TRANSCRIPT_META_LABEL_CLASS, transcriptMetaChevronClass } from "../lib/transcriptMetaLabels.ts"
 import { InteractionStack } from "./InteractionCards.tsx"
-import { RegisteredAnsweringProvider, RegisteredQuestionCard, RegisteredQuestionStack, SettledQuestionCard, SettledQuestionStack, UnregisteredQuestionCard, openQuestionsOf, useFenceQuestions, useSettledQuestions, type FenceQuestionRow, type SettledQuestion } from "./RegisteredQuestionCards.tsx"
+import { ClosedQuestionCard, RegisteredAnsweringProvider, RegisteredQuestionCard, RegisteredQuestionStack, SettledQuestionCard, SettledQuestionStack, UnregisteredQuestionCard, openQuestionsOf, useArrivedQuestions, useFenceQuestions, useRefusedFences, useSettledQuestions, type FenceQuestionRow, type SettledQuestion } from "./RegisteredQuestionCards.tsx"
 // The shared card chrome and THE question card both live in their own modules now, so every
 // surface can render them without importing the thread view. QuestionBlockCard in particular is
 // shared with the native-AskUserQuestion path, which reaches it through InteractionCards.tsx —
@@ -251,12 +252,12 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
   // lib/settledQuestions). The open cards skip any id the settled list holds, so a question just sent
   // never draws as both.
   const settledQuestions = useSettledQuestions(boardThread)
-  const openQuestions = useMemo(() => openQuestionsOf(boardThread, settledQuestions), [boardThread, settledQuestions])
+  const boardQuestions = useMemo(() => openQuestionsOf(boardThread, settledQuestions), [boardThread, settledQuestions])
   // ON A PHONE the registered cards are read-only and answering is a sheet (PhoneQuestionCards,
   // RegisteredAnswerSheet), opened from the bottom bar's "Answer". Null off the phone page.
   const phoneQuestions = useMemo<PhoneQuestions | null>(
-    () => (phone ? { numberOf: (id) => openQuestions.findIndex((q) => q.id === id) + 1 } : null),
-    [phone, openQuestions],
+    () => (phone ? { numberOf: (id) => boardQuestions.findIndex((q) => q.id === id) + 1 } : null),
+    [phone, boardQuestions],
   )
   const [answerSheetOpen, setAnswerSheetOpen] = useState(false)
 
@@ -269,7 +270,18 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
   const [earlierError, setEarlierError] = useState<string | null>(null)
   // Raw server order — each message renders its `parts` in block order (fidelity). Memoized so
   // useLiveAnswering's `liveMsg` identity check compares objects from THIS same list.
-  const messages = useMemo(() => q.data?.messages ?? [], [q.data])
+  const liveMessages = useMemo(() => q.data?.messages ?? [], [q.data])
+  // …less a rest the board has not reached yet: a push that ends on one while the board still reports the
+  // turn waits for the board, so the reply, its card and the Working row's departure land in one render
+  // (lib/restAhead.ts). Everything below reads THIS list.
+  const loadedMessages = useTranscriptHeldForBoard(boardThread, liveMessages)
+  // The open questions this surface DRAWS: a fence-asked row waits for the message that asked it, which
+  // the transcript brings a round trip after the board brings the row (lib/questionArrival).
+  const openQuestions = useArrivedQuestions(boardQuestions, loadedMessages)
+  // …with every question fence the server REFUSED marked on its message (lib/questionFaults), so each
+  // reader of a message's fences below — the placement, the claims, Message itself — sees it as the code
+  // block it is. The same array when nothing was refused.
+  const messages = useRefusedFences(loadedMessages, boardThread, openQuestions, settledQuestions)
   const liveTranscriptShells = useMemo(() => transcriptBackgroundShells(messages), [messages])
   const steerStamp = useSteeredAt()[slug]
   // The send that ends a rest draws where it will land, stamped with the instant this tab sent it — see
@@ -347,16 +359,9 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
   // because no message carries it (lib/registeredDone). Keyed on the final assistant message so a worker
   // that also wrote the fence gets one card, from the message, not two.
   const registeredDone = showsRegisteredDoneCard(thread, lastAgentIdx >= 0 ? presentationMessages[lastAgentIdx]?.text : undefined)
-  // The RESIDUAL rung: a rest that carries no other card at all (RestedCard). Same final-message key. An
-  // open question counts as this rest's card only where it renders at this rest (questionsAtCurrentRest).
-  // Read off the BOARD's questions, not `openQuestions`: a question the human has just answered leaves
-  // the open list the instant they send, a beat before the board says the worker is running, and in that
-  // beat this rest read as one that asked nothing — "Rested without a sign-off" drew under the answer and
-  // was gone 25ms later (measured on a real worker, 2026-10-12). The rest did ask; answering it does not
-  // change that, and the board's own copy moves on together with the runtime that retires this rung.
-  const boardQuestions = thread?.questions ?? NO_QUESTIONS
-  const questionsHere = useMemo(() => questionsAtCurrentRest(messages, boardQuestions), [messages, boardQuestions])
-  const restedCard = showsRestedCard(thread, lastAgentIdx >= 0 ? presentationMessages[lastAgentIdx]?.text : undefined, questionsHere)
+  // The RESIDUAL rung: a rest that carries no other card at all (RestedCard). Same final-message key.
+  // Whether an open question is this rest's ending is the server's answer, read there off the board.
+  const restedCard = showsRestedCard(thread, lastAgentIdx >= 0 ? presentationMessages[lastAgentIdx]?.text : undefined, lastAgentIdx >= 0 ? presentationMessages[lastAgentIdx]?.refusedFences : undefined)
   // Everything the runtime-status ladder needs that it cannot work out itself — see runtimeStatusRung.
   const runtimeStatus: RuntimeStatusState = { thread, showWorking, registeredDone, restedCard, errorVisible: providerErrorVisible(presentationMessages, thread?.providerError) }
   // Question-block interactivity in the thread view: EVERY ask stays answerable, wherever it sits —
@@ -384,7 +389,7 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
   // answerable thing (shared QUESTION_FENCE_RETIRED_AT). A legacy thread keeps the whole fence path.
   const fencesLive = questionFencesLive(thread?.spawnedAt)
   // …and speaks THE QUESTION FENCE instead: every row it knows, which a fence's `id:` resolves against.
-  const fenceQuestions = useFenceQuestions(fencesLive, openQuestions, settledQuestions)
+  const fenceQuestions = useFenceQuestions(fencesLive, openQuestions, settledQuestions, thread)
   // (The SSE-mode lastActivityAt refetch effect that lived here moved into transcript-live.ts: the
   // manager applies the same activity-edge pull to EVERY observed transcript that the push channel
   // doesn't cover, so no surface has to wire its own.)
@@ -888,7 +893,7 @@ export function RuntimeStatusLadder({
     // everything because `done` refuses while anything above could still be true — an open question or an
     // armed watch blocks the verb — so a thread showing this is at rest with nothing left to wait on.
     case "registered-done":
-      return <FenceCard fenceKind="done" body={thread!.lastFence!.body} hints={[]} wrap={wrap} />
+      return <FenceCard fenceKind="done" body={thread!.lastFence!.body} hints={thread!.lastFence!.hints} wrap={wrap} />
     // NOTHING ELSE APPLIES, and the bottom of the thread still has to say so — see RestedCard.
     case "rested":
       return <RestedCard thread={thread!} />
@@ -1000,11 +1005,8 @@ function VirtualizedThreadTranscript({
   // because no message carries it (lib/registeredDone). Keyed on the final assistant message so a worker
   // that also wrote the fence gets one card, from the message, not two.
   const registeredDone = showsRegisteredDoneCard(thread, lastAgentIdx >= 0 ? messages[lastAgentIdx]?.text : undefined)
-  // The RESIDUAL rung: a rest that carries no other card at all (RestedCard). Same final-message key, and
-  // the same board questions as ChatView's copy of this rung, for the same reason.
-  const boardQuestions = thread?.questions ?? NO_QUESTIONS
-  const questionsHere = useMemo(() => questionsAtCurrentRest(messages, boardQuestions), [messages, boardQuestions])
-  const restedCard = showsRestedCard(thread, lastAgentIdx >= 0 ? messages[lastAgentIdx]?.text : undefined, questionsHere)
+  // The RESIDUAL rung: a rest that carries no other card at all (RestedCard). Same final-message key.
+  const restedCard = showsRestedCard(thread, lastAgentIdx >= 0 ? messages[lastAgentIdx]?.text : undefined, lastAgentIdx >= 0 ? messages[lastAgentIdx]?.refusedFences : undefined)
   // Everything the runtime-status ladder needs that it cannot work out itself — see runtimeStatusRung.
   // The row EXISTS when some rung wins, and its own gap is that same answer: the eager path derives both
   // from the identical call, so the two cannot disagree about which card this thread gets.
@@ -1042,7 +1044,9 @@ function VirtualizedThreadTranscript({
       return rowIdx
     }
     const unplaced = openQuestions.filter((q) => !placement.placedIds.has(q.id))
-    for (const [anchor, group] of questionsByAnchor(messages, unplaced)) {
+    // `from: 0`: a question the human has typed past, asked above the loaded window, is not hoisted over
+    // everything — it draws where its message is once that is loaded (lib/questionAnchor questionsByAnchor).
+    for (const [anchor, group] of questionsByAnchor(messages, unplaced, { from: 0 })) {
       if (anchor >= tailAnchor) { tail.push(...group); continue }
       const rowIdx = rowOf(anchor)
       const at = byRow.get(rowIdx)
@@ -1136,7 +1140,20 @@ function VirtualizedThreadTranscript({
     paddingStart: 20,
     paddingEnd: 20,
     anchorTo: "end",
-    followOnAppend: true,
+    // NO `followOnAppend`. The tail follow is syncTailFollow's, below, on every commit; the library's own
+    // follow fired on exactly one event here — the runtime-status row (or a queued bubble) being APPENDED,
+    // the only time the last row's key changes — and it follows by `scrollToEnd`, which is
+    // `scrollToIndex(count - 1)` plus a reconcile loop that re-aims at THAT INDEX on each frame until the
+    // offset holds still. A turn that starts outside this tab appends the Working row on the board's
+    // `running` delta and inserts its "Agent rested" hairline and the human's bubble ABOVE that row on the
+    // transcript push ~25ms later, so on a run where the loop was still alive the index it held now
+    // named the hairline: it scrolled a reader at the tail up to that row's end — 69px, the hairline's
+    // 108px estimate less its 39px — and left them detached under "Jump to latest" for the whole turn,
+    // reply included. 4 of 180 scripted turn starts on a tall thread at 820x900 and 17 of 40 on a short
+    // one at 1400x900 (2026-10-13), every one written by `reconcileScroll`; 0 of 180 without it.
+    // syncTailFollow follows by the scroller's own height, so it has no index to go stale. (The option
+    // came with the virtualized view, 2026-07-21, three days before syncTailFollow replaced what it was
+    // for; it had been a second, redundant follower ever since.)
     scrollEndThreshold: TAIL_FOLLOW_PX,
     // THE SWALLOWED WHEEL NOTCH — why scrolling back through a long thread stutters.
     //
@@ -2125,8 +2142,6 @@ function withSpacers(blocks: ReactNode[], h: number | ((index: number) => number
 // caller's ordinary pitch otherwise. `edges` runs parallel to the block list. See PICTURE_STEP.
 type PictureEdges = { head: boolean; tail: boolean }
 const NO_PICTURE: PictureEdges = { head: false, tail: false }
-// A stable empty list for a thread with no `questions` yet, so the memos keyed on it hold.
-const NO_QUESTIONS: readonly RegisteredQuestionView[] = []
 function pictureAwareGap(edges: readonly PictureEdges[], ordinary: number): (index: number) => number {
   return (i) => (edges[i - 1]?.tail || edges[i]?.head ? PICTURE_STEP : ordinary)
 }
@@ -3721,6 +3736,10 @@ export const Message = memo(function Message({ m, answering, dense, paired, text
   const askBlocks: { raw: string; kind: QuestionKind; danger: boolean; bi: number }[] = []
   // The placed registered cards this message has already drawn (one per id, see the marker branch).
   const placedDrawn = new Set<string>()
+  // The parents this message's `when:` follow-ups claim from an earlier message — read over the WHOLE
+  // message, as the placement is (lib/questionShadow placeQuestions), and only once a follow-up asks.
+  let claimedParents: Set<string> | undefined
+  const followUpParents = () => (claimedParents ??= new Set(followUpParentsIn(m.text, m.refusedFences)))
   const renderText = (text: string, keyBase: string) => {
     // Split SIGNAL fences (```done / ```awaiting) out first — each renders as a card in place of the
     // raw block — then run the remaining prose runs through the question/image pipeline. Fences never
@@ -3783,7 +3802,9 @@ export const Message = memo(function Message({ m, answering, dense, paired, text
         )
         continue
       }
-      for (const [si, seg] of splitMessageQuestions(fseg.text, fenceQuestions !== undefined).entries()) {
+      // A fence the server REFUSED comes back as prose here (`m.refusedFences`, lib/questionFaults): the
+      // code block it is, never a card and never a claim on the card of the row its id happens to name.
+      for (const [si, seg] of splitMessageQuestions(fseg.text, fenceQuestions !== undefined, m.refusedFences).entries()) {
         if (seg.kind === "prose") {
           for (const [j, p] of splitProseAttachments(seg.text).entries()) {
             const partKey = `${keyBase}-${fi}-p${si}-${j}`
@@ -3805,9 +3826,22 @@ export const Message = memo(function Message({ m, answering, dense, paired, text
         // placement exactly like the legacy marker below, resolved by the worker's id instead of a minted one.
         if (seg.fence) {
           // A FOLLOW-UP lives inside its parent's card, which opens it when its option is picked; its own
-          // fence has nothing to draw.
-          if (seg.fence.form === "ask" && seg.fence.when) continue
-          const row = resolveQuestionName(seg.fence.id, fenceQuestions ?? [])
+          // fence has nothing to draw — unless its parent was asked in an EARLIER message. Then this fence
+          // is what names the parent here (lib/questionBlocks followUpParentsIn), so it is the slot the
+          // parent's card moves to, exactly like an `id:`-only reference. Never a card of its own: until
+          // the row carries the new branch, the parent's card simply draws here without it.
+          const followsUp = seg.fence.form === "ask" ? seg.fence.when : undefined
+          if (followsUp && !followUpParents().has(followsUp.parent.toLowerCase())) continue
+          const row = resolveQuestionName(followsUp ? followsUp.parent : seg.fence.id, fenceQuestions ?? [])
+          if (row?.closed) {
+            // CLOSED WITHOUT AN ANSWER — dismissed or withdrawn. The fence that asked it draws the question
+            // closed, saying which (ClosedQuestionCard); a follow-up or a reference to it draws nothing.
+            if (seg.fence.form === "ask" && !followsUp && !placedDrawn.has(row.id)) {
+              placedDrawn.add(row.id)
+              push(<ClosedQuestionCard key={`${keyBase}-${fi}-q${si}`} spec={seg.fence.spec} state={row.closed} wrap={dense} />)
+            }
+            continue
+          }
           if (row) {
             // Placed in THIS message (the newest one naming it from its claiming rest on): the live card,
             // once. Answered here: its settled card, once. Anywhere else, the card is drawn there.
@@ -3828,7 +3862,7 @@ export const Message = memo(function Message({ m, answering, dense, paired, text
           // registers a fence it refused. The human sees the question now, drawn READ-ONLY from the fence's
           // own spec; the board's row replaces it with the answerable card the moment it lands. A reference
           // to nothing has nothing to draw.
-          if (seg.fence.form === "ask" && !placedDrawn.has(`fence:${seg.fence.id}`)) {
+          if (seg.fence.form === "ask" && !followsUp && !placedDrawn.has(`fence:${seg.fence.id}`)) {
             placedDrawn.add(`fence:${seg.fence.id}`)
             push(<UnregisteredQuestionCard key={`${keyBase}-${fi}-q${si}`} spec={seg.fence.spec} wrap={dense} />)
           }
@@ -4213,6 +4247,7 @@ export function FenceCard({ fenceKind, body, hints, wrap }: { fenceKind: FenceKi
   // the phone thread flagged exactly that, and the approved design draws the card without it).
   const isMobile = useIsMobile()
   if (fenceKind === "done") {
+    const doneTitle = awaitingFenceTitle(hints)
     // A white "Mark as done" button, deliberately redundant with the header's check — the same completion
     // mutation, styled as the primary (light-on-dark) verb. Only shown when the thread can actually take
     // the action, and never on a phone (see `isMobile` above).
@@ -4231,11 +4266,13 @@ export function FenceCard({ fenceKind, body, hints, wrap }: { fenceKind: FenceKi
       // NEUTRAL tone — the green splash stood out as the only saturated color in the UI (maintainer
       // 2026-07-10). The Check + "Done" carries the meaning; no color needed.
       //
-      // HEADED BY A KIND CHIP AND A RULE, as the awaiting cards are (2026-10-13, TranscriptCard's KindChip:
-      // "it's weird that the done blocks still don't have a visually separate header, the way that the
-      // awaiting blocks do"). A done fence has no `title:`, so the chip alone heads it. An empty body draws
-      // no rule — the band's own border is the only seam left to draw — and nothing at all draws no body.
-      <TranscriptCard icon={Check} chip="Done" label={null} ruled={!!html}>
+      // HEADED BY ITS KIND OVER ITS TITLE, then a rule, as every block type is (2026-10-13, TranscriptCard's
+      // KindLabel: "it's weird that the done blocks still don't have a visually separate header, the way
+      // that the awaiting blocks do"). The title is the worker's own `title:` — on the fence, or on
+      // `frizzctl done --title` — and with none the "Done" line alone heads the card: never the body's
+      // first sentence (maintainer, same day). An empty body draws no rule — the band's own border is the
+      // only seam left to draw — and nothing at all draws no body.
+      <TranscriptCard icon={Check} kind="Done" label={doneTitle ? <span className="[overflow-wrap:anywhere]">{doneTitle}</span> : null} ruled={!!html}>
         {html || markDone ? (
           <>
             {html && <LinkedHtml className={`md-body${wrap ? ` ${QUEUE_WRAP}` : ""}`} html={html} />}
@@ -4372,7 +4409,7 @@ export function LimitPauseCard({ slug, sessionId, pause }: { slug: string; sessi
     setContinuing(true)
     // The message is a non-empty constant, so `started` is always true here; the reset-on-false is a
     // belt-and-suspenders that keeps the button from sticking disabled if that ever changes.
-    const started = sendEagerFollowUp(queryClient, slug, "Continue exactly where you left off.", {
+    const started = sendEagerFollowUp(queryClient, slug, RETRY_FOLLOW_UP, {
       onSuccess: () => { setContinuing(false); showToast("Continuing…") },
       onRollback: () => setContinuing(false),
       failureToast: (m) => `Continue failed: ${m.slice(0, 80)}`,

@@ -39,17 +39,24 @@
 .frizz-diff-header .frizz-diff-add { color: var(--code-add-sign); }
 .frizz-diff-header .frizz-diff-del { color: var(--code-del-sign); }
 
+/* With Wrap code off (`.frizz-diff-line` below) a wide diff scrolls here, inside the body, never the
+   page. With it on nothing overflows, and this is the same backstop the Bash body keeps. */
 .frizz-diff-body { overflow-x: auto; }
 
 /* Divider between successive edit groups merged into one block (same-file consecutive edits). A
    hairline is enough to read them as distinct edits without a heavy separator. */
 .frizz-diff-editsep { border-top: 1px solid var(--color-border); }
 
-/* Line rows */
+/* Line rows. They follow the "Wrap code" setting through the one property a fenced block reads
+   (styles.css `--code-wrap`). On, the default: a long line wraps inside its code column
+   (`.frizz-diff-code` is the one item that shrinks), so it continues under its own code, not under its
+   number or sign, and its add/del tint covers every line it wraps to. Off: every row stays on one line
+   and the body scrolls sideways, which is what the card did until 2026-10-13. */
 .frizz-diff-line {
   display: flex;
   align-items: baseline;
-  white-space: pre;
+  white-space: var(--code-wrap, pre-wrap);
+  overflow-wrap: anywhere;
 }
 .frizz-diff-line[data-type="add"] { background: var(--code-add-bg); }
 .frizz-diff-line[data-type="del"] { background: var(--code-del-bg); }

@@ -259,6 +259,18 @@ export interface ClaudeAgentBrokerBridge {
    */
   warmUp(): Promise<void>
   binding(threadSlug: string, sessionId: string): ClaudeBrokerBinding | undefined
+  /**
+   * When the newest input was handed to this bridge for the session (ms epoch), or undefined if none
+   * was since this server started. Stamped the moment `followUp` takes the message, before any resume
+   * or socket write, and withdrawn if that delivery throws.
+   *
+   * It exists for ONE reader: the router deciding whether a follow-up is the message that opens the
+   * next turn or one queued behind a turn something else just opened. The tailer answers that from the
+   * transcript, and for the tens of ms between an input being handed over and its record reaching the
+   * JSONL the transcript still says "at rest" — so a human's send racing a wake, or another tab's send,
+   * was recorded as `delivered` while the worker had queued it (see the router's `midTurn`).
+   */
+  lastInputAt(sessionId: string): number | undefined
   /** Whether an ownerless daemon for this session is running right now — the board's liveness/stall
    *  signal for a headless broker row (the parallel of codex's turnLiveness), independent of whether
    *  THIS frizz process currently holds a live socket to it. */
@@ -598,6 +610,8 @@ export function createClaudeAgentBrokerBridge(deps: ClaudeBrokerBridgeDeps): Cla
   // caller that joined — each of them needed this daemon, so each send fails and rolls back, and the
   // next one starts a fresh attempt because the entry is removed as the attempt settles.
   const attaching = new Map<string, Promise<ActiveSession>>()
+  // Keyed by session id — see `lastInputAt` on the interface.
+  const inputHandedAt = new Map<string, number>()
   const attachOnce = (...args: Parameters<typeof attach>): Promise<ActiveSession> => {
     const sessionId = args[1]
     const inFlight = attaching.get(sessionId)
@@ -680,48 +694,62 @@ export function createClaudeAgentBrokerBridge(deps: ClaudeBrokerBridgeDeps): Cla
       // cold resume, and must certainly not cost the `freshProcess` daemon retirement below — killing the
       // operator's worker on the way to refusing their message is the worst possible order.
       const message = validatedInput({ id: inputIdFor(input.deliveryId), text: input.text })
-      // A resume another caller already started for this session is the one this message rides — see
-      // attachOnce. Waited out BEFORE reading `current`, so the checks below see the daemon it produced
-      // (and a `freshProcess` caller retires THAT one, rather than racing it). A failed attempt is not
-      // this caller's failure: it falls through and starts its own.
-      const inFlight = attaching.get(input.sessionId)
-      if (inFlight) await inFlight.catch(() => undefined)
-      // Reattach if we don't already hold this session live (frizz restarted, or it was detached). The
-      // fork opts carry resume:true + the rebuilt system prompt so a DEAD daemon cold-resumes with the
-      // worker contract re-applied; when the daemon is still alive they are ignored (socket reconnect).
-      //
-      // "Hold it live" means the DAEMON is still there, not merely that this bridge has an entry for the
-      // slug — see holdsLiveDaemon. A held session whose daemon died is dropped (and its endlessly
-      // retrying client closed) so this cold-resumes instead of queueing the operator's message into a
-      // socket that never returns.
-      let held = current(input.threadSlug, input.sessionId)
-      if (held && !holdsLiveDaemon(held)) { held.client.close(); sessions.delete(input.threadSlug); held = undefined }
-      // A caller that asked for a FRESH process is telling us the live one cannot act on this message.
-      // Retire the daemon so the attach below cold-resumes instead of reconnecting: the new `claude`
-      // re-reads the credential and carries no usage-limit latch. Nothing durable is lost — the
-      // transcript is on disk and `resume: true` reads it back — beyond the in-memory sub-agents, and a
-      // latched parent's children are already dead by the same 429 that latched it.
-      if (input.freshProcess && held) {
-        held.client.close()
-        killBroker(deps.stateDir, held.sessionId, "fresh-process")
-        sessions.delete(input.threadSlug)
-        held = undefined
+      // Stamped before anything can await, so a second follow-up racing this one already sees it (see
+      // `lastInputAt`); withdrawn if the message never reaches the daemon.
+      const handedBefore = inputHandedAt.get(input.sessionId)
+      const handedAt = Date.now()
+      inputHandedAt.set(input.sessionId, handedAt)
+      try {
+        // A resume another caller already started for this session is the one this message rides — see
+        // attachOnce. Waited out BEFORE reading `current`, so the checks below see the daemon it produced
+        // (and a `freshProcess` caller retires THAT one, rather than racing it). A failed attempt is not
+        // this caller's failure: it falls through and starts its own.
+        const inFlight = attaching.get(input.sessionId)
+        if (inFlight) await inFlight.catch(() => undefined)
+        // Reattach if we don't already hold this session live (frizz restarted, or it was detached). The
+        // fork opts carry resume:true + the rebuilt system prompt so a DEAD daemon cold-resumes with the
+        // worker contract re-applied; when the daemon is still alive they are ignored (socket reconnect).
+        //
+        // "Hold it live" means the DAEMON is still there, not merely that this bridge has an entry for the
+        // slug — see holdsLiveDaemon. A held session whose daemon died is dropped (and its endlessly
+        // retrying client closed) so this cold-resumes instead of queueing the operator's message into a
+        // socket that never returns.
+        let held = current(input.threadSlug, input.sessionId)
+        if (held && !holdsLiveDaemon(held)) { held.client.close(); sessions.delete(input.threadSlug); held = undefined }
+        // A caller that asked for a FRESH process is telling us the live one cannot act on this message.
+        // Retire the daemon so the attach below cold-resumes instead of reconnecting: the new `claude`
+        // re-reads the credential and carries no usage-limit latch. Nothing durable is lost — the
+        // transcript is on disk and `resume: true` reads it back — beyond the in-memory sub-agents, and a
+        // latched parent's children are already dead by the same 429 that latched it.
+        if (input.freshProcess && held) {
+          held.client.close()
+          killBroker(deps.stateDir, held.sessionId, "fresh-process")
+          sessions.delete(input.threadSlug)
+          held = undefined
+        }
+        const session = held ?? await attachOnce(
+          input.threadSlug, input.sessionId, input.cwd, input.permissionMode ?? "default",
+          { resume: true, appendSystemPrompt: input.appendSystemPrompt, model: input.model, effort: input.effort },
+        )
+        // A message the operator sends INSTEAD of answering an open card supersedes it. Retire before the
+        // input frame, not after: while the card is pending the turn is parked inside canUseTool and will
+        // never consume what we send, so the deny has to be in flight first for the frame to land on a turn
+        // that can actually read it. Ordering aside, this is also the answer to "they typed instead of
+        // clicking" — see retirePendingFor.
+        if (!input.keepOpenCards) retirePendingFor(input.threadSlug, input.sessionId, "user-cancelled")
+        // AWAITED, and that is the fix for the other half of 2026-09-30: this used to be `sendInput`, which
+        // buffers the frame while the socket is down and returns — so a follow-up bound to a socket that
+        // never came back resolved, the router recorded "GO!!" as delivered, and the client dropped the
+        // frame on its 30s give-up. Now the RPC answers success only for a message the daemon took.
+        await deliver(session, message)
+      } catch (error) {
+        // Only our own stamp: a later input that got through keeps the one it set.
+        if (inputHandedAt.get(input.sessionId) === handedAt) {
+          if (handedBefore === undefined) inputHandedAt.delete(input.sessionId)
+          else inputHandedAt.set(input.sessionId, handedBefore)
+        }
+        throw error
       }
-      const session = held ?? await attachOnce(
-        input.threadSlug, input.sessionId, input.cwd, input.permissionMode ?? "default",
-        { resume: true, appendSystemPrompt: input.appendSystemPrompt, model: input.model, effort: input.effort },
-      )
-      // A message the operator sends INSTEAD of answering an open card supersedes it. Retire before the
-      // input frame, not after: while the card is pending the turn is parked inside canUseTool and will
-      // never consume what we send, so the deny has to be in flight first for the frame to land on a turn
-      // that can actually read it. Ordering aside, this is also the answer to "they typed instead of
-      // clicking" — see retirePendingFor.
-      if (!input.keepOpenCards) retirePendingFor(input.threadSlug, input.sessionId, "user-cancelled")
-      // AWAITED, and that is the fix for the other half of 2026-09-30: this used to be `sendInput`, which
-      // buffers the frame while the socket is down and returns — so a follow-up bound to a socket that
-      // never came back resolved, the router recorded "GO!!" as delivered, and the client dropped the
-      // frame on its 30s give-up. Now the RPC answers success only for a message the daemon took.
-      await deliver(session, message)
     },
 
     interruptTurn(input) {
@@ -870,6 +898,10 @@ export function createClaudeAgentBrokerBridge(deps: ClaudeBrokerBridgeDeps): Cla
     binding(threadSlug, sessionId) {
       const s = current(threadSlug, sessionId)
       return s ? { threadSlug, sessionId, cwd: s.cwd, generation: s.generation, state: s.client.connected() ? "active" : "detached" } : undefined
+    },
+
+    lastInputAt(sessionId) {
+      return inputHandedAt.get(sessionId)
     },
 
     isDaemonAlive(sessionId) {

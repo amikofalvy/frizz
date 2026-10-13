@@ -1,7 +1,7 @@
 import { mock, test } from "node:test"
 import assert from "node:assert/strict"
 import type { ThreadView } from "@frizz/shared"
-import { answeredNow, clearSteered, isOptimisticallySteering, markAnswered, markSteered, optimisticallySteered, steeredSinceRest, STEER_OPTIMISM_MS, transcriptBehindRest } from "./steering.ts"
+import { answeredNow, clearSteered, isOptimisticallySteering, markAnswered, markSteered, optimisticallySteered, steeredSinceRest, STEER_OPTIMISM_MS, transcriptBehindRest, transcriptBehindTurn, transcriptHold, transcriptPastRest } from "./steering.ts"
 import { isActivelyRunning, isSnoozed, orderActive, partitionActive, sectionOf, sessionIndicatorKind, workingWithOpenQuestion } from "../groups.ts"
 
 const at = (lastActivityAt?: string) => ({ id: "t", lastActivityAt } as unknown as ThreadView)
@@ -218,6 +218,23 @@ test("the Working clock starts at the send: this tab's stamp, else the server's 
   assert.equal(steeredSinceRest(atRest(), [rest, projected], 0, undefined, SENT + 200)!.lastUserAt, projected.at)
 })
 
+// A steer that waited out a turn: the board reports the rest ~20ms before the transcript carries the reply.
+// The ghost there has ended no rest — the turn on screen is still the one it is waiting on — so the overlay
+// (and the Working clock it would re-base on the steer's own instant) stays out of it.
+test("a ghost waiting on a turn whose end the transcript has not reached ends nothing", () => {
+  const at = (s: number) => new Date(SENT + s * 1000).toISOString()
+  const opener = { role: "user", at: at(0) } as const
+  const waiting = { role: "user", queued: true, at: at(2) } as const
+  const justRested = atRest({ lastAssistantAt: at(6), deliveryInFlight: true })
+  assert.equal(steeredSinceRest(justRested, [{ role: "assistant", at: at(-9) }, opener, waiting], 0, SENT + 2_000, SENT + 6_050), justRested)
+  // Once the reply and its rest boundary are there, the same ghost is the send that ends that rest — even
+  // where the coalesced reply carries an earlier instant than the board's, and the ghost none at all.
+  const reply = { role: "assistant", at: at(5) } as const
+  const boundary = { role: "assistant", kind: "event", boundary: "rest", at: at(5) } as const
+  assert.equal(steeredSinceRest(justRested, [opener, reply, boundary, waiting], 1, undefined, SENT + 6_100)!.runtime, "running")
+  assert.equal(steeredSinceRest(justRested, [opener, reply, boundary, { role: "user", queued: true }], 1, undefined, SENT + 6_100)!.runtime, "running")
+})
+
 // ── the rest the transcript has not reached ─────────────────────────────────────────────────────────
 // The board's turn-idle leads the transcript push carrying the reply by ~20ms; in between the view must
 // not draw a rest that has nothing under it.
@@ -243,9 +260,114 @@ test("the Working clock starts at the send: this tab's stamp, else the server's 
     assert.equal(transcriptBehindRest(rested(T(9)), [human(T(5)), said(T(9))]), false)
   })
 
+  test("a ghost says nothing about how far the transcript has got", () => {
+    // Typed in the turn's last 50ms: newer than the worker's final record, and the reply is still not there.
+    assert.equal(transcriptBehindRest(rested(T(9)), [said(T(0)), restAt(T(1)), human(T(5)), { role: "user" as const, at: T(10), queued: true }]), true)
+    assert.equal(transcriptBehindRest(rested(T(9)), [human(T(5)), said(T(9)), restAt(T(9)), { role: "user" as const, queued: true }]), false)
+  })
+
   test("a running thread, or a rest with no instant, is never held", () => {
     assert.equal(transcriptBehindRest(rested(T(9), "running"), [human(T(5))]), false)
     assert.equal(transcriptBehindRest({ id: "t", runtime: "turn-idle" } as unknown as ThreadView, [human(T(5))]), false)
     assert.equal(transcriptBehindRest(undefined, []), false)
+  })
+
+  // ── …and the turn the transcript has not reached, at the turn's opening ──
+  // A turn started from outside this tab: the board's `running` leads the push carrying the message that
+  // opened it by 40-60ms; until that message lands the transcript still ends on the last rest.
+  const live = (runtime: ThreadView["runtime"] = "running") => ({ id: "t", runtime } as unknown as ThreadView)
+  const wakeBubble = { role: "user" as const, at: T(10), wake: true }
+  const wakeDivider = { role: "assistant" as const, kind: "event" as const, boundary: "wake" as const, at: T(10) }
+
+  test("a turn whose opening message the transcript does not carry yet is ahead of it", () => {
+    assert.equal(transcriptBehindTurn(live(), [human(T(5)), said(T(8)), restAt(T(8))]), true)
+    assert.equal(transcriptBehindTurn(live("spawning"), [human(T(5)), said(T(8)), restAt(T(8))]), true)
+  })
+
+  test("whatever opened the turn releases it — a human's bubble, a wake's bubble or its divider", () => {
+    for (const opener of [human(T(10)), wakeBubble, wakeDivider]) {
+      assert.equal(transcriptBehindTurn(live(), [human(T(5)), said(T(8)), restAt(T(8)), opener]), false, JSON.stringify(opener))
+    }
+    // The first record of the turn itself, should the opener never project (a dropped relay).
+    assert.equal(transcriptBehindTurn(live(), [human(T(5)), said(T(8)), restAt(T(8)), said(T(11))]), false)
+  })
+
+  test("a send from this tab is never held: its ghost already sits after the rest", () => {
+    const ghost = { role: "user" as const, at: T(10), queued: true }
+    assert.equal(transcriptBehindTurn(live(), [human(T(5)), said(T(8)), restAt(T(8)), ghost]), false)
+  })
+
+  test("a rest, or a turn with nothing behind it, is never held as a turn", () => {
+    assert.equal(transcriptBehindTurn(rested(T(9)), [human(T(5)), said(T(8)), restAt(T(8))]), false)
+    assert.equal(transcriptBehindTurn(live(), [human(T(5))]), false)
+    assert.equal(transcriptBehindTurn(live(), []), false)
+    assert.equal(transcriptBehindTurn(undefined, [restAt(T(8))]), false)
+  })
+
+  // ── …and the next turn the transcript has already opened, past a rest the board still reports ──
+  // A steer that waited out a turn is handed over the instant it ends; the transcript push carries it
+  // ~20ms after the board's rest, and the board says running one tick later.
+  test("a message landed after the rest boundary has opened the next turn", () => {
+    assert.equal(transcriptPastRest(rested(T(9)), [human(T(5)), said(T(9)), restAt(T(9)), human(T(10))]), true)
+    assert.equal(transcriptPastRest(rested(T(9), "exited"), [human(T(5)), said(T(9)), restAt(T(9)), wakeBubble]), true)
+    assert.equal(transcriptPastRest(rested(T(9)), [human(T(5)), said(T(9)), restAt(T(9)), wakeDivider]), true)
+  })
+
+  test("a ghost, or a send nobody was handed, has not opened anything", () => {
+    for (const m of [{ role: "user" as const, at: T(10), queued: true }, ...(["failed", "unconfirmed", "held"] as const).map((deliveryState) => ({ role: "user" as const, at: T(10), deliveryState }))]) {
+      assert.equal(transcriptPastRest(rested(T(9)), [human(T(5)), said(T(9)), restAt(T(9)), m]), false, JSON.stringify(m))
+    }
+  })
+
+  test("a rest with nothing after it, a turn the board already reports, or a message the rest came after is not past it", () => {
+    assert.equal(transcriptPastRest(rested(T(9)), [human(T(5)), said(T(9)), restAt(T(9))]), false)
+    assert.equal(transcriptPastRest(live(), [human(T(5)), said(T(9)), restAt(T(9)), human(T(10))]), false)
+    // The human message the turn answered, with the turn's own rest after it.
+    assert.equal(transcriptPastRest(rested(T(9)), [restAt(T(1)), human(T(5)), said(T(9)), restAt(T(9))]), false)
+    // A message with no rest above it at all (the first turn) belongs to a turn the board already ended.
+    assert.equal(transcriptPastRest(rested(T(9)), [human(T(5)), said(T(9))]), false)
+    // …nor one a reply already answered, where the projection drew no boundary for that rest.
+    assert.equal(transcriptPastRest(rested(T(9)), [restAt(T(1)), human(T(5)), said(T(9))]), false)
+    assert.equal(transcriptPastRest(undefined, []), false)
+  })
+
+  // ── which side of the edge stays on screen: both ends of a turn, both orders of the two channels ──
+  const turnOver = [human(T(5)), said(T(9)), restAt(T(9))]
+  const showedTurn = { running: true }
+  const showedRest = { running: false, restedId: "t", pastRest: false }
+
+  test("turn end, board first: the turn stays up until the reply lands", () => {
+    const behind = [said(T(0)), restAt(T(1)), human(T(5))]
+    assert.deepEqual(transcriptHold(rested(T(9)), behind, showedTurn), { present: "turn", key: `rest:${T(9)}` })
+    // A thread opened at rest over an older cached transcript was never showing the turn.
+    assert.equal(transcriptHold(rested(T(9)), behind, showedRest), undefined)
+  })
+
+  test("turn end, transcript first and already into the next turn: the turn stays up", () => {
+    assert.deepEqual(transcriptHold(rested(T(9)), [...turnOver, human(T(10))], showedTurn), { present: "turn", key: `next:${T(10)}` })
+  })
+
+  test("turn start, board first: the rest stays up until the opening message lands", () => {
+    assert.deepEqual(transcriptHold(live(), turnOver, showedRest), { present: "rest", key: `turn:${T(9)}` })
+    // Already showing a turn, or showing another thread's rest: nothing of this thread's to keep.
+    assert.equal(transcriptHold(live(), turnOver, showedTurn), undefined)
+    assert.equal(transcriptHold(live(), turnOver, { ...showedRest, restedId: "other" }), undefined)
+    // …and once the message is there the board's turn is drawn.
+    assert.equal(transcriptHold(live(), [...turnOver, human(T(10))], showedRest), undefined)
+  })
+
+  test("turn start, transcript first: the turn is drawn with the message the view saw arrive", () => {
+    assert.deepEqual(transcriptHold(rested(T(9)), [...turnOver, human(T(10))], showedRest), { present: "turn", key: `next:${T(10)}` })
+    assert.deepEqual(transcriptHold(rested(T(9)), [...turnOver, wakeDivider], showedRest), { present: "turn", key: `next:${T(10)}` })
+    // A thread OPENED on a transcript that already ends in an unanswered message saw nothing arrive: the
+    // first commit had no transcript at all, or the transcript was already past the rest.
+    assert.equal(transcriptHold(rested(T(9)), [...turnOver, human(T(10))], { running: false, restedId: "t" }), undefined)
+    assert.equal(transcriptHold(rested(T(9)), [...turnOver, human(T(10))], { running: false, restedId: "t", pastRest: true }), undefined)
+  })
+
+  test("channels that agree hold nothing", () => {
+    assert.equal(transcriptHold(rested(T(9)), turnOver, showedTurn), undefined)
+    assert.equal(transcriptHold(live(), [...turnOver, human(T(10))], showedTurn), undefined)
+    assert.equal(transcriptHold(undefined, [], showedRest), undefined)
   })
 }

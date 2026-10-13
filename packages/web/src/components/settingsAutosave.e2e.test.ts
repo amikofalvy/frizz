@@ -84,6 +84,53 @@ test("a replayable refusal is replayed until it lands, and says so meanwhile", {
   }
 })
 
+// "Wrap code" is the drawer's other kind of row: a BROWSER preference (lib/prefs.ts), not a server
+// setting. Its click has to land on the page at once — lib/codeWrap.ts mirrors it onto <html>, where
+// the stylesheet reads it — be there again after a reload, before anything renders, and never go over
+// the wire. lib/codeBlocks.e2e.test.ts pins what that attribute then does to a code block.
+test("wrap code flips the page's attribute on the click, survives a reload, and writes nothing to the server", { skip: !baseUrl, timeout: 60_000 }, async () => {
+  const { browser, page, errors } = await launch()
+  try {
+    const read = () => page.evaluate(() => {
+      let field = document.querySelector('button[aria-label="About Wrap code"]')!.parentElement!
+      while (!field.querySelector("button[aria-pressed]")) field = field.parentElement!
+      const pressed = [...field.querySelectorAll<HTMLElement>("button[aria-pressed=true]")].map((b) => (b.textContent ?? "").trim())
+      return {
+        attribute: document.documentElement.dataset.codeWrap,
+        pressed,
+        stored: (JSON.parse(localStorage.getItem("frizz.prefs.v1") ?? "{}") as { wrapCode?: boolean }).wrapCode ?? null,
+      }
+    })
+    const press = (label: string) => page.evaluate((want: string) => {
+      let field = document.querySelector('button[aria-label="About Wrap code"]')!.parentElement!
+      while (!field.querySelector("button[aria-pressed]")) field = field.parentElement!
+      ;[...field.querySelectorAll<HTMLElement>("button[aria-pressed]")].find((b) => b.textContent?.trim() === want)!.click()
+    }, label)
+
+    // On by default, and the page says so before anyone has touched the row.
+    assert.deepEqual(await read(), { attribute: "on", pressed: ["On"], stored: null })
+
+    await press("Off")
+    await page.waitForFunction(() => document.documentElement.dataset.codeWrap === "off", { timeout: 2000 })
+    assert.deepEqual(await read(), { attribute: "off", pressed: ["Off"], stored: false })
+
+    // A fresh load of the same browser starts off: the attribute is set from localStorage, not from a click.
+    await page.reload({ waitUntil: "networkidle0" })
+    await page.waitForSelector('button[aria-label="About Wrap code"]')
+    assert.deepEqual(await read(), { attribute: "off", pressed: ["Off"], stored: false })
+
+    await press("On")
+    await page.waitForFunction(() => document.documentElement.dataset.codeWrap === "on", { timeout: 2000 })
+    assert.deepEqual(await read(), { attribute: "on", pressed: ["On"], stored: true })
+
+    // Three clicks and a reload, and the server heard none of it.
+    assert.deepEqual(await readWrites(page), [])
+    assert.deepEqual(errors, [])
+  } finally {
+    await browser.close()
+  }
+})
+
 // The drawer has no free-text field any more: the triage prompt — the one DEBOUNCED input — moved to
 // the GitHub picker's own settings popover on 2026-09-19, and its one-write-per-burst, flush-on-close
 // and reset-to-unset behaviours are pinned there (githubPromptPopover.e2e.test.ts). What is left here

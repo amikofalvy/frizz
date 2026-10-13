@@ -2927,6 +2927,22 @@ test("parseSignalFence: END-ANCHORED — a fence with prose after it is quoted/e
   assert.deepEqual(parseSignalFence("all done\n\n```done\nShipped.\n```\n  \n"), { kind: "done", body: "Shipped.", hints: [] })
 })
 
+// A done fence may open on `title:` (2026-10-13): the card's heading, as the same hint an awaiting
+// fence's `title:` makes, and the line never reaches the body the card renders.
+test("parseSignalFence: a done fence's leading title: is a hint, and the ledger under its --- is the body", () => {
+  assert.deepEqual(parseSignalFence("Landed.\n\n```done\ntitle: Resolver cache keyed on the normalized id\n---\n- **Fixed** the lookup.\n```"), {
+    kind: "done",
+    body: "- **Fixed** the lookup.",
+    hints: [{ kind: "title", value: "Resolver cache keyed on the normalized id" }],
+  })
+  // The body cap applies to the ledger alone, after the title is lifted out.
+  const long = parseSignalFence(`\`\`\`done\ntitle: Landed\n---\n${"x".repeat(600)}\n\`\`\``)
+  assert.equal(long?.body, `${"x".repeat(500)}…`)
+  assert.deepEqual(long?.hints, [{ kind: "title", value: "Landed" }])
+  // A --- with no title above it is the worker's horizontal rule.
+  assert.deepEqual(parseSignalFence("```done\nShipped.\n\n---\n\n- Fixed.\n```"), { kind: "done", body: "Shipped.\n\n---\n\n- Fixed.", hints: [] })
+})
+
 test("parseSignalFence: an awaiting fence parses every sequence kind in file order; the remaining lines are the body", () => {
   const f = parseSignalFence("```awaiting\nshells: [bzvtnt3ig]\nagents: [a247b4470c]\ntimers: [tmr_a1b2c3d4e5f6]\nprs: [acme/app#391]\nfor: 2h\nWaiting on a named gate.\n```")
   assert.equal(f?.kind, "awaiting")

@@ -1,8 +1,12 @@
 import { useState } from "react"
 import { createRoot } from "react-dom/client"
 import "./styles.css"
+import { DiffBlock } from "./components/DiffBlock.tsx"
+import { QUEUE_WRAP } from "./components/TranscriptCard.tsx"
+import { initCodeWrap } from "./lib/codeWrap.ts"
 import { installCodeCopyInterceptor } from "./lib/copy-code.ts"
 import { installCodeExpandInterceptor } from "./lib/expand-code.ts"
+import { prefs } from "./lib/prefs.ts"
 import { installCodeTabInterceptor } from "./lib/switch-code-tab.ts"
 import { mdToHtml } from "./lib/markdown.ts"
 import { setThemePreference } from "./lib/theme.ts"
@@ -82,6 +86,16 @@ export const CASES: [string, string][] = [
   ["plain", fence("ts", retry)],
 ]
 
+const EDIT_OLD = [
+  "export function threadsUrl(cursor: string) {",
+  `  const url = "https://api.example.com/v1/threads?limit=100&cursor=" + encodeURIComponent(cursor) + "&include=messages,attachments,reactions"`,
+  "  return url",
+  "}",
+].join("\n")
+const EDIT_NEW = EDIT_OLD.replace(/^ {2}const url = .*$/m, `  const url = build({ limit: 100, cursor, include: ["messages", "attachments", "reactions"] })`)
+
+// The app does these in main.tsx.
+initCodeWrap()
 installCodeCopyInterceptor()
 installCodeTabInterceptor()
 installCodeExpandInterceptor()
@@ -101,6 +115,11 @@ function Fixture() {
     <button type="button" data-rerender className="mb-4 text-muted underline" onClick={() => setRenders((n) => n + 1)}>
       Render again
     </button>
+    {/* The Settings drawer's "Wrap code" row writes this same preference; lib/codeWrap.ts and the
+        stylesheet do the rest, on blocks that are already drawn. */}
+    <button type="button" data-wrap-code className="mb-4 ml-4 text-muted underline" onClick={() => (prefs.wrapCode = !prefs.wrapCode)}>
+      Flip wrap code
+    </button>
     <div className="md-body flex max-w-3xl flex-col gap-6 text-[14px]">
       {CASES.map(([id, md]) => <Case key={id} id={id} md={md} />)}
     </div>
@@ -115,9 +134,13 @@ function Fixture() {
       <button type="button" data-chip-hit className="absolute inset-0" aria-label="Pick this option" />
       <div className="md-body" data-case="chip" dangerouslySetInnerHTML={{ __html: mdToHtml(sample) }} />
     </div>
-    {/* The Queue's narrow column wraps code instead of scrolling it (TranscriptCard QUEUE_WRAP). */}
-    <div className="md-body mt-6 w-[300px] text-[14px] [overflow-wrap:anywhere] [&_pre]:whitespace-pre-wrap [&_pre]:break-all"
+    {/* The Queue's narrow column (TranscriptCard QUEUE_WRAP): 300px for a block to wrap in, or to scroll inside with Wrap code off. */}
+    <div className={`md-body mt-6 w-[300px] text-[14px] ${QUEUE_WRAP}`}
       data-case="narrow" dangerouslySetInnerHTML={{ __html: mdToHtml(sample) }} />
+    {/* The Edit card: the same rows drawn from a tool call rather than a fence, and wrapped the same way. */}
+    <div className="mt-6 max-w-3xl" data-case="edit-card">
+      <DiffBlock edits={[{ file: "/fixture/src/threads.ts", old: EDIT_OLD, new: EDIT_NEW }]} />
+    </div>
   </main>
   )
 }

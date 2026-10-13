@@ -9,6 +9,7 @@ import { projectHref } from "../lib/base-path.ts"
 import { standaloneThreadHref } from "../lib/standaloneThreadRoute.ts"
 import { setFaviconBadge } from "../lib/faviconBadge.ts"
 import { SHEET_BASE_WIDTH, SPLIT_MIN_PX } from "../lib/sheet.ts"
+import { trackQueueDock } from "../lib/queueDockInset.ts"
 import type { ThreadView } from "@frizz/shared"
 import { ThreadView as ThreadViewSurface } from "./ChatView.tsx"
 import { DrawerStack } from "./DrawerStack.tsx"
@@ -90,6 +91,22 @@ export function StandaloneThreadPage({ slug }: { slug: string }) {
   }, [])
 
 
+  // THE TOAST STANDS CLEAR OF THE PROMPT BOX WHILE THE PAGE IS ONE COLUMN. The toaster rises in the
+  // window's bottom-right corner. Above the split that corner is the rail's; below it the thread column
+  // is the whole page under its 720 cap, and the corner is the prompt box's Send. Measured at 820x900
+  // (2026-10-13, pressing a done card's "Mark as done"): the "Done" toast spanned x 738-804 and the
+  // box's right edge was at 755, so the toast sat on the Send button's menu chevron for its 1.6s. The
+  // footer is the band the box covers, published the way the queue's docks publish theirs.
+  const column = useRef<HTMLElement>(null)
+  const oneColumn = !snap.splitFileViewer
+  const found = route.kind === "found"
+  useEffect(() => {
+    if (!oneColumn || !found) return
+    const footer = column.current?.querySelector<HTMLElement>("[data-thread-chat-footer]")
+    if (!footer) return
+    return trackQueueDock(`thread-page:${slug}`, footer)
+  }, [oneColumn, found, slug])
+
   const atRest = thread?.runtime === "turn-idle" || thread?.runtime === "exited" || thread?.runtime === "none"
   useEffect(() => {
     if (!thread || !atRest) return
@@ -158,6 +175,7 @@ export function StandaloneThreadPage({ slug }: { slug: string }) {
           >
             <div className="hidden w-[var(--full-gutter)] shrink-0 split:block" aria-hidden="true" />
             <main
+              ref={column}
               data-standalone-thread
               // `thread-chat` is the fullscreen door's shared view-transition element: the drawer
               // panel / queue card the door was clicked in wears the same name (tagged at click time,
