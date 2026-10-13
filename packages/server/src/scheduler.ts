@@ -14,7 +14,7 @@ import { claudeFallbackModel, claudeModelFromLimitName, claudeProfile, normalize
 import { createWakeDeliveryStore, WAKE_QUIET_WINDOW_MS, type WakeDelivery } from "./wake-store.ts"
 // The board owns the registered-done lifetime rule, and the waker must read it by exactly the same rule
 // or the two disagree about whether a thread is finished.
-import { answersInFlight, registeredDoneFence, safeQuestionAnswer, safeQuestionSpec } from "./board.ts"
+import { answersInFlight, registeredDoneFence, safeQuestionSpec, wakeQuestionAnswer } from "./board.ts"
 import { ProducerStoppedError } from "./shutdown.ts"
 import { completionsDueForRelay, relayMessage } from "./completion-relay.ts"
 import {
@@ -3795,9 +3795,9 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       if (rows.length === 0 || (!fresh && !reofferDue)) continue
       const answers: QuestionAnswer[] = []
       const dismissed: QuestionDismissal[] = []
-      // The ids are kept alongside for the delivery key ONLY. The MESSAGE names each dismissed question
-      // by its text, because the worker never saw an id — frizz minted it — so a list of ids names
-      // nothing it can act on. (The human's Answers card leaves these rows out — see answersForDisplay.)
+      // The MINTED ids are kept alongside for the delivery key ONLY. The MESSAGE names each dismissed
+      // question by its text, and by the worker's own id when a fence asked it: the worker never saw a
+      // minted id, so a list of those names nothing it can act on. (The human's Answers card leaves these rows out — see answersForDisplay.)
       const dismissedIds: string[] = []
       for (const q of rows) {
         if (q.state === "dismissed") {
@@ -3806,7 +3806,9 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
           if (spec) dismissed.push({ question: spec.question, ...(q.handle ? { handle: q.handle } : {}) })
           continue
         }
-        const parsed = safeQuestionAnswer(q.answer)
+        // Named by the worker's own id where it has one — the same stamp the board's in-flight card
+        // composes from (board wakeQuestionAnswer), so the card and this delivery are one message.
+        const parsed = wakeQuestionAnswer(q)
         if (parsed) answers.push(parsed)
       }
       // DISMISSALS ALONE WAKE NOBODY — UNLESS NOTHING ELSE WILL EVER CARRY THEM. The rule exists because

@@ -3226,6 +3226,75 @@ export interface QuestionDismissal {
   handle?: string
 }
 
+/** THE WORKER'S OWN ID ON AN ANSWER ROW — ``N. `settings-store` “question” → answer``, the id in backticks
+ *  between the row's number (and its follow-up marker) and the opening quote.
+ *
+ *  A worker asks by id, is corrected by id, references by id and withdraws by id; until 2026-10-13 the
+ *  ANSWER was the one message that named a question by its text alone. That is enough only while no two
+ *  questions share a text, and two follow-ups under different options often do ("Which path?"), each
+ *  marked by nothing but the follow-up arrow.
+ *
+ *  WHERE IT SITS IS WHAT KEEPS THE HUMAN'S TEXT OUT OF IT. Everything the human types on this wire comes
+ *  AFTER a row's `” → `, and its later lines are indented (ANSWER_CONTINUATION_INDENT), so no typed text
+ *  can reach the head of a row: an answer that reads "`store` “fake” → x" is an answer, on whichever row
+ *  it was given. (What is typed BESIDE the answers goes under ANSWERS_NOTE_HEADER, which ends the rows.)
+ *  After the arrow the same token would be forgeable by any typed answer; inside the quotes it would
+ *  read as part of the question the worker asked.
+ *
+ *  ONLY A FENCE-ASKED QUESTION HAS ONE, and a row without it is the wire as it has always been, byte for
+ *  byte — a question `ask` registered, a thread dispatched before the fence cutover, the browser's own
+ *  composeAnswerWire, and every transcript already on disk. So the one reader (the web's
+ *  parseBuriedAnswersMessage) takes the id as OPTIONAL and reads both forms.
+ *
+ *  The pattern restates the fence's id grammar (question-fence.ts ID_RE) rather than importing it: a
+ *  stored handle that somehow falls outside it — a spec written by hand — is left off the row instead of
+ *  written where it could break one, and that row is then the old form, which still names its question. */
+export const ANSWER_ROW_ID_PATTERN = "[a-z0-9][a-z0-9._-]{0,63}"
+const ANSWER_ROW_ID = new RegExp(`^${ANSWER_ROW_ID_PATTERN}$`)
+const answerRowId = (handle: string | undefined): string => (handle && ANSWER_ROW_ID.test(handle) ? `\`${handle}\` ` : "")
+
+/** An answer with the worker's own id beside each question that has one, as the wake's writer takes it.
+ *
+ *  NEVER STORED AND NEVER ACCEPTED. `handle` is stamped by `nameQuestionAnswer` from the question's own
+ *  row at the moment a message is composed; QuestionAnswerSchema is strict and does not know the field,
+ *  so a browser cannot send one and a stored answer never carries one. */
+export interface NamedQuestionAnswer extends QuestionAnswer {
+  handle?: string
+  followUps?: NamedQuestionAnswer[]
+}
+
+/** Stamp an answer with the ids its question was asked under: the root's from its row (`handle`) or,
+ *  failing that, from the root of its stored spec — one id wherever both exist, and the spec is all a
+ *  browser has (the board's question view carries no `handle` of its own) — and each follow-up's from
+ *  the node it answers in that spec tree. A question with no handle anywhere, which is every question
+ *  `ask` registered, is named nowhere and its answer comes back as it went in.
+ *
+ *  A follow-up is found the way the card that produced the answer built it (the web's registeredAnswer):
+ *  only a pick-one opens a branch, and the answer lists the taken option's follow-ups in the option's own
+ *  order. The question TEXT has to agree as well, so an answer composed against a tree that has since
+ *  grown (a `when:` follow-up attached from a later message) can never be given a neighbour's id — a row
+ *  with no id still names its question; a row with the wrong one is an answer delivered to the wrong
+ *  question. Whatever `handle` the input carried is dropped, so the stamp is the only source of one. */
+export function nameQuestionAnswer(answer: QuestionAnswer, spec: AskedQuestion | undefined, handle: string | null | undefined): NamedQuestionAnswer {
+  const walk = (said: QuestionAnswer, node: AskedQuestion | undefined, id: string | undefined): NamedQuestionAnswer => {
+    const taken = node && node.kind !== "multi" && said.chosen.length === 1 ? node.options?.find((o) => o.label === said.chosen[0]) : undefined
+    const followUps = said.followUps?.map((child, i) => {
+      const asked = taken?.followUps?.[i]
+      const same = asked !== undefined && asked.question.trim() === child.question.trim()
+      return walk(child, same ? asked : undefined, same ? asked.handle : undefined)
+    })
+    return {
+      questionId: said.questionId,
+      question: said.question,
+      chosen: said.chosen,
+      ...(said.text !== undefined ? { text: said.text } : {}),
+      ...(followUps ? { followUps } : {}),
+      ...(id ? { handle: id } : {}),
+    }
+  }
+  return walk(answer, spec, handle || spec?.handle)
+}
+
 /** The answer as it reaches the worker — one message, composed here so the RPC, the delivery and any
  *  read-back cannot word it three ways.
  *
@@ -3239,8 +3308,11 @@ export interface QuestionDismissal {
  *  question? They used to look good. It just showed it, reiterated the question as well as my selected
  *  or typed answer", then, of the header: "Why would this show up in the UI?").
  *
+ *  EACH ROW NAMES ITS QUESTION BY THE WORKER'S OWN ID when it has one (answerRowId), ahead of the
+ *  restated text: two questions may share a text, and no two share an id.
+ *
  *  SO THE TREE IS FLATTENED — one numbered row per answered node, a follow-up marked `⤷` before its
- *  quote. Indenting a child under its parent is what the fence form does NOT support: the parser reads
+ *  id and its quote. Indenting a child under its parent is what the fence form does NOT support: the parser reads
  *  any line after a row that is not itself a row as a CONTINUATION of that row's answer, so an indented
  *  follow-up renders inside its parent's answer chip. The rows stay in tree order, so the shape is still
  *  legible; the marker is what says which is which.
@@ -3249,7 +3321,7 @@ export interface QuestionDismissal {
  *  dismissing several in a row and is sitting right there, so each × marking the row and waking the
  *  worker would be a turn per click. They are told at the next wake, in this same message — as ROWS, for
  *  the same reason the follow-ups are: a trailing paragraph is swallowed into the last answer. */
-export function questionAnswerMessage(answers: readonly QuestionAnswer[], dismissed: readonly QuestionDismissal[] = []): string {
+export function questionAnswerMessage(answers: readonly NamedQuestionAnswer[], dismissed: readonly QuestionDismissal[] = []): string {
   // NO ANSWERS AT ALL is its own message, not the answers one with an empty list. It reaches exactly one
   // thread: an AUTONOMOUS one, whose questions were cancelled wholesale when its Goal was armed and
   // which has no next steer for them to ride (scheduler.evalQuestionAnswers). Wording it as "answers"
@@ -3257,13 +3329,13 @@ export function questionAnswerMessage(answers: readonly QuestionAnswer[], dismis
   // speaking here rather than the human, so the chat draws it as a hairline — see questionsCancelledWake.
   if (answers.length === 0) return questionsCancelledWakeMessage(dismissed.length, dismissed)
   const rows: string[] = []
-  const push = (a: QuestionAnswer, followUp: boolean): void => {
+  const push = (a: NamedQuestionAnswer, followUp: boolean): void => {
     const said = answerPicksText(a.chosen, a.text)
-    rows.push(`${followUp ? `${ANSWER_FOLLOW_UP_MARKER} ` : ""}“${a.question}” → ${indentAnswerContinuation(said || "(no answer)")}`)
+    rows.push(`${followUp ? `${ANSWER_FOLLOW_UP_MARKER} ` : ""}${answerRowId(a.handle)}“${a.question}” → ${indentAnswerContinuation(said || "(no answer)")}`)
     for (const child of a.followUps ?? []) push(child, true)
   }
   for (const a of answers) push(a, false)
-  for (const d of dismissed) rows.push(`“${d.question}” → ${DISMISSED_ANSWER}`)
+  for (const d of dismissed) rows.push(`${answerRowId(d.handle)}“${d.question}” → ${DISMISSED_ANSWER}`)
   return `${BURIED_ANSWERS_HEADER}\n${rows.map((row, i) => `${i + 1}. ${row}`).join("\n")}`
 }
 

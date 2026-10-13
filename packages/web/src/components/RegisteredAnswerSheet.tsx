@@ -9,7 +9,7 @@ import { useMarkdownHtml } from "../lib/useMarkdown.ts"
 import { LinkedHtml } from "./LinkedHtml.tsx"
 import { SecretCaption } from "./SecretCaption.tsx"
 import { MobileBottomSheet } from "./MobileBottomSheet.tsx"
-import { InlineLabel, QUESTION_PROSE } from "./PhoneQuestionCards.tsx"
+import { InlineLabel, QUESTION_PROSE, RECOMMENDED_TAG_LINE } from "./PhoneQuestionCards.tsx"
 import { RegisteredAnsweringContext, type RegisteredAnswering } from "./RegisteredQuestionCards.tsx"
 
 // ANSWERING REGISTERED QUESTIONS ON A PHONE (mockup v2 §3): a bottom sheet, one question per step, then
@@ -188,7 +188,7 @@ function OptionRow({ option, multi, on, onClick }: { option: AskedOption; multi:
       <span className="min-w-0 flex-1">
         <span className="block text-[15.5px] font-medium leading-[21px] text-fg">
           <InlineLabel md={option.label} />
-          {option.recommended && <span className="ml-1.5 text-[11px] font-bold tracking-[0.02em] text-accent">RECOMMENDED</span>}
+          {option.recommended && <span className={`ml-1.5 text-[11px] font-bold ${RECOMMENDED_TAG_LINE} tracking-[0.02em] text-accent`}>RECOMMENDED</span>}
         </span>
         {line && <span className="mt-px block text-[13px] leading-[18px] text-muted">{line}</span>}
         {body && <OptionBody md={body} />}
