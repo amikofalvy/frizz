@@ -349,9 +349,12 @@ export function SettledQuestionCard({ s, wrap }: { s: SettledQuestion; wrap?: bo
     <QuestionBlockCard
       key={node.path}
       question={node.question}
-      // "Question" even for a `multi`: its own title, "Select multiple", is an instruction nobody can act
-      // on any more.
-      label={node.depth > 1 ? "Follow-up" : node.question.secret ? "Secret" : "Question"}
+      // THE KIND THE LIVE CARD NAMED — "Question", "Select multiple" or "Secret", the card's own default —
+      // so answering a question does not rename it. A settled `multi` read "Question" until 2026-10-13, on
+      // the reasoning that "Select multiple" is an instruction nobody can act on any more; but the line
+      // is the card's KIND, it sits over the same checked boxes, and a card that changed its name as it
+      // greyed read as a different question.
+      label={node.depth > 1 ? "Follow-up" : undefined}
       settled={node.settled}
       wrap={wrap}
     />

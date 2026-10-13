@@ -126,7 +126,23 @@ const CARD_ICON_OFFSET = "card-icon-offset"
 //
 // The kind line's glyph is trimmed the same way (KindLabel): every block type shares that line, each with
 // a different glyph, and one gap cannot sit their different dead spaces at one ink distance from the word.
-function useInkTrim(Icon: LucideIcon | undefined) {
+//
+// `inkHeight` SIZES THE GLYPH BY ITS INK AS WELL (KindLabel's `evenInk`), for a card whose kinds must read
+// as one family. Lucide draws a list glyph in a short band of its viewBox: at this line's 12px ListChecks
+// paints 10.0 x 8.0px where CircleHelp and KeyRound paint 11.0 x 11.0 and AlertTriangle 11.0 x 10.0
+// (getBBox plus the stroke; sans, 2026-10-13), so "Select multiple" read lighter and smaller than
+// "Question" and "Secret" on cards stacked in one message. The glyph is drawn in the LARGEST EVEN BOX
+// at which its ink still fits `inkHeight`, with its stroke held at the width it paints at the asked
+// size:
+//   - even, because an even box centres on the 16px line on whole pixels. The exact fit for ListChecks
+//     is 17.14px, and there its three 1px rules fall between device pixels and draw soft at dsf 2 —
+//     lighter, which was the complaint. At 16 they land on the grid.
+//   - fits, never exceeds, so a glyph already at full height is left alone whatever its shape: 14px
+//     would take CircleHelp to 12.7 and AlertTriangle to 11.5.
+// ListChecks therefore draws in a 16px box and paints 13.0 x 10.3px at a 1px stroke, inside the
+// 10.0–11.0 the other three already span. The box's extra height is given back as a negative block
+// margin, so the kind line is the height it was and the head is the same on every card.
+function useInkTrim(Icon: LucideIcon | undefined, inkHeight?: number) {
   const ref = useRef<SVGSVGElement>(null)
   useLayoutEffect(() => {
     const svg = ref.current
@@ -134,11 +150,25 @@ function useInkTrim(Icon: LucideIcon | undefined) {
     const ink = svg.getBBox()
     const view = svg.viewBox.baseVal
     if (!view || view.width === 0 || ink.width === 0) return
+    let stroke = Number(svg.getAttribute("stroke-width")) || 0
+    if (inkHeight !== undefined && ink.height > 0) {
+      // The size the caller asked for is the `width` ATTRIBUTE; the style set below never changes it.
+      const asked = svg.width.baseVal.value
+      const strokePx = (stroke * asked) / view.width
+      const inkAt = (size: number) => (ink.height * size) / view.height + strokePx
+      let size = asked
+      while (inkAt(size + 2) <= inkHeight) size += 2
+      const grown = size > asked
+      svg.style.width = svg.style.height = grown ? `${size}px` : ""
+      svg.style.marginBlock = grown ? `${(asked - size) / 2}px` : ""
+      if (grown) stroke = (strokePx * view.width) / size
+      svg.style.strokeWidth = grown ? String(stroke) : ""
+    }
     const scale = svg.getBoundingClientRect().width / view.width
-    const halfStroke = (Number(svg.getAttribute("stroke-width")) || 0) / 2
+    const halfStroke = stroke / 2
     svg.style.marginLeft = `${-Math.max(0, ink.x - halfStroke - view.x) * scale}px`
     svg.style.marginRight = `${-Math.max(0, view.x + view.width - (ink.x + ink.width) - halfStroke) * scale}px`
-  }, [Icon])
+  }, [Icon, inkHeight])
   return ref
 }
 
@@ -220,12 +250,20 @@ export function CardHead({
 // head; the kind is a label for it. A tone that has something to say (a destructive question) colours the
 // kind line instead, which is where the eye now looks first.
 const CARD_KIND = "flex min-w-0 items-center gap-[5px] text-[12px] font-medium leading-4"
+// The kind line's glyph box, and the ink height a glyph that fills lucide's keyline paints in it
+// (22 of the viewBox's 24 units: CircleHelp, KeyRound, Hourglass). It is what `evenInk` sizes to.
+const KIND_GLYPH = 12
+const KIND_GLYPH_INK = (KIND_GLYPH * 22) / 24
 
-export function KindLabel({ icon: Icon, children, className = "text-muted" }: { icon?: LucideIcon; children: ReactNode; className?: string }) {
-  const ref = useInkTrim(Icon)
+// `evenInk`: this card's kinds are read against each other (a question card's "Question", "Select
+// multiple" and "Secret" stack in one message), so a glyph that paints short is drawn larger until its
+// ink is as tall as the others' — see useInkTrim. THE ONE PLACE A KIND GLYPH IS SIZED. The done and
+// awaiting cards do not ask for it: their glyphs (Check, ListTodo) were weighed as they are.
+export function KindLabel({ icon: Icon, children, className = "text-muted", evenInk = false }: { icon?: LucideIcon; children: ReactNode; className?: string; evenInk?: boolean }) {
+  const ref = useInkTrim(Icon, evenInk ? KIND_GLYPH_INK : undefined)
   return (
     <span data-card-kind className={`${CARD_KIND} ${className}`}>
-      {Icon && <Icon ref={ref} aria-hidden="true" size={12} className="shrink-0" />}
+      {Icon && <Icon ref={ref} aria-hidden="true" size={KIND_GLYPH} className="shrink-0" />}
       <span className="min-w-0">{children}</span>
     </span>
   )
@@ -245,10 +283,11 @@ export function KindLabel({ icon: Icon, children, className = "text-muted" }: { 
 // reads 10.7px, close enough to read as one label and its subject, where the 4px first tried read 14.7px
 // and floated. The rule then sits 18px under a bare kind's baseline and 20px under a title's, against
 // 18.84px from the rule to the body's first cap top.
-function KindHead({ icon, kind, kindClass, label, head, aside, ruled }: {
+function KindHead({ icon, kind, kindClass, label, head, aside, ruled, evenInk }: {
   icon?: LucideIcon
   kind: ReactNode
   kindClass: string
+  evenInk?: boolean
   label?: ReactNode
   head: string
   aside?: ReactNode
@@ -259,7 +298,7 @@ function KindHead({ icon, kind, kindClass, label, head, aside, ruled }: {
     <>
       <div className="min-w-0">
         <div className="flex min-w-0 items-center gap-2">
-          <KindLabel icon={icon} className={kindClass}>{kind}</KindLabel>
+          <KindLabel icon={icon} className={kindClass} evenInk={evenInk}>{kind}</KindLabel>
           {aside && <span className="ml-auto flex shrink-0 items-center [--card-icon-offset:0px]">{aside}</span>}
         </div>
         {titled && (
@@ -357,7 +396,7 @@ export function TranscriptCard({
   return (
     <div {...rest} className={`min-w-0 ${BLOCK_RADIUS} border ${surface === "question" ? "border-question-border bg-question" : `${border} bg-panel-2`} p-4 ${className}`}>
       {kind != null
-        ? <KindHead icon={icon} kind={kind} kindClass={tone === "neutral" ? "text-muted" : head} label={label} head={tone === "neutral" ? head : CARD_TONES.neutral.head} aside={aside} ruled={rule} />
+        ? <KindHead icon={icon} kind={kind} kindClass={tone === "neutral" ? "text-muted" : head} label={label} head={tone === "neutral" ? head : CARD_TONES.neutral.head} aside={aside} ruled={rule} evenInk={surface === "question"} />
         : <CardHead icon={icon} label={label} head={head} aside={aside} />}
       {children != null && <CardContent gap={kind == null ? "plain" : rule ? "ruled" : "band"}>{children}</CardContent>}
     </div>

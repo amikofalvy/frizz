@@ -55,7 +55,9 @@ import "./styles.css"
 //                     from the fence. Add &land=<ms> and the row lands then, swapping in the live card.
 //   ?fence=claimed  — asked at an older rest, replied past, then a later rest writes `id: settings-store`
 //                     alone: the card leaves the asking prose and draws in the reference's slot.
-//   ?fence=settled  — the same question answered: the settled card, greyed, in the fence's slot.
+//   ?fence=settled  — the same question answered: the settled card, greyed, in the fence's slot — and
+//                     under it a `multi` asked by fence and answered, whose settled card keeps the
+//                     kind its live card wore ("Select multiple").
 //   ?fence=sheet    — the PHONE's answering sheet on the fenced question (open it at a phone width): the
 //                     context draws under the question there too.
 //   ?view=thread    — the thread page (ChatView) instead of the queue card; add &virtualized=1 for its
@@ -223,6 +225,10 @@ const FENCED: RegisteredQuestionView = {
     ].join("\n"),
   },
 }
+// ?fence=settled's second card: a `multi`, asked by fence in the same handoff and answered.
+const FENCED_GATES: RegisteredQuestionView = { ...GATES, id: "qst_f3nc3d0002", askedAt: ago(1), spec: { ...GATES.spec, handle: "commit-gates" } }
+const GATES_ASK = ["```question", "id: commit-gates", "kind: multi", `question: ${GATES.spec.question}`, "options:", "  - label: Typecheck", "    recommended: true", "  - label: Unit tests", "    recommended: true", "  - label: The browser e2e pass", "    description: slow — about 90s", "```"].join("\n")
+const SETTLED_GATES = { ...FENCED_GATES, settledAt: ago(0.5), answer: { questionId: FENCED_GATES.id, question: GATES.spec.question, chosen: ["Typecheck", "Unit tests"] } }
 const FENCE_ASK = [
   "```question",
   "id: settings-store",
@@ -249,7 +255,7 @@ const FENCE_ASK = [
   "```",
 ].join("\n")
 const QUOTED_SAMPLE = "For the record, a reference is the id alone:\n\n````md\n```question\nid: settings-store\n```\n````"
-const fenceHandoff = `**Done** — the store's interface is in and \`c6c292e8\` is on local \`main\`.\n\nOne call is yours, because it is the one thing here that is hard to reverse:\n\n${FENCE_ASK}\n\nEither way the rest of the work is the same.${fenceMode === "placed" ? `\n\n${QUOTED_SAMPLE}\n\nThe older gates card still stands:\n\n\`\`\`question ${GATES.id}\n\`\`\`` : ""}`
+const fenceHandoff = `**Done** — the store's interface is in and \`c6c292e8\` is on local \`main\`.\n\nOne call is yours, because it is the one thing here that is hard to reverse:\n\n${FENCE_ASK}\n\nEither way the rest of the work is the same.${fenceMode === "settled" ? `\n\nThe gates are a separate call:\n\n${GATES_ASK}` : ""}${fenceMode === "placed" ? `\n\n${QUOTED_SAMPLE}\n\nThe older gates card still stands:\n\n\`\`\`question ${GATES.id}\n\`\`\`` : ""}`
 const fenceRef = "Docs are in, and the migration is written against both stores.\n\nThe store is still the one thing I need from you:\n\n```question\nid: settings-store\n```\n\nOnce it is picked the migration lands in one commit."
 const SETTLED_FENCED = { ...FENCED, settledAt: ago(0.5), answer: { questionId: FENCED.id, question: FENCED.spec.question, chosen: ["SQLite"], followUps: [{ questionId: FENCED.id, question: "Where should the database file live?", chosen: ["Beside the sessions database"] }] } }
 const landMs = Number(params.get("land") ?? "")
@@ -376,7 +382,7 @@ window.fetch = async (input, init) => {
   }
   // ?fence=settled: the thread's answered questions, read beside its transcript.
   if (url.pathname === "/_frizz/rpc/threadSettledQuestions") {
-    return new Response(JSON.stringify({ result: { questions: fenceMode === "settled" ? [SETTLED_FENCED] : [] } }), { headers: { "content-type": "application/json" } })
+    return new Response(JSON.stringify({ result: { questions: fenceMode === "settled" ? [SETTLED_FENCED, SETTLED_GATES] : [] } }), { headers: { "content-type": "application/json" } })
   }
   // The Settings drawer (?keys=1) reads the machine's settings; any plausible object will do.
   if (url.pathname === "/_frizz/rpc/settingsGet") {
