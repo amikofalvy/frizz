@@ -76,6 +76,7 @@ import {
   type ShutdownDiagnostic,
 } from "./shutdown.ts"
 import { log as frizzLog } from "./logging.ts"
+import { createQuestionRegistrar } from "./question-fences.ts"
 import { projectScopedEnvironment } from "./project-launch.ts"
 import { homedir } from "node:os"
 
@@ -945,6 +946,9 @@ function createContextUnchecked(opts: ContextOptions, resources: PartialContextR
     },
     memoryFile: join(frizzRoots().state, "session-peers.json"),
   })
+  // Registers the ```question fences the tailer just folded, before the board rebuild it triggers —
+  // see createQuestionRegistrar for why this rides the tailer's clock and not the scheduler's.
+  let questionRegistrar: ReturnType<typeof createQuestionRegistrar> | undefined
   const tailer = createTailer({
     project,
     storage,
@@ -952,7 +956,15 @@ function createContextUnchecked(opts: ContextOptions, resources: PartialContextR
     onCrossSessionMessage: (peer) => void sessionPeerResolver(peer, project.id),
     backendFor,
     codexModels: () => readCodexModels(undefined, opts.codexVersion),
-    onChange: () => board.refresh(),
+    onChange: () => {
+      try {
+        questionRegistrar?.sweep()
+      } catch (err) {
+        // A registrar failure must never cost the board its refresh.
+        frizzLog.warn("server", `question registrar sweep failed: ${err instanceof Error ? err.message : String(err)}`)
+      }
+      board.refresh()
+    },
     onTranscriptChange: (slugs) => transcriptChange.emit(slugs),
     // The journal's word on whether a deferred permission request has been answered — the transcript
     // only says so once the approved tool call returns.
@@ -976,6 +988,7 @@ function createContextUnchecked(opts: ContextOptions, resources: PartialContextR
     codexBackgroundExecs: codexAppServer ? (slug, sessionId) => codexAppServer.backgroundExecs(slug, sessionId) : undefined,
   })
   resources.tailer = tailer
+  questionRegistrar = createQuestionRegistrar({ storage, tailer, log: (message) => frizzLog.info("server", message) })
   opts.startup?.afterPhase?.("tailer")
   permissionAnswered = (slug) => tailer.permissionAnswered?.(slug)
   // The bridge is the authority on whether a codex app-server TURN is actually running — a rollout

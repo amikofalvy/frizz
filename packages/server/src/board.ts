@@ -8,6 +8,7 @@ import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import watcher from "@parcel/watcher"
 import type { BoardSnapshot, ClaudeModel, ThreadView, RuntimeState, ThreadRecurringPrompt, ProviderError } from "@frizz/shared"
+import { standingQuestions } from "./question-fences.ts"
 import { AskedQuestionSchema, BoardDiffer, PermissionMode, SnoozeUntil, ThreadSlug, awaitingNeedsInput, formatElapsed, awaitingStatus, awaitingSteps, isDirectSubAgent, splitDoneFrontmatter, needsInputRequired, questionAnswerMessage, questionsCancelledWakeMessage, type AskedQuestion, type PermissionMode as PermissionModeValue, type QuestionAnswer, type QuestionDismissal } from "@frizz/shared"
 import type { Bus } from "./bus.ts"
 import type { Project } from "./project.ts"
@@ -1796,9 +1797,13 @@ function sessionThreadView(
   const archived = state === "archived"
   const limitPause = resolveLimitPause(row, tele, nowMs)
   const answerInFlight = answerAwaitingDelivery(questionRows, rawTele?.lastUserAt, nowMs)
-  const needsYou = archived ? false : deriveNeedsYou(row, tele, runtime, interactionPresence.needsUser, nowMs, limitPause, true, deliveryProcessGone, github, registeredPrWatches, armedTimerIds, armedWatches, questions.length, answerInFlight)
+  // Only the questions STANDING at this rest queue the thread — asked at it, or referenced by it with an
+  // `id:` fence (question-fences.ts). An older open question stays answerable where it was asked, and on
+  // the card, but says nothing about where this rest sits (2026-10-13).
+  const standingCount = standingQuestions(questionRows, rawTele).length
+  const needsYou = archived ? false : deriveNeedsYou(row, tele, runtime, interactionPresence.needsUser, nowMs, limitPause, true, deliveryProcessGone, github, registeredPrWatches, armedTimerIds, armedWatches, standingCount, answerInFlight)
   const deliveryInFlight = !archived && deriveDeliveryInFlight(row, runtime, needsYou, deliveryProcessGone, answerInFlight, nowMs)
-  const awaitingBackground = archived ? false : deriveAwaitingBackground(row, tele, runtime, interactionPresence.needsUser, nowMs, limitPause, deliveryProcessGone, github, registeredPrWatches, armedTimerIds, armedWatches, questions.length)
+  const awaitingBackground = archived ? false : deriveAwaitingBackground(row, tele, runtime, interactionPresence.needsUser, nowMs, limitPause, deliveryProcessGone, github, registeredPrWatches, armedTimerIds, armedWatches, standingCount)
   // hasFreshDelivery rather than deliveryInFlight: the spin stops after a minute, and a message still on
   // its way past that keeps its row where it was rather than parking it in Snoozed.
   const waitStatus = archived ? undefined : deriveWaitStatus(tele, runtime, needsYou, awaitingBackground, answerInFlight || hasFreshDelivery(row, deliveryProcessGone), nowMs, github, registeredPrWatches, armedWatches)

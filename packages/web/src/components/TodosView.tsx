@@ -49,7 +49,7 @@ import { consoleCardOrder, useConsoleGroup } from "../lib/consoleBoard.ts"
 import { useConsoleProjectList } from "../lib/consoleProjects.ts"
 import { ProjectScope } from "../lib/projectScope.tsx"
 import { keyProject } from "../lib/threadKey.ts"
-import { RegisteredAnsweringProvider, RegisteredQuestionStack, SettledQuestionStack, openQuestionsOf, useSettledQuestions } from "./RegisteredQuestionCards.tsx"
+import { RegisteredAnsweringProvider, RegisteredQuestionStack, SettledQuestionStack, openQuestionsOf, useFenceQuestions, useSettledQuestions } from "./RegisteredQuestionCards.tsx"
 import { DividerHint, WAKE_DIVIDER_WIDE_ONLY, WakeDivider } from "./WakeDivider.tsx"
 import {
   captureTranscriptViewportAnchor,
@@ -1210,6 +1210,8 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
   // ```question with a body is prose there, drawn read-only, and the registered card is the only
   // answerable thing (shared QUESTION_FENCE_RETIRED_AT). A legacy thread keeps the whole fence path.
   const fencesLive = questionFencesLive(thread.spawnedAt)
+  // …and speaks THE QUESTION FENCE instead: every row it knows, which a fence's `id:` resolves against.
+  const fenceQuestions = useFenceQuestions(fencesLive, openQuestions, settledQuestions)
   // The registered questions standing at each message — its rest and every later one — so a fence
   // restating or naming one folds into its card (lib/questionShadow), here exactly as on the thread page.
   const shadowedByMessage = useMemo(() => registeredStandingAt(messages, openQuestions), [messages, openQuestions])
@@ -1779,7 +1781,7 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
                   const textKey = m.sourceId ?? `legacy-${globalIdx}`
                   out.push(
                     <div key={textKey} data-transcript-source-id={textKey} className="flex flex-col">
-                      <Message m={m} dense textOnly answering={fencesLive ? answeringForMessage(m) : undefined} paired={paired[globalIdx]} staleAwaiting={isStaleAwaiting(globalIdx)} restingCardShown={globalIdx === lastAgentIdx && restingShown} shadowedBy={shadowedByMessage.get(globalIdx)} placed={placement.placed.get(globalIdx)} settledPlaced={settledPlacement.placed.get(globalIdx)} thread={thread} />
+                      <Message m={m} dense textOnly answering={fencesLive ? answeringForMessage(m) : undefined} paired={paired[globalIdx]} staleAwaiting={isStaleAwaiting(globalIdx)} restingCardShown={globalIdx === lastAgentIdx && restingShown} shadowedBy={shadowedByMessage.get(globalIdx)} placed={placement.placed.get(globalIdx)} settledPlaced={settledPlacement.placed.get(globalIdx)} fenceQuestions={fenceQuestions} thread={thread} />
                     </div>,
                   )
                   // Text-only → the row ends in prose (tool band dropped).
@@ -1803,6 +1805,7 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
                     shadowedBy={shadowedByMessage.get(globalIdx)}
                     placed={placement.placed.get(globalIdx)}
                     settledPlaced={settledPlacement.placed.get(globalIdx)}
+                    fenceQuestions={fenceQuestions}
                     thread={thread}
                   />
                   </div>,

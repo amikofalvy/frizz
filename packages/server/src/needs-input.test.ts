@@ -220,7 +220,7 @@ test("steps ARE the needs_input answer: the line may be left out, and a false be
   assert.equal(awaitingNeedsInput(splitAwaitingFrontmatter("needs_input: false\nsteps:\n  - Sign in").hints), true, "a thread waiting on its human never hides from them")
   // The retired `human:` gate now points at steps for an act, and at a question for a decision.
   assert.match(RETIRED_AWAITING_REPLACEMENT.human, /`steps:`/)
-  assert.match(RETIRED_AWAITING_REPLACEMENT.human, /registered with `frizzctl ask`/)
+  assert.match(RETIRED_AWAITING_REPLACEMENT.human, /asked in a ```question fence/)
 })
 
 // `questions:` (2026-10-05): a fence beside open questions names every one the worker still needs. The

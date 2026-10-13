@@ -527,6 +527,10 @@ export interface ThreadQuestionRow {
    *  lets the scheduler re-offer the settlement rather than leave it stranded — see
    *  scheduler.evalQuestionAnswers. Absent from a row written before 2026-10-01 (null). */
   delivery_id: string | null
+  /** The id the WORKER chose in its ```question fence (`settings-store`), unique within the thread for
+   *  good; null on a question `ask` registered, which only ever had the minted `qst_…` above. Added by
+   *  ALTER on older files (2026-10-13); optional so a hand-built fixture row need not spell it. */
+  handle?: string | null
   asked_at: number
   settled_at: number | null
 }
@@ -805,7 +809,7 @@ export interface Storage {
   // ---- THE WORKER'S REGISTERED QUESTIONS -----------------------------------------------------------
   /** Register one root question. Never idempotent, unlike a watch: two identically-worded questions are
    *  two things the human owes an answer to, and collapsing them would silently drop one. */
-  askThreadQuestion(q: { id: string; slug: string; spec: string; askedAtMs: number }): ThreadQuestionRow
+  askThreadQuestion(q: { id: string; slug: string; spec: string; askedAtMs: number; handle?: string | null }): ThreadQuestionRow
   listThreadQuestions(slug: string, opts?: { openOnly?: boolean }): ThreadQuestionRow[]
   /** Every thread's questions at once, keyed by slug — the board's read (see groupBySlug above).
    *  UNFILTERED, matching the board's own `listThreadQuestions(slug)` with no `openOnly`: the card
@@ -1331,6 +1335,10 @@ export const STORAGE_SCHEMA = `
       delivered   INTEGER NOT NULL DEFAULT 0,
       -- The wake_delivery row carrying it (ThreadQuestionRow.delivery_id). Added by ALTER on older files.
       delivery_id TEXT,
+      -- The worker's own id for the question, from its question fence (2026-10-13). Null on a row the
+      -- ask RPC registered. Unique per thread by the registrar's check, not a constraint, so a file that
+      -- predates the column needs nothing but the ALTER below.
+      handle      TEXT,
       asked_at    INTEGER NOT NULL,
       settled_at  INTEGER
     );
@@ -1398,7 +1406,8 @@ export function ensureStorageSchema(db: Database): void {
   // `thread_question.delivery_id` (2026-10-01): `delivered` used to be set when the answer was QUEUED,
   // so a wake that then failed every attempt left the answer reading delivered and nothing re-offered
   // it. The column names the carrying wake, so `delivered` can wait for that wake to land.
-  for (const [table, column] of [["pr_watch", "kind TEXT NOT NULL DEFAULT 'pull'"], ["thread_question", "delivery_id TEXT"]] as const) {
+  // `thread_question.handle` (2026-10-13): the id a worker chose in its ```question fence.
+  for (const [table, column] of [["pr_watch", "kind TEXT NOT NULL DEFAULT 'pull'"], ["thread_question", "delivery_id TEXT"], ["thread_question", "handle TEXT"]] as const) {
     try {
       db.exec(`ALTER TABLE ${table} ADD COLUMN ${column}`)
     } catch {
@@ -1966,8 +1975,8 @@ export function createStorage(source: string | Database, projectId: string): Sto
   `)
   const delThreadWatches = scope.prepare("DELETE FROM thread_watch WHERE project_id = @project_id AND thread_slug = ?")
   const askThreadQuestionStmt = scope.prepare(`
-    INSERT INTO thread_question (project_id, id, thread_slug, spec, state, answer, delivered, asked_at, settled_at)
-    VALUES (@project_id, @id, @slug, @spec, 'open', NULL, 0, @askedAtMs, NULL)
+    INSERT INTO thread_question (project_id, id, thread_slug, spec, state, answer, delivered, handle, asked_at, settled_at)
+    VALUES (@project_id, @id, @slug, @spec, 'open', NULL, 0, @handle, @askedAtMs, NULL)
   `)
   // TIEBREAK ON ROWID, NOT ID. Every question of one `ask` call shares its `asked_at` — the router stamps
   // one `now` for the batch — and `qst_…` is random, so ordering by id read a batch back SHUFFLED: the
@@ -2775,7 +2784,7 @@ export function createStorage(source: string | Database, projectId: string): Sto
     expiredThreadWatches: (nowMs) => expiredThreadWatchesStmt.all(nowMs),
     armedThreadWatches: () => armedThreadWatchesStmt.all(),
     askThreadQuestion: (q) => {
-      askThreadQuestionStmt.run(q)
+      askThreadQuestionStmt.run({ ...q, handle: q.handle ?? null })
       return threadQuestionByIdStmt.get(q.id)!
     },
     listThreadQuestions: (slug, opts) =>

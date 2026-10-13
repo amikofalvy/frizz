@@ -8,6 +8,7 @@ import { delimiter, join } from "node:path"
 import { fileURLToPath } from "node:url"
 // @ts-expect-error — the worker plugin is plain .mjs shipped loose beside the server; it has no types.
 import { CLI, TOOLS } from "../../../cc-worker/lib/frizz-tools.mjs"
+import { questionFenceBlocks } from "@frizz/shared"
 import { buildWorkerPrompt } from "./workerPrompt.ts"
 
 // Drives the REAL cc-worker/bin/frizzctl as a child process — its real argv, stdin, stdout and exit code
@@ -107,6 +108,13 @@ test("every registry command has a command-line spelling, and the spelling names
     const spec = CLI[tool.name]
     assert.ok(spec, `${tool.name} has no CLI entry — \`frizzctl --help\` would not list it`)
     assert.ok(spec.summary && !spec.summary.includes("\n"), `${tool.name} needs a one-line summary`)
+    // A RETIRED command is in no group (so the index does not list it) and has nothing to run as an
+    // example: what it prints instead of running is its whole page.
+    if (spec.retired) {
+      assert.equal(spec.group, undefined, `${tool.name} is retired, and must not be listed`)
+      assert.deepEqual(spec.examples, [], `${tool.name} is retired, and has nothing to show as an example`)
+      continue
+    }
     assert.ok(["Sign off", "Waiting", "This thread", "Other threads"].includes(spec.group), `${tool.name} is in no listed group`)
     const props = Object.keys(tool.inputSchema.properties ?? {})
     for (const key of [...(spec.positional ?? []), ...Object.values(spec.then ?? {}).flat(), ...(spec.wrap ? [spec.wrap] : [])] as string[]) {
@@ -121,6 +129,10 @@ test("`frizzctl --help` is the short index; a command's own `--help` is the full
   const top = await run(["--help"])
   assert.equal(top.code, 0)
   for (const tool of TOOLS as Array<{ name: string; description: string }>) {
+    if (CLI[tool.name].retired) {
+      assert.doesNotMatch(top.stdout, new RegExp(`^  ${tool.name}\\s`, "m"), `${tool.name} is retired, and must not be listed`)
+      continue
+    }
     assert.match(top.stdout, new RegExp(`^  ${tool.name.replace(/_/g, "-")}\\s+${CLI[tool.name].summary.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "m"))
     // The index must stay an index: no command's long description leaks into it.
     assert.ok(!top.stdout.includes(tool.description.slice(0, 60)), `${tool.name}'s description is in the top-level help`)
@@ -136,10 +148,11 @@ test("`frizzctl --help` is the short index; a command's own `--help` is the full
   assert.match(one.stdout, /frizzctl watch-pr add acme\/app#391 --for 180d/)
   assert.equal((await run(["help", "watch_pr"])).stdout, one.stdout, "`help <command>` and the underscore spelling are the same page")
 
-  // `ask` nests itself three deep; the reference describes a question once.
+  // A retired command's page is what it prints instead of running: the fence that replaced it.
   const ask = await run(["ask", "--help"])
-  assert.equal(ask.stdout.match(/THE QUESTION, on one line/g)?.length, 1)
-  assert.match(ask.stdout, /same shape as --questions, above/)
+  assert.equal(ask.code, 0)
+  assert.match(ask.stdout, /^frizzctl ask — Retired: a question is a ```question fence in your own message\n/)
+  assert.match(ask.stdout, /```question\nid: settings-store\nkind: choice\n/)
 
   const schema = await run(["timer", "--schema"])
   assert.deepEqual(JSON.parse(schema.stdout), (TOOLS as Array<{ name: string; inputSchema: unknown }>).find((t) => t.name === "timer")!.inputSchema)
@@ -221,18 +234,31 @@ test("flags, bare arguments, inline JSON, `--input <file>` and `--input -` all s
   }
 })
 
-test("`ask` takes its questions as the object, as a bare list, or as one question", async () => {
+// `ask` AND `secret` ARE RETIRED (2026-10-13): a question is a ```question fence the worker writes in its
+// own message. Both commands stay, so the worker that reaches for one — a contract that predates the fence,
+// a project doc that still names it — is taught the fence at that moment. They refuse (exit 2) whatever
+// they are given, WITHOUT calling Frizz and without reading the stdin a heredoc hands them, and the fence
+// in the refusal is one the shared parser registers as written.
+test("`ask` and `secret` refuse with the fence that replaced them, and call nothing", async () => {
   const fake = await fakeFrizz()
   try {
-    const question = { question: "SQLite or a JSON file?", kind: "question", options: [{ label: "SQLite", recommended: true, followUps: [{ question: "WAL?", kind: "question" }] }, { label: "JSON file" }] }
-    for (const payload of [{ questions: [question] }, [question], question]) {
-      fake.seen.length = 0
-      const ran = await run(["ask", "--input", "-"], { env: worker(fake), stdin: JSON.stringify(payload) })
-      assert.equal(ran.code, 0, ran.stderr)
-      assert.deepEqual(fake.seen, [{ url: "/_frizz/proj-1/rpc/ask", body: { slug: "the-caller", questions: [question] } }])
-      assert.match(ran.stdout, /Registered 1 question\./)
-      assert.match(ran.stdout, /qst_0 {2}SQLite or a JSON file\?/)
+    const question = { question: "SQLite or a JSON file?", kind: "question", options: [{ label: "SQLite", recommended: true }, { label: "JSON file" }] }
+    for (const argv of [["ask", "--input", "-"], ["ask", JSON.stringify({ questions: [question] })], ["ask", "--no-such-flag"], ["ask"]]) {
+      const ran = await run(argv, { env: worker(fake), stdin: JSON.stringify({ questions: [question] }) })
+      assert.equal(ran.code, 2, `${argv.join(" ")}: ${ran.stderr}`)
+      assert.equal(ran.stderr, "")
+      assert.match(ran.stdout, /^NOT registered — `frizzctl ask` is retired \(2026-10-13\), and nothing was sent\./)
+      const fences = questionFenceBlocks(ran.stdout)
+      assert.equal(fences.length, 1)
+      assert.equal(fences[0].read.form, "ask")
     }
+    const secret = await run(["secret", "The npm one-time code", "--header", "npm OTP"], { env: worker(fake) })
+    assert.equal(secret.code, 2)
+    assert.match(secret.stdout, /^NOT registered — `frizzctl secret` is retired/)
+    const [otp] = questionFenceBlocks(secret.stdout)
+    assert.ok(otp.read.form === "ask" && otp.read.spec.secret, "the secret refusal shows a `kind: secret` fence")
+    assert.match(secret.stdout, /--otp "\$\(cat '<path>'\)"/)
+    assert.deepEqual(fake.seen, [], "a retired command calls nothing")
   } finally {
     fake.close()
   }
@@ -345,7 +371,7 @@ test("a shell that only has FRIZZ_PERM_DIR still finds the server and its own pr
 
 test("exit 0 is done, 1 is a failure, and 2 is a gate that held", async () => {
   const fake = await fakeFrizz((procedure) => {
-    if (procedure === "markOwnDone") return { result: { done: false, blockingQuestions: [{ id: "qst_open", question: "SQLite or JSON?" }], blockingWatches: [] } }
+    if (procedure === "markOwnDone") return { result: { done: false, blockingQuestions: [{ id: "settings-store", question: "SQLite or JSON?" }], blockingWatches: [] } }
     if (procedure === "setOwnThreadTitle") return { status: 500 }
     return undefined
   })
@@ -353,7 +379,8 @@ test("exit 0 is done, 1 is a failure, and 2 is a gate that held", async () => {
     const refused = await run(["done", "--body", "all finished"], { env: worker(fake) })
     assert.equal(refused.code, 2)
     assert.match(refused.stdout, /^NOT marked done\./)
-    assert.match(refused.stdout, /qst_open {2}SQLite or JSON\?/)
+    // The server names a question by the worker's own id where it has one — the id `unask` takes.
+    assert.match(refused.stdout, /settings-store {2}SQLite or JSON\?/)
     assert.equal(refused.stderr, "")
 
     const failed = await run(["title", "Fix queue focus"], { env: worker(fake) })
@@ -361,9 +388,9 @@ test("exit 0 is done, 1 is a failure, and 2 is a gate that held", async () => {
     assert.equal(failed.stdout, "")
     assert.match(failed.stderr, /^frizzctl title failed: setOwnThreadTitle returned HTTP 500/)
 
-    const ok = await run(["unask", "qst_open"], { env: worker(fake) })
+    const ok = await run(["unask", "settings-store"], { env: worker(fake) })
     assert.equal(ok.code, 0)
-    assert.match(ok.stdout, /^Question qst_open withdrawn\./)
+    assert.match(ok.stdout, /^Question settings-store withdrawn\./)
   } finally {
     fake.close()
   }
@@ -498,7 +525,6 @@ test("every example in every command's help runs as written", async () => {
   const fake = await fakeFrizz()
   try {
     const cwd = mkdtempSync(join(tmpdir(), "frizzctl-examples-"))
-    writeFileSync(join(cwd, "questions.json"), JSON.stringify({ questions: [{ question: "Ship it?", kind: "question", options: [{ label: "Yes" }, { label: "No" }] }] }))
     for (const file of ["handoff.md", "prompt.md", "resume-prompt.md"]) writeFileSync(join(cwd, file), "Some text with `backticks`.\n")
     for (const [name, spec] of Object.entries(CLI as Record<string, { examples: string[] }>)) {
       for (const example of spec.examples) {
@@ -539,11 +565,13 @@ test("every frizzctl example the worker contract writes out runs as written, and
       const named = [...prompt.matchAll(/`frizzctl ([a-z][a-z_-]*)/g)].map((m) => m[1])
       assert.ok(named.length >= 30, `${kind}: the contract names the command line throughout (${named.length})`)
       for (const name of named) assert.ok(commands.has(name), `${kind}: the contract names \`frizzctl ${name}\`, which is not a command`)
+      // …nor one that only refuses: a question is a fence the worker writes, never a command it runs.
+      for (const name of named) assert.ok(!CLI[name.replace(/-/g, "_")]?.retired, `${kind}: the contract teaches the retired \`frizzctl ${name}\``)
       // Every capability a worker is told about by name is one it was introduced to as `frizzctl`.
       assert.match(prompt, /`frizzctl --help` lists every command; `frizzctl <command> --help` is that command's full\s+reference/)
 
       const examples = [...prompt.matchAll(/```sh\n(frizzctl [^]*?)\n```/g)].map((m) => m[1])
-      assert.equal(examples.length, 3, `${kind}: the done heredoc and the two written-out questions`)
+      assert.equal(examples.length, 1, `${kind}: the done heredoc`)
       for (const example of examples) {
         fake.seen.length = 0
         const ran = await new Promise<Ran>((resolve) => {
@@ -562,16 +590,8 @@ test("every frizzctl example the worker contract writes out runs as written, and
         assert.equal(ran.code, 0, `${kind}: \`${first}\` exited ${ran.code}: ${ran.stderr}`)
         assert.equal(fake.seen.length, 1, `${kind}: \`${first}\` made ${fake.seen.length} calls`)
         const { url, body } = fake.seen[0]
-        if (url.endsWith("/rpc/ask")) {
-          // The JSON the contract writes out is the question it describes: one pick-one question, two
-          // options, the recommended one first.
-          assert.equal(body.questions.length, 1)
-          assert.equal(body.questions[0].kind, "question")
-          assert.deepEqual(body.questions[0].options.map((o: { recommended?: boolean }) => !!o.recommended), [true, false])
-        } else {
-          assert.ok(url.endsWith("/rpc/markOwnDone"), url)
-          assert.equal(body.body, "- **Fixed the lookup** in `src/resolver.ts`; `npm test` green.")
-        }
+        assert.ok(url.endsWith("/rpc/markOwnDone"), url)
+        assert.equal(body.body, "- **Fixed the lookup** in `src/resolver.ts`; `npm test` green.")
       }
     }
   } finally {

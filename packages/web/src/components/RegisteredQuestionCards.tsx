@@ -22,14 +22,14 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { X } from "lucide-react"
-import type { QuestionAnswer, RegisteredQuestionView, SettledQuestionView, ThreadView } from "@frizz/shared"
+import type { AskedQuestion, QuestionAnswer, RegisteredQuestionView, SettledQuestionView, ThreadView } from "@frizz/shared"
 import { rpc } from "../api/rpc.ts"
 import { draftKey, draftStore, useDraftValues, useProjectDir } from "../lib/drafts.ts"
 import { clearSteered, markSteered } from "../lib/steering.ts"
 import { SendScopeContext, usePromptBoxSends } from "../lib/sendScope.tsx"
 import type { BlockAnswer } from "../lib/questionBlocks.ts"
 import type { PairedAnswer } from "../lib/answersMessage.ts"
-import { ROOT_PATH, liveQuestionNodes, nodeAnswered, registeredAnswer, settledQuestionNodes } from "../lib/registeredQuestion.ts"
+import { ROOT_PATH, liveQuestionNodes, nodeAnswered, registeredAnswer, settledQuestionNodes, toParsedQuestion } from "../lib/registeredQuestion.ts"
 import { decodeQuestionPick, encodeQuestionPick, questionSpecAt } from "../lib/registeredPicks.ts"
 import { AnswersCard } from "./AnswersCard.tsx"
 import { QueueDismissContext } from "./ChatView.tsx"
@@ -373,6 +373,37 @@ export function SettledQuestionStack({ questions, wrap, className = "" }: { ques
     <section data-settled-questions aria-label={`${questions.length} answered question${questions.length === 1 ? "" : "s"}`} className={`flex min-w-0 flex-col gap-3 ${className}`}>
       {questions.map((s) => <SettledQuestionCard key={s.id} s={s} wrap={wrap} />)}
     </section>
+  )
+}
+
+// ---- THE QUESTION FENCE: what a fence's `id:` resolves against ----
+
+/** A registered row as a ```question fence's id resolves it: its minted id, and its tree for the handles. */
+export type FenceQuestionRow = Pick<RegisteredQuestionView, "id" | "spec">
+
+/** Every row the thread knows — open and answered — when it speaks THE QUESTION FENCE (dispatched after
+ *  QUESTION_FENCE_RETIRED_AT, so `fencesLive` is false), else undefined: the legacy free-form fence is
+ *  that thread's grammar, and Message keeps reading it. One memoized array per surface, handed to every
+ *  Message, so a message's memo boundary only moves when a row is added or settled. */
+export function useFenceQuestions(
+  fencesLive: boolean,
+  open: readonly RegisteredQuestionView[],
+  settled: readonly SettledQuestion[],
+): readonly FenceQuestionRow[] | undefined {
+  return useMemo(() => (fencesLive ? undefined : [...open, ...settled]), [fencesLive, open, settled])
+}
+
+/** A ```question fence's ask before its row exists: the same card, READ-ONLY, from the fence's own spec.
+ *  The server registers the row a second or two after the transcript records the message (and never
+ *  registers a fence it refused), so in that beat the question is visible but not yet answerable; the
+ *  surface swaps in the registered card in this slot once the board carries the row. Only the root is
+ *  drawn: a follow-up opens under a pick, and nothing can be picked here. */
+export function UnregisteredQuestionCard({ spec, wrap }: { spec: AskedQuestion; wrap?: boolean }) {
+  const question = useMemo(() => toParsedQuestion(spec).question, [spec])
+  return (
+    <article data-question-fence={spec.handle} data-question-unregistered className="flex min-w-0 flex-col gap-2">
+      <QuestionBlockCard question={question} wrap={wrap} />
+    </article>
   )
 }
 

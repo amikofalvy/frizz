@@ -457,7 +457,7 @@ test("a nameless fence with nothing running is told it is not awaiting at all", 
     const msg = h.queued()[0].message
     assert.match(msg, /You have NOTHING running right now/)
     // The question fence is retired (2026-09-11); a registered question is the other way out.
-    assert.match(msg, /finish in\s*```done, or register a question with `frizzctl ask`/s)
+    assert.match(msg, /finish in\s*```done, or ask the human in a ```question fence/s)
   } finally { h.close() }
 })
 
@@ -772,37 +772,24 @@ test("the correction lists a running sub-agent by its runtime agentId, not its t
   } finally { h.close() }
 })
 
-// AN OPEN QUESTION THE FENCE DOES NOT NAME REFUSES THE PARK (2026-08-28, narrowed 2026-10-05). Until
-// 2026-10-05 any open question refused every park outright (maintainer 2026-08-28: "Weird that there's
-// both an awaiting block and open questions … it should not be allowed, basically"), which forced every
-// later rest of a thread with an old question open to be a bare one — and the old card was redrawn under
-// it as the sign-off. Now a fence may stand beside open questions by naming each one under `questions:`;
-// one it leaves out is refused, so the worker names it or withdraws it.
+// AN OPEN QUESTION NO LONGER REFUSES THE PARK (2026-10-13). From 2026-08-28 any open question refused
+// every park outright (maintainer: "Weird that there's both an awaiting block and open questions … it
+// should not be allowed, basically"); on 2026-10-05 that narrowed to a question the fence did not name
+// under `questions:`. The ```question fence retired the rule with the per-rest naming obligation: a
+// question stands only at the rest that asked or referenced it (question-fences.ts standingQuestions), and
+// one standing at this rest queues the thread on the board whatever the fence says. `questions:` is still
+// READ for a worker whose contract predates the fence — as a claim, never as a refusal.
 const ELECTRON = { id: "qst_6506c36d2f28", question: "Nub still breaks Electron 34 and older — how should that flag be handled?" }
 const askElectron = (h: ReturnType<typeof parkHarness>, askedAtMs = Date.now() - 90 * 60_000) =>
   h.storage.askThreadQuestion({ id: ELECTRON.id, slug: "parked", askedAtMs, spec: JSON.stringify({ question: ELECTRON.question, kind: "question", options: [{ label: "Add it only when coverage is detectable" }] }) })
 
-test("a park that leaves an OPEN registered question unnamed is refused, even when everything it names is live", async () => {
+test("a park beside an OPEN registered question it does not name is honoured — the question no longer refuses it", async () => {
   const h = parkHarness([{ kind: "shell", value: "bzvtnt3ig" }, { kind: "for", value: "1h" }], { shells: [LIVE_SHELL] })
   try {
     askElectron(h)
     await h.s.tick()
-    const rows = h.queued()
-    assert.equal(rows.length, 1, "a live park is still not a park while it leaves a question out")
-    assert.match(rows[0].fence_id, /^park:question:/)
-    // NAMED, with the question's own words: the worker never saw the id frizz minted, so the id alone
-    // would not tell it which question is meant.
-    assert.match(rows[0].message, /Open, and not named under `questions:`:\n- `qst_6506c36d2f28` — Nub still breaks Electron 34/)
-    assert.match(rows[0].message, /`questions: \[qst_…\]`/, "…says how to keep the question")
-    assert.match(rows[0].message, /`frizzctl unask <id>`/, "…and how to drop it")
-    assert.doesNotMatch(rows[0].message, /NOT RUNNING|still running/, "the live shell is not the news")
-    // The transcript reads this delivery as a correction, so the refused fence stops drawing.
-    assert.equal(isParkCorrection(rows[0].message), true)
-    // COUNTED against the cap: a worker whose contract predates the rule re-fences at every rest.
-    assert.equal(h.storage.getSession("parked")?.park_bumps, 1)
-    // …and DELIVERED, through the same outbox branch as the other causes.
-    assert.equal(h.sent.length, 1)
-    assert.deepEqual(h.state().map((r) => r.state), ["delivered"])
+    assert.equal(h.queued().length, 0, "everything it names is live; the open question is not this pass's business")
+    assert.equal(h.storage.getSession("parked")?.park_bumps ?? 0, 0)
   } finally { h.close() }
 })
 
@@ -825,27 +812,13 @@ test("a fence naming ONLY questions is a park on the human: no other name and no
   } finally { h.close() }
 })
 
-test("a park naming a question that is NOT open is refused — unless it settled after the rest", async () => {
-  const stale = parkHarness([{ kind: "question", value: "qst_0000deadbeef" }, { kind: "question", value: ELECTRON.id }])
+test("a park naming a question that is NOT open is not refused either — `questions:` is a claim, not a check", async () => {
+  const h = parkHarness([{ kind: "question", value: "qst_0000deadbeef" }, { kind: "question", value: ELECTRON.id }])
   try {
-    askElectron(stale)
-    await stale.s.tick()
-    const rows = stale.queued()
-    assert.equal(rows.length, 1)
-    assert.match(rows[0].message, /names a question that is not open/)
-    assert.match(rows[0].message, /Named, but not an open question of yours:\n- `qst_0000deadbeef`/)
-    assert.doesNotMatch(rows[0].message, /Open, and not named/, "the open one IS named")
-  } finally { stale.close() }
-
-  // Answered WHILE the park stood: the fence was right when it was written, and the answer's own wake
-  // carries the news — no correction.
-  const answered = parkHarness([{ kind: "question", value: ELECTRON.id }])
-  try {
-    const q = askElectron(answered)
-    answered.storage.answerThreadQuestion(q.id, JSON.stringify({ questionId: q.id, question: ELECTRON.question, answer: "Detect it" }), Date.now())
-    await answered.s.tick()
-    assert.equal(answered.queued().length, 0)
-  } finally { answered.close() }
+    askElectron(h)
+    await h.s.tick()
+    assert.equal(h.queued().length, 0)
+  } finally { h.close() }
 })
 
 test("readAwaitingPark carries `questions:` lowercased, and they count as naming the human", () => {

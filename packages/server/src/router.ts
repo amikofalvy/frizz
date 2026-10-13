@@ -139,6 +139,7 @@ import {
   askedQuestionFaults,
   secretAnswerText,
   type AskedQuestion,
+  questionHandles,
   type RegisteredQuestionView,
   DropOwnWatchInput,
   DropOwnWatchResult,
@@ -192,7 +193,8 @@ import { liveThreadsForBackend, runProviderLogout } from "./backend/account-acti
 import { threadProfileOptions, validateThreadProfile } from "./backend/thread-profiles.ts"
 import { adoptionRuntimeBinding, type AdoptionPaneLookup, type ExpectedAdoptionPane } from "./adoption-recovery.ts"
 import { parseIssueRef, parsePrRef, readGithubIssueStatusBook, readGithubStatusBook, GITHUB_ISSUE_STATUS_SETTING, GITHUB_STATUS_SETTING } from "./awaiting.ts"
-import { isBrokerClaudeRow, type CommandWatchRow, type SessionRow, type Storage, type SubAgentSteerRow } from "./storage.ts"
+import { isBrokerClaudeRow, type CommandWatchRow, type SessionRow, type Storage, type SubAgentSteerRow, type ThreadQuestionRow } from "./storage.ts"
+import { syncQuestionFences } from "./question-fences.ts"
 import { COMMAND_WATCH_FALLBACK } from "./command-watch.ts"
 import type { SessionTelemetry } from "./tailer.ts"
 import { backgroundShellLineCount, readBackgroundShellOutput } from "./background-shell-output.ts"
@@ -1547,6 +1549,37 @@ export function createRouter(ctx: AppContext) {
     }
   }
 
+  /** Bring this thread's ```question fences up to date BEFORE a call that reads its questions. The
+   *  registrar normally runs on the tailer's next poll, which can be a second behind a worker that wrote a
+   *  fence and then, in the same message, ran `frizzctl done` or `frizzctl unask` — the gate would judge a
+   *  question set the worker has already changed. So read the transcript now and register what it holds. */
+  function catchUpQuestionFences(slug: string): void {
+    const row = ctx.storage.getSession(slug)
+    if (!row) return
+    try {
+      ctx.tailer.tick()
+    } catch {
+      // the tailer reports its own tick failures; the registrar still reads whatever it already folded
+    }
+    syncQuestionFences(ctx.storage, {
+      slug,
+      spawnedAt: row.spawned_at,
+      sightings: ctx.tailer.get(slug)?.questionSightings,
+      autonomousGoal: autonomousGoal(row),
+    })
+  }
+
+  /** A question by the id the worker knows it by: its own fence id (a follow-up's resolves to the root it
+   *  rides in), or the `qst_…` an `ask` minted. */
+  function findOwnQuestion(slug: string, id: string): ThreadQuestionRow | undefined {
+    const want = id.trim().toLowerCase()
+    return ctx.storage.listThreadQuestions(slug).find((q) => {
+      if (q.id.toLowerCase() === want || q.handle?.toLowerCase() === want) return true
+      const spec = parseQuestionSpec(q.spec)
+      return spec ? questionHandles(spec).some((h) => h.toLowerCase() === want) : false
+    })
+  }
+
   // This thread's OPEN questions, in the shape the worker's read-back, the board and the card all use.
   function openQuestionViews(slug: string): RegisteredQuestionView[] {
     const out: RegisteredQuestionView[] = []
@@ -1561,6 +1594,7 @@ export function createRouter(ctx: AppContext) {
   function questionView(slug: string, id: string, spec: AskedQuestion, askedAtMs: number): RegisteredQuestionView {
     return {
       id,
+      ...(spec.handle ? { handle: spec.handle } : {}),
       spec,
       askedAt: new Date(askedAtMs).toISOString(),
       ...(spec.secret ? { secretPath: secretFilePath(ctx.project.stateDir, slug, id) } : {}),
@@ -3605,8 +3639,11 @@ export function createRouter(ctx: AppContext) {
       input: UnaskInput,
       output: UnaskResult,
       handler: async ({ input }) => {
-        // Slug-scoped in storage, so one thread can never withdraw another's question.
-        const withdrawn = ctx.storage.withdrawThreadQuestion(input.slug, input.id, Date.now())
+        catchUpQuestionFences(input.slug)
+        // Slug-scoped in storage, so one thread can never withdraw another's question. Named by the
+        // worker's own fence id since 2026-10-13, or by a legacy `qst_…`.
+        const target = findOwnQuestion(input.slug, input.id)
+        const withdrawn = target ? ctx.storage.withdrawThreadQuestion(input.slug, target.id, Date.now()) : false
         if (withdrawn) ctx.board.refresh()
         return { withdrawn, open: openQuestionViews(input.slug) }
       },
@@ -3681,9 +3718,12 @@ export function createRouter(ctx: AppContext) {
         // registered does not block this: frizz cannot tell a build from a dev server, only the worker
         // can, and the registration IS that judgement. Gating on raw liveness would make `done`
         // unreachable for any thread that left a log tail running.
+        // A fence written in the same message as this call must count — catch the registrar up first.
+        catchUpQuestionFences(input.slug)
         const blockingQuestions = ctx.storage.listThreadQuestions(input.slug, { openOnly: true }).flatMap((q) => {
           const spec = parseQuestionSpec(q.spec)
-          return spec ? [{ id: q.id, question: spec.question }] : []
+          // Named the way the worker knows it, so `frizzctl unask <id>` takes the id the refusal printed.
+          return spec ? [{ id: q.handle ?? q.id, question: spec.question }] : []
         })
         const blockingWatches = [
           ...armedOwnWatchViews(input.slug).map((w) => ({

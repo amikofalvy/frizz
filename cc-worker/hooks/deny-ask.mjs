@@ -2,9 +2,9 @@
 // @ts-check
 // PreToolUse hook on AskUserQuestion (frizz-worker). A frizz worker runs under a dashboard, not a
 // live chat: an interactive question prompt would hang the session invisibly (nobody is at the
-// keyboard to click it). Deny with a redirect to the async pattern: register the question with
-// `frizzctl ask` (a row; the free-form ```question fence was retired 2026-09-11), keep working, and
-// rest normally; the answer arrives as its own wake.
+// keyboard to click it). Deny with a redirect to the async pattern: ask it in a structured ```question
+// fence in the worker's own message (a row, registered when the message lands — since 2026-10-13; it
+// was `frizzctl ask` before that), keep working, and rest normally; the answer arrives as its own wake.
 // GATE: inert unless FRIZZ_THREAD is set. FAIL OPEN on parse errors.
 //
 // SECOND GATE: also inert when FRIZZ_NATIVE_ASK=1. The premise above — "nobody is at the keyboard" —
@@ -13,7 +13,7 @@
 // operator answers and which returns the chosen labels to the tool. The broker bridge sets that var
 // only when an InteractionStore is actually wired to render and resolve the card, so a denial here
 // would block a question the operator CAN see. Any other path leaves the var unset, so it keeps the
-// deny plus the `frizzctl ask` redirect.
+// deny plus the ```question fence redirect.
 import { readFileSync } from 'node:fs';
 
 const slug = process.env.FRIZZ_THREAD;
@@ -32,7 +32,7 @@ process.stdout.write(
       hookEventName: 'PreToolUse',
       permissionDecision: 'deny',
       permissionDecisionReason:
-        'Interactive prompts freeze headless workers (no one is at the keyboard to answer). Register the question with `frizzctl ask` instead (a command you run from your shell; `frizzctl ask --help` has its arguments) — several in one command, each self-contained (context + the specific question + options with a one-line trade-off each, the recommended one first), written actor-explicit — never "I" or "you", which flip meaning when the human clicks an option; the frizz Queue renders each as a card. Do NOT write it as a ```question fence: that fence is retired, and a question in a fence body is plain prose nobody can answer. Registering does not end your turn — keep doing what does not depend on the answer, then rest normally: an open registered question IS the handback (no done/awaiting fence beside it, and do NOT invoke this tool again). The answer arrives as your next user message.',
+        'Interactive prompts freeze headless workers (no one is at the keyboard to answer). Ask it in a ```question fence in your own message instead: `id:` (a slug of your choosing), `kind:` (`choice`, `multi`, `text` or `secret`), a one-line `question:`, and `options:` as `- label:` items with a one-line `description:` each, the recommended one first with `recommended: true`; context for the human goes below a `---` line, in any Markdown. One fence per question, each self-contained, written actor-explicit — never "I" or "you", which flip meaning when the human clicks an option. Frizz registers it when your message lands and draws its card where you wrote it (`frizzctl ask --help` shows the whole grammar). Asking does not end your turn — keep doing what does not depend on the answer, then rest normally: the question IS the handback (no done fence beside it, and do NOT invoke this tool again). The answer arrives as your next user message.',
     },
   }),
 );

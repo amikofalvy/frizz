@@ -202,13 +202,15 @@ const CLAUDE_QUESTION_DECLINED =
   "The operator did not answer this question from the frizz dashboard. Do not ask it again with this tool — " +
   "decide with the information you already have, or raise it in your final message."
 
-/** A question frizz could not represent EXACTLY (see parseClaudeAskUserQuestion). Denied with the `ask`
- *  redirect rather than downgraded to an approval card, whose bare allow the model reads as unanswered.
- *  (It redirected to a ```question fence until 2026-09-11, when the free-form fence was retired.) */
+/** A question frizz could not represent EXACTLY (see parseClaudeAskUserQuestion). Denied with a redirect
+ *  to the structured ```question fence rather than downgraded to an approval card, whose bare allow the
+ *  model reads as unanswered. (It redirected to the free-form fence until 2026-09-11, then to `frizzctl
+ *  ask` until 2026-10-13.) */
 export const CLAUDE_ASK_DENY_MESSAGE =
-  "Frizz could not render this question as a card. Register it with `frizzctl ask` instead — context, " +
-  "the question, options with a one-line trade-off each, the recommended one first — never as a ```question " +
-  "fence, which is retired. The operator answers it from the queue and the reply arrives as your next user message."
+  "Frizz could not render this question as a card. Ask it in a ```question fence in your own message " +
+  "instead — `id:`, `kind:`, a one-line `question:`, `options:` with a one-line trade-off each and the " +
+  "recommended one first, and the context below a `---` line (`frizzctl ask --help` shows the whole " +
+  "grammar). The operator answers it from the queue and the reply arrives as your next user message."
 
 /** The card went away without an answer: the operator dismissed it, the turn was interrupted, the session
  *  was replaced — or, the common one, they sent a FOLLOW-UP instead of answering, which supersedes the
@@ -216,7 +218,7 @@ export const CLAUDE_ASK_DENY_MESSAGE =
 export const CLAUDE_ASK_WITHDRAWN_MESSAGE =
   "This question was withdrawn before anyone answered it — most likely because the operator sent a message " +
   "instead. Read their next message and follow it. Do not ask this again with this tool; if you still need " +
-  "the decision, register it with `frizzctl ask`."
+  "the decision, ask it in a ```question fence in your own message."
 
 function displayText(value: string, max: number, fallback: string, redact = true): string {
   const scrubbed = (redact ? redactCredentialSyntax(value) : value).replace(SCRUB_UNSAFE_TEXT, "").trim()

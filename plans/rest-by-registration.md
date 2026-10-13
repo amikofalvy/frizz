@@ -1,6 +1,6 @@
 # Rest by registration — replacing the awaiting fence with registered watchers and questions
 
-Status: design settled with the maintainer 2026-08-26, in a grilling session. Implementation started the same day; see the checklist at the end for what has landed.
+Status: design settled with the maintainer 2026-08-26, in a grilling session. Implementation started the same day; see the checklist at the end for what has landed. Revised 2026-10-13: a question registers from a structured ```question fence in the worker's own message rather than from `frizzctl ask`, and no rest has to name an older question — see [The structured question fence](#the-structured-question-fence-2026-10-13).
 
 Supersedes the question half of [`persistent-stacked-questions-design.md`](persistent-stacked-questions-design.md) (2026-07-13, never built). See [Relationship to the 2026-07-13 memo](#relationship-to-the-2026-07-13-memo) for which of its forks this answers and which it dissolves.
 
@@ -100,6 +100,20 @@ Proposed 2026-08-28, declined the same day. The instinct behind it is right — 
 Withdrawal already has a verb. `unask` retracts a question by an ACT; the gate would retract one by OMISSION, which is the unsafe half of that pair — a forgotten `unask` leaves a stale question standing, where a forgotten reference silently drops a live one.
 
 **If placement ever reads wrong again, the fix is server-side rather than authored.** Stamp the anchor when `ask` lands — the id of the thread's last transcript record — and render against that instead of comparing `askedAt` against message timestamps. It is exact, it needs nothing from the worker, it cannot be forgotten, and it closes the one case the timestamp rule cannot: a question whose rest is older than the loaded transcript window renders at the top of what is loaded rather than at its true position.
+
+## The structured question fence (2026-10-13)
+
+**Decision (maintainer, 2026-10-13):** a worker asks by writing a ```question fence in its own message, and that is the only way it registers a question. The fence is structured: YAML-shaped front matter (`id`, `kind`, `question`, `options`, `danger`, `when`; a `header` is accepted and not taught, because no card has ever drawn one), every value read verbatim to the end of its line, then optionally `---` and a free Markdown body for context. The server reads every assistant message and registers each NEW `id:` as a `thread_question` row, once, for the life of the thread; a fence carrying `id:` alone is a REFERENCE to a question that exists, and places its card there. The grammar lives in `packages/shared/src/question-fence.ts`; the contract teaches it in § Questions for the human (`packages/server/src/workerPrompt.ts`).
+
+**Why the command went.** `frizzctl ask` worked: across 65 sessions it was called 220 times, with about 4 failures. But 61% of those calls were the last tool call before the worker rested — a whole request spent re-reading the context to register a question, followed by a handoff that, in 57 cases, copied the minted `qst_…` back into a placement marker so the card would sit in the prose. Asking inside the handoff removes both round trips, and puts the question's own words in the transcript, where a plain terminal shows them too.
+
+**Why structured.** A first sketch read options off the body's closing list of bold labels, which guessed at layout. Naming every field means nothing is inferred from layout and every mistake is refused BY NAME, as a `⚠️ Your ```question fence …` correction: a missing or unknown key, an id already used, a reference to an id that does not exist. Ids are never reused, so an answered or withdrawn question is never silently re-asked. The body is free Markdown precisely because nothing has to be parsed out of it, and the contract encourages any block shape there — a table, a diff, a callout, `<details>`, a diagram.
+
+**No rule that each rest names every open question.** The 2026-10-05 rule — a later rest names each still-needed question under `questions:` or withdraws it, and is bumped otherwise — is dropped with `ask`. A question counts toward the rest that asks it or references it. An older one never overrides the newest sign-off and never gets a park refused; it stays answerable where it was asked, and answering it still wakes the worker. The `questions:` key is still READ for workers whose contract predates this, and taught nowhere; the carried-question nudge goes.
+
+**What stays.** `frizzctl ask` and `frizzctl secret` (and their MCP tools) stay as commands that REFUSE, without calling Frizz, printing the fence — refusing at the moment of temptation teaches a worker with an older contract better than a missing command would. `kind: secret` replaces `frizzctl secret`: the answer's wake carries the one-read pipe path. The `ask` RPC stays for the server's own registrar, its seeds and its tests. `frizzctl unask <id>` takes the worker's id (or a legacy `qst_…`), `frizzctl activity` lists open questions by it, and `frizzctl done` still refuses while one is open. On a thread carrying a Goal a non-secret question is refused with "decide it yourself", as `ask` was.
+
+**How this differs from the gate REJECTED above.** That proposal made a fence the condition for DRAWING a question that had been registered elsewhere, so a forgotten reference hid a live question. Here the fence is the REGISTRATION: once a question exists it draws where it was asked whether or not any later message mentions it, a fence in a mid-turn message registers the moment that message lands (so asking early still works), and the row — not the message — carries its lifetime.
 
 ## Migration
 

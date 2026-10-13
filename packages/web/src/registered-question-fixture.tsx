@@ -3,6 +3,9 @@ import { createRoot } from "react-dom/client"
 import { useSnapshot } from "valtio"
 import type { BoardSnapshot, RegisteredQuestionView, ThreadView as ThreadViewModel, TranscriptMessage } from "@frizz/shared"
 import { TodosView } from "./components/TodosView.tsx"
+import { ThreadView } from "./components/ChatView.tsx"
+import { RegisteredAnswerSheet } from "./components/RegisteredAnswerSheet.tsx"
+import { RegisteredAnsweringProvider } from "./components/RegisteredQuestionCards.tsx"
 import { SettingsDrawer } from "./components/SettingsDrawer.tsx"
 import { CommandPalette } from "./components/CommandPalette.tsx"
 import { TooltipProvider } from "./components/Tooltip.tsx"
@@ -40,6 +43,23 @@ import "./styles.css"
 //                 is WHICH question a bare digit answers, and above all that it never answers one the
 //                 operator cannot see.
 //   ?font=sans  — the other of the two fonts this app renders in; mono is the default and the wider.
+//
+// THE QUESTION FENCE (2026-10-13) — a thread dispatched after QUESTION_FENCE_RETIRED_AT asks by writing a
+// structured ```question fence whose `id:` the server registers as a row (shared question-fence.ts). The
+// row carries the worker's id as its `handle`, and the fence's slot is where its card draws:
+//   ?fence=placed   — the handoff asks with a fence (a table under `---`, and a `when:` follow-up fence),
+//                     quotes the grammar in a ````md sample, and keeps a legacy qst_ marker for an older
+//                     row. The fenced card draws ONCE, answerable, in its slot, context under the question;
+//                     the follow-up fence draws nothing; the quoted sample stays a code block.
+//   ?fence=pending  — the same handoff a beat before the server registered it: the card draws READ-ONLY
+//                     from the fence. Add &land=<ms> and the row lands then, swapping in the live card.
+//   ?fence=claimed  — asked at an older rest, replied past, then a later rest writes `id: settings-store`
+//                     alone: the card leaves the asking prose and draws in the reference's slot.
+//   ?fence=settled  — the same question answered: the settled card, greyed, in the fence's slot.
+//   ?fence=sheet    — the PHONE's answering sheet on the fenced question (open it at a phone width): the
+//                     context draws under the question there too.
+//   ?view=thread    — the thread page (ChatView) instead of the queue card; add &virtualized=1 for its
+//                     virtualized transcript path.
 const params = new URLSearchParams(location.search)
 document.documentElement.dataset.font = params.get("font") === "sans" ? "sans" : "mono"
 const ago = (min: number) => new Date(Date.now() - min * 60_000).toISOString()
@@ -172,9 +192,75 @@ const TABLE: RegisteredQuestionView = {
   },
 }
 
+// ---- THE QUESTION FENCE ----
+const fenceMode = params.get("fence")
+const FENCED: RegisteredQuestionView = {
+  id: "qst_f3nc3d0001",
+  askedAt: ago(1),
+  spec: {
+    handle: "settings-store",
+    question: "Should the settings store use SQLite or a JSON file?",
+    kind: "question",
+    options: [
+      {
+        label: "SQLite",
+        description: "transactional, and one store to back up",
+        recommended: true,
+        followUps: [{ handle: "sqlite-path", question: "Where should the database file live?", kind: "question", options: [{ label: "Beside the sessions database" }, { label: "In the project's `.frizz/`" }] }],
+      },
+      { label: "JSON file", description: "no dependency, hand-editable" },
+    ],
+    context: [
+      "Settings are read on every request and written by the server and by every worker's `frizzctl` calls.",
+      "",
+      "| Store | Survives a crash mid-write | Concurrent writers |",
+      "|---|---|---|",
+      "| SQLite | yes | safe |",
+      "| JSON file | no | last write wins |",
+      "",
+      "> [!NOTE]",
+      "> Either one migrates later; SQLite is the one that is hard to leave once there is data in it.",
+    ].join("\n"),
+  },
+}
+const FENCE_ASK = [
+  "```question",
+  "id: settings-store",
+  "kind: choice",
+  "question: Should the settings store use SQLite or a JSON file?",
+  "options:",
+  "  - label: SQLite",
+  "    description: transactional, and one store to back up",
+  "    recommended: true",
+  "  - label: JSON file",
+  "    description: no dependency, hand-editable",
+  "---",
+  FENCED.spec.context,
+  "```",
+  "",
+  "```question",
+  "id: sqlite-path",
+  "kind: choice",
+  "when: settings-store = SQLite",
+  "question: Where should the database file live?",
+  "options:",
+  "  - Beside the sessions database",
+  "  - In the project's `.frizz/`",
+  "```",
+].join("\n")
+const QUOTED_SAMPLE = "For the record, a reference is the id alone:\n\n````md\n```question\nid: settings-store\n```\n````"
+const fenceHandoff = `**Done** — the store's interface is in and \`c6c292e8\` is on local \`main\`.\n\nOne call is yours, because it is the one thing here that is hard to reverse:\n\n${FENCE_ASK}\n\nEither way the rest of the work is the same.${fenceMode === "placed" ? `\n\n${QUOTED_SAMPLE}\n\nThe older gates card still stands:\n\n\`\`\`question ${GATES.id}\n\`\`\`` : ""}`
+const fenceRef = "Docs are in, and the migration is written against both stores.\n\nThe store is still the one thing I need from you:\n\n```question\nid: settings-store\n```\n\nOnce it is picked the migration lands in one commit."
+const SETTLED_FENCED = { ...FENCED, settledAt: ago(0.5), answer: { questionId: FENCED.id, question: FENCED.spec.question, chosen: ["SQLite"], followUps: [{ questionId: FENCED.id, question: "Where should the database file live?", chosen: ["Beside the sessions database"] }] } }
+const landMs = Number(params.get("land") ?? "")
+
 const placed = params.get("placed") === "1"
 const keys = params.get("keys") === "1"
-const questions = params.get("danger") === "1" ? [GATE]
+const questions = fenceMode === "placed" ? [{ ...GATES, askedAt: ago(1) }, FENCED]
+  : fenceMode === "pending" || fenceMode === "settled" ? []
+  : fenceMode === "claimed" ? [{ ...FENCED, askedAt: ago(10) }]
+  : fenceMode === "sheet" ? [FENCED]
+  : params.get("danger") === "1" ? [GATE]
   : keys ? [SETTINGS, TREE]
   : placed ? [SETTINGS, GATES]
   : params.get("wide") === "1" ? [WIDE]
@@ -187,7 +273,17 @@ const tail = "Both stores work. The choice is yours because it is the one thing 
 const past = params.get("past") === "1"
 const marker = `**Fixed** — nothing further to do on the store: \`c6c292e8\` is on local \`main\`.\n\nThe one card still on the board is yours to decide, and it is the reason this thread does not file itself away as done:\n\n\`\`\`question ${SETTINGS.id}\n\`\`\`\n\nAnswer it either way and this thread is finished.`
 const placedHandoff = `**Fixed** — the store is in and \`c6c292e8\` is on local \`main\`.\n\nOne call is yours, because it is the one thing here that is hard to reverse once there is data in it:\n\n\`\`\`question ${SETTINGS.id}\n\`\`\`\n\nEither store passes every gate today. The gates themselves are the other open card, below.`
-const messages: TranscriptMessage[] = placed
+const say = (role: "user" | "assistant", at: string, text: string) => ({ role, at, text, tools: [], parts: [{ kind: "text" as const, text }] })
+const messages: TranscriptMessage[] = fenceMode === "claimed"
+  ? [
+      say("user", ago(12), "Add a settings store."),
+      say("assistant", ago(10), fenceHandoff),
+      say("user", ago(8), "Do the docs first, I'll get to the store."),
+      say("assistant", ago(1), fenceRef),
+    ]
+  : fenceMode
+  ? [say("user", ago(12), "Add a settings store."), say("assistant", ago(1), fenceHandoff)]
+  : placed
   ? [
       { role: "user", at: ago(12), text: "Add a settings store.", tools: [], parts: [{ kind: "text", text: "Add a settings store." }] },
       { role: "assistant", at: ago(1), text: placedHandoff, tools: [], parts: [{ kind: "text", text: placedHandoff }] },
@@ -239,6 +335,8 @@ const thread = {
     ? [{ id: "wch_aaa", kind: "shell", target: "bzvtnt3ig", state: "armed", createdAt: ago(6) }]
     : [],
   lastActivityAt: ago(1),
+  // A fence thread is one dispatched after the free-form fence was retired (QUESTION_FENCE_RETIRED_AT).
+  ...(fenceMode ? { spawnedAt: "2026-10-13T09:00:00Z", pendingQuestion: false } : {}),
 } as unknown as ThreadViewModel
 
 // ?keys=1's second card: the same rest, asking only the commit gates.
@@ -246,6 +344,12 @@ const gatesThread = { ...thread, id: "registered-question-gates", title: "Pick t
 
 store.board = { projectDir: "/fixture/frizz", threads: keys ? [thread, gatesThread] : [thread] } as BoardSnapshot
 Object.assign(window, { fixtureStore: store })
+// ?fence=pending&land=<ms>: the server registers the fence's row a beat after the transcript has it.
+if (fenceMode === "pending" && Number.isFinite(landMs) && landMs > 0) {
+  setTimeout(() => {
+    store.board = { projectDir: "/fixture/frizz", threads: [{ ...thread, questions: [FENCED] }] } as BoardSnapshot
+  }, landMs)
+}
 
 const transcriptPage = { messages, transcriptKey: "fixture-key", hasEarlier: past, historyLoaded: false }
 const originalFetch = window.fetch
@@ -269,6 +373,10 @@ window.fetch = async (input, init) => {
     window.dispatchEvent(new CustomEvent("fixture-rpc", { detail: { rpc: url.pathname.split("/").pop(), body } }))
     const ids: string[] = body.ids ?? (body.answers ?? []).map((a: { questionId: string }) => a.questionId)
     return new Response(JSON.stringify({ result: { answered: ids, dismissed: ids, open: [] } }), { headers: { "content-type": "application/json" } })
+  }
+  // ?fence=settled: the thread's answered questions, read beside its transcript.
+  if (url.pathname === "/_frizz/rpc/threadSettledQuestions") {
+    return new Response(JSON.stringify({ result: { questions: fenceMode === "settled" ? [SETTLED_FENCED] : [] } }), { headers: { "content-type": "application/json" } })
   }
   // The Settings drawer (?keys=1) reads the machine's settings; any plausible object will do.
   if (url.pathname === "/_frizz/rpc/settingsGet") {
@@ -294,9 +402,19 @@ function Overlays() {
 createRoot(document.getElementById("root")!).render(
   <QueryClientProvider client={new QueryClient()}>
     <TooltipProvider>
-      <div className="mx-auto w-[min(680px,calc(100%-32px))] py-8">
-        <TodosView />
-      </div>
+      {fenceMode === "sheet" ? (
+        <RegisteredAnsweringProvider thread={thread}>
+          <RegisteredAnswerSheet questions={[FENCED]} onClose={() => {}} />
+        </RegisteredAnsweringProvider>
+      ) : params.get("view") === "thread" ? (
+        <div className="mx-auto h-screen w-[min(760px,100%)]">
+          <ThreadView slug={thread.id} virtualized={params.get("virtualized") === "1"} />
+        </div>
+      ) : (
+        <div className="mx-auto w-[min(680px,calc(100%-32px))] py-8">
+          <TodosView />
+        </div>
+      )}
       {keys && <Overlays />}
     </TooltipProvider>
   </QueryClientProvider>,

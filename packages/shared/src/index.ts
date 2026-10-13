@@ -619,7 +619,7 @@ export function retiredAwaitingKindsIn(body: string): RetiredAwaitingKind[] {
 export const RETIRED_AWAITING_REPLACEMENT: Record<RetiredAwaitingKind, string> = {
   "watch": "`shells: [<the id your runtime gave you>]` (or `agents: [<id>]`) — the same id, in the current sequence",
   "pr-watch": "register the PR with `frizzctl watch-pr add`, then name it `prs: [owner/repo#123]`",
-  "human": "there is no human gate any more — steps only the human can perform go under `steps:`, one `- ` item per line; a decision you need from them is a question, registered with `frizzctl ask`",
+  "human": "there is no human gate any more — steps only the human can perform go under `steps:`, one `- ` item per line; a decision you need from them is a question, asked in a ```question fence",
   "ci": "CI is not a wait of its own: register the PR with `frizzctl watch-pr add` and you are woken when its checks settle",
   "session": "there is no cross-session wait — name the sub-agent you dispatched with `agents: [<id>]`",
   // THE 2026-08-24 CUTOVER. The frontmatter is YAML now, and YAML has no repeated keys — so the four
@@ -1878,16 +1878,17 @@ function signoffNudgeText(needsInput: boolean): string {
   "the write-up.",
   "",
   "**DECIDE RATHER THAN ASK.** Stop only for a decision that is genuinely the human's AND that blocks you",
-  "right now: register that one with `frizzctl ask`. Every other open choice INSIDE the task — a name, a",
+  "right now: ask that one in a ```question fence. Every other open choice INSIDE the task — a name, a",
   "default, a reversible design call — is yours to make: decide it, say in one line which way you went and",
   "what would reverse it, and carry on. A choice that would ENLARGE the task is not one of those: an",
   "unanswered question is not permission to go build the answer.",
   "",
-  "Otherwise, sign off — a registration, or a fence at the END of your next message:",
+  "Otherwise, sign off — a question, or a fence at the END of your next message:",
   "",
-  "- `frizzctl ask` — you need the human. NOT a fence: the ```question fence is retired, and a fence",
-  "  with a question in its body is plain prose. Register it (options with one-line trade-offs, the",
-  "  recommended one first), then rest normally — an open registered question is the sign-off.",
+  "- `` ```question `` — you need the human's decision. Write the fence where your message has earned",
+  "  the ask: `id:` (a slug of your choosing), `kind:` (`choice`, `multi`, `text` or `secret`), a one-line",
+  "  `question:`, and `options:` with one-line trade-offs, the recommended one first. Frizz registers it",
+  "  when the message lands, and a question asked at this rest is its sign-off: rest normally.",
   "- `` ```done `` — genuinely FINISHED. A DISMISSAL: the card is filed away and nobody looks again, so",
   "  if anything is still owed, it is not done. Body: 1-3 sentences, then bullets, each opening with a",
   "  **bolded verb phrase**.",
@@ -1903,10 +1904,10 @@ function signoffNudgeText(needsInput: boolean): string {
   "  every value the act needs written in. Frizz reads them verbatim. Steps name the HUMAN as the wait,",
   "  so the fence needs no other name and no `for:`, and the thread goes into their queue. Their Done",
   "  comes back to you as their reply; anything else they need to say comes as a message of their own.",
-  "- `` ```awaiting `` with `questions:` — a question you registered at an EARLIER rest is still open and",
-  "  you still need its answer. Name every such question (`questions: [qst_…]`) and withdraw the rest with",
-  "  `frizzctl unask <id>`: a fence that leaves an open question out is refused. A named card is drawn at",
-  "  this rest; an unnamed one stays where you asked it.",
+  "- A question you asked at an EARLIER rest, whose answer you still need: write a ```question fence",
+  "  carrying its `id:` alone. That draws its card in this message and keeps the thread in the human's",
+  "  queue. One you no longer need, withdraw with `frizzctl unask <id>`; one you leave unmentioned stays",
+  "  answerable where you asked it.",
   "",
   "**STILL OWED counts things you are not going to do yourself.** A decision you are RECOMMENDING, a",
   "draft you wrote but did not send, follow-up work you discovered — all of it dies with the card, even",
@@ -1933,34 +1934,6 @@ export const SIGNOFF_NUDGE_MESSAGE = signoffNudgeText(false)
 /** The same reminder for a worker dispatched under the answer-required contract (NEEDS_INPUT_REQUIRED_AT),
  *  which it teaches as `status:` since 2026-10-05. */
 export const SIGNOFF_NUDGE_MESSAGE_NEEDS_INPUT = signoffNudgeText(true)
-
-/** The reminder for a fenceless rest that leaves questions from an EARLIER rest open (2026-10-05). A
- *  question asked at THIS rest is the rest's own sign-off; one carried from before is not, because its
- *  card is no longer drawn under the newest handoff — it stays where it was asked — so a rest that says
- *  nothing about it reads as a bare stop while the thread sits in the queue on an ask nobody can see at
- *  the bottom. The worker settles each one: name it, or withdraw it. Same marker as the reminder above,
- *  so it folds out of the chat the same way. */
-export function carriedQuestionsNudgeMessage(questions: readonly { id: string; question: string }[], ops?: SignoffLiveOps, needsInput = false): string {
-  const one = questions.length === 1
-  const lines = [
-    `${SIGNOFF_NUDGE_MARKER} Nothing about your task has changed, and no new work is being asked of you.`,
-    "",
-    `${one ? "A question you registered at an EARLIER rest is" : "Questions you registered at EARLIER rests are"} still open, and this rest neither names ${one ? "it" : "them"} nor withdraws ${one ? "it" : "them"}:`,
-    "",
-    ...questions.map((q) => `- \`${q.id}\` — ${q.question}`),
-    "",
-    "Frizz does not draw an earlier rest's question under your newest handoff: its card stays where you",
-    `asked it. So say where ${one ? "it stands" : "each one stands"}:`,
-    "",
-    "- STILL NEED THE ANSWER → end with an ```awaiting fence naming it, `questions: [qst_…]`. A fence on",
-    "  questions needs no other name and no `for:`, and the thread stays in the human's queue. The card is",
-    "  drawn at this rest, under the reasoning you write below the `---` — what changed since you asked,",
-    "  if anything did.",
-    "- NO LONGER NEED IT → withdraw it with `frizzctl unask <id>`, then sign off as you otherwise would.",
-    ...liveOpsLines(ops, needsInput),
-  ]
-  return lines.join("\n")
-}
 
 // ---- THE FENCE CORRECTIONS (scheduler SOURCE 12) -------------------------------------------------
 // Frizz refusing a park and telling the worker why: a fence naming something that is not running, a
@@ -1996,10 +1969,15 @@ export const PARK_CORRECTION_QUESTION_LEAD = "⚠️ Your ```awaiting fence land
  *  where the thread sits while it waits — no `status:` (2026-10-05; `needs_input:` before it), or a value
  *  that is none of its answers. The lead is unchanged across the rename, so old corrections still fold. */
 export const PARK_CORRECTION_NEEDS_INPUT_LEAD = "⚠️ Your ```awaiting fence gives no "
+/** The fifth (2026-10-13): a ```question fence that could not register — a missing or malformed key, an id
+ *  already spent on a different question, a reference to an id the thread never asked. The server reads
+ *  every fence after the fact, so this is the only way a worker hears that its question never reached the
+ *  human (server question-fences.ts). */
+export const QUESTION_FENCE_CORRECTION_LEAD = "⚠️ Your ```question fence "
 /** Is this delivered wake one of frizz's fence corrections? */
 export function isParkCorrection(text: string): boolean {
   const t = text.trimStart()
-  return t.startsWith(PARK_CORRECTION_NAMES_LEAD) || t.startsWith(PARK_CORRECTION_RETIRED_LEAD) || t.startsWith(PARK_CORRECTION_QUESTION_LEAD) || t.startsWith(PARK_CORRECTION_NEEDS_INPUT_LEAD)
+  return t.startsWith(PARK_CORRECTION_NAMES_LEAD) || t.startsWith(PARK_CORRECTION_RETIRED_LEAD) || t.startsWith(PARK_CORRECTION_QUESTION_LEAD) || t.startsWith(PARK_CORRECTION_NEEDS_INPUT_LEAD) || t.startsWith(QUESTION_FENCE_CORRECTION_LEAD)
 }
 
 export function timerPromptMessage(prompt: string, fireAt: string): string {
@@ -2110,8 +2088,8 @@ export function parkExpiredWakeMessage(status: readonly string[]): string {
     ...status,
     "",
     "Re-park if they are genuinely still going — there is no limit on that, and a long job is not a",
-    "failure. If something is finished, read its result. If nothing is left, end in ```done or register",
-    "a question with `frizzctl ask`.",
+    "failure. If something is finished, read its result. If nothing is left, end in ```done, or ask",
+    "the human in a ```question fence.",
   ].join("\n")
 }
 
@@ -2125,7 +2103,7 @@ export function parkFinishedWakeMessage(status: readonly string[], several: bool
     "READ ITS OUTPUT AND CARRY ON. This is not a broken fence and there is nothing to fix: the wait",
     "you declared simply ended. Do NOT relaunch the same work — its result is already on disk.",
     "",
-    "Then park on whatever comes next, or end in ```done or a registered question (`frizzctl ask`) if nothing is left.",
+    "Then park on whatever comes next, or end in ```done or a ```question if nothing is left.",
   ].join("\n")
 }
 
@@ -2837,7 +2815,14 @@ export interface AskedOption {
 }
 
 export interface AskedQuestion {
+  /** The id the WORKER chose in its ```question fence (`id: settings-store`) — absent on a question
+   *  `ask` registered, which only ever had the minted `qst_…`. Every node of a tree carries its own, so
+   *  a follow-up's id is spent as surely as its root's (question-fence.ts). */
+  handle?: string
   question: string
+  /** A fence's body below `---`: any markdown the human needs to answer cold. Kept apart from `question`
+   *  so the answer wake, `activity` and every one-line reading restate the QUESTION and not its evidence. */
+  context?: string
   /** A very short chip label for the card's heading (<= 12 chars), as the fence's own convention. */
   header?: string
   kind: AskQuestionKind
@@ -2885,7 +2870,9 @@ export const AskedQuestionSchema: z.ZodType<AskedQuestion> = z.lazy(() => z.obje
   // 4000, not the 600 it launched with (2026-09-03): this field is the whole card context — everything
   // the human needs to answer cold — and a question that carries its own evidence needs the room. The
   // answer restates it, so QuestionAnswerSchema's cap matches.
+  handle: z.string().trim().min(1).max(64).optional(),
   question: z.string().trim().min(1).max(4000),
+  context: z.string().trim().max(20000).optional(),
   header: z.string().trim().max(24).optional(),
   kind: AskQuestionKind,
   danger: z.boolean().optional(),
@@ -2953,6 +2940,9 @@ export const RegisteredQuestionView = z.object({
   /** Minted by frizz. The worker never chose it, which is why an answer RESTATES the question text —
    *  an id alone cannot be correlated back to what was asked. */
   id: z.string(),
+  /** The worker's own id for it, from its ```question fence — what `unask` and every correction name it
+   *  by. Absent on a question `ask` registered, which only ever had the minted id. */
+  handle: z.string().optional(),
   spec: AskedQuestionSchema,
   askedAt: z.string(),
   /** A `secret` question only: the path its value will be served at. Known at registration, so the
@@ -5767,6 +5757,7 @@ export type BoardDelta = Extract<ServerEvent, { type: "board-delta" }>
 export * from "./claim.ts"
 export * from "./claude-editions.ts"
 export * from "./code-fences.ts"
+export * from "./question-fence.ts"
 export * from "./delta.ts"
 export * from "./drainable-worker.ts"
 export * from "./interactions.ts"
