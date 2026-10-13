@@ -545,8 +545,8 @@ function Chip({
       data-question-option
       title={recTitle}
       // The div-level click exists for the body's ELEVATED, non-link content — a code block sits above
-      // the stretched button so it can h-scroll (styles.css), which takes its pixels out of the
-      // button's hit area, and a click on the code you are reading must still pick the option. The
+      // the stretched button so its text can be selected (styles.css), which takes its pixels out of
+      // the button's hit area, and a click on the code you are reading must still pick the option. The
       // guards keep it from double-firing or over-reaching: a click the BUTTON caught bubbles here
       // with the button as target (closest matches, skip — a second call would un-toggle a multi), a
       // link keeps its own click, a picture opens the lightbox (a gallery tile is a button), a

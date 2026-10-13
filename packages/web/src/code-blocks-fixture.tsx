@@ -1,6 +1,7 @@
 import { useState } from "react"
 import { createRoot } from "react-dom/client"
 import "./styles.css"
+import { DiffBlock } from "./components/DiffBlock.tsx"
 import { installCodeCopyInterceptor } from "./lib/copy-code.ts"
 import { installCodeExpandInterceptor } from "./lib/expand-code.ts"
 import { installCodeTabInterceptor } from "./lib/switch-code-tab.ts"
@@ -82,6 +83,14 @@ export const CASES: [string, string][] = [
   ["plain", fence("ts", retry)],
 ]
 
+const EDIT_OLD = [
+  "export function threadsUrl(cursor: string) {",
+  `  const url = "https://api.example.com/v1/threads?limit=100&cursor=" + encodeURIComponent(cursor) + "&include=messages,attachments,reactions"`,
+  "  return url",
+  "}",
+].join("\n")
+const EDIT_NEW = EDIT_OLD.replace(/^ {2}const url = .*$/m, `  const url = build({ limit: 100, cursor, include: ["messages", "attachments", "reactions"] })`)
+
 installCodeCopyInterceptor()
 installCodeTabInterceptor()
 installCodeExpandInterceptor()
@@ -115,9 +124,13 @@ function Fixture() {
       <button type="button" data-chip-hit className="absolute inset-0" aria-label="Pick this option" />
       <div className="md-body" data-case="chip" dangerouslySetInnerHTML={{ __html: mdToHtml(sample) }} />
     </div>
-    {/* The Queue's narrow column wraps code instead of scrolling it (TranscriptCard QUEUE_WRAP). */}
-    <div className="md-body mt-6 w-[300px] text-[14px] [overflow-wrap:anywhere] [&_pre]:whitespace-pre-wrap [&_pre]:break-all"
+    {/* The Queue's narrow column (TranscriptCard QUEUE_WRAP). Code wraps on every surface; here it has 300px to do it in. */}
+    <div className="md-body mt-6 w-[300px] text-[14px] [overflow-wrap:anywhere]"
       data-case="narrow" dangerouslySetInnerHTML={{ __html: mdToHtml(sample) }} />
+    {/* The Edit card: the same rows drawn from a tool call rather than a fence, and wrapped the same way. */}
+    <div className="mt-6 max-w-3xl" data-case="edit-card">
+      <DiffBlock edits={[{ file: "/fixture/src/threads.ts", old: EDIT_OLD, new: EDIT_NEW }]} />
+    </div>
   </main>
   )
 }
