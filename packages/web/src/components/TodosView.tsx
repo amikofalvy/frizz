@@ -22,6 +22,8 @@ import { lastAskIndex, lastHumanTurnIndex } from "../lib/messagePresentation.ts"
 import { isOptimisticallySteering, useSteeredAt } from "../lib/steering.ts"
 import { prefersReducedMotion } from "../lib/sheet.ts"
 import { REST_CATCH_UP_MS } from "../lib/steering.ts"
+import { useTranscriptHeldForBoard } from "../lib/restAhead.ts"
+import { useTurnAheadOfBoard } from "../lib/queueTurnAhead.ts"
 import { returningHolds } from "../lib/queueReturn.ts"
 import { questionsByAnchor } from "../lib/questionAnchor.ts"
 import { allFencesShadowed, placedFrom, placedRestEnds, placeQuestions, registeredStandingAt } from "../lib/questionShadow.ts"
@@ -956,9 +958,17 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
   // Every card beneath this one was therefore shoved down, then up, then up again, inside one 200ms
   // fade: the up-and-down jitter the operator reported. The card is going away; the last frame before
   // the dismissal is the one it should dissolve on.
+  //
+  // …AND ON A TURN OPENED FROM ELSEWHERE, WHEN THE TRANSCRIPT REPORTS IT FIRST. Neither `leaving` nor the
+  // steer stamp knows about a steer from another tab, a wake or `frizzctl steer`; the board does, but the
+  // landed message can reach this cache before the board drops the row, and the same re-cut then happens
+  // on a card nobody here touched (lib/queueTurnAhead). Held the same way: the transcript the card was
+  // showing, until the board takes the card away.
+  const turnAhead = useTurnAheadOfBoard(thread, q.data?.messages)
+  const holdsTranscript = frozen || turnAhead
   const frozenTranscript = useRef(q.data)
-  if (!frozen) frozenTranscript.current = q.data
-  const transcript = frozen ? frozenTranscript.current : q.data
+  if (!holdsTranscript) frozenTranscript.current = q.data
+  const transcript = holdsTranscript ? frozenTranscript.current : q.data
   // …and the BOX is pinned for the duration of the exit, which is the same invariant enforced rather
   // than merely intended. This half stays on `leaving` alone, unlike the freeze above: it exists for the
   // composer THIS card clears on its own send, and a card steered from elsewhere never clears one. Held
@@ -1032,7 +1042,13 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
   })
   // Raw server order — each message renders its `parts` in block order (fidelity). Memoized so the
   // windowing/useLiveAnswering below line up on identity.
-  const rawMessages = useMemo(() => transcript?.messages ?? [], [transcript])
+  const liveMessages = useMemo(() => transcript?.messages ?? [], [transcript])
+  // …less a rest the board has not reached yet (lib/restAhead.ts, the thread view's own hold). A RUNNING
+  // thread can hold a card — see `running` below — and that card takes `running` from the board row and
+  // its messages from this cache, exactly as the thread view does. So a push that ends on the rest while
+  // the board still reports the turn drew the finished reply with the Working row under it until the next
+  // board tick; held, the reply and the Working row's departure land in one render.
+  const rawMessages = useTranscriptHeldForBoard(thread, liveMessages)
   // A STILL-RUNNING background call (a shell, a Monitor) leaves the transcript and is counted in the ops
   // line over the prompt box instead — the drawer's rule (ChatView presentationMessages), which this card
   // broke until 2026-10-09 by drawing the same call as a tool card here AND counting it there. The shells
