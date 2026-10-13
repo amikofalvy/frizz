@@ -140,6 +140,15 @@ export interface NormalizedTail {
 // interface no longer leaks Claude internals. A backend whose turn model maps onto NormalizedEvent
 // (codex's explicit task_started/task_complete brackets) drives this via `applyEvent`; Claude reuses
 // its corpus-verified `applyRecord` over the richer TailState (see the NOTE on NormalizedEvent).
+/** One assistant message's ```question fences, kept so the registrar can mint their rows. `text` is
+ *  the fences alone — each block's source, opener to closer — so a long handoff costs the tail cache only
+ *  the part anyone will read, and `questionFenceBlocks` re-reads it exactly. */
+export interface QuestionSighting {
+  /** The record's own timestamp: the question's `asked_at`, and which rest it belongs to. */
+  at: string
+  text: string
+}
+
 export interface FoldState {
   turn: TurnState // in-flight while a turn runs; idle once it brackets closed
   sawRecords: boolean // any substantive record folded yet (a fresh/booting session guard)
@@ -181,6 +190,12 @@ export interface FoldState {
   firstUserText?: string
   lastFence?: FenceView // done/awaiting excusal fence on the final message (cleared by any user turn)
   lastAssistantHasQuestion: boolean // the final message carries an unanswered ```question fence
+  // Every assistant message that carried a ```question fence, newest last, capped (QUESTION_SIGHTINGS_MAX
+  // in tailer.ts). NOT cleared by a user turn, unlike the two above: a fence registers a ROW, and the row
+  // must be minted whether or not the worker said anything after it, so the server's registrar reads
+  // these whatever has happened since (server question-fences.ts). Absent on a state folded before
+  // 2026-10-13, which the fold-schema digest invalidates anyway.
+  questionSightings?: QuestionSighting[]
   // The final message answers a stop hook with AWAITING (scheduler.ts SOURCE 5). Folded and
   // cleared on exactly the same lifecycle as the question flag above: set per assistant text, wiped by
   // any user record — so the next bump the operator sends re-opens the loop by itself.

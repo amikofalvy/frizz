@@ -2929,6 +2929,9 @@ export const RegisteredQuestionView = z.object({
   /** Minted by frizz. The worker never chose it, which is why an answer RESTATES the question text —
    *  an id alone cannot be correlated back to what was asked. */
   id: z.string(),
+  /** The worker's own id for it, from its ```question fence — what `unask` and every correction name it
+   *  by. Absent on a question `ask` registered, which only ever had the minted id. */
+  handle: z.string().optional(),
   spec: AskedQuestionSchema,
   askedAt: z.string(),
   /** A `secret` question only: the path its value will be served at. Known at registration, so the

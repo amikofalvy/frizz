@@ -5,13 +5,13 @@ import { promisify } from "node:util"
 import { basename, join, win32 } from "node:path"
 import { homedir, tmpdir } from "node:os"
 import type { AskQuestion, AwaitingHint, CodexModel, LiveTool } from "@frizz/shared"
-import { insideFence, isAllInjectedNoise, isInterruptMarker, parseAskUserQuestionInput, parseCrossSessionMessage, PermissionMode, questionFencesLive, saysAllDone, splitAwaitingFrontmatter } from "@frizz/shared"
+import { insideFence, isAllInjectedNoise, isInterruptMarker, parseAskUserQuestionInput, parseCrossSessionMessage, PermissionMode, questionFenceBlocks, questionFencesLive, saysAllDone, splitAwaitingFrontmatter } from "@frizz/shared"
 import type { Bus } from "./bus.ts"
 import { permMarkerPath, type Project } from "./project.ts"
 import { isBrokerClaudeRow, isHeadlessRow } from "./storage.ts"
 import type { Storage, SessionRow } from "./storage.ts"
 import { discoverTranscriptDir, discoverTranscriptId, mtimeOfNonEmpty, DISCOVERY_GRACE_MS } from "./discover.ts"
-import { CLAUDE_WORKER_ENV, type AgentBackend, type FoldState, type NormalizedEvent, type NormalizedTail } from "./backend/types.ts"
+import { CLAUDE_WORKER_ENV, type AgentBackend, type FoldState, type NormalizedEvent, type NormalizedTail, type QuestionSighting } from "./backend/types.ts"
 import { adoptionRuntimeBinding } from "./adoption-recovery.ts"
 import { normalizeObservedThreadModel, validateThreadProfile } from "./backend/thread-profiles.ts"
 import { dispatchProfileCell } from "./subagent-profile.ts"
@@ -764,6 +764,10 @@ export interface SessionTelemetry extends NormalizedTail {
   // is interrupt-ended.ts, which must name a child the interrupt KILLED and never one that simply
   // finished in the same 30s — so the outcome rides along with the id.
   retiredSubAgents?: RetiredSubAgentView[]
+  // The assistant messages that carried a ```question fence (FoldState.questionSightings). Server-internal
+  // like the two rings above: the registrar mints rows from them and the board reads which question a
+  // rest referenced; the browser parses the transcript itself.
+  questionSightings?: QuestionSighting[]
   pendingAsk?: PendingAskData // a pending native AskUserQuestion the session is frozen on (else absent)
   // The last assistant message carries an unanswered ```question fence AND the thread still speaks the
   // fence (dispatched before QUESTION_FENCE_RETIRED_AT — see `get`). Always false for a new-contract thread.
@@ -913,6 +917,10 @@ interface RetiredShell {
 // How many terminal sub-agents to retain per thread for drawer review (newest-wins ring).
 const RETAINED_SUBAGENTS_MAX = 20
 const RETAINED_SHELLS_MAX = 20
+// How many fenced messages the fold keeps for the question registrar. The registrar runs every scheduler
+// tick, so it only ever needs the messages written since the last one; the rest of the ring is what a
+// refold after a restart replays, and replaying a fence whose row exists is a no-op.
+const QUESTION_SIGHTINGS_MAX = 32
 // How many DESCENDANT terminal instants to hold (see TailState.descendantTerminals). Unlike the ring
 // above these are 16 bytes apiece and are read, never rendered, so this is sized to the sidecar cap —
 // one long orchestrator session in the local corpus accumulated 104 descendants across a day.
@@ -1202,6 +1210,33 @@ export function parseLine(line: string): Record | null {
 // The RAW last text block of an assistant message (newlines intact). Handles the streaming split (one
 // block per record) and a defensive multi-block array alike. Kept raw because the question-fence
 // detection below needs the line structure the preview collapses away.
+// Note an assistant message's ```question fences for the registrar (FoldState.questionSightings). Only
+// the fences are kept, each block's source verbatim. The same message seen twice — a normalized backend
+// carries its final answer on both the text event and the turn-end bracket — is noted once.
+function noteQuestionFences(state: FoldState, at: string | undefined, text: string | undefined): void {
+  if (!at || !text || !text.includes("question")) return
+  const blocks = questionFenceBlocks(text)
+  if (blocks.length === 0) return
+  const sighting: QuestionSighting = { at, text: blocks.map((b) => text.slice(b.start, b.end).trimEnd()).join("\n\n") }
+  const ring = state.questionSightings ?? []
+  const last = ring[ring.length - 1]
+  if (last && last.at === sighting.at && last.text === sighting.text) return
+  state.questionSightings = [...ring, sighting].slice(-QUESTION_SIGHTINGS_MAX)
+}
+
+// Every text block of a record, in order — a message's fences may sit in any of them.
+function allTextBlocks(content: unknown): string | undefined {
+  if (!Array.isArray(content)) return undefined
+  const texts: string[] = []
+  for (const block of content) {
+    if (block && typeof block === "object" && (block as { type?: string }).type === "text") {
+      const t = (block as { text?: unknown }).text
+      if (typeof t === "string") texts.push(t)
+    }
+  }
+  return texts.length ? texts.join("\n\n") : undefined
+}
+
 function lastTextBlock(content: unknown): string | undefined {
   if (!Array.isArray(content)) return undefined
   let text: string | undefined
@@ -2397,6 +2432,11 @@ export function applyRecord(state: TailState, rec: Record): void {
       }
     }
     const raw = lastTextBlock(rec.message?.content)
+    // A ```question fence registers from ANY assistant text, mid-turn included — asking does not end the
+    // turn, and 39% of asks measured were followed by more work. A sidechain record is a child's.
+    if (rec.isSidechain !== true && rec.isApiErrorMessage !== true) {
+      noteQuestionFences(state, typeof rec.timestamp === "string" ? rec.timestamp : undefined, allTextBlocks(rec.message?.content))
+    }
     // Runtime auth classifier (claude-auth plan): claude records a rejected credential as a SYNTHETIC
     // assistant record (isApiErrorMessage:true, model "<synthetic>") whose text is the 401/login
     // recovery line. Keying on the synthetic flag makes user-authored or quoted "401" text
@@ -2586,7 +2626,10 @@ export function applyEvent(state: FoldState, ev: NormalizedEvent): void {
         state.apiFault = undefined
         state.providerError = undefined
       }
-      if (ev.finalText !== undefined) applyFinalText(state, ev.finalText)
+      if (ev.finalText !== undefined) {
+        applyFinalText(state, ev.finalText)
+        noteQuestionFences(state, ev.at ?? state.lastAssistantAt, ev.finalText)
+      }
       break
     case "assistant-text":
       // Streamed assistant text. The FINAL answer sets preview + question/excusal fence; a non-final
@@ -2602,6 +2645,8 @@ export function applyEvent(state: FoldState, ev: NormalizedEvent): void {
       } else {
         setAssistantPreview(state, ev.text)
       }
+      // A commentary block may ask too — registering is not a sign-off, so it needs no final message.
+      noteQuestionFences(state, ev.at, ev.text)
       break
     case "user-message":
       // A human/peer/notification turn re-opens the turn (the model is about to respond → in-flight)
@@ -5920,7 +5965,7 @@ export function createTailer(deps: TailerDeps): Tailer {
       // thread has no row and reads as legacy, which is what `questionFencesLive` does with unknown.
       const pendingQuestion = s.lastAssistantHasQuestion && questionFencesLive(row?.spawned_at)
       const nowMs = now()
-      return { turn: s.turn, permPrompt: s.permPrompt, permPolicy: s.permPolicy, permDenies: s.permDenies, model: s.model, effort: s.effort, profileAt: s.profileAt, profileRevision: s.profileRevision, permissionMode: s.permissionMode, permissionModeAt: s.permissionModeAt, permissionModeRevision: s.permissionModeRevision, lastActivityAt: s.lastActivityAt, lastAssistantAt: s.lastAssistantAt, lastAssistant: s.lastAssistant, lastAssistantLine: s.lastAssistantLine, liveTool: newestLiveTool(s), aiTitle: s.aiTitle, customTitle: s.customTitle, customTitleRevision: s.customTitleRevision, subAgents: subAgentViews(s, nowMs), droppedReports: [...s.queuedReports.values()], bgShells: [...bgShellViews(s), ...codexBgShellViews(s)], retiredShells: retiredShellViews(s), retiredSubAgents: retiredSubAgentViews(s), pendingAsk: s.pendingAsk, pendingQuestion, lastAssistantAllDone: s.lastAssistantAllDone, lastUserAt: s.lastUserAt, lastUserText: s.lastUserText, firstUserText: s.firstUserText, lastFence: s.lastFence, noTranscript: s.noTranscript, authFault: s.authFault, apiFault: s.apiFault, providerError: s.providerError, limitFault: s.limitFault, contextTokens: s.contextTokens, contextWindow: s.contextWindow, lastCompactionAt: s.lastCompactionAt }
+      return { turn: s.turn, permPrompt: s.permPrompt, permPolicy: s.permPolicy, permDenies: s.permDenies, model: s.model, effort: s.effort, profileAt: s.profileAt, profileRevision: s.profileRevision, permissionMode: s.permissionMode, permissionModeAt: s.permissionModeAt, permissionModeRevision: s.permissionModeRevision, lastActivityAt: s.lastActivityAt, lastAssistantAt: s.lastAssistantAt, lastAssistant: s.lastAssistant, lastAssistantLine: s.lastAssistantLine, liveTool: newestLiveTool(s), aiTitle: s.aiTitle, customTitle: s.customTitle, customTitleRevision: s.customTitleRevision, subAgents: subAgentViews(s, nowMs), droppedReports: [...s.queuedReports.values()], bgShells: [...bgShellViews(s), ...codexBgShellViews(s)], retiredShells: retiredShellViews(s), retiredSubAgents: retiredSubAgentViews(s), questionSightings: s.questionSightings, pendingAsk: s.pendingAsk, pendingQuestion, lastAssistantAllDone: s.lastAssistantAllDone, lastUserAt: s.lastUserAt, lastUserText: s.lastUserText, firstUserText: s.firstUserText, lastFence: s.lastFence, noTranscript: s.noTranscript, authFault: s.authFault, apiFault: s.apiFault, providerError: s.providerError, limitFault: s.limitFault, contextTokens: s.contextTokens, contextWindow: s.contextWindow, lastCompactionAt: s.lastCompactionAt }
     },
     // The CURRENT fresh foreign session ids (mtime within FOREIGN_FRESH_MS, capped), mtime-desc. Kept
     // as the last scan's result — recomputed at most every FOREIGN_SCAN_EVERY ticks.
