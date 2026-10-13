@@ -27,6 +27,7 @@ import { DividerHint, DividerQuotedTitle, WakeDivider } from "./components/WakeD
 import { TRANSCRIPT_META_LABEL_CLASS, transcriptMetaChevronClass } from "./lib/transcriptMetaLabels.ts"
 import { OPAQUE_SURFACE_BASE } from "./lib/overlaySurface.ts"
 import { BLOCK_RADIUS } from "./components/TranscriptCard.tsx"
+import { mdToHtml } from "./lib/markdown.ts"
 import { store } from "./store.ts"
 import "./styles.css"
 
@@ -322,6 +323,54 @@ function SettledDivider({ kind }: { kind: "passed" | "expired" | "cancelled" }) 
   )
 }
 
+// The data-model half of the sheet, from a read of the code on 2026-10-13 (main at a6c67684).
+const DATA_MODEL = `
+#### What exists
+
+- **One \`command_watch\` row per watch, keyed only by thread:** the command, cadence, expiry, a run counter, and the *last* check (outcome, exit code, 4 KB of output). Each check overwrites the one before.
+- **It is already a full wait.** \`commands:\` in a fence is checked against it, an armed watch parks the thread even with no fence, \`frizzctl done\` refuses while one is armed, and a thread resting on one hibernates. A background shell would block that hibernation.
+- **The gaps are all about showing it:**
+  - nothing ties a watch to the call that registered it;
+  - no history is kept;
+  - a settled watch drops off the board;
+  - its wakes are never parsed (\`parseCommandWatchWake\` has no caller), so they render as the generic card, worker instructions included;
+  - a watch registered by a sub-agent is filed under the parent thread, with nothing saying which child made it.
+
+#### Option 1: its own kind, plus provenance and history (recommended)
+
+- **Provenance:** stamp \`origin_tool_use_id\` on the row, plus \`origin_agent_id\` when a sub-agent made the call.
+  - **Source:** the PreToolUse Bash hook Frizz already installs (\`cc-worker/hooks/bash-background.mjs\`). It sees both ids and can leave a record for the registration to pick up, the way \`agent-bind.mjs\` binds sub-agents today.
+  - **Fallback with no new plumbing:** join on the \`Watching as cmw_…\` line frizzctl prints (pinned by \`frizzctl.test.ts\`). This works for the main thread only.
+- **History:** a \`command_watch_run\` table.
+  - One row per check (time, outcome, exit code). Store output only when it differs from the previous check's. Keep the first check, the last 60, and every check whose outcome changed.
+  - A 2m watch held for 12h writes 360 rows.
+  - The board carries a summary only: checks run, last outcome, when the next check is due, and whether one is running now. The drawer fetches the history on demand, the way it fetches a shell's output.
+- **Settled watches:** keep projecting a watch for a while after it passes, gives up, is dropped or is stopped, so its transcript card can show how it ended before folding away.
+- **Surfaces:** sections 1A, 2, 3 and 4 above, all reading this one row.
+
+#### Option 2: put it in the shell list (section 5)
+
+Every shell surface would draw it for free, but each of them would be wrong about it:
+
+- A shell is "running" because the OS says its process is alive; a watch has no process between checks.
+- The shell drawer reads an output file; a watch keeps 4 KB of one check.
+- Stopping a shell goes through the provider; a watch is dropped with \`watch-command drop\`.
+- Any shell blocks hibernation, which is the reason command watches exist.
+- About ten places key on the shell list (queue and park rules) and would change behaviour.
+
+#### Option 3: one list of everything a thread has out
+
+Sub-agents, shells, command watches, timers, and PR and issue watchers as one projection: kind, the call that started it, label, state, started and settled times, last event.
+
+- **Why:** the count line, the waiting card, the /full rail and the drawers each rebuild this set by hand today. That is how command watches were left out everywhere, and timers are still missing from the count line.
+- **Cost:** it is the right end state, but a refactor across every surface. Option 1's columns are a subset of it, so doing Option 1 first wastes nothing.
+
+#### Also found
+
+- **\`status: working\` on a command park is read as \`watching\`,** so the thread always lands in Snoozed and never shows as running, even while a check is running.
+- **No sidebar mark of its own:** a command park gets the generic Snoozed hourglass.
+`
+
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
 createRoot(document.getElementById("root")!).render(
@@ -414,8 +463,8 @@ createRoot(document.getElementById("root")!).render(
           </Frame>
         </Section>
 
-        <Section id="data" title="Data model options" note="Filled in below from the code.">
-          <div id="data-model" className="md-body text-[14px] leading-6" />
+        <Section id="data" title="Data model options">
+          <div id="data-model" className="md-body text-[14px] leading-6" dangerouslySetInnerHTML={{ __html: mdToHtml(DATA_MODEL) }} />
         </Section>
       </main>
     </ThreadSlugContext.Provider>
