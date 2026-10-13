@@ -2413,7 +2413,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         status.push(`- \`steps:\` (${park.steps.length}) — the human has not replied; check whether they were done anyway before you post them again`)
       }
       if (park.questions.length > 0) {
-        status.push(`- \`questions:\` (${park.questions.length}) — not answered yet; name the ones you still need in your next fence and withdraw the rest`)
+        status.push(`- \`questions:\` (${park.questions.length}) — not answered yet; a rest that still needs one references it with an \`id:\`-only \`\`\`question fence, and \`frizzctl unask <id>\` withdraws the rest`)
       }
       // When EVERY dead name simply finished, the news is not "your fence is wrong" — it is "the thing
       // you were waiting for is done". Different fact, different next action.
@@ -2446,8 +2446,8 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
           "in a sentence breaks the YAML, which is why `reason:` is gone.",
           "",
           "`frizzctl activity` lists everything you have running, and prints it back as a ready-to-paste",
-          "fence. If you are not waiting on anything, you are not awaiting — end with ```done, or register",
-          "a question with `frizzctl ask`.",
+          "fence. If you are not waiting on anything, you are not awaiting — end with ```done, or ask the",
+          "human in a ```question fence.",
         ].join("\n")
         : nameless
         ? [
@@ -2469,7 +2469,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
           "Use `frizzctl activity` to read it all back as a ready-to-paste fence.",
           "",
           "AND IF YOU ARE NOT WAITING ON ANYTHING, you are not awaiting — you are done. End with ```done,",
-          "or register a question with `frizzctl ask` if you need the human.",
+          "or ask the human in a ```question fence if you need them.",
         ].join("\n")
         // THESE TWO LIVE IN @frizz/shared, beside the parsers that read them back. Same rule as
         // `limitResumeSteer`: a formatter the chat cannot parse falls through FrizzWake's legacy
@@ -2485,8 +2485,8 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
           ...status,
           "",
           "Use `frizzctl activity` to read back what you actually have out, with the exact id each line",
-          "needs, then re-fence naming only those — or end in ```done or a registered question",
-          "(`frizzctl ask`) if there is nothing left to wait for.",
+          "needs, then re-fence naming only those — or end in ```done or a ```question fence if there is",
+          "nothing left to wait for.",
         ].join("\n")
 
       const cause = retired.length > 0 ? "retired" : nameless ? "nameless" : expired ? "expired" : "dead"
@@ -2518,7 +2518,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         ? `${head}\n${ops.join("\n")}`
         : cause === "expired"
         ? head
-        : `${head}\n\nYou have NOTHING running right now — no shell, no sub-agent, no timer, no registered\npull request. There is nothing that could wake you, so this thread is not awaiting: finish in\n\`\`\`done, or register a question with \`frizzctl ask\`.`
+        : `${head}\n\nYou have NOTHING running right now — no shell, no sub-agent, no timer, no registered\npull request. There is nothing that could wake you, so this thread is not awaiting: finish in\n\`\`\`done, or ask the human in a \`\`\`question fence.`
       // THE CONSECUTIVE CAP, and the reason SOURCE 12 needed one. A correction is only worth sending to a
       // worker that can act on it, and a worker whose contract froze before this grammar existed cannot:
       // no fence it knows how to write will pass the check. Uncapped, that is a closed loop — bump, wake,

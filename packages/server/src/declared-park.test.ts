@@ -457,7 +457,7 @@ test("a nameless fence with nothing running is told it is not awaiting at all", 
     const msg = h.queued()[0].message
     assert.match(msg, /You have NOTHING running right now/)
     // The question fence is retired (2026-09-11); a registered question is the other way out.
-    assert.match(msg, /finish in\s*```done, or register a question with `frizzctl ask`/s)
+    assert.match(msg, /finish in\s*```done, or ask the human in a ```question fence/s)
   } finally { h.close() }
 })
 
