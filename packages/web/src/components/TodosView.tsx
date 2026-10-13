@@ -20,6 +20,9 @@ import { carriesDoneRegistration, collapseMiddleRuns, opensQueueSegment, queueCo
 import { pairAllAnswers, unrenderedAnswers } from "../lib/answersMessage.ts"
 import { lastAskIndex, lastHumanTurnIndex } from "../lib/messagePresentation.ts"
 import { isOptimisticallySteering, useSteeredAt } from "../lib/steering.ts"
+import { prefersReducedMotion } from "../lib/sheet.ts"
+import { REST_CATCH_UP_MS } from "../lib/steering.ts"
+import { returningHolds } from "../lib/queueReturn.ts"
 import { questionsByAnchor } from "../lib/questionAnchor.ts"
 import { allFencesShadowed, placedFrom, placedRestEnds, placeQuestions, questionsAtCurrentRest, registeredStandingAt } from "../lib/questionShadow.ts"
 import { settledQuestionPositions } from "../lib/settledQuestions.ts"
@@ -74,12 +77,36 @@ import type { ChatMessage, TranscriptData } from "../hooks.ts"
 // card to the top; board departure → pin a visible neighbour so nothing on screen shifts). There is
 // no height-collapse phase (it drifted the neighbour — see styles.css). Keep in sync with the CSS fade.
 const QUEUE_DISSOLVE_MS = 200
-// How long a resolved card is KEPT MOUNTED after the board has dropped it, so the fade can finish before
-// the unmount + neighbour pin. completeThread / setThreadStatus call ctx.board.refresh() SYNCHRONOUSLY
+// A resolved card is KEPT MOUNTED after the board has dropped it, so the fade can finish before the
+// unmount + neighbour pin. completeThread / setThreadStatus call ctx.board.refresh() SYNCHRONOUSLY
 // (board.ts publish()), so the board delta that removes the thread races the RPC response — without this
-// retention the card unmounts the instant the delta lands and no fade ever plays. 120ms of slack past the
-// fade leaves margin in both exit paths (board-drop, or the next-frame arm when the board hasn't dropped).
+// retention the card unmounts the instant the delta lands and no fade ever plays.
+//
+// THE UNMOUNT IS THE FADE'S OWN END, NOT A TIMER FROM THE DEPARTURE. It used to be one timer of
+// QUEUE_DISSOLVE_MS + 120ms from the moment the card began exiting, the 120ms covering the departed path's
+// one-frame arm (below). On the optimistic path, which is every send and every dismissal from the card,
+// the fade starts in the commit that marks the card leaving, so the slack simply played out after it: a
+// slot of the card's full height, empty, for 72-128ms before the cards around it moved (measured on real
+// workers, 2026-10-13). Now the card unmounts when its slot's opacity transition reports finished (the
+// exit effect below), and the CSS fade runs on the accelerate curve, so there is no long tail at ~0
+// opacity before that either.
+//
+// QUEUE_EXIT_MS survives only as a SAFETY timer: for a fade that never reports, and for a card the board
+// dropped, which is armed on the next animation frame — a backgrounded tab may not run one for a long
+// time, and the card still unmounts.
 const QUEUE_EXIT_MS = QUEUE_DISSOLVE_MS + 120
+// Reduced motion has no fade (styles.css), so there is nothing to wait for: the card leaves at once.
+const exitFadeMs = () => (prefersReducedMotion() ? 0 : QUEUE_DISSOLVE_MS)
+
+// The opacity fade a leaving card's slot is running (styles.css .frizz-card-slot), if any. Reading the
+// slot's animations flushes style, which is what starts the transition the commit just asked for, so
+// the handle exists the moment the effect looks.
+function slotFade(slug: string): Animation | undefined {
+  if (typeof document === "undefined") return undefined
+  const slot = document.querySelector<HTMLElement>(`[data-queue-card="${CSS.escape(slug)}"]`)
+  if (!slot || typeof slot.getAnimations !== "function") return undefined
+  return slot.getAnimations().find((a) => typeof CSSTransition !== "undefined" && a instanceof CSSTransition && a.transitionProperty === "opacity")
+}
 
 // Pick the on-screen neighbour whose position we hold fixed across a card's unmount — the PURE BOARD
 // DEPARTURE path only (a card the agent/another client resolved, not a local action): a reader mid-card
@@ -166,6 +193,25 @@ export function TodosView() {
   const items = onConsole ? consoleCardOrder(queueItems, consoleGroup, consoleProjects.projects.map((p) => p.slug)) : queueItems
   const itemKey = items.map((i) => i.id).join(",")
 
+  // A card RETURNING to the queue (its turn just ended) is held out of the list until its transcript has
+  // caught up with the rest the board reports, so it mounts once, with its reply — lib/queueReturn.
+  // Recomputed on every render from the transcript cache; a held card's ReturnGate (rendered below)
+  // observes that cache, which is what fetches it, and re-renders this view when it moves or the cap ends.
+  const queryClient = useQueryClient()
+  const knownRef = useRef<{ project: string | undefined; ids: Set<string> } | null>(null)
+  const holdsRef = useRef<Map<string, number>>(new Map())
+  const [holdTick, bumpHolds] = useState(0)
+  const settleHold = useCallback(() => bumpHolds((n) => n + 1), [])
+  const heldBefore = holdsRef.current
+  if (board) {
+    const project = board.projectDir
+    const known = knownRef.current && knownRef.current.project === project ? knownRef.current.ids : null
+    holdsRef.current = returningHolds(holdsRef.current, known, items, (slug) => queryClient.getQueryData<TranscriptData>(["transcript", slug])?.messages, Date.now())
+    knownRef.current = { project, ids: new Set(items.map((i) => i.id)) }
+  }
+  const holds = holdsRef.current
+  const holdKey = [...holds.keys()].join(",")
+
   // The queue does NO passive/observer-driven scrolling — no on-mount focus, no re-anchor machine
   // (maintainer 2026-07-15: "go back to the drawing board, use the classic approach"). The ONLY viewport
   // adjustments are one-shot and deterministic: (1) at a card's unmount (the useLayoutEffect below) — a
@@ -215,6 +261,7 @@ export function TodosView() {
   const armedRef = useRef<Set<string>>(new Set()) // departed slugs whose fade is armed (leaving=true)
   const goneRef = useRef<Set<string>>(new Set()) // slugs whose fade elapsed → excluded from render (unmounted)
   const finalizeTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
+  const fallbackTimedRef = useRef<Set<string>>(new Set()) // finalize timers that are the unarmed-departure safety, not a fade
   const reappearTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map()) // resolve()'s per-slug 8s guard
   // A dismissed card is unmounted INSTANTLY (no height collapse). We pick an anchor card the instant
   // BEFORE the unmount (in the finalize callback) and adjust the viewport the instant AFTER (the layout
@@ -227,7 +274,9 @@ export function TodosView() {
     prevItemsRef.current.forEach((it) => {
       // A board departure snapshots the card so its fade still plays even though the board dropped it.
       // Skip a slug that already finished its exit (goneRef) — it must not be resurrected as a held card.
-      if (!presentIds.has(it.id) && !goneRef.current.has(it.id)) {
+      // …but not one that was HELD out of the list (a returning card the board took back before its
+      // transcript caught up): it was never drawn, so there is nothing to fade.
+      if (!presentIds.has(it.id) && !goneRef.current.has(it.id) && !heldBefore.has(it.id)) {
         // Capture the slot from the PREVIOUS RENDER order (which still holds any earlier-departed cards),
         // NOT from the shrinking board — else two cards departing in separate renders both resolve to the
         // same board index and swap while fading.
@@ -262,7 +311,7 @@ export function TodosView() {
       departedRef.current.delete(oldest)
       armedRef.current.delete(oldest)
       const orphan = finalizeTimersRef.current.get(oldest)
-      if (orphan) { clearTimeout(orphan); finalizeTimersRef.current.delete(oldest) }
+      if (orphan) { clearTimeout(orphan); finalizeTimersRef.current.delete(oldest); fallbackTimedRef.current.delete(oldest) }
     }
   }
   // A card's data-queue-leaving: on-board cards read the optimistic set; departed (held) cards read the
@@ -301,7 +350,7 @@ export function TodosView() {
   // splice work on a tiny list; the memoized CardSlot/QueueCard boundary (JSON-compare on thread) is what
   // actually prevents re-render churn, and it only passes threads that genuinely changed.
   const renderItems = useMemo(() => {
-    const list = items.filter((it) => !goneRef.current.has(it.id))
+    const list = items.filter((it) => !goneRef.current.has(it.id) && !holds.has(it.id))
     const held = [...departedRef.current.entries()]
       .filter(([s]) => !presentIds.has(s) && !goneRef.current.has(s))
       .map(([, v]) => v)
@@ -309,17 +358,18 @@ export function TodosView() {
     for (const { view, index } of held) list.splice(Math.min(index, list.length), 0, view)
     return list
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [items, leaving, exitTick])
+  }, [items, leaving, exitTick, holdKey, holdTick])
   // Remember this render's exact order (board + held) so the NEXT departure captures a stable slot.
   prevRenderRef.current = renderItems.map((i) => i.id)
 
   // Drive EVERY exiting card through the SAME board-independent exit, so all dismissal paths (Mark done,
   // Snooze, or steering the agent by sending a message) behave identically:
   // (1) ARM a board-departed card's fade on the next frame (one opaque frame must paint first, else there
-  // is no transition), (2) FINALIZE — pin a neighbour, then un-mount — QUEUE_EXIT_MS after the card BEGAN
-  // exiting. "Exiting" = optimistically dismissed (in `leaving`, the board may still list it) OR
-  // board-departed. Gating finalize on the timer (not the board drop) is what stopped a slow-board path
-  // (a sent message clears the queue only once the agent's turn starts) from leaving a lingering blank.
+  // is no transition), (2) FINALIZE — pin a neighbour, then un-mount — when the fade has run its course,
+  // timed from the commit that STARTED it (see QUEUE_EXIT_MS). "Exiting" = optimistically dismissed (in
+  // `leaving`, the board may still list it) OR board-departed. Gating finalize on the timer (not the
+  // board drop) is what stopped a slow-board path (a sent message clears the queue only once the agent's
+  // turn starts) from leaving a lingering blank.
   useEffect(() => {
     const departedHeld = [...departedRef.current.keys()].filter((s) => !presentIds.has(s) && !goneRef.current.has(s))
     const toArm = departedHeld.filter((s) => !armedRef.current.has(s))
@@ -332,32 +382,61 @@ export function TodosView() {
         forceExitRender((n) => n + 1)
       })
     }
-    const exiting = new Set<string>()
-    for (const s of leaving) if (!goneRef.current.has(s)) exiting.add(s)
-    for (const s of departedHeld) exiting.add(s)
-    for (const slug of exiting) {
-      if (finalizeTimersRef.current.has(slug)) continue
-      const timer = setTimeout(() => {
-        finalizeTimersRef.current.delete(slug)
-        // Snapshot the anchor BEFORE the unmount renders — consumed in the layout effect below. A
-        // user-initiated dismissal (`leaving` is fed ONLY by resolve(), i.e. a local action on the
-        // card) auto-scrolls the next card to the viewport top; a pure board departure keeps the
-        // hold-in-place neighbour pin so a reader mid-card elsewhere is never yanked.
-        if (leavingRef.current.has(slug)) {
-          const target = captureScrollTarget(slug)
-          pinRef.current = target ? { kind: "top", slug: target } : null
-        } else {
-          const pin = captureNeighborPin(slug)
-          pinRef.current = pin ? { kind: "hold", ...pin } : null
-        }
-        goneRef.current.add(slug) // exclude from render → unmount, regardless of whether the board dropped it
-        armedRef.current.delete(slug)
-        // Deliberately do NOT drain `leaving` here — keep the slug in it (goneRef hides the card) so
-        // resolve()'s 8s guard can still reappear it if the mutation never actually resolved. The single
-        // drain is the prune effect below, once the board CONFIRMS the drop.
-        forceExitRender((n) => n + 1)
-      }, QUEUE_EXIT_MS)
+    const finalize = (slug: string) => {
+      finalizeTimersRef.current.delete(slug)
+      fallbackTimedRef.current.delete(slug)
+      // Snapshot the anchor BEFORE the unmount renders — consumed in the layout effect below. A
+      // user-initiated dismissal (`leaving` is fed ONLY by resolve(), i.e. a local action on the
+      // card) auto-scrolls the next card to the viewport top; a pure board departure keeps the
+      // hold-in-place neighbour pin so a reader mid-card elsewhere is never yanked.
+      if (leavingRef.current.has(slug)) {
+        const target = captureScrollTarget(slug)
+        pinRef.current = target ? { kind: "top", slug: target } : null
+      } else {
+        const pin = captureNeighborPin(slug)
+        pinRef.current = pin ? { kind: "hold", ...pin } : null
+      }
+      goneRef.current.add(slug) // exclude from render → unmount, regardless of whether the board dropped it
+      armedRef.current.delete(slug)
+      // Deliberately do NOT drain `leaving` here — keep the slug in it (goneRef hides the card) so
+      // resolve()'s 8s guard can still reappear it if the mutation never actually resolved. The single
+      // drain is the prune effect below, once the board CONFIRMS the drop.
+      forceExitRender((n) => n + 1)
+    }
+    // FADING = the slot this commit rendered wears data-queue-leaving (isLeaving): an optimistic dismissal
+    // from the commit that set `leaving`, a board departure from the commit after its arm. It unmounts
+    // when THAT FADE FINISHES — the slot's own opacity transition, watched through the Web Animations API —
+    // so the unmount lands on the fade's last frame, not before it and not after. A timer cannot be lined
+    // up with it: the transition starts at the next style pass, a frame or two after this effect on a busy
+    // send, and a timer started here cut a real fade off at 31% opacity (measured). The timer stays as the
+    // backstop (a fade that never reports, a tab the browser stopped animating), and is the whole exit
+    // where there is no transition at all — reduced motion, where the card leaves at once.
+    // A departure still waiting for its arm gets only the safety timer, which the arm's commit replaces.
+    const fading = new Set<string>()
+    for (const s of leaving) if (!goneRef.current.has(s)) fading.add(s)
+    for (const s of departedHeld) if (armedRef.current.has(s)) fading.add(s)
+    for (const slug of fading) {
+      const prior = finalizeTimersRef.current.get(slug)
+      if (prior !== undefined) {
+        if (!fallbackTimedRef.current.has(slug)) continue
+        clearTimeout(prior)
+        fallbackTimedRef.current.delete(slug)
+      }
+      const fade = slotFade(slug)
+      const timer = setTimeout(() => finalize(slug), fade ? QUEUE_EXIT_MS : exitFadeMs())
       finalizeTimersRef.current.set(slug, timer)
+      // Only the watch that is still this slug's current one may finalize: unresolve() and an eviction
+      // clear the entry, and a cancelled transition rejects `finished`, which is simply ignored.
+      fade?.finished.then(() => {
+        if (finalizeTimersRef.current.get(slug) !== timer) return
+        clearTimeout(timer)
+        finalize(slug)
+      }, () => {})
+    }
+    for (const slug of departedHeld) {
+      if (fading.has(slug) || finalizeTimersRef.current.has(slug)) continue
+      fallbackTimedRef.current.add(slug)
+      finalizeTimersRef.current.set(slug, setTimeout(() => finalize(slug), QUEUE_EXIT_MS))
     }
     return () => { if (raf !== undefined) cancelAnimationFrame(raf) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -473,7 +552,7 @@ export function TodosView() {
     const prior = reappearTimersRef.current.get(slug)
     if (prior) { clearTimeout(prior); reappearTimersRef.current.delete(slug) }
     const finalize = finalizeTimersRef.current.get(slug)
-    if (finalize) { clearTimeout(finalize); finalizeTimersRef.current.delete(slug) }
+    if (finalize) { clearTimeout(finalize); finalizeTimersRef.current.delete(slug); fallbackTimedRef.current.delete(slug) }
     goneRef.current.delete(slug)
     armedRef.current.delete(slug)
     setLeaving((prev) => {
@@ -501,17 +580,28 @@ export function TodosView() {
 
   return (
     // The queue column, top to bottom: queue cards (or the empty-inbox state) → rule → dispatch box.
-    // NO scroll container here — the PAGE scrolls. my-auto (NOT justify-center, whose top overflow
-    // would be unreachable): the column vertically CENTERS in the viewport while its content is
-    // shorter (App's <main> is a min-h-screen flex column), and degrades safely to normal
-    // top-anchored flow the moment it grows past — margins collapse to 0, nothing clips.
-    // The Console's column is top-anchored instead (`mb-auto`): its sidebar is anchored under the home
-    // band, and a short queue centred beside it would float away from the rows it answers.
-    <div className={`${onConsole ? "mb-auto" : "my-auto"} w-full min-w-0 flex flex-col py-8`}>
+    // NO scroll container here — the PAGE scrolls.
+    // ANCHORED TO THE TOP whenever it holds a card (maintainer 2026-10-13: "Anchor both to the top"). It
+    // used to be `my-auto`, centred in the window while shorter than it, and a centred column turns
+    // every height change into a move of EVERYTHING: a card leaving moved the cards above it down by
+    // half its height, and a card coming back moved every card up — measured at 450px and 243+44px on
+    // real workers. Top-anchored, a change moves only what sits below it. The first card opens 52px
+    // down (main's 20px + this column's 32px), the line the sidebar's top is set to (Sidebar.tsx).
+    // The two EMPTY states keep their centring, on their own: the first-run prompt box and the calm
+    // inbox-zero were designed as the middle of an empty workpane, and with no card on the page there
+    // is nothing for a centred column to shove. (`my-auto`, not justify-center, whose top overflow
+    // would be unreachable.) The Console was already top-anchored, under its home band.
+    <div className={`${renderItems.length === 0 && !onConsole ? "my-auto" : "mb-auto"} w-full min-w-0 flex flex-col py-8`}>
       {/* Source-of-truth failures are LOUD: a board that can't be read renders as this banner, never
           as a silently empty listing (a truncated shell-out once blanked a 700-thread board with the
           error hidden in an unrendered field). */}
       <BoardErrorsBanner board={board} />
+      {/* Held returning cards render nothing; each one only observes its transcript (lib/queueReturn). */}
+      {[...holds].map(([slug, since]) => (
+        <ProjectScope key={slug} project={keyProject(slug)}>
+          <ReturnGate slug={slug} since={since} onSettle={settleHold} />
+        </ProjectScope>
+      ))}
 
       {renderItems.length > 0 && (
         <div className="flex flex-col">
@@ -568,6 +658,22 @@ export function TodosView() {
       ) : null}
     </div>
   )
+}
+
+// The observer a held returning card keeps while it waits out of the list (lib/queueReturn): mounting
+// useTranscript is what refetches the stale cached copy and re-subscribes the push. It renders nothing; it
+// re-renders the queue whenever that transcript moves — in a layout effect, so the card the queue then
+// mounts lands in the same frame — and once more when the hold's cap runs out.
+function ReturnGate({ slug, since, onSettle }: { slug: string; since: number; onSettle: () => void }) {
+  const q = useTranscript(slug, { poll: false })
+  useLayoutEffect(() => {
+    if (q.data) onSettle()
+  }, [q.data, onSettle])
+  useEffect(() => {
+    const timer = setTimeout(onSettle, Math.max(0, since + REST_CATCH_UP_MS - Date.now()))
+    return () => clearTimeout(timer)
+  }, [since, onSettle])
+  return null
 }
 
 // The board-errors banner: source-of-truth failures rendered LOUD (never a silently empty listing).
@@ -1142,9 +1248,9 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
       alreadyReserved: pending.reserved === true,
     })
     if (decision === "reserve") {
-      // A short queue is vertically centered by `my-auto`; once prepended history makes it taller than
-      // the viewport those auto margins collapse. At the document's new maximum scroll position there
-      // may therefore be no physical space left to keep the old message at its original screen Y. Keep
+      // A short queue's document has little or no scroll range; once prepended history pushes the old
+      // message down, the document's maximum scroll position may leave no physical space to keep it at
+      // its original screen Y. Keep
       // an equivalent external reserve below this card, then the next layout pass can restore exactly.
       pending.reserved = true
       setBottomScrollReserve((current) => current + Math.ceil(remaining))

@@ -49,17 +49,19 @@ test("steering a queue card dissolves it at a frozen height — the cards below 
     // Sample on every animation frame, in-page: a round trip per sample would miss the 50ms window the
     // two height changes lived in.
     await page.evaluate((steered: string, below: string) => {
-      const w = window as unknown as { __steerFrames: { t: number; h: number | null; belowTop: number | null }[] }
+      const w = window as unknown as { __steerFrames: { t: number; h: number | null; op: number | null; belowTop: number | null }[] }
       w.__steerFrames = []
       const t0 = performance.now()
       const tick = () => {
         const card = document.querySelector<HTMLElement>(`[data-queue-card-root="${steered}"]`)
+        const slot = document.querySelector<HTMLElement>(`[data-queue-card="${steered}"]`)
         const next = document.querySelector<HTMLElement>(`[data-queue-card-root="${below}"]`)
         w.__steerFrames.push({
           t: +(performance.now() - t0).toFixed(1),
           // offsetHeight, not the painted rect: the leaving card wears scale(0.94), which shrinks what is
           // drawn without moving anything. The LAYOUT box is what shoves the cards beneath it.
           h: card ? card.offsetHeight : null,
+          op: slot ? +Number(getComputedStyle(slot).opacity).toFixed(3) : null,
           belowTop: next ? +next.getBoundingClientRect().top.toFixed(1) : null,
         })
         if (performance.now() - t0 < 900) requestAnimationFrame(tick)
@@ -74,7 +76,7 @@ test("steering a queue card dissolves it at a frozen height — the cards below 
 
     await page.keyboard.press("Enter")
     await new Promise((r) => setTimeout(r, 1100))
-    const frames = await page.evaluate(() => (window as unknown as { __steerFrames: { t: number; h: number | null; belowTop: number | null }[] }).__steerFrames)
+    const frames = await page.evaluate(() => (window as unknown as { __steerFrames: { t: number; h: number | null; op: number | null; belowTop: number | null }[] }).__steerFrames)
 
     const mounted = frames.filter((f) => f.h !== null)
     assert.ok(mounted.length > 4, `expected the card to stay mounted for several frames, got ${mounted.length}`)
@@ -88,6 +90,16 @@ test("steering a queue card dissolves it at a frozen height — the cards below 
     const untilUnmount = frames.slice(0, frames.findIndex((f) => f.h === null))
     const moved = untilUnmount.filter((f) => f.belowTop !== null && Math.abs(f.belowTop - before.belowTop) > 0.5)
     assert.deepEqual(moved, [], `a card below the dissolving one moved before the unmount: ${JSON.stringify(moved.slice(0, 6))}`)
+
+    // …and the card is still THERE until it unmounts. A slot that has faded to nothing but still holds the
+    // card's full height is an empty hole the reader watches before anything moves: 72-128ms of it on
+    // real workers, while the exit waited out 120ms of slack past the fade (2026-10-13). One frame is the
+    // fade's own last one; the unmount must follow it. Measured in TIME, not samples: a headless page runs
+    // animation frames faster than a 60Hz display, so one display frame can be two samples here.
+    const firstBlank = mounted.find((f) => f.op !== null && f.op < 0.05)
+    const unmountAt = frames.find((f) => f.h === null)!.t
+    const blankMs = firstBlank ? unmountAt - firstBlank.t : 0
+    assert.ok(blankMs <= 25, `the dissolved card held an empty slot for ${blankMs.toFixed(0)}ms before unmounting: ${JSON.stringify(mounted.filter((f) => f.op !== null && f.op < 0.05).slice(0, 8))}`)
 
     assert.deepEqual(errors, [])
   } finally {
@@ -168,6 +180,67 @@ test("a queue card holds still through a send that does not dismiss it — Retry
 
     const moved = frames.filter((f) => f.belowTop !== null && Math.abs(f.belowTop - before.belowTop) > 0.5)
     assert.deepEqual(moved, [], `a card below the steered one was relaid out: ${JSON.stringify(moved.slice(0, 6))}`)
+
+    assert.deepEqual(errors, [])
+  } finally {
+    await browser.close()
+  }
+})
+
+// A CARD COMING BACK TO THE QUEUE MOUNTS ONCE, WITH ITS REPLY. The steered card above took its transcript's
+// only observer with it, so nothing was pushed while its turn ran; the turn's end reaches the queue as a
+// board row at rest whose newest record is the reply, and the reply itself only through a fetch. The card
+// used to mount on the board row over its pre-turn cache — the human's message with nothing under it —
+// and grow when the fetch landed (lib/queueReturn). The fixture's read takes 120ms, longer than the real
+// one, so a regression shows as several frames rather than one.
+test("a card coming back to the queue mounts once, with its reply — never over its pre-turn cache", {
+  skip: !baseUrl,
+  timeout: 60_000,
+}, async () => {
+  const { launchHeadless } = await import("../../../../scripts/lib/headless-browser.mjs")
+  const browser = await launchHeadless()
+  const errors: string[] = []
+  const STEER = "Summarise the export path in one sentence."
+  const REPLY = "The export streams rows from a server cursor straight into the response, so memory stays flat."
+  try {
+    const page = await browser.newPage()
+    await page.setViewport({ width: 1440, height: 1000, deviceScaleFactor: 1 })
+    page.on("console", (m) => { if (m.type() === "error" && !/404|favicon/i.test(m.text())) errors.push(m.text()) })
+    page.on("pageerror", (e) => errors.push(String(e)))
+    await page.goto(`${baseUrl}/queue-dissolve-fixture.html`, { waitUntil: "networkidle0" })
+    const composer = `[data-queue-card="${STEERED}"] textarea[placeholder*="reply" i]`
+    await page.waitForSelector(composer)
+    await page.click(composer)
+    await page.type(composer, STEER)
+    await page.keyboard.press("Enter")
+    await page.waitForFunction((steered: string) => !document.querySelector(`[data-queue-card-root="${steered}"]`), { timeout: 5_000 }, STEERED)
+    await new Promise((r) => setTimeout(r, 400))
+
+    await page.evaluate((steered: string, steer: string, reply: string) => {
+      const w = window as unknown as {
+        __returnFrames: { t: number; present: boolean; reply: boolean; h: number | null }[]
+        __endTurn: (slug: string, steer: string, reply: string, readMs: number) => void
+      }
+      w.__returnFrames = []
+      const t0 = performance.now()
+      const tick = () => {
+        const card = document.querySelector<HTMLElement>(`[data-queue-card-root="${steered}"]`)
+        w.__returnFrames.push({ t: +(performance.now() - t0).toFixed(1), present: !!card, reply: !!card?.innerText.includes(reply.slice(0, 40)), h: card ? card.offsetHeight : null })
+        if (performance.now() - t0 < 1500) requestAnimationFrame(tick)
+      }
+      requestAnimationFrame(tick)
+      w.__endTurn(steered, steer, reply, 120)
+    }, STEERED, STEER, REPLY)
+    await new Promise((r) => setTimeout(r, 1700))
+    const frames = await page.evaluate(() => (window as unknown as { __returnFrames: { t: number; present: boolean; reply: boolean; h: number | null }[] }).__returnFrames)
+
+    const shown = frames.filter((f) => f.present)
+    assert.ok(shown.length > 5, `the card must come back to the queue: ${shown.length} frames with it mounted`)
+    const stale = shown.filter((f) => !f.reply)
+    assert.deepEqual(stale, [], `the returning card painted without its reply: ${JSON.stringify(stale.slice(0, 6))}`)
+    assert.equal(new Set(shown.map((f) => f.h)).size, 1, `the returning card changed height after it mounted: ${JSON.stringify([...new Set(shown.map((f) => f.h))])}`)
+    // Held only for the read, nowhere near the cap.
+    assert.ok(shown[0].t < 600, `the card came back late: first frame at ${shown[0].t}ms`)
 
     assert.deepEqual(errors, [])
   } finally {
