@@ -48,6 +48,11 @@ export function markAnswered(slug: string, questionIds: readonly string[]): void
   steering.answered[slug] = [...new Set([...(steering.answered[slug] ?? []), ...questionIds])]
 }
 
+/** The standing stamp, read outside React; undefined once it has lapsed or been cleared. */
+export function steeredAtNow(slug: string): number | undefined {
+  return steering.at[slug]
+}
+
 /** The question ids the standing steer answered, read outside React. They live and die with the stamp:
  *  its expiry and clearSteered drop both. */
 export function answeredNow(slug: string): readonly string[] | undefined {

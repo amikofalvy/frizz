@@ -1,10 +1,10 @@
 import { useCallback, useState } from "react"
 import { useQueryClient, type QueryClient } from "@tanstack/react-query"
-import type { QuestionAnswer } from "@frizz/shared"
+import type { QuestionAnswer, ThreadView } from "@frizz/shared"
 import { isKeptDeliveryError, isRetryableRpcError, rpc } from "../api/rpc.ts"
 import { appendQueuedMessage, removeQueuedMessage } from "../hooks.ts"
 import { showToast, store, threadBySlug } from "../store.ts"
-import { markSteered, clearSteered } from "./steering.ts"
+import { markSteered, clearSteered, steeredAtNow, STEER_OPTIMISM_MS } from "./steering.ts"
 
 let fallbackDeliverySequence = 0
 
@@ -126,15 +126,15 @@ export const DELIVERY_SEND_TIMEOUT_MS = 120_000
 
 const wait = (ms: number): Promise<void> => new Promise((resolve) => { setTimeout(resolve, ms) })
 
-// `reanchor` runs on every attempt boundary — after a landed send, and again before each backoff.
-// It re-stamps the optimistic steer so a card steered under load asserts "working" continuously:
-// the hint's window must cover the wait for the TAILER to observe the turn, and that wait starts when
-// delivery lands, not when the operator hit Enter, which under contention can be seconds and several
-// attempts earlier. Without it a queue card leaves, reappears when the hint expires mid-flight, and
-// leaves again once truth arrives — the exact flicker the operator reported.
+// `reanchor` runs on every attempt boundary — after a landed send (`landed` true), and again before
+// each backoff. It re-stamps the optimistic steer so a card steered under load asserts "working"
+// continuously: the hint's window must cover the wait for the TAILER to observe the turn, and that wait
+// starts when delivery lands, not when the operator hit Enter, which under contention can be seconds
+// and several attempts earlier. Without it a queue card leaves, reappears when the hint expires
+// mid-flight, and leaves again once truth arrives — the exact flicker the operator reported.
 export async function withDeliveryRetry(
   send: () => Promise<void>,
-  reanchor: () => void,
+  reanchor: (landed: boolean) => void,
   sleep: (ms: number) => Promise<void> = wait,
 ): Promise<void> {
   for (let attempt = 0; ; attempt++) {
@@ -144,16 +144,52 @@ export async function withDeliveryRetry(
       // Only a REFUSAL the transport proved took no effect is replayable; an ambiguous failure
       // (the text may already have reached the worker) falls straight through to the caller's rollback.
       if (attempt >= DELIVERY_RETRY_BACKOFF_MS.length || !isRetryableRpcError(error)) throw error
-      reanchor()
+      reanchor(false)
       await sleep(DELIVERY_RETRY_BACKOFF_MS[attempt])
       continue
     }
     // Re-anchor ONLY on the success path, and OUTSIDE the try: a delivered send must never be
     // reclassified as a failure just because re-stamping the optimism threw. `send()` has returned,
     // so the message is in — nothing after this may undo that.
-    reanchor()
+    reanchor(true)
     return
   }
+}
+
+// A LANDED SEND NEVER MOVES THE STAMP PAST THE SERVER'S ANSWER. The stamp yields to any board activity
+// newer than itself (lib/steering isOptimisticallySteering), and a re-stamp at "now" is newer than
+// everything stamped before it — including a reply the worker has already written. So re-anchoring a send
+// whose turn is already over took the row back from the truth and asserted "working" over it for the
+// stamp's whole 12s cap.
+//
+// A fast turn does exactly that, because its reply is written before the turn's own `followUp` call
+// returns. Recorded against the scripted Claude (replythink=0 disklag=25, 2026-10-13, 3 of 3 before):
+// the call answered at +43-330ms and the board put the thread back at rest, reply and all, at
+// +100-180ms — in either order — and the re-stamp then held the rested thread's row in the Running band,
+// and its queue card frozen on the transcript from before the send, for twelve seconds.
+//
+// Two rules, and a landed send re-anchors only when both allow it:
+//
+//   · NOT WHEN THE BOARD HAS ALREADY ANSWERED: activity newer than the send means the tailer has looked
+//     at the thread since, so whatever it says now — running, or already finished — is what the row shows.
+//   · NOT WHILE THE STAMP IS STILL LIVE. The board answering first is only one of the two orders; in the
+//     other the call returns first and the reply, stamped before that instant, is reported a few
+//     milliseconds later. A stamp moved to the call's return can never yield to that reply, so the stamp
+//     a landed send finds standing keeps its instant — the send's own, or its last refusal's — and with it
+//     whatever is left of its window. Only a hint that has LAPSED mid-flight (a delivery slower than the
+//     cap, the case this re-anchor was written for) is stamped again, to cover the tailer's catch-up.
+//
+// A REFUSED attempt still re-anchors unconditionally: it took no effect, so nothing stamped before the
+// refusal can be this send's answer.
+export function reanchorsOnLanding(
+  t: Pick<ThreadView, "lastActivityAt"> | undefined,
+  sentAtMs: number,
+  stampMs: number | undefined,
+  nowMs = Date.now(),
+): boolean {
+  const activity = t?.lastActivityAt ? Date.parse(t.lastActivityAt) : NaN
+  if (Number.isFinite(activity) && activity > sentAtMs) return false
+  return stampMs === undefined || nowMs - stampMs > STEER_OPTIMISM_MS
 }
 
 /** One attempt, under DELIVERY_SEND_TIMEOUT_MS — so a request the server never answers cannot hold the
@@ -179,10 +215,10 @@ export function sendFollowUpAttempt(
   ) as Promise<void>).finally(() => clearTimeout(timer))
 }
 
-function deliverFollowUp(slug: string, message: string, deliveryId: string, freshProcess?: boolean, interrupt?: boolean, supersedes?: string, extras?: FollowUpExtras): Promise<void> {
+function deliverFollowUp(slug: string, message: string, deliveryId: string, sentAtMs: number, freshProcess?: boolean, interrupt?: boolean, supersedes?: string, extras?: FollowUpExtras): Promise<void> {
   return withDeliveryRetry(
     () => sendFollowUpAttempt(slug, message, deliveryId, freshProcess, interrupt, DELIVERY_SEND_TIMEOUT_MS, supersedes, extras),
-    () => markSteered(slug),
+    (landed) => { if (!landed || reanchorsOnLanding(threadBySlug(store.board, slug), sentAtMs, steeredAtNow(slug))) markSteered(slug) },
   )
 }
 
@@ -213,19 +249,22 @@ export function sendEagerFollowUp(
   // claim a wait that is not going to happen.
   const held = callbacks.hold === true && !callbacks.interrupt && threadBySlug(store.board, slug)?.runtime === "running"
   const deliveryId = newDeliveryId()
+  // The instant of the send, which is also the first stamp: what reanchorsOnLanding measures the board's
+  // answer against.
+  const sentAtMs = Date.now()
   beginEagerSubmission({
     optimistic: () => {
       callbacks.onOptimistic?.()
       appendQueuedMessage(queryClient, slug, shown, { deliveryId, held })
       // The row is working again the instant the operator commits, not when the injection
       // returns ~half a second later — see lib/steering.ts.
-      markSteered(slug)
+      markSteered(slug, sentAtMs)
       rpc.markRead({ slug }).catch(() => {})
     },
     // Resolve the session id at SEND time from the live board (not render time), so a re-dispatch
     // between mount and send still binds the guarded followUp to the current session. Contention
     // refusals are retried in place — the composer only gets the message back once they are exhausted.
-    request: () => enqueueThreadSend(slug, () => deliverFollowUp(slug, message, deliveryId, callbacks.freshProcess, callbacks.interrupt, callbacks.supersedes, { answers, hold: callbacks.hold })),
+    request: () => enqueueThreadSend(slug, () => deliverFollowUp(slug, message, deliveryId, sentAtMs, callbacks.freshProcess, callbacks.interrupt, callbacks.supersedes, { answers, hold: callbacks.hold })),
     success: () => callbacks.onSuccess?.(),
     failure: (error) => {
       // The optimistic copy goes either way. When the server KEPT the send, its own failed bubble (same
