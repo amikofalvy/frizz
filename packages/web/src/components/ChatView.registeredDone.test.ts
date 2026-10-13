@@ -31,7 +31,8 @@ test("the card is the last rung of the one ladder, after the resting card", () =
     "the resting card, then the registered done, then the residual rung, then nothing",
   )
   // …and each of those rungs draws its own card, in the one renderer both paths call.
-  assert.match(chat, /case "registered-done":\n\s*return <FenceCard fenceKind="done" body=\{thread!\.lastFence!\.body\} hints=\{\[\]\} wrap=\{wrap\} \/>/)
+  // The fence's HINTS ride along: a registered done carries the worker's `title:` there (2026-10-13).
+  assert.match(chat, /case "registered-done":\n\s*return <FenceCard fenceKind="done" body=\{thread!\.lastFence!\.body\} hints=\{thread!\.lastFence!\.hints\} wrap=\{wrap\} \/>/)
   assert.match(chat, /case "rested":\n\s*return <RestedCard thread=\{thread!\} \/>/)
 })
 

@@ -7,18 +7,78 @@ import test from "node:test"
 //   FRIZZ_SIGNAL_CARD_HEADS_E2E_URL=http://127.0.0.1:5233 nub --test src/components/signalCardHeads.e2e.test.ts
 const baseUrl = process.env.FRIZZ_SIGNAL_CARD_HEADS_E2E_URL
 
-// ONE HEAD FOR EVERY SIGNAL CARD (2026-10-13). The steps card alone wore the kind chip and its rule, and
-// the done card kept the glyph-beside-title head beside it (maintainer: "it's weird that the done blocks
-// still don't have a visually separate header, the way that the awaiting blocks do. We need consistency
-// here in our … block types"). Drawn against the real FenceCard in fence-card-gallery-fixture.html, every
-// done and awaiting shape it carries:
+// ONE HEAD FOR EVERY BLOCK TYPE (2026-10-13): a small glyph and the kind's word over the title, then a
+// rule (maintainer: "all block types should have a header"; "a small icon followed by a small word over
+// the title will look good"). Drawn against the real cards in fence-card-gallery-fixture.html — every done
+// and awaiting shape, and the question cards — and the registered question with its ×:
 //
-//   1. heads with a kind chip, ruled off from its body — and the rule sits the same ink distance under a
-//      bare chip on every kind, as does the body's first line under the rule;
-//   2. sets its chip glyph at the same INK inset and the same ink gap to its label on every kind, though
-//      Check, Hourglass and TerminalSquare each carry different dead space in their boxes;
-//   3. draws no rule over a bare done card, whose Mark-as-done band is then the only seam, at the rule's distance.
-test("every done and awaiting card wears the chip head, at one rhythm", {
+//   1. every card heads with its kind line, then its title when it has one, then the rule, then the body;
+//   2. the rule sits the same ink distance under the head on every card (18px under a bare kind's
+//      baseline, 20px under a title's) and the body's first cap the same distance under the rule;
+//   3. every kind glyph's ink centres on its word's cap band, at one ink gap from the word, though each
+//      glyph carries different dead space in its box — and the question's × centres on the same band;
+//   4. a bare done card draws no rule, and its Mark-as-done band's border sits where the rule would.
+const MEASURE = () => {
+  const ctx = document.createElement("canvas").getContext("2d")!
+  const metrics = (node: Text) => {
+    const span = document.createElement("span")
+    span.style.whiteSpace = "nowrap"
+    node.parentNode!.insertBefore(span, node)
+    span.appendChild(node)
+    const probe = document.createElement("span")
+    probe.style.cssText = "display:inline-block;width:0;height:0;padding:0;margin:0;border:0"
+    span.insertBefore(probe, node)
+    const baseline = probe.getBoundingClientRect().bottom
+    // Read into a string NOW: a CSSStyleDeclaration is live, and once the span is removed below it reads
+    // empty — the canvas then falls back to its 10px default and every cap height comes out short.
+    const cs = getComputedStyle(span)
+    const font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`
+    const range = document.createRange()
+    range.selectNodeContents(node)
+    const box = range.getBoundingClientRect()
+    probe.remove()
+    span.parentNode!.insertBefore(node, span)
+    span.remove()
+    ctx.font = font
+    const m = ctx.measureText(node.textContent ?? "")
+    return { baseline, capTop: baseline - ctx.measureText("H").actualBoundingBoxAscent, inkLeft: box.left - m.actualBoundingBoxLeft }
+  }
+  const firstText = (el: Element) =>
+    document.createTreeWalker(el, NodeFilter.SHOW_TEXT, { acceptNode: (n) => (/\S/.test(n.textContent ?? "") ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT) }).nextNode() as Text | null
+  // An SVG geometry child's client rect is its ink (stroke excluded), unioned over every child.
+  const ink = (svg: Element) => {
+    const rs = [...svg.querySelectorAll("path,rect,circle,ellipse,line,polyline,polygon")].map((g) => g.getBoundingClientRect())
+    return { top: Math.min(...rs.map((r) => r.top)), bottom: Math.max(...rs.map((r) => r.bottom)), right: Math.max(...rs.map((r) => r.right)) }
+  }
+  return [...document.querySelectorAll("[data-card-kind]")].map((kind) => {
+    const card = kind.closest(".rounded-xl")!
+    const word = metrics(firstText(kind)!)
+    const glyph = ink(kind.querySelector("svg")!)
+    const capMid = (word.capTop + word.baseline) / 2
+    const titleEl = card.querySelector("[data-card-title]")
+    const title = titleEl ? metrics(firstText(titleEl)!) : null
+    const headBaseline = title && titleEl ? title.baseline + titleEl.getBoundingClientRect().height - parseFloat(getComputedStyle(titleEl).lineHeight) : word.baseline
+    const rule = card.querySelector("[data-card-rule]")
+    const band = card.querySelector("[data-card-actions]")
+    const bodyText = card.querySelector(".card-md") ? firstText(card.querySelector(".card-md")!) : null
+    const x = card.querySelector("[data-dismiss-question] svg")
+    const order = [kind, titleEl, rule, card.querySelector(".card-md")].filter(Boolean).map((el) => el!.getBoundingClientRect().top)
+    return {
+      section: card.closest("[data-fence-section]")?.getAttribute("data-fence-section") ?? null,
+      kind: kind.textContent,
+      titled: !!titleEl,
+      ordered: order.every((t, i) => i === 0 || t > order[i - 1]),
+      headToRule: rule ? rule.getBoundingClientRect().top - headBaseline : null,
+      ruleToBody: rule && bodyText && !card.querySelector("[data-card-actions]")?.contains(bodyText) ? metrics(bodyText).capTop - rule.getBoundingClientRect().top : null,
+      headToBand: !rule && band ? band.getBoundingClientRect().top - headBaseline : null,
+      glyphVsCap: capMid - (glyph.top + glyph.bottom) / 2,
+      glyphToWord: word.inkLeft - glyph.right,
+      xVsCap: x ? capMid - (ink(x).top + ink(x).bottom) / 2 : null,
+    }
+  })
+}
+
+test("every block type heads with its kind over its title, at one rhythm", {
   skip: !baseUrl,
   timeout: 90_000,
 }, async () => {
@@ -30,56 +90,50 @@ test("every done and awaiting card wears the chip head, at one rhythm", {
     page.on("pageerror", (e) => errors.push(String(e)))
     page.on("console", (m) => { if (m.type() === "error" && !/favicon/i.test(m.text())) errors.push(m.text()) })
     await page.setViewport({ width: 720, height: 1200, deviceScaleFactor: 2 })
-    await page.goto(`${baseUrl}/fence-card-gallery-fixture.html`, { waitUntil: "networkidle0" })
-    await page.evaluate(() => { document.documentElement.dataset.font = "sans" })
-    await page.waitForSelector("[data-fence-section] [data-card-chip]")
-    const cards = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>("[data-fence-section]")].map((section) => {
-      const chip = section.querySelector<HTMLElement>("[data-card-chip]")!
-      const rule = section.querySelector<HTMLElement>("[data-card-rule]")
-      const body = section.querySelector<HTMLElement>(".card-md")
-      const svg = chip.querySelector("svg")!
-      // An SVG geometry child's client rect is its ink (stroke excluded) — the same frame every reading
-      // in TranscriptCard's comments was taken in.
-      const inks = [...svg.querySelectorAll("path,rect,circle,line,polyline,polygon")].map((g) => g.getBoundingClientRect())
-      const ink = { left: Math.min(...inks.map((r) => r.left)), right: Math.max(...inks.map((r) => r.right)) }
-      const label = [...chip.childNodes].find((n) => n.nodeType === 3)!
-      const range = document.createRange()
-      range.selectNodeContents(label)
-      const chipBox = chip.getBoundingClientRect()
-      return {
-        slug: section.dataset.fenceSection!,
-        chip: chip.textContent,
-        titled: !!section.querySelector("[data-card-title]"),
-        chipToRule: rule ? rule.getBoundingClientRect().top - chipBox.bottom : null,
-        order: rule && body ? chipBox.top < rule.getBoundingClientRect().top && rule.getBoundingClientRect().top < body.getBoundingClientRect().top : null,
-        chipToBand: (() => { const band = section.querySelector("[data-card-actions]"); return band ? band.getBoundingClientRect().top - chipBox.bottom : null })(),
-        glyphInset: ink.left - chipBox.left,
-        glyphGap: range.getBoundingClientRect().left - ink.right,
-      }
-    }))
-    const by = (slug: string) => cards.find((c) => c.slug === slug)!
-    assert.ok(cards.length >= 10, `the gallery draws its signal cards (${cards.length})`)
+    const read = async (path: string) => {
+      await page.goto(`${baseUrl}/${path}`, { waitUntil: "networkidle0" })
+      await page.evaluate(() => { document.documentElement.dataset.font = "sans" })
+      await page.waitForSelector("[data-card-kind]")
+      // Every reading is an ink distance, so it waits for the page to settle first: the fixture answers
+      // the code chips' local-path lookups after first paint, and the fonts it measures must have landed.
+      await page.waitForNetworkIdle({ idleTime: 400 })
+      await page.evaluate(async () => { await document.fonts.ready; await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))) })
+      return page.evaluate(MEASURE)
+    }
+    const gallery = await read("fence-card-gallery-fixture.html")
+    const registered = await read("registered-question-fixture.html")
+    const cards = [...gallery, ...registered]
+    const by = (section: string) => gallery.find((c) => c.section === section)!
+    const near = (v: number | null, want: number, tol: number, what: string) =>
+      assert.ok(v !== null && Math.abs(v - want) <= tol, `${what}: ${v} (want ${want} ± ${tol})`)
 
-    // 1. Chip → rule → body on every card with a body, and one distance under a bare chip.
-    assert.equal(by("g-done").chip, "Done")
-    assert.equal(by("g-shell-midturn").chip, "Background shells running")
-    assert.ok(cards.filter((c) => c.chip === "Awaiting").length >= 5, "the generic awaiting shapes chip as Awaiting")
-    for (const c of cards.filter((c) => c.slug !== "g-done-empty")) {
-      assert.equal(c.order, true, `${c.slug}: chip, then the rule, then the body`)
-      if (!c.titled) assert.ok(Math.abs(c.chipToRule! - 17) < 0.5, `${c.slug}: 17px from a bare chip to the rule (${c.chipToRule})`)
+    // 1. The kinds, and the order.
+    assert.equal(by("g-done").kind, "Done")
+    assert.ok(!by("g-done").titled && by("g-done-titled").titled, "a done card's title is the worker's `title:`, never its body")
+    assert.equal(by("g-shell-midturn").kind, "Background shells running")
+    assert.ok(gallery.filter((c) => c.kind === "Awaiting").length >= 5, "the generic awaiting shapes name themselves Awaiting")
+    assert.ok(cards.some((c) => c.kind === "Question") && cards.some((c) => c.kind === "Select multiple"), "the question cards wear the kind line too")
+    for (const c of cards) assert.ok(c.ordered, `${c.section ?? c.kind}: kind, then title, then rule, then body`)
+
+    // 2. One rhythm around the rule.
+    for (const c of cards.filter((c) => c.headToRule !== null)) {
+      near(c.headToRule, c.titled ? 20 : 18, 0.5, `${c.section ?? c.kind}: head's last baseline to the rule`)
+      if (c.ruleToBody !== null) near(c.ruleToBody, 18.84, 0.5, `${c.section ?? c.kind}: the rule to the body's first cap`)
     }
 
-    // 2. One ink inset and one ink gap, whatever the glyph.
-    const insets = new Set(cards.map((c) => c.glyphInset.toFixed(1)))
-    const gaps = new Set(cards.map((c) => c.glyphGap.toFixed(1)))
-    assert.equal(insets.size, 1, `one glyph ink inset across ${[...new Set(cards.map((c) => c.chip))].join(", ")}: ${[...insets]}`)
-    assert.equal(gaps.size, 1, `one glyph-to-label ink gap: ${[...gaps]}`)
+    // 3. Every glyph on its word's cap band, at one ink gap, and the × on the same band.
+    for (const c of cards) {
+      near(c.glyphVsCap, 0, 0.35, `${c.kind}: glyph ink centre against the word's cap band`)
+      assert.ok(c.glyphToWord >= 5.4 && c.glyphToWord <= 6.8, `${c.kind}: glyph ink to word ${c.glyphToWord}`)
+    }
+    const xs = registered.filter((c) => c.xVsCap !== null)
+    assert.ok(xs.length > 0, "the registered question draws its ×")
+    for (const c of xs) near(c.xVsCap, 0, 0.5, "the × against the kind word's cap band")
 
-    // 3. A bare done: its chip and its band, and no rule between them.
+    // 4. A bare done: no rule, and the band's border where the rule would be.
     const empty = by("g-done-empty")
-    assert.equal(empty.chip, "Done")
-    assert.equal(empty.chipToRule, null, "no rule over a card with no body")
-    assert.ok(empty.chipToBand !== null && Math.abs(empty.chipToBand - 17) < 0.5, `the band's border sits where the rule would, 17px under the chip (${empty.chipToBand})`)
+    assert.equal(empty.headToRule, null, "no rule over a card with no body")
+    near(empty.headToBand, 18, 0.5, "the band's border sits at the rule's distance")
 
     assert.deepEqual(errors, [])
   } finally {

@@ -15,7 +15,7 @@
 // surface (InteractionCards.tsx) is imported BY ChatView, so a question card defined inside ChatView
 // could only have been shared through a module cycle.
 import { Fragment, type ReactNode, useEffect, useId, useLayoutEffect, useMemo, useRef } from "react"
-import { AlertTriangle, Check } from "lucide-react"
+import { AlertTriangle, Check, CircleHelp, KeyRound, ListChecks } from "lucide-react"
 import { SECRET_ANSWER_MASK } from "@frizz/shared"
 import { useInlineMarkdownHtml, useMarkdownHtml } from "../lib/useMarkdown.ts"
 import { shouldSubmitStagedEnter } from "../lib/composerKeyboard.ts"
@@ -152,15 +152,15 @@ export function QuestionBlockCard({
       },
     })
   }, [answerable, parsed])
-  // NO corner glyph on an answerable question (dropped 2026-08-31). The registered-question × rides
-  // the same corner, and beside it a full-strength HelpCircle/ListChecks read as the actionable thing
-  // while the actual control read as chrome (maintainer: "the actionable thing is gray and light,
-  // whereas the not actionable thing is a very bold white color"). The title word already names the
-  // kind. The `danger` warning glyph stays: it is a real warning, not decoration, and a danger card
-  // never offers the × (see RegisteredQuestionCards), so the collision cannot arise there.
-  const KindIcon = isDanger ? AlertTriangle : undefined
-  // Sentence case, because the shared chrome renders this as a real TITLE now rather than as an
-  // uppercased eyebrow — a lowercase "question" beside the card's glyph reads as a typo.
+  // THE KIND LINE, as every block type wears it since 2026-10-13 (TranscriptCard's KindLabel): a 12px
+  // glyph and the kind's word, muted, over a rule — the ask itself stays the body. The glyph is back on
+  // every question. It was dropped on 2026-08-31 because a full-strength 16px HelpCircle in the corner
+  // beside the muted × read as the actionable thing (maintainer: "the actionable thing is gray and light,
+  // whereas the not actionable thing is a very bold white color"); on the kind line it is small, muted
+  // and at the far LEFT, so the × keeps the corner to itself. A danger card's warning glyph colours with
+  // its kind line, and a danger card never offers the × (see RegisteredQuestionCards).
+  const KindIcon = isDanger ? AlertTriangle : parsed.secret ? KeyRound : isMulti ? ListChecks : CircleHelp
+  // Sentence case: the kind line is a label, and a lowercase "question" beside its glyph reads as a typo.
   const kindLabel = label ?? (parsed.secret ? "Secret" : isMulti ? "Select multiple" : "Question")
   // `risk`, not `danger`: the neutral border with a red title. A destructive gate is a question nobody
   // has answered wrongly yet, not a thing that has broken, and it wore the same lit red border as a dead
@@ -168,7 +168,7 @@ export function QuestionBlockCard({
   // and stay narrow — force-merge, deletion, history rewrite, prod rollback — so these should almost
   // never appear; what changed is how loudly one of them shouts.
   return (
-    <TranscriptCard tone={isDanger ? "risk" : "neutral"} surface="question" icon={KindIcon} label={kindLabel} aside={aside}>
+    <TranscriptCard tone={isDanger ? "risk" : "neutral"} surface="question" icon={KindIcon} kind={kindLabel} label={null} aside={aside}>
       {/* FULL-strength, against the card's stepped-down description colour: this card's body is not a
           description of the title, it IS the ask, and the question must never read dimmer than the
           word "Question" above it. The colour rides a WRAPPER because `.card-md .md-body` inherits

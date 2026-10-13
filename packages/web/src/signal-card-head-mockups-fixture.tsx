@@ -13,14 +13,14 @@
 //   nubx vite --port 5478 --strictPort      (from packages/web)
 //   http://localhost:5478/signal-card-head-mockups-fixture.html          — ?only=C for one shape
 //
-// Everything renders in the REAL stylesheet, through the shipped pieces where they exist (KindChip,
-// CardHead, CardActions, the wait table, the steps list), so a choice made here is a choice about the
-// thing that ships.
+// Everything renders in the REAL stylesheet, through the shipped pieces where they exist (the kind
+// chip as it then shipped, CardHead, CardActions, the wait table, the steps list), so a choice made
+// here is a choice about the thing that ships.
 import { createRoot } from "react-dom/client"
 import { Fragment, useMemo, type ReactNode } from "react"
 import { Check, CircleHelp, GitPullRequest, Hourglass, ListTodo, X, type LucideIcon } from "lucide-react"
 import type { ThreadView, ThreadWatchView } from "@frizz/shared"
-import { CardActions, CardHead, CARD_LINK, CARD_PRIMARY_ACTION, KindChip } from "./components/TranscriptCard.tsx"
+import { CardActions, CardHead, CARD_LINK, CARD_PRIMARY_ACTION } from "./components/TranscriptCard.tsx"
 import { AwaitingWaitTable, GithubWatchRow } from "./components/AwaitingBackgroundCard.tsx"
 import { StepsList } from "./components/AwaitingSteps.tsx"
 import { ICON_LABEL_NUDGE } from "./lib/iconAlign.ts"
@@ -94,6 +94,16 @@ const QUESTION_CARD: Scenario = {
 const SCENARIOS = [DONE_TITLED, DONE_UNTITLED, AWAITING_PR, STEPS, QUESTION_CARD]
 
 // ---- shared pieces --------------------------------------------------------------------------------
+// The kind CHIP as it shipped in d7d047ce, kept here because the shipped one became a kind LINE after this
+// round (TranscriptCard's KindLabel) and this sheet is the record of what it was weighed against.
+function KindChip({ icon: Icon, children }: { icon?: LucideIcon; children: ReactNode }) {
+  return (
+    <span data-card-chip className="inline-flex shrink-0 items-center gap-[5px] rounded-full bg-fg/[0.08] px-2 py-0.5 text-[11px] font-medium leading-4 text-fg/85">
+      {Icon && <Icon aria-hidden="true" size={12} className="shrink-0" />}
+      {children}
+    </span>
+  )
+}
 const SHELL_BASE = "min-w-0 rounded-xl border p-4"
 const shell = (s: Scenario) => `${SHELL_BASE} ${s.surface === "question" ? "border-question-border bg-question" : "border-border-strong bg-panel-2"}`
 const TITLE = "min-w-0 text-[16px] font-semibold leading-6 tracking-tight text-fg [overflow-wrap:anywhere]"

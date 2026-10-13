@@ -13,8 +13,8 @@ const baseUrl = process.env.FRIZZ_AWAITING_STEPS_E2E_URL
 // Only the RPC answers are stubbed, in the fixture; the send itself goes through the composer's own
 // eager follow-up, which is the point:
 //
-//   1. The card states the steps in order, as markdown, under a "Awaiting human" chip and the worker's heading
-//      (the chip alone when the worker named none), ruled off from the body — in the paragraph's own
+//   1. The card states the steps in order, as markdown, under an "Awaiting human" kind line and the worker's heading
+//      (the kind alone when the worker named none), ruled off from the body — in the paragraph's own
 //      colour, every item on the same line height whether or not it carries a command — over ONE control,
 //      the "I have completed this" box: no Snooze, no button, no text box of its own (2026-10-12).
 //   2. Ticking the box STAGES an answer, as picking a question's option does: nothing is sent, the tick
@@ -58,15 +58,15 @@ test("a steps card's one box stages an answer the prompt box sends", {
       armed: !(document.querySelector(s) as HTMLButtonElement | null)?.disabled,
     }), COMPOSER, SEND)
 
-    // ---- an untitled card is headed by its chip alone ----
+    // ---- an untitled card is headed by its kind line alone ----
     await page.goto(`${baseUrl}/awaiting-bg-fixture.html?steps=1`, { waitUntil: "networkidle0" })
     await page.waitForSelector(`${CARD} [data-awaiting-steps] li`)
     await page.evaluate(() => localStorage.clear())
     const untitled = await page.$eval(CARD, (el) => ({
-      chip: (el.querySelector("[data-card-chip]") as HTMLElement | null)?.innerText.trim(),
+      kind: (el.querySelector("[data-card-kind]") as HTMLElement | null)?.innerText.trim(),
       title: !!el.querySelector("[data-card-title]"),
     }))
-    assert.deepEqual(untitled, { chip: "Awaiting human", title: false }, "the chip already says what the card is for")
+    assert.deepEqual(untitled, { kind: "Awaiting human", title: false }, "the kind line already says what the card is for")
 
     // ---- 1. the statement ----
     await page.goto(`${baseUrl}/awaiting-bg-fixture.html?steps=titled`, { waitUntil: "networkidle0" })
@@ -75,11 +75,11 @@ test("a steps card's one box stages an answer the prompt box sends", {
     const card = await page.$eval(CARD, (el) => {
       const top = (sel: string) => el.querySelector(sel)?.getBoundingClientRect().top ?? NaN
       return {
-        chip: (el.querySelector("[data-card-chip]") as HTMLElement | null)?.innerText.trim(),
+        kind: (el.querySelector("[data-card-kind]") as HTMLElement | null)?.innerText.trim(),
         title: (el.querySelector("[data-card-title]") as HTMLElement | null)?.innerText.trim(),
-        glyph: el.querySelector("[data-card-chip] svg")?.getAttribute("class") ?? "",
-        // chip → title → rule → body → box, top to bottom
-        order: [top("[data-card-chip]"), top("[data-card-title]"), top("[data-card-rule]"), top(".card-md"), top("[data-steps-complete]")],
+        glyph: el.querySelector("[data-card-kind] svg")?.getAttribute("class") ?? "",
+        // kind → title → rule → body → box, top to bottom
+        order: [top("[data-card-kind]"), top("[data-card-title]"), top("[data-card-rule]"), top(".card-md"), top("[data-steps-complete]")],
         proseColour: getComputedStyle(el.querySelector(".card-md p") as Element).color,
         stepColour: getComputedStyle(el.querySelector("[data-awaiting-steps] li") as Element).color,
         stepHeights: [...el.querySelectorAll("[data-awaiting-steps] .frizz-step-text")].map((t) => t.getBoundingClientRect().height),
@@ -92,11 +92,11 @@ test("a steps card's one box stages an answer the prompt box sends", {
         textBoxes: el.querySelectorAll("textarea, input").length,
       }
     })
-    assert.equal(card.chip, "Awaiting human", "the card's kind, in its chip")
-    assert.equal(card.title, "Sign in to npm so the acme 4.2.0 release can publish", "the worker's own heading, under the chip")
-    assert.match(card.glyph, /lucide-list-todo/, "the to-do glyph rides inside the chip, not the hourglass beside a title")
-    assert.ok(card.order.every(Number.isFinite), "the chip, the title, the rule, the body and the box are all drawn")
-    assert.deepEqual([...card.order].sort((a, b) => a - b), card.order, "chip, title, rule, body, box — top to bottom")
+    assert.equal(card.kind, "Awaiting human", "the card's kind, on its kind line")
+    assert.equal(card.title, "Sign in to npm so the acme 4.2.0 release can publish", "the worker's own heading, under the kind")
+    assert.match(card.glyph, /lucide-list-todo/, "the to-do glyph leads the kind line, not the hourglass beside a title")
+    assert.ok(card.order.every(Number.isFinite), "the kind, the title, the rule, the body and the box are all drawn")
+    assert.deepEqual([...card.order].sort((a, b) => a - b), card.order, "kind, title, rule, body, box — top to bottom")
     assert.equal(card.stepColour, card.proseColour, "one body is one colour: the steps are not brighter than the paragraph above them")
     assert.equal(new Set(card.stepHeights).size, 1, `a step carrying a command is no taller than one without (${card.stepHeights.join(", ")})`)
     assert.deepEqual(card.steps, [
