@@ -122,7 +122,7 @@ test("the contract teaches steps: as the wait on a human's act, and routes to it
     assert.match(c, /The `title:` and `steps:` values are the exceptions: frizz reads them verbatim/)
     assert.match(c, /Steps NAME THE HUMAN as the wait, so the fence needs no other name and no `for:`/)
     assert.match(c, /it always puts the thread in their queue/)
-    assert.match(c, /anything else they need to tell you — a step that failed, the account they used — comes as a message of their own/)
+    assert.match(c, /anything else they need to tell you — a step that failed, the account they used — comes as that note or a message of their own/)
     assert.doesNotMatch(c, /Couldn't do it/)
     assert.match(c, /\(`steps:` and `questions:` count: they name the human\.\)/)
     // Every step is clickable and complete (maintainer 2026-10-08): links to the pages it names, taught
@@ -140,7 +140,7 @@ test("the contract teaches steps: as the wait on a human's act, and routes to it
     assert.match(c, /do everything up to the first one, hand over only that, and do what follows yourself when their reply wakes you/)
     assert.match(c, /`npm login --auth-type=web` is running in this thread and waiting on that approval/)
     assert.doesNotMatch(prompt, /steps:\n(?: {4}- [^\n]*\n)*? {4}- Run `npm login/)
-    assert.match(c, /card, headed \*\*Awaiting human\*\*, shows the steps over one \*\*Done\*\* button, and its click comes back to you as their reply, `Done`/)
+    assert.match(c, /card, headed \*\*Awaiting human\*\*, shows the steps over one checkbox, \*\*I have completed this\*\*; ticked and sent, it comes back to you as their reply, `Done`/)
     // A decision is still a question; an act is steps — at every place the two used to blur.
     assert.match(c, /A DECISION you need from them is a question, never a fence/)
     assert.match(c, /WAITING ON ONE TO ACT IS `steps:`/)

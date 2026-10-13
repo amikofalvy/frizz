@@ -392,6 +392,16 @@ export function codexWorkerBaseInstructions(sessionId: string, projectDir: strin
   return [loadWorkerPrompt("codex"), scratchpadOrientation(sessionId, "codex"), frizzConfigBlock(projectDir)].filter(Boolean).join("\n\n")
 }
 
+// The block an ACP worker's contract is: the worker contract, the scratch line and the project's
+// FRIZZ.md. ACP has no system-prompt channel, so it rides a PROMPT — the dispatch's first one, and again
+// whenever the session stops holding it: after the agent compacts (opencode's summary prompt tells the
+// model to leave out "instructions and setup the assistant was given", and measured 2026-10-12 against
+// opencode 2.0.27 the request after `/compact` carried none of it), and on the first prompt into a FRESH
+// session that replaced one the agent could not load. The bridge asks for it through `contractFor`.
+export function acpWorkerContract(sessionId: string, projectDir: string): string {
+  return [loadWorkerPrompt("acp"), scratchpadOrientation(sessionId, "acp"), frizzConfigBlock(projectDir)].filter(Boolean).join("\n\n")
+}
+
 // The SYSTEM-level scratch-directory orientation (survives compaction, rebuilds on every resume).
 // Passed as extraSystemPrompt on dispatch, adopt, AND the followUp resume path.
 //
@@ -1124,8 +1134,7 @@ export function createDispatcher(deps: DispatchDeps): Dispatcher {
           cleanupDispatchFiles(scratchRel, { argv: [], env: {}, prewrite: [] }, sessionId)
           throw new Error(!bridge ? "The ACP bridge is unavailable; cannot start this thread." : `An ACP dispatch needs an agent: pick one in the composer (model \`acp:<agent>\`), got ${JSON.stringify(model ?? null)}.`)
         }
-        const firstPrompt = [loadWorkerPrompt("acp"), scratchpadOrientation(sessionId, kind), frizzConfigBlock(deps.project.dir), prompt]
-          .filter(Boolean).join("\n\n")
+        const firstPrompt = [acpWorkerContract(sessionId, deps.project.dir), prompt].filter(Boolean).join("\n\n")
         try {
           const spawned = await bridge.spawnDispatch({ threadSlug: slug, sessionId, cwd: deps.project.dir, agentId, modelId: acpModelIdFromModel(model), prompt: firstPrompt, userText: input.prompt })
           deps.storage.upsertSession({

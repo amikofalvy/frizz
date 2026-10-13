@@ -36,13 +36,14 @@ import { CHILD_DISMISS_NOUN, CHILD_DISMISS_TITLE, CHILD_DISMISS_VERB, CHILD_STAL
 import { compactElapsedSince, formatCompactElapsed } from "../lib/durationLabels.ts"
 import { useNowMs } from "../lib/liveClock.ts"
 import { useMarkdownHtml } from "../lib/useMarkdown.ts"
+import { restingOnSteps } from "../lib/stepsAnswer.ts"
 import { pushBackgroundShellDrawer, pushSubAgentDrawer, showToast } from "../store.ts"
 import { rpc } from "../api/rpc.ts"
 import { threadLifecycleAvailability } from "../lib/threadLifecycle.ts"
 import { ICON_LABEL_NUDGE } from "../lib/iconAlign.ts"
 import { PRIMER, PRIMER_DANGER_LINK } from "../lib/primer.ts"
 import { LinkedHtml } from "./LinkedHtml.tsx"
-import { StepsDone, StepsList } from "./AwaitingSteps.tsx"
+import { StepsComplete, StepsList } from "./AwaitingSteps.tsx"
 import { CARD_ACTION_EXPLAINER, CardActions, CARD_BODY, CARD_LINK, CARD_PRIMARY_ACTION, QUEUE_WRAP, TranscriptCard } from "./TranscriptCard.tsx"
 
 // Name what the thread is ACTUALLY waiting on. Three real cases, and the sentence has to be true in all
@@ -170,15 +171,9 @@ function armedTimerWatches(thread: Pick<ThreadView, "watches">): ThreadWatchView
 const NO_LIVE_WORK: Pick<ThreadView, "id" | "subAgents" | "bgShells" | "watches"> = { id: "", subAgents: [], bgShells: [], watches: [] }
 const NO_HINTS: readonly AwaitingHint[] = []
 
-/** Is the thread resting on EXACTLY these steps right now — the board's own last fence, at rest? Only
- *  then may the card offer the steps' Done. A fence the transcript hands in (`fence`) is a rest the
- *  thread may already have left: the tailer clears `lastFence` on the human's very next message, so a
- *  steps card drawn after the reply is a record of what was asked, and a second Done would send twice. */
-export function restingOnSteps(thread: Pick<ThreadView, "runtime" | "lastFence"> | undefined, steps: readonly string[]): boolean {
-  if (steps.length === 0 || thread?.runtime !== "turn-idle" || thread.lastFence?.kind !== "awaiting") return false
-  const live = awaitingSteps(thread.lastFence.hints)
-  return live.length === steps.length && live.every((step, i) => step === steps[i])
-}
+// Whether the card may answer its steps — in lib/stepsAnswer since 2026-10-12, because the prompt box
+// asks the same thing before it lets a ticked box ride its send.
+export { restingOnSteps }
 
 /** The watched PRs that get a CHIP: the `prs:` the fence names which the wait table does not already
  *  row. A registered PR is a github row below — verdict glyph, check counts, the same link — so a chip
@@ -1199,7 +1194,7 @@ export function AwaitingBackgroundCard({ thread, fence, onSnooze, onSnoozeFailed
   // bg-snoozed — which would offer a park the mutation refuses (router.snoozeAwaitingBackground guards
   // on the rest instant). A thread running past its rest draws no awaiting card at all since 2026-09-24.
   //
-  // NOT ON A STEPS CARD. The thread is waiting on the reader, so the footer carries the steps' own verbs;
+  // NOT ON A STEPS CARD. The thread is waiting on the reader, so the card ends on the steps' own box;
   // an event-snooze ("until new activity") would hide a card whose only new activity is the reader's own
   // reply. The header's wall-clock snooze (the alarm clock) still parks it for anyone who means "not now".
   //
@@ -1251,7 +1246,7 @@ export function AwaitingBackgroundCard({ thread, fence, onSnooze, onSnoozeFailed
         // sub-agent's own transcript above all), and the sentence below is what it says instead.
         : groups.length === 0 && !hasUnrowedWork(work) && steps.length === 0 ? <p className={CARD_BODY}>{AWAITING_NO_PROSE}</p>
         : null}
-      {steps.length > 0 && <StepsList steps={steps} live={stepsLive} />}
+      {steps.length > 0 && <StepsList steps={steps} />}
       {unrowed.length > 1 && (
         // `gap-x-3` rather than a punctuation separator: the refs are a set of targets, not a sentence,
         // and a wrapped "·" stranded at a line end reads as a typo. They wrap onto as many lines as the
@@ -1305,9 +1300,11 @@ export function AwaitingBackgroundCard({ thread, fence, onSnooze, onSnoozeFailed
       {/* THE FOOTER BAND — the card's snooze, in the family's shared action footer (CardActions), so
           the control reads as chrome under the content rather than as one more row of it. This card
           introduced the band on 2026-08-31; every card with a verb wears it since 2026-09-30. It draws
-          on EVERY surface the card is live on; a thread with no snooze verb draws the card without it. */}
+          on EVERY surface the card is live on; a thread with no snooze verb draws the card without it.
+          A STEPS card ends on its box instead — the card's answer, last like a verb — and wears the band
+          only for its own Send, where no prompt box sends the box for it (AwaitingSteps). */}
       {stepsLive ? (
-        <StepsDone slug={thread.id} onReplied={onReplied} onReplyFailed={onReplyFailed} />
+        <StepsComplete slug={thread.id} steps={steps} onReplied={onReplied} onReplyFailed={onReplyFailed} />
       ) : snoozable ? (
         <CardActions data-awaiting-snooze>
           <AwaitingSnooze thread={thread} onSnooze={onSnooze} onSnoozeFailed={onSnoozeFailed} />

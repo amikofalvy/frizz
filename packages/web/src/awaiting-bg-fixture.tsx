@@ -47,7 +47,8 @@ const wantAgents = wantAll || params.get("agents") === "1"
 const wantWatch = wantAll || watchMode !== null
 // ?steps=1 — STEPS FOR THE HUMAN (2026-10-03): a fence handing the reader things only they can do, with
 // no live work beside it — the shape a worker parks on when it needs a sign-in. ?steps=titled adds the
-// worker's own heading. The Done button draws because the thread rests on these steps.
+// worker's own heading. The "I have completed this" box draws because the thread rests on these steps, and
+// the card's prompt box is what sends it.
 const stepsMode = params.get("steps")
 const wantSteps = stepsMode !== null
 // Shells are the DEFAULT shape; ?agents=1 swaps them for sub-agents, and ?watch=1 for a lone watcher.
@@ -163,7 +164,7 @@ const thread = {
           { kind: "step", value: "Delete the token with Access Key ID `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` (the old `acme-uploads-prod` key)." },
           { kind: "step", value: "Delete the token with Access Key ID `bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb` (the old `acme-private-prod` key)." },
           { kind: "step", value: "Delete the token with Access Key ID `cccccccccccccccccccccccccccccccc` (the old `acme-uploads-dev` key)." },
-          { kind: "step", value: "Keep the two new tokens whose names end in `-2026-10-12`, and leave every other token alone. Press **Done** when the three are gone." },
+          { kind: "step", value: "Keep the two new tokens whose names end in `-2026-10-12`, and leave every other token alone. Tick the box when the three are gone." },
         ] : [
           { kind: "step", value: "Run `npm login --auth-type=web` in a terminal on this machine." },
           { kind: "step", value: "Approve the browser prompt with the **acme-bot** account." },
@@ -220,7 +221,7 @@ window.fetch = async (input, init) => {
     // A void mutation serializes as {result:null} (rpc/server.ts) — mirror that so the web client parses success.
     return new Response(JSON.stringify({ result: null }), { headers: { "content-type": "application/json" } })
   }
-  // The steps' Done is an ordinary reply, so it arrives HERE, as the composer's would — recorded with
+  // The steps' answer is an ordinary reply, so it arrives HERE, through the composer's send — recorded with
   // the exact message, so the e2e can read the words the worker would receive.
   // The reply starts the worker's turn in production, which takes the thread out of the queue; model
   // that by pruning it, so the queue's 8s un-hide guard does not bring the card back.
@@ -246,7 +247,7 @@ function Fixture() {
 createRoot(document.getElementById("root")!).render(
   <QueryClientProvider client={new QueryClient()}>
     <TooltipProvider>
-      {/* A SEND from this card (the steps' Done, or the composer) marks the thread steered, and the working
+      {/* A SEND from this card (the composer, with or without the steps' box ticked) marks the thread steered, and the working
           status row that then draws reads the router (StatusRow's project-scoped links) — outside a router
           context it throws on render. A MemoryRouter gives it that context without an address bar, as in
           the sidebar fixtures. */}

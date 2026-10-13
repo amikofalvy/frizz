@@ -32,9 +32,16 @@ export interface AcpSessionHeader {
 
 export interface AcpNote { kind: "acp-note"; at: string; text: string }
 
+/** The worker contract went out again, prepended to the prompt the next `user-message` records. Written
+ *  so the debt survives a restart: a compaction record with none of these after it is a session that
+ *  no longer holds its contract (`acpContractOwed`). Neither the fold nor the drawer reads it. */
+export interface AcpContractRecord { kind: "acp-contract"; at: string; reason: AcpContractReason }
+export type AcpContractReason = "compaction" | "fresh-session"
+
 export type AcpRecord =
   | AcpSessionHeader
   | AcpNote
+  | AcpContractRecord
   | (NormalizedEvent & { messageId?: string; acp?: { kind?: string; title?: string; locations?: string[]; input?: unknown } })
 
 const EVENT_KINDS: ReadonlySet<string> = new Set([
@@ -53,16 +60,36 @@ export function parseAcpRecord(line: string): AcpRecord | undefined {
   try { raw = JSON.parse(line) } catch { return undefined }
   if (!raw || typeof raw !== "object" || typeof (raw as { kind?: unknown }).kind !== "string") return undefined
   const kind = (raw as { kind: string }).kind
-  if (kind === "acp-session" || kind === "acp-note" || EVENT_KINDS.has(kind)) return raw as AcpRecord
+  if (kind === "acp-session" || kind === "acp-note" || kind === "acp-contract" || EVENT_KINDS.has(kind)) return raw as AcpRecord
   return undefined
 }
 
 /** The tailer's view: only the events, with the transcript-only fields stripped. */
 export function parseAcpLine(line: string): NormalizedEvent[] {
   const rec = parseAcpRecord(line)
-  if (!rec || rec.kind === "acp-session" || rec.kind === "acp-note") return []
+  if (!rec || rec.kind === "acp-session" || rec.kind === "acp-note" || rec.kind === "acp-contract") return []
   const { messageId: _m, acp: _a, ...ev } = rec as NormalizedEvent & { messageId?: string; acp?: unknown }
   return [ev as NormalizedEvent]
+}
+
+/**
+ * Whether the session this transcript belongs to has compacted since its worker contract last went out —
+ * the dispatch's first prompt, or an `acp-contract` re-send. The bridge keeps that debt in memory while
+ * it is attached; this is how a re-open (reattach, `session/load`) learns it, so a compaction that landed
+ * just before a Frizz restart is still answered on the next prompt.
+ */
+export function acpContractOwed(path: string): boolean {
+  let text: string
+  try { text = readFileSync(path, "utf8") } catch { return false }
+  let owed = false
+  for (const line of text.split("\n")) {
+    // A cheap prefilter: a long thread's transcript is mostly text and tool records.
+    if (!line.includes('"compaction"') && !line.includes('"acp-contract"')) continue
+    const rec = parseAcpRecord(line)
+    if (rec?.kind === "compaction") owed = true
+    else if (rec?.kind === "acp-contract") owed = false
+  }
+  return owed
 }
 
 /** Appends records; creates the directory and file on first write so the tailer can find it at once. */
@@ -174,6 +201,7 @@ export function projectAcpTranscript(raw: string, identityPrefix = "acp"): Trans
     switch (rec.kind) {
       case "acp-session":
       case "acp-note":
+      case "acp-contract":
       case "title":
       case "context-usage":
       case "compaction":

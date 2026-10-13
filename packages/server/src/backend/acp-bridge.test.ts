@@ -22,7 +22,7 @@ const FAKE = fileURLToPath(new URL("./acp.fixtures/fake-acp-agent.mjs", import.m
 
 interface Rig { bridge: AcpBridge; stateDir: string; store: InteractionStore; status: number; diagnostics: string[] }
 
-function rig(mode = "", opts: { customCommand?: string; stateDir?: string; direct?: boolean; host?: AcpHost; agentLog?: string; frizzCli?: FrizzCli; mountsMcp?: (slug: string) => boolean } = {}): Rig {
+function rig(mode = "", opts: { customCommand?: string; stateDir?: string; direct?: boolean; host?: AcpHost; agentLog?: string; frizzCli?: FrizzCli; mountsMcp?: (slug: string) => boolean; contractFor?: (slug: string, sessionId: string) => string | undefined } = {}): Rig {
   const stateDir = opts.stateDir ?? mkdtempSync(join(tmpdir(), "acp-bridge-"))
   const store = createInteractionStore(new Database(":memory:"))
   const r: Rig = { stateDir, store, status: 0, diagnostics: [], bridge: undefined as unknown as AcpBridge }
@@ -36,6 +36,7 @@ function rig(mode = "", opts: { customCommand?: string; stateDir?: string; direc
     frizzMcp: { scriptPath: "/opt/frizz/frizz-mcp.mjs", stateDir: "/opt/state", projectId: "proj-1" },
     ...(opts.frizzCli ? { frizzCli: opts.frizzCli } : {}),
     ...(opts.mountsMcp ? { mountsMcp: opts.mountsMcp } : {}),
+    ...(opts.contractFor ? { contractFor: opts.contractFor } : {}),
     onStatusChange: () => { r.status++ },
     onDiagnostic: (d) => { if (d.kind !== "stderr") r.diagnostics.push(`${d.kind}: ${d.message}`) },
     flushMs: 20,
@@ -468,5 +469,106 @@ test("acp-bridge: two concurrent follow-ups to a session with no live agent shar
     const frames = readFileSync(agentLog, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as { method?: string; params?: { prompt?: Array<{ text?: string }> } })
     assert.equal(frames.filter((f) => f.method === "initialize").length, 1, "one agent process")
     assert.deepEqual(frames.filter((f) => f.method === "session/prompt").map((f) => f.params?.prompt?.[0]?.text), ["the waker's answers", "the operator's send"])
+  } finally { await teardown(r) }
+})
+
+// ---- the worker contract, re-sent when the session lost it -----------------------------------------
+// ACP has no system-prompt channel, so the contract rides a prompt and lives only as long as the
+// session's history does. Measured 2026-10-12 against opencode 2.0.27 with a recording fake model: the
+// request after `/compact` carried none of it. These pin when it goes out again — and when it does NOT.
+
+const CONTRACT = (slug: string, sessionId: string) => `FRIZZ-CONTRACT for ${slug}/${sessionId}`
+
+function promptsSent(agentLog: string): string[] {
+  return readFileSync(agentLog, "utf8").split("\n").filter(Boolean)
+    .map((l) => JSON.parse(l) as { method?: string; params?: { prompt?: Array<{ text?: string }> } })
+    .filter((f) => f.method === "session/prompt")
+    .map((f) => (f.params?.prompt ?? []).map((b) => b.text ?? "").join(""))
+}
+
+async function send(r: Rig, text: string, acpSessionId?: string) {
+  const res = await r.bridge.followUp({ threadSlug: "t1", sessionId: "s1", cwd: r.stateDir, agentId: "fake", text, ...(acpSessionId ? { acpSessionId } : {}) })
+  await untilIdle(r, "s1")
+  return res
+}
+
+for (const mode of ["", "meta-compaction"]) {
+  const shape = mode ? "opencode's `_meta` marker" : "a standard `compaction_update`"
+  test(`acp-bridge: after the agent compacts (${shape}) the NEXT prompt carries the contract, once; a plain follow-up never does`, async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), "acp-bridge-"))
+    const agentLog = join(stateDir, "agent-frames.jsonl")
+    const r = rig(mode, { stateDir, agentLog, contractFor: CONTRACT })
+    try {
+      await r.bridge.spawnDispatch({ threadSlug: "t1", sessionId: "s1", cwd: stateDir, agentId: "fake", prompt: "DISPATCH-CONTRACT\n\ngo", userText: "go" })
+      await untilIdle(r, "s1")
+      await send(r, "plain follow-up")
+      await send(r, "/compact")
+      await send(r, "after the compaction")
+      await send(r, "and once more")
+      assert.deepEqual(promptsSent(agentLog), [
+        "DISPATCH-CONTRACT\n\ngo", // the dispatch's own first prompt, not doubled
+        "plain follow-up", // nothing was lost, so nothing is re-sent
+        "/compact", // a slash command is parsed off the start of the prompt; it goes out bare
+        "FRIZZ-CONTRACT for t1/s1\n\nafter the compaction",
+        "and once more", // once per compaction
+      ])
+      const frames = readFileSync(agentLog, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as { method?: string; params?: { clientCapabilities?: { session?: { compaction?: unknown } } } })
+      assert.ok(frames.find((f) => f.method === "initialize")?.params?.clientCapabilities?.session?.compaction, "the client asks for standard compaction updates")
+      const recs = records(r, "s1")
+      const kinds = recs.map((x) => x.kind)
+      assert.equal(kinds.filter((k) => k === "compaction").length, 1, "the compaction is in the transcript, for the fold")
+      const resent = recs.findIndex((x) => x.kind === "acp-contract")
+      assert.deepEqual(recs[resent], { kind: "acp-contract", at: (recs[resent] as { at: string }).at, reason: "compaction" })
+      assert.equal((recs[resent + 1] as { kind: string; text?: string }).text, "after the compaction", "the transcript records the operator's words, not the contract")
+      assert.equal(kinds.filter((k) => k === "acp-contract").length, 1)
+    } finally { await teardown(r) }
+  })
+}
+
+test("acp-bridge: a compaction is still answered after a re-open: the debt is read back from the transcript", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "acp-bridge-"))
+  const agentLog = join(stateDir, "agent-frames.jsonl")
+  const r = rig("", { stateDir, agentLog, contractFor: CONTRACT })
+  try {
+    const info = await r.bridge.spawnDispatch({ threadSlug: "t1", sessionId: "s1", cwd: stateDir, agentId: "fake", prompt: "go", userText: "go" })
+    await untilIdle(r, "s1")
+    await send(r, "/compact")
+    // The runtime that saw the compaction goes away before the next prompt, taking its in-memory flag.
+    r.bridge.releaseSession("t1", "s1", "session-deleted")
+    const again = await send(r, "after the re-open", info.acpSessionId)
+    assert.equal(again.resumed, "loaded")
+    await send(r, "and once more", info.acpSessionId)
+    assert.deepEqual(promptsSent(agentLog).slice(-2), ["FRIZZ-CONTRACT for t1/s1\n\nafter the re-open", "and once more"])
+  } finally { await teardown(r) }
+})
+
+test("acp-bridge: a FRESH session replacing one the agent could not load gets the contract on its first prompt", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "acp-bridge-"))
+  const agentLog = join(stateDir, "agent-frames.jsonl")
+  const r = rig("no-load", { stateDir, agentLog, contractFor: CONTRACT })
+  try {
+    const info = await r.bridge.spawnDispatch({ threadSlug: "t1", sessionId: "s1", cwd: stateDir, agentId: "fake", prompt: "DISPATCH-CONTRACT\n\ngo", userText: "go" })
+    await untilIdle(r, "s1")
+    r.bridge.releaseSession("t1", "s1", "session-deleted")
+    const again = await send(r, "more", info.acpSessionId)
+    assert.equal(again.resumed, "fresh")
+    await send(r, "still more", again.acpSessionId)
+    assert.deepEqual(promptsSent(agentLog), ["DISPATCH-CONTRACT\n\ngo", "FRIZZ-CONTRACT for t1/s1\n\nmore", "still more"])
+    const resent = records(r, "s1").filter((x) => x.kind === "acp-contract") as Array<{ reason: string }>
+    assert.deepEqual(resent.map((x) => x.reason), ["fresh-session"])
+  } finally { await teardown(r) }
+})
+
+test("acp-bridge: the contract owed to a fresh session waits behind a slash command", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "acp-bridge-"))
+  const agentLog = join(stateDir, "agent-frames.jsonl")
+  const r = rig("no-load", { stateDir, agentLog, contractFor: CONTRACT })
+  try {
+    const info = await r.bridge.spawnDispatch({ threadSlug: "t1", sessionId: "s1", cwd: stateDir, agentId: "fake", prompt: "go", userText: "go" })
+    await untilIdle(r, "s1")
+    r.bridge.releaseSession("t1", "s1", "session-deleted")
+    await send(r, "/review", info.acpSessionId)
+    await send(r, "/Users/me/notes.md is the file")
+    assert.deepEqual(promptsSent(agentLog).slice(1), ["/review", "FRIZZ-CONTRACT for t1/s1\n\n/Users/me/notes.md is the file"])
   } finally { await teardown(r) }
 })

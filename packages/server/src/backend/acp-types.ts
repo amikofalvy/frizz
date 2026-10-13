@@ -165,6 +165,9 @@ export const AcpSessionUpdateKnown = z.discriminatedUnion("sessionUpdate", [
   z.object({ sessionUpdate: z.literal("session_info_update"), title: z.string().nullish(), updatedAt: z.string().nullish() }).passthrough(),
   z.object({ sessionUpdate: z.literal("config_option_update"), configOptions: z.array(AcpConfigOption) }).passthrough(),
   z.object({ sessionUpdate: z.literal("compaction_update"), compactionId: z.string().optional(), status: z.string().optional() }).passthrough(),
+  // The summary streaming in while a compaction runs — sent only to a client that advertised
+  // `session.compaction`, which the bridge does. The `completed` update is the one that matters.
+  z.object({ sessionUpdate: z.literal("compaction_summary_chunk"), compactionId: z.string().optional() }).passthrough(),
 ])
 export type AcpSessionUpdateKnown = z.infer<typeof AcpSessionUpdateKnown>
 

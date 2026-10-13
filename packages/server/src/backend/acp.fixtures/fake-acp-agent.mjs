@@ -12,6 +12,12 @@
 //   no-load         advertises loadSession:false
 //   shell           a prompt line `RUN: <command>` is run by `sh -c` in the agent's OWN environment, which
 //                   is what a real agent's shell tool does; the result goes to FAKE_ACP_LOG
+//   meta-compaction reports a compaction the way opencode does to a client that did NOT advertise
+//                   `session.compaction`, even when the client did: `_meta` on a `session_info_update`
+//
+// A prompt that is exactly `/compact` compacts, the way opencode's slash command does: a standard
+// `compaction_update` (in_progress, completed) when the client advertised `session.compaction`, else the
+// `_meta["opencode/compaction"]` marker — the two shapes opencode 2.0.27 emits.
 //
 // FAKE_ACP_LOG, when set, receives one JSON line per inbound frame so a test can assert what the client
 // actually sent (the mcpServers it passed, the prompt text, the cwd).
@@ -41,6 +47,7 @@ if (mode === "oversized") process.stdout.write("x".repeat(200 * 1024) + "\n")
 
 const sessions = new Map() // sessionId -> { cancelled: boolean, promptId: id|undefined }
 let sessionSeq = 0
+let standardCompaction = false
 
 function modelOptions(current) {
   return [{ id: "model", name: "Model", category: "model", type: "select", currentValue: current, options: [{ value: "fake/small", name: "Fake Small" }, { value: "fake/large", name: "Fake Large" }] }]
@@ -60,6 +67,7 @@ async function handle(msg) {
   switch (msg.method) {
     case "initialize": {
       if (mode === "slow-init") return
+      standardCompaction = mode !== "meta-compaction" && p.clientCapabilities?.session?.compaction != null
       reply({
         protocolVersion: 1,
         agentCapabilities: { loadSession: mode !== "no-load", mcpCapabilities: { http: true, sse: true }, promptCapabilities: { embeddedContext: true, image: false }, sessionCapabilities: { list: {}, resume: {} } },
@@ -93,6 +101,17 @@ async function handle(msg) {
       s.cancelled = false
       s.promptId = msg.id
       const text = (p.prompt ?? []).map((b) => b.text ?? "").join("")
+      if (text.trim() === "/compact") {
+        const compactionId = `cmp_${msg.id}`
+        if (standardCompaction) {
+          notify(sessionId, { sessionUpdate: "compaction_update", compactionId, status: "in_progress" })
+          notify(sessionId, { sessionUpdate: "compaction_update", compactionId, status: "completed", summary: [{ type: "text", text: "## Objective\n- (summary)" }] })
+        } else {
+          notify(sessionId, { sessionUpdate: "session_info_update", _meta: { "opencode/compaction": { status: "started", messageId: compactionId, reason: "manual" } } })
+          notify(sessionId, { sessionUpdate: "session_info_update", _meta: { "opencode/compaction": { status: "completed", messageId: compactionId, reason: "manual" } } })
+        }
+        return reply({ stopReason: "end_turn" })
+      }
       notify(sessionId, { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "thinking about " }, messageId: "m1" })
       notify(sessionId, { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "it" }, messageId: "m1" })
       if (mode === "shell") {
