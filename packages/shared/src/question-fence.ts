@@ -42,7 +42,7 @@
 import { parse as parseYaml } from "yaml"
 import { fencedInteriors } from "./code-fences.ts"
 import type { AskedOption, AskedQuestion } from "./index.ts"
-import { askedQuestionFaults } from "./index.ts"
+import { ASK_MAX_DEPTH, askedQuestionFaults } from "./index.ts"
 
 /** The four answer shapes a question fence declares, each explicit (maintainer 2026-10-13: "we need to have
  *  some pretty explicit options in terms of specifying multiple-choice answers versus other kinds"). */
@@ -449,20 +449,64 @@ export interface QuestionFenceFault {
   faults: string[]
 }
 
+/** A follow-up whose parent is not asked in its own message: `when:` names a question the THREAD may
+ *  already hold. Only the server can say — it has the rows — so assembly hands it over unjudged. */
+export interface LateFollowUp {
+  id: string
+  /** The follow-up's own node, with any follow-ups of ITS options this message carried already attached. */
+  spec: AskedQuestion
+  /** The id `when:` names, and the option under it. */
+  parent: string
+  option: string
+}
+
 export interface AssembledQuestionFences {
   /** Root questions to register, follow-ups attached, in the order written. */
   asks: { id: string; spec: AskedQuestion }[]
+  /** Follow-ups whose parent this message does not ask, in the order written (see LateFollowUp). */
+  followUps: LateFollowUp[]
   /** Ids named by a reference fence, in the order written. */
   refs: string[]
   /** Every fence that cannot register, with its reasons. */
   faults: QuestionFenceFault[]
 }
 
-/** One message's fences as what they ask for. A follow-up (`when:`) is attached to its parent's option
- *  here, so it must sit in the SAME message as its parent: the parent's card is registered as one tree,
- *  and a branch added after the human could already see the card would open under an answer in progress. */
+/** `when:` named an option its parent does not have. The parent's REAL labels are the whole point of the
+ *  message: a worker that wrote `SQLite` for an option labelled `SQLite (better-sqlite3)` can fix the
+ *  label from this, and could only guess without it. One wording for the two places that can find it —
+ *  assembly (the parent is in the message) and the server (the parent is a row). */
+export function followUpOptionFault(when: { parent: string; option: string }, parent: AskedQuestion): string {
+  const labels = (parent.options ?? []).map((o) => `\`${o.label}\``).join(", ")
+  return labels
+    ? `\`when:\` names the option \`${when.option}\`, and \`${when.parent}\` has only ${labels} — write the label exactly as the option has it`
+    : `\`when:\` names the option \`${when.option}\`, and \`${when.parent}\` is a free-text question with no options to follow — ask this as its own question, without the \`when:\` line`
+}
+
+/** A `multi` cannot open a follow-up — the same fault wherever the parent is found. */
+export function followUpMultiFault(parent: string): string {
+  return `\`${parent}\` is a \`multi\`, and a multi's options cannot open follow-ups — several picks would open several at once`
+}
+
+/** The option of `parent` a `when:` names, matched the way a label is compared everywhere here. */
+export function followUpOption(parent: AskedQuestion, label: string): AskedOption | undefined {
+  return parent.options?.find((o) => o.label.toLowerCase() === label.toLowerCase())
+}
+
+/** A fence that was never judged on its own, because the question it follows could not be asked. Named,
+ *  so it is not simply missing from the correction: every fence in a message either registers, attaches,
+ *  references, or is refused BY ID. */
+export function followUpRiderFault(parent: string): string {
+  return `it follows \`${parent}\`, which could not be asked (see that fence's own fault), so it was not asked either — write it again with the corrected \`${parent}\``
+}
+
+/** One message's fences as what they ask for. A follow-up (`when:`) whose parent is asked in the SAME
+ *  message is attached to that parent's option here, so the tree registers as one card. One whose parent
+ *  is not in the message is returned unattached (`followUps`): it may hang off a question the thread
+ *  already has open, which only the server can check (maintainer-approved 2026-10-13, after a follow-up
+ *  whose `when:` label was wrong on the first try could never be asked again — its parent had registered,
+ *  and no later message could carry both). */
 export function assembleQuestionFences(reads: readonly QuestionFenceRead[]): AssembledQuestionFences {
-  const out: AssembledQuestionFences = { asks: [], refs: [], faults: [] }
+  const out: AssembledQuestionFences = { asks: [], followUps: [], refs: [], faults: [] }
   const asks = new Map<string, { spec: AskedQuestion; when?: { parent: string; option: string } }>()
   for (const r of reads) {
     if (r.form === "invalid") out.faults.push({ ...(r.id ? { id: r.id } : {}), faults: r.faults })
@@ -476,37 +520,82 @@ export function assembleQuestionFences(reads: readonly QuestionFenceRead[]): Ass
   // Attach every follow-up to its parent. A copy of each spec, so attaching never mutates a read the
   // caller still holds.
   const specs = new Map([...asks].map(([id, a]) => [id, structuredClone(a.spec)]))
+  // THE CHAIN each follow-up hangs from, read off the `when:` lines alone before anything is attached:
+  // the fences between it and the first one that is not a follow-up of a question in this message.
+  // `circular` when the chain comes back on itself (`a` follows `b` follows `a`), which reaches nothing.
+  const chainOf = (id: string): { chain: string[]; circular: false | "in" | "under" } => {
+    const chain: string[] = []
+    let at = id
+    for (;;) {
+      const parent = asks.get(at)?.when?.parent
+      if (parent === undefined || !asks.has(parent)) return { chain, circular: false }
+      // Back at itself it is part of the circle; back at a fence above it, it only hangs under one.
+      if (parent === id) return { chain, circular: "in" }
+      if (chain.includes(parent)) return { chain, circular: "under" }
+      chain.push(parent)
+      at = parent
+    }
+  }
+  // What became of each fence that names a parent: `failed` (refused here, by name), `late` (its parent is
+  // not asked in this message), or attached — in neither set.
   const failed = new Set<string>()
+  const late = new Set<string>()
   for (const [id, a] of asks) {
     if (!a.when) continue
-    const parent = specs.get(a.when.parent)
     const fail = (fault: string) => {
       failed.add(id)
       out.faults.push({ id, faults: [fault] })
     }
+    const { chain, circular } = chainOf(id)
+    if (circular) {
+      fail(circular === "in"
+        ? `\`when: ${a.when.parent} = ${a.when.option}\` goes in a circle — a follow-up names the question it follows, and that question cannot follow it back`
+        : followUpRiderFault(a.when.parent))
+      continue
+    }
+    const parent = specs.get(a.when.parent)
     if (!parent) {
-      fail(`\`when: ${a.when.parent} = ${a.when.option}\` names no question in this message — a follow-up is written in the same message as the question it follows`)
+      late.add(id)
+      continue
+    }
+    // DEPTH, refused on the fence that goes too deep rather than on the tree (which askedQuestionFaults
+    // would do, taking a sound root down with its fourth level). Counted only when the chain ends at a
+    // root of this message; one that ends at a late follow-up is measured by the server, against the row.
+    const top = chain[chain.length - 1]
+    if (!asks.get(top)?.when && chain.length + 1 > ASK_MAX_DEPTH) {
+      fail(`this would be level ${chain.length + 1} under \`${top}\`, and follow-ups go ${ASK_MAX_DEPTH} levels deep at most — past that you are asking the human to fill in a form; ask it as its own question, without the \`when:\` line, or decide it yourself`)
       continue
     }
     if (parent.kind === "multi") {
-      fail(`\`${a.when.parent}\` is a \`multi\`, and a multi's options cannot open follow-ups — several picks would open several at once`)
+      fail(followUpMultiFault(a.when.parent))
       continue
     }
-    const option = parent.options?.find((o) => o.label.toLowerCase() === a.when!.option.toLowerCase())
+    const option = followUpOption(parent, a.when.option)
     if (!option) {
-      const labels = (parent.options ?? []).map((o) => `\`${o.label}\``).join(", ")
-      fail(`\`when:\` names the option \`${a.when.option}\`, and \`${a.when.parent}\` has ${labels ? `only ${labels}` : "no options"}`)
+      fail(followUpOptionFault(a.when, parent))
       continue
     }
     option.followUps = [...(option.followUps ?? []), specs.get(id)!]
   }
-  // A failed follow-up takes its own subtree with it, but never its parent: the parent stands on its own.
+  // Emit what stands on its own: a root, or a late follow-up, each with the follow-ups attached under it.
+  const refused = new Set(failed)
   for (const [id, a] of asks) {
-    if (a.when || failed.has(id)) continue
+    if (failed.has(id) || (a.when && !late.has(id))) continue
     const spec = specs.get(id)!
     const treeFaults = askedQuestionFaults(spec)
-    if (treeFaults.length > 0) out.faults.push({ id, faults: treeFaults })
+    if (treeFaults.length > 0) {
+      refused.add(id)
+      out.faults.push({ id, faults: treeFaults })
+    } else if (late.has(id)) out.followUps.push({ id, spec, parent: a.when!.parent, option: a.when!.option })
     else out.asks.push({ id, spec })
+  }
+  // A REFUSED FENCE TAKES THE FENCES UNDER IT WITH IT, but never its parent — the parent stands on its
+  // own. Each one under it is named, by the nearest refusal above it, so none is simply missing from the
+  // correction.
+  for (const id of asks.keys()) {
+    if (refused.has(id)) continue
+    const nearest = chainOf(id).chain.find((x) => refused.has(x))
+    if (nearest) out.faults.push({ id, faults: [followUpRiderFault(nearest)] })
   }
   return out
 }

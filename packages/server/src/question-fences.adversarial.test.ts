@@ -194,12 +194,12 @@ test("a thread with a null, malformed or pre-cutover spawned_at registers nothin
     const sightings = [{ at: at(0), text: choice("settings-store") }, { at: at(1), text: fence("id: broken\nkind: choice") }]
     for (const spawnedAt of [null, undefined, "", "not a date", "2026-09-10T23:59:59.000Z", Number.NaN, 0]) {
       const out = sync(h.storage, sightings, { spawnedAt: spawnedAt as never })
-      assert.deepEqual(out, { registered: [], faults: [], refs: [] }, `spawned_at ${String(spawnedAt)}`)
+      assert.deepEqual(out, { registered: [], attached: [], faults: [], refs: [] }, `spawned_at ${String(spawnedAt)}`)
     }
     assert.equal(h.storage.listThreadQuestions("t").length, 0)
     // A sighting with no readable instant, or one from before the cutover, is skipped the same way.
     const stale = sync(h.storage, [{ at: "", text: choice("a") }, { at: "garbage", text: choice("b") }, { at: new Date(Date.parse(QUESTION_FENCES_REGISTER_FROM) - 1).toISOString(), text: choice("c") }])
-    assert.deepEqual(stale, { registered: [], faults: [], refs: [] })
+    assert.deepEqual(stale, { registered: [], attached: [], faults: [], refs: [] })
   } finally { h.close() }
 })
 
@@ -263,6 +263,7 @@ test("one thread's failing sweep neither stops the other threads' nor is retried
       listThreadQuestions: (slug: string) => h.storage.listThreadQuestions(slug),
       clearThreadDone: (slug: string) => h.storage.clearThreadDone(slug),
       resetParkBumps: (slug: string) => h.storage.resetParkBumps(slug),
+      growThreadQuestionSpec: (slug: string, id: string, spec: string) => h.storage.growThreadQuestionSpec(slug, id, spec),
       askThreadQuestion: (q: Parameters<typeof h.storage.askThreadQuestion>[0]) => {
         asks++
         if (q.slug === "a-broken") throw new Error("database is locked")
