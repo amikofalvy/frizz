@@ -1136,7 +1136,20 @@ function VirtualizedThreadTranscript({
     paddingStart: 20,
     paddingEnd: 20,
     anchorTo: "end",
-    followOnAppend: true,
+    // NO `followOnAppend`. The tail follow is syncTailFollow's, below, on every commit; the library's own
+    // follow fired on exactly one event here — the runtime-status row (or a queued bubble) being APPENDED,
+    // the only time the last row's key changes — and it follows by `scrollToEnd`, which is
+    // `scrollToIndex(count - 1)` plus a reconcile loop that re-aims at THAT INDEX on each frame until the
+    // offset holds still. A turn that starts outside this tab appends the Working row on the board's
+    // `running` delta and inserts its "Agent rested" hairline and the human's bubble ABOVE that row on the
+    // transcript push ~25ms later, so on a run where the loop was still alive the index it held now
+    // named the hairline: it scrolled a reader at the tail up to that row's end — 69px, the hairline's
+    // 108px estimate less its 39px — and left them detached under "Jump to latest" for the whole turn,
+    // reply included. 4 of 180 scripted turn starts on a tall thread at 820x900 and 17 of 40 on a short
+    // one at 1400x900 (2026-10-13), every one written by `reconcileScroll`; 0 of 180 without it.
+    // syncTailFollow follows by the scroller's own height, so it has no index to go stale. (The option
+    // came with the virtualized view, 2026-07-21, three days before syncTailFollow replaced what it was
+    // for; it had been a second, redundant follower ever since.)
     scrollEndThreshold: TAIL_FOLLOW_PX,
     // THE SWALLOWED WHEEL NOTCH — why scrolling back through a long thread stutters.
     //
