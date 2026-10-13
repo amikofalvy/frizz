@@ -41,7 +41,8 @@ write kills the server with SIGPIPE — minutes later, mid-verification, looking
 Redirect to a file and poll the file.
 
 Flags: `--port=N`, `--project=/abs/dir` (defaults to the frizz repo), `--also-project=/abs/dir`
-(repeatable — see §2), `--creds` (real credentials, needed for a real dispatch), `--wakers`, `--reaper`,
+(repeatable — see §2), `--creds` (links the real agent logins in; NEVER with a live Claude worker, see
+§ A real Claude worker), `--wakers`, `--reaper`,
 `--prime`, `--keep`, `--home=/abs`, `--seed`.
 
 `--home=/abs` reuses a sandbox a previous `--keep` run left behind, which is the only way to verify
@@ -71,8 +72,8 @@ project lost `spawn_thread`, `recurring_prompt` and `timer`, because it was read
 launcher publishes, and POSTing an unprefixed RPC that means "the launching project" by definition).
 
 ```bash
-# a launcher + one tenant, with REAL credentials so a dispatched worker can actually start
-nub scripts/adhoc-stack.mjs --port=45571 --project=/abs/launcher --also-project=/abs/tenant --creds \
+# a launcher + one tenant
+nub scripts/adhoc-stack.mjs --port=45571 --project=/abs/launcher --also-project=/abs/tenant \
   > /tmp/stack.log 2>&1
 # → …"launcher":{"id","slug","serverLock"},"tenants":[{"id","slug","dir","stateDir"}]
 ```
@@ -93,8 +94,11 @@ The traps, each of which costs a full boot cycle to rediscover:
 - **The broker is the SOLE claude transport.** The interactive-TUI path is retired, so `FRIZZ_CLAUDE_BROKER_BRIDGE=0`
   does not "fall back" — dispatch fails outright with *"Claude session broker is unavailable"*. You cannot
   capture a worker's argv with a stub `claude`; to see the env a worker really gets, dispatch a real one and
-  read it off the process table (`ps -Ao pid,command | grep FRIZZ_PROJECT_ID`).
-- **A sandbox HOME has no credentials**, so a real dispatch needs `--creds`.
+  read it off the process table (`ps -Ao pid,command | grep FRIZZ_PROJECT_ID`). A real CLAUDE worker only
+  ever runs on a real-HOME stack: see § A real Claude worker.
+- **A sandbox HOME has no credentials, and a live Claude worker must not be given them.** `--creds` makes
+  it sign in, and its next token save puts a keychain dialog on the maintainer's screen (§ A real Claude
+  worker).
 - **`startServer({port: 0})` does not give you an ephemeral port** — pick a real high port.
 - **A dispatched worker is a DETACHED daemon.** It survives the stack it was born in and keeps burning
   quota. `ps -Ao pid,command | grep <your temp HOME>` → `kill <pid>` each, then re-check none survive.
@@ -127,13 +131,27 @@ The client also sets the loopback `Origin` header, without which any write 403s.
 
 ### A real Claude worker
 
-`--creds` symlinks the real `~/.claude*` into the sandbox, which is what a dispatch needs. The older
-workaround — keep the real HOME and isolate only the PROJECT (`--home=$HOME --project=/tmp/<throwaway>`)
-— still works and is the one to use when you need the real keychain path exercised. Either way: HOME's
-keychain is why a bare temp HOME fails `AUTH_REQUIRED:claude` (the macOS login keychain lives at
-`$HOME/Library/Keychains`, so redirecting HOME hides the credential even though it is user-scoped).
+**Never start a live Claude worker under a sandbox HOME** (AGENTS.md § Never put a macOS keychain dialog
+on the maintainer's screen). `--creds` symlinks the real `~/.claude*` in, so a sandboxed worker signs in
+from `~/.claude/.credentials.json`. But whenever its OAuth token is due, Claude Code saves the new one to
+the keychain first (`security add-generic-password`), macOS finds no keychain under the sandbox HOME, and
+the maintainer gets a modal *"Keychain Not Found — A keychain cannot be found to store "colin.""*. Whether a
+given run hits a refresh is luck, so "it was fine on the last run" proves nothing (2026-10-13: two Haiku
+dispatches from a scratch `rd.mjs`, eight failed `security` saves, two dialogs). In order of preference:
 
-**The same redirect puts a modal dialog on the maintainer's screen.** A process in a sandbox HOME that starts a Chromium without `--use-mock-keychain` — it was the real `/Applications/Google Chrome.app`, which no agent starts at all any more (AGENTS.md § Agents never touch the maintainer's real Chrome) — makes Chrome store its "Chrome Safe Storage" key, macOS finds no default keychain under that HOME, and the system shows *"Keychain Not Found — A keychain cannot be found to store "Chrome.""* for every Chrome start. Headless `--screenshot` Chrome also often hangs at exit on its own, so a worker kills and restarts it, and every restart opens another dialog (2026-10-03: two harness runs, 13 SecurityAgent processes, maintainer: *"It's shown up hundreds of times"*). Chrome that puppeteer launches is immune, because puppeteer passes `--use-mock-keychain --password-store=basic`. So a worker's browser comes from `launchHeadless()` (`scripts/lib/headless-browser.mjs`), every raw headless-shell command a sandbox worker runs carries `--use-mock-keychain`, and when your prompt asks a worker for a browser, the launcher or the flag goes in the prompt you hand it. The sandbox HOME itself stays WITHOUT a keychain: the maintainer declined linking the real `~/Library/Keychains` in (2026-10-03), and an empty keychain there is worse, because Claude Code deletes the real `~/.claude/.credentials.json` after its first token write into one. `log show --last 3h --style compact --predicate 'process == "SecurityAgent"'` tells you whether a dialog fired.
+1. **Simulate the worker** (§ Simulating a worker, below). Records appended to the JSONL drive the same
+   tailer → board → push → render path a live worker does, on a timeline you control, which is what a UI,
+   timing or layout check actually needs. A model in the loop adds nothing there but nondeterminism.
+2. **Keep the real HOME and isolate only the PROJECT** (`--home=$HOME --project=/tmp/<throwaway>`) when
+   nothing but a live model can show the behavior. The keychain is found there, so nothing prompts.
+
+`--creds` remains for the non-Claude backends that need a login in the sandbox (opencode's
+`~/.local/share/opencode`, ARCHITECTURE.md § ACP backend); after dispatching one, run the AGENTS.md log query and
+confirm no `SecurityAgent` started. HOME's keychain is also why a bare temp HOME fails
+`AUTH_REQUIRED:claude` (the macOS login keychain lives at `$HOME/Library/Keychains`, so redirecting HOME
+hides the credential even though it is user-scoped).
+
+**A raw Chromium raises the same dialog.** A process in a sandbox HOME that starts a Chromium without `--use-mock-keychain` — it was the real `/Applications/Google Chrome.app`, which no agent starts at all any more (AGENTS.md § Agents never touch the maintainer's real Chrome) — makes Chrome store its "Chrome Safe Storage" key, macOS finds no default keychain under that HOME, and the system shows *"Keychain Not Found — A keychain cannot be found to store "Chrome.""* for every Chrome start. Headless `--screenshot` Chrome also often hangs at exit on its own, so a worker kills and restarts it, and every restart opens another dialog (2026-10-03: two harness runs, 13 SecurityAgent processes, maintainer: *"It's shown up hundreds of times"*). Chrome that puppeteer launches is immune, because puppeteer passes `--use-mock-keychain --password-store=basic`. So a worker's browser comes from `launchHeadless()` (`scripts/lib/headless-browser.mjs`), every raw headless-shell command a sandbox worker runs carries `--use-mock-keychain`, and when your prompt asks a worker for a browser, the launcher or the flag goes in the prompt you hand it. The sandbox HOME itself stays WITHOUT a keychain: the maintainer declined linking the real `~/Library/Keychains` in (2026-10-03), and an empty keychain there is worse, because Claude Code deletes the real `~/.claude/.credentials.json` after its first token write into one. `log show --last 3h --style compact --predicate 'process == "SecurityAgent"'` tells you whether a dialog fired.
 
 Clean up after yourself: kill the stack by exact PID, kill the leftover `claude` broker processes (find
 them by their `FRIZZ_STATE_DIR=<that project id>` in `ps`), then
