@@ -1,6 +1,8 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { mkdirSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
 // Real server, real transcript, real file reads; only the absent launcher status probe is stubbed.
 // Boot scripts/adhoc-stack.mjs, then scripts/seed-file-panel-stack.mjs --home=<its HOME>.
@@ -126,6 +128,153 @@ test("full-screen file links push readers and Escape restores the reader underne
       const path = "/src/store.ts"; const { store } = await import(path)
       return store.filePanels.length
     }), 0, "leaving full screen clears the file stack")
+    assert.deepEqual(errors, [])
+  } finally {
+    await browser.close()
+  }
+})
+
+// THE ROUTING RULE, against the real server's gates (maintainer 2026-10-13, after a PDF opened this
+// page's viewer onto "Couldn't read this file … not a text file"): a click opens what Frizz can show IN
+// Frizz, and hands everything else to the system — never a reader that cannot show it. The opener is
+// set to "copy" first, so a fall-through answers with the path instead of launching an app on this Mac.
+test("full-screen file links open what Frizz can show and hand the rest to the system", { skip: !baseUrl, timeout: 120_000 }, async () => {
+  const { launchHeadless } = await import("../../../../scripts/lib/headless-browser.mjs")
+  const browser = await launchHeadless()
+  try {
+    const page = await browser.newPage()
+    const errors: string[] = []
+    const opened: string[] = []
+    page.on("pageerror", (e) => errors.push(String(e)))
+    page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()) })
+    await page.setRequestInterception(true)
+    page.on("request", (r) => {
+      const url = new URL(r.url())
+      if (url.pathname.endsWith("/openLocalFile")) opened.push(String(JSON.parse(r.postData() ?? "{}").path))
+      if (url.pathname === "/_frizz/control/status") {
+        void r.respond({ status: 200, contentType: "application/json", body: JSON.stringify({ protocol: 1, state: "ready", updateRestart: false }) })
+      } else void r.continue()
+    })
+    // The headless shell has no PDF viewer and says so (`pdfViewerEnabled` false), so it stands in for a
+    // desktop Chrome — which has one — by saying the opposite, until the no-viewer case below.
+    const pdfViewer = (enabled: boolean) => { Object.defineProperty(Navigator.prototype, "pdfViewerEnabled", { configurable: true, get: () => enabled }) }
+    await page.evaluateOnNewDocument(pdfViewer, true)
+    await page.setViewport({ width: 1440, height: 900 })
+    await page.goto(`${baseUrl}/thread/file-panel-stack/full`, { waitUntil: "networkidle2" })
+    await page.evaluate(async () => {
+      const path = "/src/api/rpc.ts"; const { rpc } = await import(path)
+      await rpc.settingsSet({ ...(await rpc.settingsGet()), localFileOpener: "copy" })
+    })
+    const link = (name: string) => `main[data-standalone-thread] [data-local-path$="/${name}"]`
+    const state = () => page.evaluate(async () => {
+      const path = "/src/store.ts"; const { store } = await import(path)
+      return { panels: store.filePanels.length as number, lightbox: store.lightbox?.images.map((i: { path: string }) => i.path) ?? null, toast: store.toast?.text ?? null }
+    })
+    await page.waitForSelector(link("report.pdf"))
+
+    // A PDF opens IN the panel, in the browser's own viewer, fed by the gated route as a real PDF. The
+    // FRAME's own navigation is the request that matters: it carries no Origin, so it passes the
+    // server's origin gate only as a same-origin fetch, and Chrome's viewer renders what it answers.
+    const framed = page.waitForResponse((r) => new URL(r.url()).pathname.endsWith("local-file") && r.url().includes("report.pdf") && r.request().resourceType() === "document")
+    await page.click(link("report.pdf"))
+    const navigation = await framed
+    assert.equal(navigation.frame() === page.mainFrame(), false, "the frame navigated, not the page")
+    assert.deepEqual([navigation.status(), navigation.headers()["content-type"], navigation.headers()["content-disposition"]], [200, "application/pdf", "inline; filename*=UTF-8''report.pdf"])
+    const frame = await page.waitForSelector("[data-file-viewer-slot] iframe[data-pdf-view]")
+    const src = await frame!.evaluate((el) => (el as HTMLIFrameElement).src)
+    const response = await page.evaluate(async (src) => {
+      const res = await fetch(src)
+      const bytes = new Uint8Array(await res.arrayBuffer())
+      return { status: res.status, type: res.headers.get("content-type"), head: new TextDecoder().decode(bytes.subarray(0, 8)), size: bytes.length }
+    }, src)
+    const { size: pdfSize, ...pdf } = response
+    assert.deepEqual(pdf, { status: 200, type: "application/pdf", head: "%PDF-1.4" })
+    assert.equal(await page.$eval("[data-file-viewer-slot]", (el) => el.textContent?.includes("⌘I")), false, "no selection hint over a frame the page cannot select in")
+    if (shots) {
+      mkdirSync(shots, { recursive: true })
+      await page.waitForFunction(() => [...document.querySelectorAll("[data-file-viewer-slot]")].every((el) => el.getAnimations().length === 0 && getComputedStyle(el).translate === "0px"))
+      await page.screenshot({ path: `${shots}/file-kinds-pdf.png` })
+    }
+    await page.click('[data-file-viewer-slot] button[aria-label="Close"]')
+    await page.waitForFunction(() => document.querySelectorAll("[data-file-viewer-slot]").length === 0)
+
+    // A binary file opens NO reader: the server's read calls it binary, and it falls through to the
+    // opener — here "copy", which answers with the path rather than launching anything.
+    await page.click(link("bundle.zip"))
+    await page.waitForFunction(async () => {
+      const path = "/src/store.ts"; const { store } = await import(path)
+      return store.toast?.text === "Copied local path"
+    })
+    assert.equal((await state()).panels, 0)
+    assert.equal(opened.length, 1)
+    assert.match(opened[0]!, /\/bundle\.zip$/)
+
+    // A picture opens in the lightbox, not in a text viewer.
+    await page.click(link("shot.png"))
+    await page.waitForFunction(async () => {
+      const path = "/src/store.ts"; const { store } = await import(path)
+      return store.lightbox !== null
+    })
+    const lit = await state()
+    assert.equal(lit.panels, 0)
+    assert.match(lit.lightbox?.[0] ?? "", /\/shot\.png$/)
+    await page.keyboard.press("Escape")
+    await page.waitForFunction(async () => {
+      const path = "/src/store.ts"; const { store } = await import(path)
+      return store.lightbox === null
+    })
+
+    // And text still opens as source.
+    await page.click(link("notes.txt"))
+    await page.waitForFunction(() => document.querySelector("[data-file-viewer-slot] pre")?.textContent?.includes("plain notes"))
+    await page.click('[data-file-viewer-slot] button[aria-label="Close"]')
+    await page.waitForFunction(() => document.querySelectorAll("[data-file-viewer-slot]").length === 0)
+    assert.equal(opened.length, 1, "neither the picture nor the text reached the opener")
+
+    // A browser that would DOWNLOAD a PDF (Chrome's "Download PDF files", or this shell as it really
+    // is) has no viewer to lend the panel, so a PDF falls through to the opener like the zip did.
+    await page.evaluate(pdfViewer, false)
+    const toOpener = page.waitForRequest((r) => r.url().endsWith("/openLocalFile") && (r.postData() ?? "").includes("report.pdf"), { timeout: 10_000 })
+    await page.click(link("report.pdf"))
+    await toOpener
+    assert.match(opened[1] ?? "", /\/report\.pdf$/)
+    assert.equal((await state()).panels, 0, "and opens no blank panel")
+    await page.evaluate(pdfViewer, true)
+
+    // ON A PHONE the desktop opener is the wrong machine: a PDF opens in the phone's own viewer (a new
+    // tab on the route), and a binary file downloads from it. The headless shell has no PDF viewer, so
+    // its new tab DOWNLOADS the PDF — what Android's Chrome does too — and both arrive as downloads here,
+    // which is the observation that the browser itself fetched each one off the gated route.
+    await page.setViewport({ width: 390, height: 844 })
+    await page.waitForSelector(link("report.pdf"))
+    const downloads = mkdtempSync(join(tmpdir(), "frizz-file-kinds-downloads-"))
+    const finished: { name: string; bytes: number }[] = []
+    const names = new Map<string, string>()
+    // Browser-level, not the page's: the PDF downloads in the NEW tab, whose events the page never sees.
+    const cdp = await browser.target().createCDPSession()
+    cdp.on("Browser.downloadWillBegin", (e) => { names.set(e.guid, e.suggestedFilename) })
+    cdp.on("Browser.downloadProgress", (e) => { if (e.state === "completed") finished.push({ name: names.get(e.guid) ?? "?", bytes: e.receivedBytes }) })
+    await cdp.send("Browser.setDownloadBehavior", { behavior: "allowAndName", downloadPath: downloads, eventsEnabled: true })
+    try {
+      await page.click(link("report.pdf"))
+      await page.click(link("bundle.zip"))
+      const deadline = Date.now() + 10_000
+      while (finished.length < 2 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100))
+      assert.deepEqual(finished.sort((a, b) => a.name.localeCompare(b.name)), [
+        { name: "bundle.zip", bytes: 22 },
+        { name: "report.pdf", bytes: pdfSize },
+      ])
+    } finally {
+      rmSync(downloads, { recursive: true, force: true })
+    }
+    assert.equal(opened.length, 2, "nothing on the phone reached the desktop opener")
+    assert.equal(await page.$$eval(".frizz-sheet-panel", (els) => els.length), 0, "and no reader opened for either")
+
+    await page.evaluate(async () => {
+      const path = "/src/api/rpc.ts"; const { rpc } = await import(path)
+      const { localFileOpener: _, ...rest } = await rpc.settingsGet()
+      await rpc.settingsSet(rest)
+    })
     assert.deepEqual(errors, [])
   } finally {
     await browser.close()

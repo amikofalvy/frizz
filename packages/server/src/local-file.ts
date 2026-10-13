@@ -1,7 +1,7 @@
 import { spawn, type SpawnOptions } from "node:child_process"
-import { existsSync, readFileSync, realpathSync, statSync } from "node:fs"
+import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, realpathSync, statSync } from "node:fs"
 import { homedir } from "node:os"
-import { dirname, isAbsolute, join, resolve, sep } from "node:path"
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path"
 import type { LocalFileOpener } from "@frizz/shared"
 import { normalizeLocalPath } from "./local-path.ts"
 
@@ -96,7 +96,51 @@ export const MARKDOWN_READ_LIMIT = 1024 * 1024
 
 export type LocalMarkdownRead = { path: string; markdown: string; truncated: boolean }
 
-export type LocalTextRead = { path: string; text: string; truncated: boolean }
+/**
+ * `binary` is the reader's answer to "can Frizz show this as text?", given as DATA rather than thrown:
+ * the web routes every file click on it (lib/local-file-links.ts), and a binary file goes to the
+ * system opener instead of opening a reader that can only say it cannot read it (maintainer
+ * 2026-10-13, of a PDF: "Anything that's clickable and handled by Frizz needs to be openable in
+ * Frizz. Otherwise, we should just fall through to the system click."). A binary read carries no
+ * text. `modifiedAt` is the file's mtime in ms, the revision the PDF view reloads on.
+ */
+export type LocalTextRead = { path: string; text: string; truncated: boolean; binary: boolean; modifiedAt: number }
+
+// A PDF is the one BINARY document Frizz shows itself — in the browser's own PDF viewer, fed by the
+// `/local-file` route (resolveServedLocalFile) — so the text reader never sends one's bytes as source,
+// even a PDF whose first 8 KiB happen to hold no NUL. The web's `PDF_FILE_PATH` must match.
+export const PDF_FILE_EXT = /\.pdf$/i
+
+// The binary sniff: a NUL in the first 8 KiB, git's own tell. Compressed and media formats carry one
+// within a few bytes; UTF-8 text never does.
+const SNIFF_BYTES = 8192
+
+// Up to `max` bytes from the start of an open file, stopping early at EOF. Bounded on purpose: the
+// reader shows at most a megabyte, and the sniff needs 8 KiB, so neither reads a 2 GB recording whole.
+function readHead(fd: number, max: number): Buffer {
+  const buffer = Buffer.alloc(max)
+  let filled = 0
+  while (filled < max) {
+    const read = readSync(fd, buffer, filled, max - filled, filled)
+    if (read === 0) break
+    filled += read
+  }
+  return buffer.subarray(0, filled)
+}
+
+/** True for a file Frizz cannot show as text: a PDF by name, anything else by a NUL in its head. */
+export function isBinaryLocalFile(path: string): boolean {
+  if (PDF_FILE_EXT.test(path)) return true
+  let fd: number | undefined
+  try {
+    fd = openSync(path, "r")
+    return readHead(fd, SNIFF_BYTES).includes(0)
+  } catch {
+    return false
+  } finally {
+    if (fd !== undefined) closeSync(fd)
+  }
+}
 
 /**
  * A file's source, for the fullscreen page's file viewer (the "edited files" rail, 2026-08-28).
@@ -118,17 +162,61 @@ export type LocalTextRead = { path: string; text: string; truncated: boolean }
  * already spawns the desktop opener on anything under home. The origin check and the session are the
  * boundary; this is defense in depth behind them, and it stays exactly as wide as the reader's.
  *
- * Binary is refused rather than rendered as noise: a NUL in the first 8 KiB is the classic tell and the
- * viewer is a text surface. Same 1 MiB line-boundary truncation as the Markdown reader.
+ * A binary file is REPORTED, never rendered as noise and never refused: `binary: true`, no text (see
+ * LocalTextRead). It was a thrown "Local file is not a text file" until 2026-10-13, which the viewer
+ * printed as its whole body. Same 1 MiB line-boundary truncation as the Markdown reader, and the read
+ * stops there too rather than pulling the whole file into memory first.
  */
 export function readLocalTextFile(rawPath: string, roots: readonly string[]): LocalTextRead {
   const path = resolveLocalFile(rawPath, roots)
-  const bytes = readFileSync(path)
-  if (bytes.subarray(0, 8192).includes(0)) throw new Error("Local file is not a text file")
-  if (bytes.length <= MARKDOWN_READ_LIMIT) return { path, text: bytes.toString("utf8"), truncated: false }
-  const head = bytes.subarray(0, MARKDOWN_READ_LIMIT)
-  const lastBreak = head.lastIndexOf(0x0a)
-  return { path, text: head.subarray(0, lastBreak > 0 ? lastBreak : head.length).toString("utf8"), truncated: true }
+  const fd = openSync(path, "r")
+  try {
+    const modifiedAt = Math.trunc(fstatSync(fd).mtimeMs)
+    const binary = { path, text: "", truncated: false, binary: true, modifiedAt }
+    if (PDF_FILE_EXT.test(rawPath.trim()) || PDF_FILE_EXT.test(path)) return binary
+    // One byte past the cap says whether the cut is needed.
+    const bytes = readHead(fd, MARKDOWN_READ_LIMIT + 1)
+    if (bytes.subarray(0, SNIFF_BYTES).includes(0)) return binary
+    if (bytes.length <= MARKDOWN_READ_LIMIT) return { path, text: bytes.toString("utf8"), truncated: false, binary: false, modifiedAt }
+    const head = bytes.subarray(0, MARKDOWN_READ_LIMIT)
+    const lastBreak = head.lastIndexOf(0x0a)
+    return { path, text: head.subarray(0, lastBreak > 0 ? lastBreak : head.length).toString("utf8"), truncated: true, binary: false, modifiedAt }
+  } finally {
+    closeSync(fd)
+  }
+}
+
+export type ServedLocalFile = { path: string; size: number; name: string; pdf: boolean }
+
+/**
+ * A local file's BYTES, for the `/local-file` route: behind the same openable roots as the readers,
+ * which already hand any text file under them to the page. Two shapes, and only two:
+ *
+ *   · a PDF — the requested AND the canonical path both `.pdf`, as the Markdown gate pairs them — is
+ *     served inline as `application/pdf`, for the reader's PDF view and a phone's own viewer;
+ *   · anything else is a DOWNLOAD (`application/octet-stream`, `attachment`, sandboxed), a phone's
+ *     fall-through for a file Frizz cannot show, since the desktop opener there is the wrong machine.
+ *
+ * Nothing is ever served as a type the page could run: an `.html` under home comes back as a download,
+ * never as a document on Frizz's origin (localFileHeaders).
+ */
+export function resolveServedLocalFile(rawPath: string, roots: readonly string[]): ServedLocalFile {
+  const path = resolveLocalFile(rawPath, roots)
+  return { path, size: statSync(path).size, name: basename(path), pdf: PDF_FILE_EXT.test(rawPath.trim()) && PDF_FILE_EXT.test(path) }
+}
+
+export function localFileHeaders(file: ServedLocalFile): Record<string, string> {
+  // RFC 6266 / 5987: the name percent-encoded, plus the characters encodeURIComponent leaves alone.
+  const name = encodeURIComponent(file.name).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)
+  return {
+    "content-type": file.pdf ? "application/pdf" : "application/octet-stream",
+    "content-length": String(file.size),
+    "content-disposition": `${file.pdf ? "inline" : "attachment"}; filename*=UTF-8''${name}`,
+    "x-content-type-options": "nosniff",
+    "cache-control": "private, no-store",
+    // A CSP sandbox stops Chrome's PDF viewer from loading at all, so only the download carries one.
+    ...(file.pdf ? {} : { "content-security-policy": "default-src 'none'; sandbox" }),
+  }
 }
 
 export function readLocalMarkdown(rawPath: string, roots: readonly string[]): LocalMarkdownRead {
@@ -255,8 +343,11 @@ export async function openLocalFile(
   options: { forceSystem?: boolean; spawn?: LocalFileSpawn } & OpenerCommandOptions = {},
 ): Promise<LocalFileOpenResult> {
   const path = resolveLocalFile(rawPath, roots)
-  const selected = options.forceSystem ? "system" : opener
-  if (selected === "copy") return { action: "copy", path }
+  const chosen = options.forceSystem ? "system" : opener
+  if (chosen === "copy") return { action: "copy", path }
+  // An editor is the opener for TEXT. Cursor handed a PDF or a zip shows a binary-file warning, so a
+  // file the reader would call binary goes where a double-click would send it: the system's own app.
+  const selected = (chosen === "cursor" || chosen === "vscode") && isBinaryLocalFile(path) ? "system" : chosen
 
   const spec = localFileOpenCommand(path, selected, options)
   const child = (options.spawn ?? defaultSpawn)(spec.command, spec.args, {

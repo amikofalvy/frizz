@@ -85,11 +85,28 @@ function slugFromBody(init?: RequestInit): string | null {
   }
 }
 
+// …or from a query read's `?input=` (rpc.ts sends queries as GET), which the body never carries.
+function slugFromQuery(url: URL): string | null {
+  try {
+    const input = url.searchParams.get("input")
+    return input ? (JSON.parse(input)?.slug ?? null) : null
+  } catch {
+    return null
+  }
+}
+
 const originalFetch = window.fetch
 window.fetch = async (input, init) => {
   const url = new URL(typeof input === "string" ? input : (input as Request).url ?? input.toString(), location.origin)
   if (url.pathname === "/_frizz/rpc/threadTranscript" || url.pathname === "/_frizz/rpc/threadTranscriptEarlier") {
-    const slug = slugFromBody(init) ?? CARDS[0].id
+    const slug = slugFromBody(init) ?? slugFromQuery(url) ?? CARDS[0].id
+    const turn = endedTurns.get(slug)
+    if (turn) {
+      // The server's read takes a moment, as it does in production (~20-45ms measured): the window a
+      // returning card used to paint its pre-turn cache in.
+      await new Promise((r) => setTimeout(r, turn.readMs))
+      return new Response(JSON.stringify({ result: turn.transcript }), { headers: { "content-type": "application/json" } })
+    }
     const card = CARDS.find((c) => c.id === slug) ?? CARDS[0]
     return new Response(JSON.stringify({ result: transcriptFor(card.id, card.title) }), { headers: { "content-type": "application/json" } })
   }
@@ -159,6 +176,31 @@ const lagBoard = new Set<string>()
       ],
     }
   })
+}
+
+// A TURN THAT ENDED while the card was out of the queue. `__endTurn` models the turn end exactly as the
+// server reports it: the board puts the thread back in the queue at rest with the reply as its newest
+// record (lastAssistantAt), and the transcript carrying that reply is only readable through a fetch —
+// the card took the transcript's only observer with it when it left, so nothing was pushed meanwhile.
+const endedTurns = new Map<string, { readMs: number; transcript: ReturnType<typeof transcriptFor> }>()
+;(window as unknown as { __endTurn: (slug: string, steer: string, reply: string, readMs: number) => void }).__endTurn = (slug, steer, reply, readMs) => {
+  const card = CARDS.find((c) => c.id === slug) ?? CARDS[0]
+  const now = Date.now()
+  const base = transcriptFor(card.id, card.title)
+  endedTurns.set(slug, {
+    readMs,
+    transcript: {
+      ...base,
+      messages: [
+        ...base.messages,
+        { sourceId: `${slug}-steer`, role: "user", text: steer, tools: [], parts: [], at: new Date(now - 2_000).toISOString() } as TranscriptMessage,
+        { sourceId: `${slug}-reply`, role: "assistant", text: reply, tools: [], parts: [{ kind: "text", text: reply }], at: new Date(now).toISOString() } as TranscriptMessage,
+        { sourceId: `${slug}-rest`, role: "assistant", kind: "event", boundary: "rest", text: "Agent rested", tools: [], parts: [], at: new Date(now).toISOString() } as TranscriptMessage,
+      ],
+    },
+  })
+  const back = { ...makeThread(card.id, card.title), runtime: "turn-idle", lastAssistantAt: new Date(now).toISOString(), lastActivityAt: new Date(now).toISOString() } as ThreadViewModel
+  if (store.board) store.board = { ...store.board, threads: [...store.board.threads.filter((t) => t.id !== slug), back] } as BoardSnapshot
 }
 
 // QA hook: prune a thread from the board WITHOUT any user action on the card — a pure board

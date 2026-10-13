@@ -34,6 +34,9 @@ test("Markdown local image syntax uses the gated image proxy and local files rem
         void request.continue()
       }
     })
+    // A desktop Chrome renders PDFs inline, and that is what makes one a document the reader opens. The
+    // headless shell has no viewer and says so; stand in for the browser that does.
+    await page.evaluateOnNewDocument(() => Object.defineProperty(Navigator.prototype, "pdfViewerEnabled", { configurable: true, get: () => true }))
     await page.goto(`${baseUrl}/local-file-opener-fixture.html`, { waitUntil: "domcontentloaded" })
     await page.waitForSelector('button[data-local-path="/fixture/report.md"]')
     const rendered = await page.$eval(".md-body", (node) => {
@@ -91,8 +94,9 @@ test("Markdown local image syntax uses the gated image proxy and local files rem
 
     // The ROUTING split, which the markup above deliberately cannot show: both links are the same
     // `data-local-path` button, and only the click decides where each one goes. A `.md` file is prose
-    // Frizz renders ITSELF — it must push the reader drawer and never reach the desktop opener — while
-    // any other local file must still be handed to the opener and open no drawer.
+    // Frizz renders ITSELF, and a PDF a document it shows in the browser's viewer — both must push the
+    // reader drawer and never reach the desktop opener — while any other local file must still be
+    // handed to the opener and open no drawer.
     await page.click('button[data-local-path="/fixture/report.md"]')
     await page.click('button[data-local-path="/fixture/contract.pdf"]')
     // And the rebased one routes by the SAME rule — the click handler never learns which syntax the
@@ -114,9 +118,10 @@ test("Markdown local image syntax uses the gated image proxy and local files rem
       drawers: (window as unknown as { __localFileFixtureDrawers: () => unknown[] }).__localFileFixtureDrawers(),
     }))
     assert.deepEqual(routed, {
-      opened: ["/fixture/contract.pdf", "/fixture/trace.json", "D:\\fixture\\win-trace.json"],
+      opened: ["/fixture/trace.json", "D:\\fixture\\win-trace.json"],
       drawers: [
         { kind: "markdown", path: "/fixture/report.md" },
+        { kind: "markdown", path: "/fixture/contract.pdf" },
         { kind: "markdown", path: "/fixture/.frizz/threads/6d56ea2f/HANDOFF.md" },
         { kind: "markdown", path: "/fixture/plan.md" },
         { kind: "markdown", path: "D:/fixture/win-report.md" },
@@ -141,13 +146,13 @@ test("Markdown local image syntax uses the gated image proxy and local files rem
       expanded: document.querySelector(".frizz-diff-header")?.getAttribute("data-expanded"),
     }))
     assert.deepEqual(fromHeaders.opened, [
-      "/fixture/contract.pdf",
       "/fixture/trace.json",
       "D:\\fixture\\win-trace.json",
       "/fixture/src/app.ts",
     ])
     assert.deepEqual(fromHeaders.drawers, [
       { kind: "markdown", path: "/fixture/report.md" },
+      { kind: "markdown", path: "/fixture/contract.pdf" },
       { kind: "markdown", path: "/fixture/.frizz/threads/6d56ea2f/HANDOFF.md" },
       { kind: "markdown", path: "/fixture/plan.md" },
       { kind: "markdown", path: "D:/fixture/win-report.md" },

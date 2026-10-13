@@ -69,7 +69,7 @@ if (!settingsFixture) {
   initSupervisorStatus(queryClient)
   initFont()
   installExternalLinkInterceptor()
-  installLocalFileLinkInterceptor()
+  installLocalFileLinkInterceptor(queryClient)
   installCodeCopyInterceptor()
   installCodeTabInterceptor()
   installCodeExpandInterceptor()

@@ -1,15 +1,18 @@
-import { rpc } from "../api/rpc.ts"
-import { fileRpc } from "./consoleProjects.ts"
-import { openFilePanel, openLightbox, pushMarkdownDrawer, showToast, store } from "../store.ts"
+import type { QueryClient } from "@tanstack/react-query"
+import { fileRpc, localFileUrl } from "./consoleProjects.ts"
+import { openLightbox, pushMarkdownDrawer, showToast, store } from "../store.ts"
 import { copyTextToClipboard } from "./clipboard.ts"
 import { lightboxImageFor } from "./lightbox.ts"
-import { isLocalMarkdownFile, localImageUrl } from "./markdownTargets.ts"
+import { localFileQuery } from "./localFileQuery.ts"
+import { browserShowsPdf, isLightboxPath, isLocalMarkdownFile, isLocalPdfFile, localImageUrl } from "./markdownTargets.ts"
+import { basename } from "./paths.ts"
 import { isMobileViewport } from "./mobile.ts"
 
 // One delegated listener covers every sanitized markdown surface (chat, the doc drawer, and
 // drawers). It never follows file:// or an accidental same-origin pathname: only explicit data
 // attributes emitted by markdown.ts reach the server's canonical-path allowlist gate.
-export function installLocalFileLinkInterceptor(): () => void {
+export function installLocalFileLinkInterceptor(client?: QueryClient): () => void {
+  readCache = client ?? null
   const handler = (event: MouseEvent) => {
     if (event.button !== 0 || event.defaultPrevented) return
     const source = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-local-path]") : null
@@ -78,42 +81,81 @@ function openPicture(source: HTMLElement, path: string): void {
   openLightbox(pictures.map((img) => lightboxImageFor(img.dataset.localPath!, img.alt)), Math.max(pictures.indexOf(source), 0))
 }
 
-// Act on a vetted local path: a `.md` file is prose Frizz can render itself, so it opens in the built-in
-// reader instead of launching an editor; everything else goes to the server, which realpath-gates it and
-// hands it to the opener the `localFileOpener` setting names — except on a phone, where nothing leaves
-// the browser (below). The decision lives HERE, in the one place
-// every local-path activation passes through, rather than in each producer — markdown links, resolved
-// inline-code paths, attachment chips, the Codex file rows and the tool-header path links all get the
-// same routing from this single branch. A picture never arrives here from a click — it opens in the
-// lightbox (openPicture, above) — so `image` is the lightbox's own way OUT, its "Open in default
-// viewer": the file goes to the desktop's image viewer rather than to the reader or an editor.
+// Act on a vetted local path. THE RULE (maintainer 2026-10-13, after a PDF opened the /full viewer onto
+// "Couldn't read this file: Local file is not a text file"): "Anything that's clickable and handled by
+// Frizz needs to be openable in Frizz. Otherwise, we should just fall through to the system click." So a
+// click never opens a reader that cannot show what it was handed. By kind:
+//
+//   · Markdown → the reader, rendered (a drawer; the split panel on /full).
+//   · a picture or a video → the lightbox, which shows and plays exactly what `/local-image` serves.
+//   · a PDF → the reader, in the browser's own PDF viewer; on a phone, the phone's own (a new tab). A
+//     desktop browser that would download PDFs rather than show them has no viewer to lend, so there
+//     a PDF goes to the desktop opener like any other binary file.
+//   · anything else → wherever the board sends code on this surface. On the desktop board that is the
+//     desktop opener, as it always was. Where the surface is the reader's SOURCE view — the /full split
+//     panel, a phone — the server's read decides first: text opens the reader, and a binary file falls
+//     through to the desktop opener, or on a phone downloads, which is the phone's own "open".
+//
+// The decision lives HERE, in the one place every local-path activation passes through, rather than in
+// each producer — markdown links, resolved inline-code paths, attachment chips, the Codex file rows,
+// the tool-header path links and the /full rail all get the same routing from this single function.
+// `image` is the lightbox's own way OUT, its "Open in default viewer": the file goes to the desktop's
+// image viewer rather than back into the lightbox.
 //
 // Components that own their own click (PathLink, whose row swallows the event before it can reach the
 // delegated listener below) call this directly; everything that only tags itself `data-local-path`
 // arrives through the interceptor.
 export function openLocalPath(path: string, image = false): void {
-  if (!image && isLocalMarkdownFile(path)) {
-    pushMarkdownDrawer(path)
+  if (image) {
+    // ON A PHONE the desktop opener is the wrong machine (it launches on the computer Frizz runs on), so
+    // the browser — the phone's own viewer — opens the picture through the route that already serves it.
+    if (isMobileViewport()) window.open(localImageUrl(path), "_blank", "noopener")
+    else void open(path, true)
     return
   }
-  // On the fullscreen page every non-image file opens in the split viewer too (source view; the
-  // server admits project files only), because a reader beside the transcript beats being thrown out
-  // to an editor for a look. Outside it — the board — the desktop opener remains the answer for code.
-  if (!image && store.splitFileViewer) {
-    openFilePanel(path)
+  if (isLocalMarkdownFile(path)) return pushMarkdownDrawer(path)
+  if (isLightboxPath(path)) return openLightbox([lightboxImageFor(path, null)], 0)
+  if (isLocalPdfFile(path)) {
+    // Synchronously, inside the tap: a phone's browser blocks a window opened after an await.
+    if (isMobileViewport()) window.open(localFileUrl(path), "_blank", "noopener")
+    else if (browserShowsPdf()) pushMarkdownDrawer(path)
+    else void open(path, false)
     return
   }
-  // ON A PHONE the desktop opener is the wrong machine: it launches an editor on the computer Frizz runs
-  // on, which from a phone is somewhere else entirely, and the tap appears to do nothing. So every file
-  // opens in Frizz's own reader instead — the same drawer a `.md` gets, showing the file as highlighted
-  // source (MarkdownDrawer) — and the lightbox's "Open in default viewer" opens the picture in the
-  // browser, the phone's own image viewer, through the route that already serves it to the transcript.
-  if (isMobileViewport()) {
-    if (image) window.open(localImageUrl(path), "_blank", "noopener")
-    else pushMarkdownDrawer(path)
+  if (!store.splitFileViewer && !isMobileViewport()) {
+    void open(path, false)
     return
   }
-  void open(path, image)
+  void openAsSource(path)
+}
+
+// The query client the readers share, set at install, so this read IS the reader's: a text file opens
+// onto a warm cache (and a rail row's hover prewarm makes the read itself free). A page that installs
+// no client — a fixture — reads once without caching, and the reader reads again on mount.
+let readCache: QueryClient | null = null
+
+async function openAsSource(path: string): Promise<void> {
+  let binary = false
+  try {
+    const read = localFileQuery(path)
+    binary = (readCache ? await readCache.fetchQuery(read) : await read.queryFn()).binary
+  } catch {
+    // Gone, or outside the gate: the reader says so in the gate's own words, as it always has.
+  }
+  if (!binary) return pushMarkdownDrawer(path)
+  if (isMobileViewport()) download(path)
+  else void open(path, false)
+}
+
+// A same-origin `download` anchor rather than a navigation: an attachment that 404s must not take the
+// page with it. It carries no `data-local-path`, so the interceptor above lets its click through.
+function download(path: string): void {
+  const anchor = document.createElement("a")
+  anchor.href = localFileUrl(path)
+  anchor.download = basename(path)
+  document.body.append(anchor)
+  anchor.click()
+  anchor.remove()
 }
 
 async function open(path: string, image: boolean) {

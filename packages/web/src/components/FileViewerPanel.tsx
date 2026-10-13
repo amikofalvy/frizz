@@ -9,10 +9,10 @@ import { LOCAL_FILE_POLL_MS, highlightedSource, localFileQuery } from "../lib/lo
 import { useLocalFileCodeLinks } from "../lib/localFileCode.ts"
 import { useMarkdownHtml } from "../lib/useMarkdown.ts"
 import { splitFrontmatter } from "../lib/frontmatter.ts"
-import { isLocalMarkdownFile, localFileDir } from "../lib/markdownTargets.ts"
+import { browserShowsPdf, isLocalMarkdownFile, isLocalPdfFile, localFileDir } from "../lib/markdownTargets.ts"
 import { basename, tildePath } from "../lib/paths.ts"
 import { contextChipLabel, insertTokenIntoProse, locateInSource, uniqueToken } from "../lib/composerContext.ts"
-import { Frontmatter, FOOTER_STYLE, OpenAction } from "./MarkdownDrawer.tsx"
+import { BinaryFileNotice, Frontmatter, FOOTER_STYLE, OpenAction, PdfView } from "./MarkdownDrawer.tsx"
 import { useMermaidIslands } from "./CodexRichOutput.tsx"
 import { useLightboxIslands } from "./Lightbox.tsx"
 import { SheetHeader } from "./ui/SheetHeader.tsx"
@@ -61,13 +61,17 @@ function lineOfOffset(raw: string, offset: number): number {
 
 export function FileViewerPanel({ slug, path, active }: { slug: string; path: string; active: boolean }) {
   // Markdown reads through the reader gate (`.md` only) and renders; anything else reads through the
-  // text gate — the same roots since 2026-09-03 — and is source, full stop. The read itself lives in
+  // text gate — the same roots since 2026-09-03 — and is source, full stop, unless that gate calls it
+  // binary: a PDF then shows in the browser's own viewer, and anything else says Frizz cannot show it
+  // (a click never opens one here — lib/local-file-links.ts). The read itself lives in
   // lib/localFileQuery so the rail can PREWARM it on hover through the identical key.
   //
   // LIVE while open: the server watches the file and the socket invalidates this query on every save
   // (useLiveLocalFile), so the panel follows a worker's edits as they land. The poll is the fallback
   // for a socket that is not up; data stays on screen across a refetch, so neither path flickers.
   const markdown = isLocalMarkdownFile(path)
+  // A PDF in a browser with no viewer to lend falls to the binary notice below, as the file it then is.
+  const pdf = isLocalPdfFile(path) && browserShowsPdf()
   const live = useLiveLocalFile(path)
   const body = useQuery({ ...localFileQuery(path), refetchInterval: live ? false : LOCAL_FILE_POLL_MS })
   // Canonical path from the server (symlinks resolved) — the base for relative links, the label, and
@@ -204,11 +208,16 @@ export function FileViewerPanel({ slug, path, active }: { slug: string; path: st
           </div>
         }
       />
-      <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4">
-        {body.isLoading ? (
+      {/* A PDF's frame fills the body edge to edge; its viewer scrolls and pads itself. */}
+      <div className={`flex-1 min-h-0 ${pdf && body.data ? "flex flex-col" : "overflow-y-auto px-5 py-4"}`}>
+        {pdf && body.data ? (
+          <PdfView path={resolved} revision={body.data.modifiedAt} title={title} />
+        ) : body.isLoading ? (
           <div className="text-[13px] text-muted">Loading…</div>
         ) : body.error ? (
           <div className="text-[13px] text-danger-90">Couldn’t read this file: {(body.error as Error).message}</div>
+        ) : body.data?.binary ? (
+          <BinaryFileNotice />
         ) : view === "source" ? (
           raw ? (
             // Highlighted through the same hljs pipeline as every transcript code body (lib/codeBody);
@@ -244,7 +253,8 @@ export function FileViewerPanel({ slug, path, active }: { slug: string; path: st
         className="shrink-0 flex items-center justify-between gap-3 border-t border-border/60 bg-panel px-5 pt-3"
         style={FOOTER_STYLE}
       >
-        <span className="min-w-0 truncate text-[11px] text-muted-70">Select text and press ⌘I to add it to the chat</span>
+        {/* A PDF's text lives in the viewer's own frame, out of this page's selection, so ⌘I cannot stage it. */}
+        {pdf || body.data?.binary ? <span /> : <span className="min-w-0 truncate text-[11px] text-muted-70">Select text and press ⌘I to add it to the chat</span>}
         <OpenAction path={resolved} />
       </div>
     </div>

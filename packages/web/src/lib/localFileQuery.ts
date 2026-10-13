@@ -1,7 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query"
 import { fileRpc } from "./consoleProjects.ts"
 import { renderCodeBody } from "./codeBody.ts"
-import { isLocalMarkdownFile } from "./markdownTargets.ts"
+import { isLightboxPath, isLocalMarkdownFile } from "./markdownTargets.ts"
 import { resolveFileLanguage } from "./syntaxHighlight.ts"
 
 // The ONE read of a local file the /full split viewer renders, shared by the panel that shows it and
@@ -13,21 +13,31 @@ import { resolveFileLanguage } from "./syntaxHighlight.ts"
 // through the text gate, which since 2026-09-03 is rooted identically — home-and-below plus the temp
 // trees — so a worker's worktree file opens as readily as one in the project dir. Either way the result
 // carries the CANONICAL path (symlinks resolved), which is what the panel labels, links relative to,
-// and stamps on context items.
+// and stamps on context items — and `binary`, the text gate's word on whether the file is text at all,
+// which is what a click routes on (lib/local-file-links.ts) and what the PDF view reloads on (`modifiedAt`).
 // The key alone — what the socket's `file-changed` frame invalidates (api/socket.ts), keyed by the
 // path the reader subscribed with, which is the path it queried with.
 export function localFileQueryKey(path: string): readonly [string, string] {
   return [isLocalMarkdownFile(path) ? "localMarkdown" : "localFile", path]
 }
 
+export interface LocalFileRead {
+  path: string
+  markdown: string
+  truncated: boolean
+  binary: boolean
+  /** The file's mtime in ms — absent for Markdown, whose reader re-renders on content alone. */
+  modifiedAt?: number
+}
+
 export function localFileQuery(path: string) {
   const markdown = isLocalMarkdownFile(path)
   return {
     queryKey: localFileQueryKey(path),
-    queryFn: async () => {
-      if (markdown) return fileRpc(path).localMarkdown({ path })
+    queryFn: async (): Promise<LocalFileRead> => {
+      if (markdown) return { ...(await fileRpc(path).localMarkdown({ path })), binary: false }
       const read = await fileRpc(path).localFile({ path })
-      return { path: read.path, markdown: read.text, truncated: read.truncated }
+      return { path: read.path, markdown: read.text, truncated: read.truncated, binary: read.binary, modifiedAt: read.modifiedAt }
     },
     // Long enough that a hover followed by a click is ONE read. Freshness while the file is OPEN is
     // the live watch's job (useLiveLocalFile: the server pushes `file-changed`, the key above is
@@ -71,11 +81,13 @@ function whenIdle(run: () => void): void {
 // the click that follows renders the same error through the panel's own query, where the reader can
 // see it.
 export function prewarmLocalFile(client: QueryClient, path: string): void {
+  // A picture or a video opens in the lightbox, which reads nothing through here.
+  if (isLightboxPath(path)) return
   client
     .prefetchQuery(localFileQuery(path))
     .then(() => {
-      const cached = client.getQueryData<{ path: string; markdown: string }>(localFileQuery(path).queryKey)
-      if (!cached?.markdown || isLocalMarkdownFile(path)) return
+      const cached = client.getQueryData<LocalFileRead>(localFileQuery(path).queryKey)
+      if (!cached?.markdown || cached.binary || isLocalMarkdownFile(path)) return
       whenIdle(() => highlightedSource(cached.path, cached.markdown))
     })
     .catch(() => {})

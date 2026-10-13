@@ -205,6 +205,26 @@ test("each opener preference selects its own app, and an image ignores the prefe
   assert.deepEqual(await argvFor("vscode", true), expected.system)
 })
 
+test("an editor preference never receives a binary file: a PDF or a zip goes to the system's own app", async () => {
+  const root = mkdtempSync(join(tmpdir(), "frizz-local-file-binary-opener-"))
+  const pdf = join(root, "report.pdf")
+  const zip = join(root, "bundle.zip")
+  writeFileSync(pdf, "%PDF-1.4\n%%EOF\n")
+  writeFileSync(zip, Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00, 0x00]))
+  const argvFor = async (file: string, opener: LocalFileOpener) => {
+    const calls: SpawnCall[] = []
+    await openLocalFile(file, opener, [root], { platform: "darwin", spawn: fakeSpawn(calls), env: {}, exists: () => false })
+    return [calls[0]!.command, ...calls[0]!.args]
+  }
+  for (const file of [pdf, zip]) {
+    const real = realpathSync(file)
+    assert.deepEqual(await argvFor(file, "cursor"), ["open", real], file)
+    assert.deepEqual(await argvFor(file, "vscode"), ["open", real], file)
+    // Reveal is not an editor, and it does what it says for any file.
+    assert.deepEqual(await argvFor(file, "finder"), ["open", "-R", real], file)
+  }
+})
+
 test("local opener refuses relative, outside, directory, and escaping symlink paths", () => {
   const root = mkdtempSync(join(tmpdir(), "frizz-local-file-root-"))
   const outside = mkdtempSync(join(tmpdir(), "frizz-local-file-outside-"))
@@ -291,7 +311,7 @@ test("an oversized Markdown file is cut at a line boundary and reports the cut",
   assert.equal(read.markdown.split("\n").every((l) => l === "" || l.length === 99), true)
 })
 
-test("the text reader spans every openable root, not the project dir alone, and refuses binary", () => {
+test("the text reader spans every openable root, not the project dir alone, and reports binary as data", () => {
   const project = realpathSync(mkdtempSync(join(tmpdir(), "frizz-local-text-project-")))
   // A worker's checkout is very often NOT the project directory — a git worktree, a sibling clone,
   // `/tmp` scratch. The viewer's gate is the reader's, so every one of those rows opens.
@@ -302,15 +322,45 @@ test("the text reader spans every openable root, not the project dir alone, and 
   writeFileSync(join(worktree, "mod.rs"), "fn main() {}\n")
   writeFileSync(join(untrusted, "elsewhere.ts"), "no")
   writeFileSync(join(worktree, "logo.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x0d]))
+  // A PDF whose head holds no NUL at all: binary by NAME, so its bytes never come back as source.
+  writeFileSync(join(worktree, "report.pdf"), "%PDF-1.4\n1 0 obj << >> endobj\n%%EOF\n")
+  const mtime = (path: string) => Math.trunc(statSync(path).mtimeMs)
 
   assert.equal(readLocalTextFile(join(project, "app.ts"), roots).text, "export const a = 1\n")
   assert.deepEqual(readLocalTextFile(join(worktree, "mod.rs"), roots), {
     path: join(worktree, "mod.rs"),
     text: "fn main() {}\n",
     truncated: false,
+    binary: false,
+    modifiedAt: mtime(join(worktree, "mod.rs")),
   })
   assert.throws(() => readLocalTextFile(join(untrusted, "elsewhere.ts"), roots), /trusted roots/)
-  assert.throws(() => readLocalTextFile(join(worktree, "logo.png"), roots), /not a text file/)
+  // The /full viewer printed this case's thrown error as its whole body (2026-10-13). It is an answer
+  // now — the click routes on it — and it carries none of the file's bytes.
+  for (const name of ["logo.png", "report.pdf"]) {
+    assert.deepEqual(readLocalTextFile(join(worktree, name), roots), {
+      path: join(worktree, name),
+      text: "",
+      truncated: false,
+      binary: true,
+      modifiedAt: mtime(join(worktree, name)),
+    }, name)
+  }
+})
+
+test("the text reader reads no further than the cap, and sniffs binary in the head alone", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "frizz-local-text-cap-")))
+  const big = join(root, "huge.log")
+  writeFileSync(big, `${"line\n".repeat(MARKDOWN_READ_LIMIT / 5 + 10)}`)
+  const read = readLocalTextFile(big, [root])
+  assert.equal(read.truncated, true)
+  assert.equal(read.binary, false)
+  assert.equal(read.text.length <= MARKDOWN_READ_LIMIT, true)
+  assert.equal(read.text.endsWith("line"), true, "cut on a line boundary")
+  // A NUL past the sniff window is not the tell: git's own rule, and a log can carry one.
+  const late = join(root, "late-nul.txt")
+  writeFileSync(late, Buffer.concat([Buffer.from("a".repeat(9000)), Buffer.from([0])]))
+  assert.equal(readLocalTextFile(late, [root]).binary, false)
 })
 
 test("a watch attaches exactly where the read is allowed, and a decoy .md arms nothing", () => {

@@ -75,8 +75,13 @@ import type { ReactElement, ReactNode, RefObject } from "react"
 // utility over a bare one.
 const ROW_ACTION_CLASS = "flex h-[19px] w-[19px] items-center justify-center rounded text-muted opacity-70 outline-none transition-[color,opacity] hover:bg-panel-2 hover:text-fg hover:opacity-100"
 
+// ANCHORED TO THE TOP, 52px down: the line the queue's first card opens on (main's py-5 + the queue
+// column's py-8 — TodosView), so the status row and the top card start level. It was centred
+// (`justify-center`) until 2026-10-13, and a centred column moves every row and the prompt box by half of
+// any change in its height: a send that put a thread in a fresh Running band moved the whole sidebar up
+// 24px, and its return moved it back (maintainer: "Anchor both to the top").
 export const SIDEBAR_COLUMN_CLASS =
-  "sticky top-0 self-start h-screen w-[clamp(272px,34vw,680px)] shrink-0 flex flex-col justify-center max-[800px]:static max-[800px]:h-auto max-[800px]:w-full max-[800px]:justify-start max-[800px]:pt-16"
+  "sticky top-0 self-start h-screen w-[clamp(272px,34vw,680px)] shrink-0 flex flex-col pt-[52px] max-[800px]:static max-[800px]:h-auto max-[800px]:w-full max-[800px]:pt-16"
 
 /**
  * Which row's card is under the reading line, and the rail scrolled to keep that row in view — the
@@ -195,8 +200,8 @@ export function Sidebar() {
   const { railRef, activeId, navigateToQueueCard } = useQueueScrollspy(snap.view, snap.drawers.length)
 
   return (
-    // HEIGHT MODEL: a sticky, exactly viewport-height wrapper that CENTERS the inner column, which
-    // grows fit-content to a near-flush cap and scrolls internally only past it. overflow-x is CLIPPED
+    // HEIGHT MODEL: a sticky, exactly viewport-height wrapper that holds the inner column at its top
+    // inset, where it grows fit-content to a near-flush cap and scrolls internally only past it. overflow-x is CLIPPED
     // (titles wrap; min-w-0 at every level). No bg/clip on the column itself.
     // NO z-index. The rail and the workpane are side-by-side flex columns that never overlap, so the
     // old desktop `z-[100]` bought nothing — but it outranked every ordinary overlay (the ⌘K palette
@@ -209,14 +214,13 @@ export function Sidebar() {
     // for nav and left the queue with the remainder. 272px still holds the dispatch composer's profile
     // chip and its icon buttons on one line, and hands the difference back to the queue.
     <aside className={SIDEBAR_COLUMN_CLASS}>
-      {/* The content column FILLS the aside track (no narrow inner cap). Its cap reserves 16px top AND
-          bottom (symmetric, so the column stays centred), and below it the column grows and then
-          scrolls INTERNALLY. The reserve used to be 44px a side, holding open the band the FIXED
+      {/* The content column FILLS the aside track (no narrow inner cap). Its cap reserves the 52px top
+          inset and 16px below, and under it the column grows and then scrolls INTERNALLY. The reserve used to be 44px a side, holding open the band the FIXED
           status bar occupied in the page's top-left corner so a long thread list could not push the
           composer up underneath it. That bar is gone — its contents are the StatusRow at the top of
           this very column now — so the lane it needed goes with it and the rail gets the 56px back.
           Short boards are unaffected: they never reach the cap. */}
-      <div className="flex max-h-[calc(100vh-32px)] min-h-0 min-w-0 w-full flex-col max-[800px]:max-h-none">
+      <div className="flex max-h-[calc(100vh-68px)] min-h-0 min-w-0 w-full flex-col max-[800px]:max-h-none">
         {/* THE PROMPT BOX lives at the sidebar top (it replaced the New-thread pill — maintainer
             2026-07-09): always present, type + Enter dispatches a new thread. A brand-new repo shows
             this same box CENTERED as the whole screen (App hides the sidebar); the first dispatch

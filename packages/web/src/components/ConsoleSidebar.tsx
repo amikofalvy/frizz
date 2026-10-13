@@ -87,7 +87,8 @@ export function ConsoleSidebar() {
   return (
     <aside className={CONSOLE_SIDEBAR_COLUMN_CLASS} style={{ paddingTop: CONSOLE_TOP_PX }} data-console-sidebar>
       <div className="flex min-h-0 min-w-0 w-full flex-1 flex-col max-[800px]:max-h-none">
-        <div className="mb-3 shrink-0 px-0.5">
+        {/* mb-5: the 20px that sets the grouping switch off from the prompt box (GroupSwitch). */}
+        <div className="mb-5 shrink-0 px-0.5">
           <StatusRow label="All projects" />
           <ConsoleDispatch />
         </div>
@@ -171,8 +172,15 @@ function RunningRows({ project, rows, render }: { project: string; rows: ThreadV
 }
 
 /**
- * "By status" | "By project". Borderless — it is a view setting under the prompt box, not a control
- * competing with it — and left-aligned to the rows' titles' inset so it reads as the list's own.
+ * "By status" | "By project": a segmented control as wide as the prompt box, the chosen half raised.
+ *
+ * It was two borderless words until 2026-10-13, and that read as the prompt box's footer rather than the
+ * list's header: 12px of muted text 12px under the box, and lighter than the project names it groups. Of
+ * seven mockups the maintainer chose this one ("I do think it's got to be full width. Option C: segmented
+ * control"). Full width, it spans the list it sorts; the top block's `mb-5` is the 20px that separates it
+ * from the box. The idiom is the GitHub picker's `Segmented` (GithubPickerModal.tsx), stretched to the
+ * column: a bordered track, the chosen segment lifted to `elevated`. The track's 10px corner less its 4px
+ * inset (border + `p-[3px]`) is the segments' 6px (`rounded-md`), so the two arcs share a centre.
  */
 function GroupSwitch({ group }: { group: ConsoleGroup }) {
   const option = (value: ConsoleGroup, label: string) => (
@@ -181,15 +189,20 @@ function GroupSwitch({ group }: { group: ConsoleGroup }) {
       aria-pressed={group === value}
       data-console-group={value}
       onClick={() => setConsoleGroup(value)}
-      className={`h-[22px] rounded-md px-2 text-[12px] leading-none outline-none transition-colors focus-visible:ring-1 focus-visible:ring-focus-ink-60 ${
-        group === value ? "bg-elevated text-fg" : "text-muted-70 hover:text-fg"
+      className={`h-[26px] min-w-0 flex-1 truncate rounded-md px-2 text-[12.5px] font-medium leading-none outline-none transition-colors focus-visible:ring-1 focus-visible:ring-focus-ink-60 ${
+        group === value ? "bg-elevated text-fg shadow-sm shadow-shadow-ink/30" : "text-muted-70 hover:text-fg"
       }`}
     >
       {label}
     </button>
   )
   return (
-    <div role="group" aria-label="Group the list" className="mb-2 flex shrink-0 gap-0.5 pl-3" data-console-group-switch>
+    <div
+      role="group"
+      aria-label="Group the list"
+      className="mx-0.5 mb-3 flex shrink-0 gap-[3px] rounded-[10px] border border-border bg-fg/[0.03] p-[3px]"
+      data-console-group-switch
+    >
       {option("status", "By status")}
       {option("project", "By project")}
     </div>

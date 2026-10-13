@@ -1,7 +1,7 @@
 import { Hono } from "hono"
 import { cors } from "hono/cors"
 import { streamSSE } from "hono/streaming"
-import { mkdirSync, writeFileSync } from "node:fs"
+import { createReadStream, mkdirSync, writeFileSync } from "node:fs"
 import { Readable } from "node:stream"
 import { join } from "node:path"
 import { randomUUID } from "node:crypto"
@@ -12,11 +12,12 @@ import type { AppContext } from "./context.ts"
 import { allowedLocalCorsOrigin, isTrustedLocalHttpRequest } from "./local-origin.ts"
 import { compress, negotiateEncoding, shouldCompress } from "./compression.ts"
 import { localImageHeaders, localImageStream, resolveLocalImage } from "./local-image.ts"
+import { localFileHeaders, resolveServedLocalFile } from "./local-file.ts"
 import { resolveProjectIconResponse } from "./project-icon.ts"
 import { resolveLocalVisualization } from "./local-visualization.ts"
 import { CALLER_HEADER, requestOriginFrom, withRequestOrigin } from "./audit.ts"
 import { LAUNCH_ROUTE_PATH, LAUNCH_ROUTE_PROTOCOL, LAUNCH_TOKEN_HEADER, parseLaunchRouteRequest, routeLaunch } from "./launch-routing.ts"
-import { resolveProject } from "./project.ts"
+import { openableFileRoots, resolveProject } from "./project.ts"
 import { ProjectServedElsewhereError, projectServedElsewhere } from "./project-serving.ts"
 
 export { resolveLocalImage } from "./local-image.ts"
@@ -190,6 +191,25 @@ export function createApp(ctx: AppContext, options: AppOptions = {}) {
     const stream = c.req.method === "HEAD" ? null : localImageStream(r)
     if (!stream) return c.body(null, r.status, localImageHeaders(r))
     return c.body(Readable.toWeb(stream) as ReadableStream<Uint8Array>, r.status, localImageHeaders(r))
+  })
+
+  // A local file's bytes — a PDF inline for the reader's PDF view, anything else as a download for a
+  // phone — behind the readers' own openable roots (local-file.ts resolveServedLocalFile). One 404 for
+  // every refusal, so the route says nothing about what exists outside the gate. No byte ranges: the
+  // PDF viewer reads the whole document off the navigation, and a download wants the whole file.
+  app.get(frizzRoute("/local-file"), (c) => {
+    let file
+    try {
+      file = resolveServedLocalFile(c.req.query("path") ?? "", openableFileRoots(ctx.project))
+    } catch {
+      return c.text("404", 404)
+    }
+    const headers = localFileHeaders(file)
+    // A HEAD runs this handler too, and an empty file has no span for createReadStream to express.
+    if (c.req.method === "HEAD" || file.size === 0) return c.body(null, 200, headers)
+    // Bounded at the size the headers promised, so a file still being written cannot overrun its length.
+    const stream = createReadStream(file.path, { start: 0, end: file.size - 1 })
+    return c.body(Readable.toWeb(stream) as ReadableStream<Uint8Array>, 200, headers)
   })
 
   // MACHINE-SCOPED, not this project's: the rail draws every project on the machine, so it asks for

@@ -145,6 +145,27 @@ export function isLocalMarkdownFile(path: string): boolean {
   return MARKDOWN_FILE_PATH.test(path.trim().replace(/:\d+(?::\d+)?$/, ""))
 }
 
+// Must match the server's `PDF_FILE_EXT`. The one BINARY document the reader shows itself, in the
+// browser's own PDF viewer — see lib/local-file-links.ts for where every other kind goes.
+const PDF_FILE_PATH = /\.pdf$/i
+
+export function isLocalPdfFile(path: string): boolean {
+  return PDF_FILE_PATH.test(path.trim())
+}
+
+// The browser's own word on whether it renders a PDF inline. False where it would DOWNLOAD one instead —
+// Chrome with "Download PDF files" switched on, the headless shell — and an iframe there is a blank panel
+// plus a stray download, so a PDF is then not something Frizz can show. Absent only from browsers older
+// than the property (Safari before 16.4), all of which render PDFs.
+export function browserShowsPdf(): boolean {
+  return typeof navigator === "undefined" || navigator.pdfViewerEnabled !== false
+}
+
+/** A picture or a video the gated `/local-image` route serves, which the lightbox shows or plays. */
+export function isLightboxPath(path: string): boolean {
+  return PROXIED_IMAGE_PATH.test(path) || PROXIED_VIDEO_PATH.test(path)
+}
+
 // Resolve a RELATIVE Markdown destination against the directory the prose belongs to. Repo docs link
 // to each other relatively on purpose (`./ARCHITECTURE.md`, `../scripts/shot.mjs`) and so does chat
 // prose — a worker writing up its own scratch file names it `.frizz/threads/<id>/HANDOFF.md`, exactly
