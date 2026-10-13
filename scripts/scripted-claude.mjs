@@ -28,9 +28,16 @@
 //   think=MS       how long the model "thinks" before its first record (default 1500)
 //   reply=done|steps|needs|bare   how every later turn ends (default done)
 //   replyparas=N   replytools=N   replythink=MS    the same knobs for later turns (defaults 2, 0, 1500)
+//   replythinking=1  a thinking block OPENING every later turn, before its tool calls — the shape a real
+//                  extended-thinking turn writes (thinking, then tool_use, under one message id) — held
+//                  for `thinkms` (default 2000) before the first call
+//   gapms=MS       the model's pause between a tool result and its next call (default 0) — the inter-call
+//                  gap where the slot reads `Ran N tool calls. Thinking…`
+//   reply=question registers a question mid-turn in every later turn too, the way `ending=question` does
 //   disklag=MS     event → JSONL write delay for each assistant record (default 15)
 //   resultlag=MS   final event → `result` delay (default 30). With the defaults the final record reaches
-//                  disk BEFORE the result, the order measured on real broker sessions (94c6b0ee).
+//                  disk BEFORE the result, the order measured on real broker sessions (94c6b0ee);
+//                  `disklag=40 resultlag=10` is the other order, the result first.
 //
 // A message that arrives while a turn runs is a STEER, handled the way Claude Code 2.1.296 writes it:
 // a `queue-operation enqueue` at once; handed over at the next tool boundary (`queued_command`
@@ -78,7 +85,7 @@ function write(record) {
 const now = () => new Date().toISOString()
 
 // ---- the script ----
-const defaults = { ending: "done", paras: 3, tools: 0, toolms: 1500, thinking: 0, think: 1500, reply: "done", replyparas: 2, replytools: 0, replythink: 1500, disklag: 15, resultlag: 30 }
+const defaults = { ending: "done", paras: 3, tools: 0, toolms: 1500, thinking: 0, think: 1500, thinkms: 2000, replythinking: 0, gapms: 0, reply: "done", replyparas: 2, replytools: 0, replythink: 1500, disklag: 15, resultlag: 30 }
 let config = null
 function parseScript(text) {
   const token = /\[script([^\]]*)\]/.exec(text)?.[1] ?? ""
@@ -130,7 +137,12 @@ async function runTurn(kind) {
   const tools = first ? s.tools : s.replytools
   const paras = first ? s.paras : s.replyparas
   await sleep(first ? s.think : s.replythink)
+  if (!first && s.replythinking) {
+    await assistantRecord(tools ? `msg_scripted_${turnNumber}_t0` : `msg_scripted_${turnNumber}`, { type: "thinking", thinking: "", signature: "scripted" }, null, s)
+    await sleep(s.thinkms)
+  }
   for (let i = 0; i < tools; i++) {
+    if (i > 0 && s.gapms) await sleep(s.gapms)
     const id = `toolu_scripted_${turnNumber}_${i}`
     await assistantRecord(`msg_scripted_${turnNumber}_t${i}`, { type: "tool_use", id, name: "Bash", input: { command: `sleep ${Math.round(s.toolms / 1000)}`, description: `Running step ${i + 1} of ${tools}` } }, "tool_use", s)
     await sleep(s.toolms)
@@ -144,9 +156,12 @@ async function runTurn(kind) {
   if (first && s.thinking) await assistantRecord(messageId, { type: "thinking", thinking: "", signature: "scripted" }, null, s)
   const fence = FENCES[ending] ?? ""
   const lead = ending === "question" ? "One decision is needed before this can go further; it is registered as a question." : undefined
-  await assistantRecord(messageId, { type: "text", text: [prose(paras, lead), fence].filter(Boolean).join("\n\n") }, "end_turn", s)
-  await sleep(Math.max(0, s.resultlag - s.disklag))
+  // The final record and the `result` each trail the final event by their OWN lag, so either can win:
+  // `resultlag < disklag` is the result reaching Frizz before the record reaches the disk.
+  const landed = assistantRecord(messageId, { type: "text", text: [prose(paras, lead), fence].filter(Boolean).join("\n\n") }, "end_turn", s)
+  await sleep(s.resultlag)
   send({ type: "result", subtype: "success", duration_ms: 1, duration_api_ms: 1, is_error: false, num_turns: 1, result: "", stop_reason: "end_turn", total_cost_usd: 0, usage: {}, modelUsage: {}, permission_denials: [], uuid: randomUUID(), session_id: sessionId })
+  await landed
   running = false
   // A message that waited out the turn is handed over now and starts the next one.
   if (queued.length) {
