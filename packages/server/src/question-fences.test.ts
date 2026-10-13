@@ -100,23 +100,41 @@ test("a reference to an unknown or settled id is refused; a legacy thread and an
     const invalid = sync(h.storage, [{ at: at(0), text: fence("kind: text\nquestion: Q?") }])
     assert.match(invalid.faults[0].faults[0], /no `id:`/)
     // Dispatched before the free-form fence was retired: there a body fence IS the legacy ask.
-    assert.deepEqual(sync(h.storage, [{ at: at(0), text: choice("x") }], { spawnedAt: "2026-09-01T00:00:00.000Z" }), { registered: [], attached: [], faults: [], refs: [] })
+    assert.deepEqual(sync(h.storage, [{ at: at(0), text: choice("x") }], { spawnedAt: "2026-09-01T00:00:00.000Z" }), { registered: [], cancelled: [], attached: [], faults: [], refs: [] })
     // Written before the registrar existed: prose then, and prose now.
     const before = new Date(Date.parse(QUESTION_FENCES_REGISTER_FROM) - 1).toISOString()
-    assert.deepEqual(sync(h.storage, [{ at: before, text: choice("x") }]), { registered: [], attached: [], faults: [], refs: [] })
+    assert.deepEqual(sync(h.storage, [{ at: before, text: choice("x") }]), { registered: [], cancelled: [], attached: [], faults: [], refs: [] })
     assert.equal(h.storage.listThreadQuestions("t").length, 0)
   } finally { h.close() }
 })
 
-test("an autonomous thread's question is refused with its Goal; a secret still registers", () => {
+test("an autonomous thread's question is recorded and cancelled at once; a secret still registers", () => {
   const h = storageHarness()
   try {
     h.storage.upsertSession(row("t"))
     const goal = "Keep going until the suite is green."
-    const out = sync(h.storage, [{ at: at(0), text: `${choice("pick")}\n\n${fence("id: otp\nkind: secret\nquestion: The npm one-time code")}` }], { autonomousGoal: goal })
+    const sightings = [{ at: at(0), text: `${choice("pick")}\n\n${fence("id: otp\nkind: secret\nquestion: The npm one-time code")}` }]
+    const out = sync(h.storage, sightings, { autonomousGoal: goal })
     assert.deepEqual(out.registered.map((q) => q.handle), ["otp"])
-    assert.match(out.faults[0].faults[0], /running autonomously/)
-    assert.match(out.faults[0].faults[0], /Keep going until the suite is green/)
+    assert.deepEqual(out.cancelled.map((q) => q.handle), ["pick"])
+    assert.deepEqual(out.faults, [], "the worker hears of it from the cancellation wake, not a fence correction")
+    // The row is the record: dismissed and still owed to the worker, which is what the scheduler's
+    // cancellation wake reads (evalQuestionAnswers) — and never open, so it never reaches the human.
+    const pick = h.storage.listThreadQuestions("t").find((q) => q.handle === "pick")!
+    assert.equal(pick.state, "dismissed")
+    assert.equal(pick.asked_at, Date.parse(at(0)))
+    assert.deepEqual(h.storage.listThreadQuestions("t", { openOnly: true }).map((q) => q.handle), ["otp"])
+    // THE GOAL IS DISARMED. The same message read again must not turn the refused fence into a question:
+    // the worker was told to decide it and did. (Control: without the row this registered `pick`.)
+    for (const replay of [sync(h.storage, sightings, { autonomousGoal: goal }), sync(h.storage, sightings)]) {
+      assert.deepEqual(replay.registered, [])
+      assert.deepEqual(replay.cancelled, [])
+      assert.deepEqual(replay.faults, [])
+    }
+    assert.deepEqual(h.storage.listThreadQuestions("t", { openOnly: true }).map((q) => q.handle), ["otp"])
+    // Asked again under the same id once the thread takes questions: the id is spent, and it says so.
+    const again = sync(h.storage, [...sightings, { at: at(5), text: choice("pick") }])
+    assert.match(again.faults[0].faults[0], /`pick` was already asked and dismissed.*an id is never reused/)
   } finally { h.close() }
 })
 
@@ -360,7 +378,7 @@ function unaccounted(storage: ReturnType<typeof createStorage>, out: ReturnType<
   const handlesOf = (rowId: string) => questionHandles(JSON.parse(rows.get(rowId)!.spec))
   const here = <T extends { at: string }>(xs: T[]) => xs.filter((x) => x.at === sighting.at)
   const named = new Set<string>([
-    ...out.registered.filter((q) => q.asked_at === Date.parse(sighting.at)).flatMap((q) => handlesOf(q.id)),
+    ...[...out.registered, ...out.cancelled].filter((q) => q.asked_at === Date.parse(sighting.at)).flatMap((q) => handlesOf(q.id)),
     ...here(out.attached).flatMap((a) => a.handles),
     ...here(out.refs).flatMap((r) => handlesOf(r.rowId)),
     ...here(out.faults).flatMap((f) => (f.id ? [f.id] : [])),
@@ -515,7 +533,8 @@ test("a fence under a refused question is refused by name too — nothing in a m
     assert.deepEqual(unaccounted(h.storage, out, clash), [])
     const auto = { at: at(2), text: `${choice("auto")}\n\n${child("under-auto", "auto = SQLite")}` }
     const refused = sync(h.storage, [auto], { autonomousGoal: "Keep going." })
-    assert.deepEqual(refused.faults.map((f) => f.id), ["auto", "under-auto"])
+    assert.deepEqual(refused.cancelled.map((q) => questionHandles(JSON.parse(q.spec))), [["auto", "under-auto"]], "the whole tree is cancelled on the record")
+    assert.deepEqual(refused.faults, [])
     assert.deepEqual(unaccounted(h.storage, refused, auto), [])
     // A NEW root whose follow-up reuses a spent id: the branch is cut out and named, the root registers.
     const reuse = { at: at(3), text: `${choice("fresh", "Fresh?")}\n\n${child("spent", "fresh = SQLite")}` }

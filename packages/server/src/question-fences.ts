@@ -55,6 +55,9 @@ export interface QuestionFenceFault {
 
 export interface QuestionFenceSync {
   registered: ThreadQuestionRow[]
+  /** Questions an AUTONOMOUS thread wrote: recorded and cancelled at once, never put to the human. The
+   *  worker is told by the cancellation wake the scheduler sends for any question dismissed under a Goal. */
+  cancelled: ThreadQuestionRow[]
   /** Follow-ups a LATER message hung under an option of a question that was still open: the row whose
    *  tree grew, and the ids it gained. */
   attached: { at: string; rowId: string; handles: string[] }[]
@@ -129,7 +132,7 @@ const SETTLED_WORD: Record<ThreadQuestionRow["state"], string> = {
  * counts as referenced at that message. Once the parent is settled there is nothing to hang it from.
  */
 export function syncQuestionFences(
-  storage: Pick<Storage, "listThreadQuestions" | "askThreadQuestion" | "growThreadQuestionSpec" | "clearThreadDone" | "resetParkBumps">,
+  storage: Pick<Storage, "listThreadQuestions" | "askThreadQuestion" | "dismissThreadQuestion" | "growThreadQuestionSpec" | "clearThreadDone" | "resetParkBumps">,
   input: {
     slug: string
     spawnedAt: string | number | null | undefined
@@ -138,7 +141,7 @@ export function syncQuestionFences(
     autonomousGoal?: string
   },
 ): QuestionFenceSync {
-  const out: QuestionFenceSync = { registered: [], attached: [], faults: [], refs: [] }
+  const out: QuestionFenceSync = { registered: [], cancelled: [], attached: [], faults: [], refs: [] }
   if (!input.sightings?.length || questionFencesLive(input.spawnedAt)) return out
   const rows = storage.listThreadQuestions(input.slug)
   const index = handleIndex(rows)
@@ -167,7 +170,8 @@ export function syncQuestionFences(
     // Was the row settled BEFORE this message was written? A message from while it was still open is a
     // restatement of an open question whatever has happened since — a refold after the human answered
     // must not turn it into a re-ask and correct the worker for it.
-    const settledBefore = (row: ThreadQuestionRow) => row.state !== "open" && (row.settled_at ?? 0) < atMs
+    // (Never the message that ASKED it: nothing is settled before it exists, whatever two clocks say.)
+    const settledBefore = (row: ThreadQuestionRow) => row.state !== "open" && row.asked_at !== atMs && (row.settled_at ?? 0) < atMs
     const ref = (row: ThreadQuestionRow) => out.refs.push({ at, rowId: row.id })
 
     // THE MESSAGE THAT REGISTERED A QUESTION IS NEVER JUDGED AGAINST IT AGAIN. A row's `asked_at` is its
@@ -285,8 +289,31 @@ export function syncQuestionFences(
       // AUTONOMOUS MODE DECLINES THE ASK — the rule `ask` enforced at the moment of temptation, kept for
       // the fence: the thread was told to decide for itself. A secret is exempt, as it was there: a
       // credential is a value only the human holds, not a call the worker can make.
+      //
+      // DECLINED ON THE RECORD, not by a fault. The row is written and cancelled in the same breath, the
+      // way arming a Goal cancels the questions already open (router cancelQuestionsForAutonomy), and the
+      // worker hears of it through that path's own wake: "CANCELLED without an answer. Decide it yourself",
+      // naming its id, exactly once. A fault left no trace, so the refusal lasted only as long as the Goal
+      // did: the tick after the human disarmed it, the old fence read as new and became an open question —
+      // one the worker had been told was not asked and had since decided, now on the human's board and
+      // blocking `done`. The row also gives the web something true to draw in the fence's slot, where a
+      // refusal it could not see stayed a card that looked askable.
       if (autonomousFault && !ask.spec.secret) {
-        refuse(ask.spec, ask.id, autonomousFault)
+        const row = storage.askThreadQuestion({
+          id: `qst_${randomUUID().replace(/-/g, "").slice(0, 12)}`,
+          slug: input.slug,
+          spec: JSON.stringify(ask.spec),
+          askedAtMs: atMs,
+          handle: ask.id,
+        })
+        const cancelledAtMs = Math.max(Date.now(), atMs)
+        storage.dismissThreadQuestion(row.id, cancelledAtMs)
+        const cancelled: ThreadQuestionRow = { ...row, state: "dismissed", settled_at: cancelledAtMs }
+        for (const h of questionHandles(ask.spec)) index.set(h.toLowerCase(), cancelled)
+        index.set(row.id.toLowerCase(), cancelled)
+        rows.push(cancelled)
+        held(ask.spec)
+        out.cancelled.push(cancelled)
         continue
       }
       const row = storage.askThreadQuestion({
@@ -495,7 +522,7 @@ export function autonomousGoalOf(row: { recurring_on_rest?: number | null; recur
  * anything registered, though the caller refreshes the board either way.
  */
 export function createQuestionRegistrar(deps: {
-  storage: Pick<Storage, "allSessions" | "listThreadQuestions" | "askThreadQuestion" | "growThreadQuestionSpec" | "clearThreadDone" | "resetParkBumps">
+  storage: Pick<Storage, "allSessions" | "listThreadQuestions" | "askThreadQuestion" | "dismissThreadQuestion" | "growThreadQuestionSpec" | "clearThreadDone" | "resetParkBumps">
   tailer: { get(slug: string): { questionSightings?: QuestionSighting[] } | undefined }
   log?: (message: string) => void
 }): { sweep(): boolean } {
@@ -534,6 +561,10 @@ export function createQuestionRegistrar(deps: {
         if (sync.attached.length > 0) {
           registered = true
           deps.log?.(`questions: ${row.slug} attached follow-up(s) ${sync.attached.flatMap((a) => a.handles).join(", ")}`)
+        }
+        if (sync.cancelled.length > 0) {
+          registered = true
+          deps.log?.(`questions: ${row.slug} cancelled ${sync.cancelled.map((q) => q.handle).join(", ")} — the thread runs autonomously`)
         }
       }
       return registered

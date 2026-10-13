@@ -194,12 +194,12 @@ test("a thread with a null, malformed or pre-cutover spawned_at registers nothin
     const sightings = [{ at: at(0), text: choice("settings-store") }, { at: at(1), text: fence("id: broken\nkind: choice") }]
     for (const spawnedAt of [null, undefined, "", "not a date", "2026-09-10T23:59:59.000Z", Number.NaN, 0]) {
       const out = sync(h.storage, sightings, { spawnedAt: spawnedAt as never })
-      assert.deepEqual(out, { registered: [], attached: [], faults: [], refs: [] }, `spawned_at ${String(spawnedAt)}`)
+      assert.deepEqual(out, { registered: [], cancelled: [], attached: [], faults: [], refs: [] }, `spawned_at ${String(spawnedAt)}`)
     }
     assert.equal(h.storage.listThreadQuestions("t").length, 0)
     // A sighting with no readable instant, or one from before the cutover, is skipped the same way.
     const stale = sync(h.storage, [{ at: "", text: choice("a") }, { at: "garbage", text: choice("b") }, { at: new Date(Date.parse(QUESTION_FENCES_REGISTER_FROM) - 1).toISOString(), text: choice("c") }])
-    assert.deepEqual(stale, { registered: [], attached: [], faults: [], refs: [] })
+    assert.deepEqual(stale, { registered: [], cancelled: [], attached: [], faults: [], refs: [] })
   } finally { h.close() }
 })
 
@@ -264,6 +264,7 @@ test("one thread's failing sweep neither stops the other threads' nor is retried
       clearThreadDone: (slug: string) => h.storage.clearThreadDone(slug),
       resetParkBumps: (slug: string) => h.storage.resetParkBumps(slug),
       growThreadQuestionSpec: (slug: string, id: string, spec: string) => h.storage.growThreadQuestionSpec(slug, id, spec),
+      dismissThreadQuestion: (id: string, atMs: number) => h.storage.dismissThreadQuestion(id, atMs),
       askThreadQuestion: (q: Parameters<typeof h.storage.askThreadQuestion>[0]) => {
         asks++
         if (q.slug === "a-broken") throw new Error("database is locked")
@@ -453,15 +454,15 @@ test("an autonomous thread's cancellation wake reaches the worker naming the fen
   } finally { h.close() }
 })
 
-// ── Design concerns, each with its reproduction (todo: these FAIL today and are reported, not fixed) ──
-
-test("a fence refused on an autonomous thread stays refused when the Goal is disarmed", { todo: "design concern: the refusal is not recorded, so the next tick registers the old fence" }, () => {
+// Reported by this file as a design concern (the refusal was a fault that left no trace), then fixed: the
+// refusal is a row, cancelled the moment it is written.
+test("a fence refused on an autonomous thread stays refused when the Goal is disarmed", () => {
   const h = storageHarness()
   try {
     h.storage.upsertSession(row("t"))
     const sightings = [{ at: at(0), text: choice("settings-store") }]
     const refused = sync(h.storage, sightings, { autonomousGoal: "Keep going until the suite is green." })
-    assert.match(refused.faults[0].faults[0], /running autonomously, so the question was not asked/)
+    assert.deepEqual(refused.cancelled.map((q) => q.handle), ["settings-store"])
     // The worker was told to decide it itself, and did. Then the human disarms the Goal.
     const after = sync(h.storage, sightings)
     assert.deepEqual(after.registered, [], "the question the worker was told was NOT asked is now an open card, and blocks `done`")
