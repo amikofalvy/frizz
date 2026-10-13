@@ -1958,10 +1958,15 @@ export const PARK_CORRECTION_QUESTION_LEAD = "⚠️ Your ```awaiting fence land
  *  where the thread sits while it waits — no `status:` (2026-10-05; `needs_input:` before it), or a value
  *  that is none of its answers. The lead is unchanged across the rename, so old corrections still fold. */
 export const PARK_CORRECTION_NEEDS_INPUT_LEAD = "⚠️ Your ```awaiting fence gives no "
+/** The fifth (2026-10-13): a ```question fence that could not register — a missing or malformed key, an id
+ *  already spent on a different question, a reference to an id the thread never asked. The server reads
+ *  every fence after the fact, so this is the only way a worker hears that its question never reached the
+ *  human (server question-fences.ts). */
+export const QUESTION_FENCE_CORRECTION_LEAD = "⚠️ Your ```question fence "
 /** Is this delivered wake one of frizz's fence corrections? */
 export function isParkCorrection(text: string): boolean {
   const t = text.trimStart()
-  return t.startsWith(PARK_CORRECTION_NAMES_LEAD) || t.startsWith(PARK_CORRECTION_RETIRED_LEAD) || t.startsWith(PARK_CORRECTION_QUESTION_LEAD) || t.startsWith(PARK_CORRECTION_NEEDS_INPUT_LEAD)
+  return t.startsWith(PARK_CORRECTION_NAMES_LEAD) || t.startsWith(PARK_CORRECTION_RETIRED_LEAD) || t.startsWith(PARK_CORRECTION_QUESTION_LEAD) || t.startsWith(PARK_CORRECTION_NEEDS_INPUT_LEAD) || t.startsWith(QUESTION_FENCE_CORRECTION_LEAD)
 }
 
 export function timerPromptMessage(prompt: string, fireAt: string): string {
@@ -2799,7 +2804,14 @@ export interface AskedOption {
 }
 
 export interface AskedQuestion {
+  /** The id the WORKER chose in its ```question fence (`id: settings-store`) — absent on a question
+   *  `ask` registered, which only ever had the minted `qst_…`. Every node of a tree carries its own, so
+   *  a follow-up's id is spent as surely as its root's (question-fence.ts). */
+  handle?: string
   question: string
+  /** A fence's body below `---`: any markdown the human needs to answer cold. Kept apart from `question`
+   *  so the answer wake, `activity` and every one-line reading restate the QUESTION and not its evidence. */
+  context?: string
   /** A very short chip label for the card's heading (<= 12 chars), as the fence's own convention. */
   header?: string
   kind: AskQuestionKind
@@ -2847,7 +2859,9 @@ export const AskedQuestionSchema: z.ZodType<AskedQuestion> = z.lazy(() => z.obje
   // 4000, not the 600 it launched with (2026-09-03): this field is the whole card context — everything
   // the human needs to answer cold — and a question that carries its own evidence needs the room. The
   // answer restates it, so QuestionAnswerSchema's cap matches.
+  handle: z.string().trim().min(1).max(64).optional(),
   question: z.string().trim().min(1).max(4000),
+  context: z.string().trim().max(20000).optional(),
   header: z.string().trim().max(24).optional(),
   kind: AskQuestionKind,
   danger: z.boolean().optional(),
@@ -5729,6 +5743,7 @@ export type BoardDelta = Extract<ServerEvent, { type: "board-delta" }>
 export * from "./claim.ts"
 export * from "./claude-editions.ts"
 export * from "./code-fences.ts"
+export * from "./question-fence.ts"
 export * from "./delta.ts"
 export * from "./drainable-worker.ts"
 export * from "./interactions.ts"
