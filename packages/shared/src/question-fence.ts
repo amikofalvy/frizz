@@ -40,9 +40,9 @@
 // indented block under a key (`detail: |`) is taken as written.
 
 import { parse as parseYaml } from "yaml"
-import { fencedInteriors } from "./code-fences.ts"
+import { fencedInteriors, questionFenceClose } from "./code-fences.ts"
 import type { AskedOption, AskedQuestion } from "./index.ts"
-import { askedQuestionFaults } from "./index.ts"
+import { ASK_MAX_DEPTH, askedQuestionFaults } from "./index.ts"
 
 /** The four answer shapes a question fence declares, each explicit (maintainer 2026-10-13: "we need to have
  *  some pretty explicit options in terms of specifying multiple-choice answers versus other kinds"). */
@@ -91,12 +91,12 @@ export interface QuestionFenceBlock {
 // An opener whose info string is exactly `question`. A ```question qst_… placement marker and the retired
 // ```question multi / danger info strings are NOT this grammar — they carry tokens — and stay with the
 // legacy readers (web lib/questionBlocks).
-const OPENER_RE = /^ {0,3}(`{3,})question[ \t]*$/
+const OPENER_RE = /^( {0,3})(`{3,})question[ \t]*$/
 
 /** Every question fence in a message, in order, skipping one that sits inside another code block — a
  *  worker DOCUMENTING the grammar wraps its sample in a longer fence, and that sample is not an ask. An
  *  unclosed fence is not a block: the renderer would run it to the end of the message, and nothing that
- *  never finished is registered. */
+ *  never finished is registered — nor corrected, since a turn interrupted mid-fence is nobody's mistake. */
 export function questionFenceBlocks(text: string): QuestionFenceBlock[] {
   if (!text.includes("question")) return []
   const quoted = fencedInteriors(text)
@@ -112,23 +112,29 @@ export function questionFenceBlocks(text: string): QuestionFenceBlock[] {
     offset += lines[i].length + 1
     const m = OPENER_RE.exec(line)
     if (!m || inside(lineStart)) continue
-    const ticks = m[1].length
-    // CommonMark's closer: a bare run of backticks at least as long as the opener, up to 3 spaces in.
-    let close = -1
+    const ticks = m[2].length
+    // Where it ends is the shared scanner's call (code-fences.ts questionFenceClose): a code block written
+    // inside the fence, opened with an info string, is stepped over rather than taken for the closer.
+    const end = questionFenceClose(lines, i + 1, ticks)
+    if (!end) break
+    const close = end.close
     let closeEnd = offset
-    for (let j = i + 1, at = offset; j < lines.length; j++) {
-      const candidate = lines[j].replace(/\r$/, "")
-      at += lines[j].length + 1
-      const c = /^ {0,3}(`{3,})[ \t]*$/.exec(candidate)
-      if (c && c[1].length >= ticks) {
-        close = j
-        closeEnd = Math.min(at, text.length)
-        break
-      }
-    }
-    if (close === -1) break
-    const body = lines.slice(i + 1, close).map((l) => l.replace(/\r$/, "")).join("\n")
-    out.push({ start: lineStart, end: closeEnd, body, read: readQuestionFence(body) })
+    for (let j = i + 1; j <= close; j++) closeEnd += lines[j].length + 1
+    closeEnd = Math.min(closeEnd, text.length)
+    // AN INDENTED FENCE GIVES ITS INDENT BACK (CommonMark: up to the opener's indentation comes off every
+    // content line). A fence written inside a list item sits at the item's content column, body and all,
+    // and read with that indent left on, every key was "indented under nothing" and the fence had "no
+    // `id:`" — a correction that named nothing the worker could see wrong.
+    const dedent = new RegExp(`^ {0,${m[1].length}}`)
+    const body = lines.slice(i + 1, close).map((l) => l.replace(/\r$/, "").replace(dedent, "")).join("\n")
+    const read = readQuestionFence(body)
+    // CUT SHORT: the only line that closes this fence is one that closes a code block inside it. The read
+    // nearly always says so itself (its context or a detail ends inside the open block); where the block
+    // sat somewhere no value reaches, it is said here, so a cut-off fence never registers.
+    const cut = end.cutShort && read.form !== "invalid"
+      ? { form: "invalid" as const, id: read.id, faults: [`the fence is cut off inside a code block: its last line closes that block, and nothing closes the fence. ${FENCE_LENGTH_FIX}`] }
+      : read
+    out.push({ start: lineStart, end: closeEnd, body, read: cut })
     // Resume after the closer; the offsets of the skipped lines are already counted in closeEnd.
     offset = closeEnd
     i = close
@@ -145,7 +151,9 @@ interface Value {
   block: string[]
 }
 
-const KEY_RE = /^([A-Za-z_][\w-]*)[ \t]*:(?:[ \t]+(.*))?[ \t]*$/
+// `s`: a value is everything to the end of its LINE, and the body is split on "\n" alone — so a lone CR or
+// a U+2028 inside a value is part of it (a bare `.` stops at both, and the line then read as "not a key").
+const KEY_RE = /^([A-Za-z_][\w-]*)[ \t]*:(?:[ \t]+(.*))?[ \t]*$/s
 const BLOCK_MARKERS = new Set(["|", "|-", "|+", ">", ">-", ">+"])
 
 function indentOf(line: string): number {
@@ -166,10 +174,37 @@ function collectBlock(lines: readonly string[], from: number, keyIndent: number)
   return { block, next: Math.max(next, from) }
 }
 
-/** A value as ONE line of prose: the inline text and any continuation joined by single spaces. */
+/** A value as ONE line of prose: the inline text and any continuation joined by single spaces. Collapsed
+ *  again AFTER unquoting, because a quoted scalar's escapes are whitespace too: `"First\nsecond"` is two
+ *  lines once read, and a question is what a one-line reading restates. */
 function lineOf(v: Value): string {
   if (BLOCK_MARKERS.has(v.inline)) return v.block.join(" ").replace(/\s+/g, " ").trim()
-  return unquote([v.inline, ...v.block].join(" ").replace(/\s+/g, " ").trim())
+  return unquote([v.inline, ...v.block].join(" ").replace(/\s+/g, " ").trim()).replace(/\s+/g, " ").trim()
+}
+
+/** The fence run (``` or ~~~~) of a code block this markdown opens and never closes, if it leaves one open.
+ *  An unclosed fence runs to the end of its text, so it is the one whose interior ends there (a closed one
+ *  ends at its closing line, which has characters of its own). */
+function openFenceIn(markdown: string): string | undefined {
+  const last = fencedInteriors(markdown).at(-1)
+  if (!last || last[1] !== markdown.length) return undefined
+  const opener = markdown.slice(0, last[0]).trimEnd().split("\n").at(-1) ?? ""
+  return /^ {0,3}(`{3,}|~{3,})/.exec(opener)?.[1]
+}
+
+// WHY AN OPEN CODE BLOCK IS REFUSED. It is the mark of a fence that was cut off: the fence ended on a line
+// that closes a code block INSIDE it, so the question would register with its context stopped mid-block, and
+// everything the worker wrote after that line would render as code. The scanner steps over a nested block
+// that opens with an info string (code-fences.ts questionFenceClose), so what still arrives here is the
+// fence whose own closer is missing — a real Haiku reply closed its ````sql block and never the question,
+// 2026-10-13 — and a block the worker opened and never closed. Nothing else about such a fence is wrong, so
+// it is named here or it is never named.
+//
+// A ~~~ block cannot close a backtick fence, so one left open is only what it looks like.
+const FENCE_LENGTH_FIX = "Write it again with room for the block: the `question` lines take four backticks (````question to open, ```` to close); the code block inside keeps three"
+function openFenceFault(where: string, run: string): string {
+  if (run[0] === "~") return `${where} ends inside a ${run} code block that is never closed — close it with ${run} on a line of its own`
+  return `${where} ends inside an unclosed ${run} code block: the fence is cut off there, and whatever follows it in your message reads as code. ${FENCE_LENGTH_FIX}`
 }
 
 /** A value as MARKDOWN: a block keeps its lines; an inline value with continuations joins them. */
@@ -265,7 +300,7 @@ function readOptions(
       i++
       continue
     }
-    const item = /^(\s*)-(?:[ \t]+(.*))?$/.exec(line)
+    const item = /^(\s*)-(?:[ \t]+(.*))?$/s.exec(line)
     // The list ends at the first line that is neither an item nor indented under one — the next top key.
     if (!item) {
       if (indentOf(line) > 0 && dashIndent >= 0) {
@@ -285,34 +320,43 @@ function readOptions(
     const option = new Map<string, Value>()
     options.push(option)
     const first = (item[2] ?? "").trim()
-    // The column the item's keys sit at: right after `- `.
-    const keyIndent = indent + (line.length - line.trimStart().length - indent) + 2
-    const readKey = (text: string, at: number): number => {
+    // A KEY'S VALUE IS WHATEVER SITS DEEPER THAN THE KEY ITSELF, so each key is read against its OWN column —
+    // the first one's is wherever the text after the dash starts. Reading every key against one assumed
+    // column (dash + 2) folded `description:` into the label above it whenever the dash was followed by
+    // more than one space.
+    const readKey = (text: string, at: number, column: number): number => {
       const k = KEY_RE.exec(text)
       if (!k) return -1
       const key = k[1].toLowerCase()
       if (!(QUESTION_FENCE_OPTION_KEYS as readonly string[]).includes(key)) {
         faults.push(`option ${options.length}: unknown key \`${k[1]}:\` — an option's keys are ${QUESTION_FENCE_OPTION_KEYS.map((x) => `\`${x}\``).join(", ")}`)
-        return collectBlock(lines, at, keyIndent).next
+        return collectBlock(lines, at, column).next
       }
       if (option.has(key)) faults.push(`option ${options.length}: \`${key}:\` is written twice`)
-      const { block, next } = collectBlock(lines, at, keyIndent)
+      const { block, next } = collectBlock(lines, at, column)
       option.set(key, { inline: (k[2] ?? "").trim(), block })
       return next
     }
+    const isOptionKey = (text: string) => (QUESTION_FENCE_OPTION_KEYS as readonly string[]).includes(KEY_RE.exec(text)?.[1].toLowerCase() ?? "")
     i++
     if (first) {
-      const next = KEY_RE.test(first) ? readKey(first, i) : -1
+      const next = KEY_RE.test(first) ? readKey(first, i, line.length - (item[2] ?? "").length) : -1
       if (next === -1) {
         // A BARE ITEM IS ITS LABEL — `- Keep the fixed sleep` — the short form a follow-up's options take.
-        const { block, next: after } = collectBlock(lines, i, indent)
-        option.set("label", { inline: first, block })
-        i = after
-        continue
-      }
-      i = next
+        // A label that wraps continues on the lines under it, UP TO the first one that is an option key
+        // or another item: those are read below as what they are. Taken as more label, `- SQLite` over
+        // `description: …` became an option labelled "SQLite description: …", with nothing refused.
+        const wrapped: string[] = []
+        while (i < lines.length && (lines[i].trim() === "" || indentOf(lines[i]) > indent)) {
+          const text = lines[i].trimStart()
+          if (isOptionKey(text) || /^-(?:[ \t]|$)/.test(text)) break
+          if (text) wrapped.push(text)
+          i++
+        }
+        option.set("label", { inline: first, block: wrapped })
+      } else i = next
     }
-    // The item's remaining keys, each at the item's key column.
+    // The item's remaining keys.
     while (i < lines.length) {
       const l = lines[i]
       if (l.trim() === "") {
@@ -320,7 +364,13 @@ function readOptions(
         continue
       }
       if (indentOf(l) <= indent) break
-      const next = readKey(l.trimStart(), i + 1)
+      const text = l.trimStart()
+      if (/^-(?:[ \t]|$)/.test(text)) {
+        faults.push(`\`${l.trim()}\` is indented differently from the options above it`)
+        i++
+        continue
+      }
+      const next = readKey(text, i + 1, indentOf(l))
       if (next === -1) {
         faults.push(`option ${options.length}: \`${l.trim()}\` is not a key — an option's keys are ${QUESTION_FENCE_OPTION_KEYS.map((x) => `\`${x}\``).join(", ")}`)
         i++
@@ -341,6 +391,12 @@ export function readQuestionFence(body: string): QuestionFenceRead {
   const delimiter = lines.findIndex((l) => /^---+[ \t]*$/.test(l))
   const front = delimiter === -1 ? lines : lines.slice(0, delimiter)
   const context = delimiter === -1 ? "" : lines.slice(delimiter + 1).join("\n").trim()
+  // FRONT MATTER WRAPPED IN `---` LINES, the way a markdown file's is. The first one then ends front matter
+  // that never began, every key lands in the context, and the faults that would follow ("no `id:`", "no
+  // `kind:`") deny what the worker can see on the page. Named for what it is instead, and alone.
+  if (delimiter !== -1 && front.every((l) => l.trim() === "")) {
+    return { form: "invalid", faults: ["the fence opens with `---` — its keys start on the first line, and the one `---` goes BELOW them, before the context"] }
+  }
   const fm = readFrontmatter(front)
   const faults = [...fm.faults]
 
@@ -372,6 +428,8 @@ export function readQuestionFence(body: string): QuestionFenceRead {
   if (!question) faults.push("no `question:` — one line, the question itself; anything longer goes below the `---`")
   else if (question.length > QUESTION_MAX) faults.push(`\`question:\` is ${question.length} characters; keep it to one line and put the rest below the \`---\``)
   if (context.length > CONTEXT_MAX) faults.push(`the body below \`---\` is ${context.length} characters; the limit is ${CONTEXT_MAX}`)
+  const openInContext = openFenceIn(context)
+  if (openInContext) faults.push(openFenceFault("the body below `---`", openInContext))
 
   const headerValue = fm.keys.get("header")
   const header = headerValue ? lineOf(headerValue) : undefined
@@ -407,6 +465,8 @@ export function readQuestionFence(body: string): QuestionFenceRead {
     const parts = [description ? markdownOf(description) : "", detail ? markdownOf(detail) : ""].filter(Boolean)
     const text = parts.join("\n\n")
     if (text.length > DESCRIPTION_MAX) faults.push(`${where}the description and detail run ${text.length} characters; the limit is ${DESCRIPTION_MAX}`)
+    const openInOption = openFenceIn(text)
+    if (openInOption) faults.push(openFenceFault(`${where}its detail`, openInOption))
     const recommendedValue = o.get("recommended")
     const recommended = recommendedValue ? booleanOf(recommendedValue, "recommended", faults, where) : undefined
     options.push({ label, ...(text ? { description: text } : {}), ...(recommended ? { recommended: true } : {}) })
@@ -469,8 +529,10 @@ export function assembleQuestionFences(reads: readonly QuestionFenceRead[]): Ass
     else if (r.form === "ref") {
       if (!out.refs.includes(r.id)) out.refs.push(r.id)
     } else if (asks.has(r.id)) {
-      // The same fence written twice in one message is a restatement; two different ones are a collision.
-      if (JSON.stringify(asks.get(r.id)?.spec) !== JSON.stringify(r.spec)) out.faults.push({ id: r.id, faults: [`two different questions in this message use \`id: ${r.id}\``] })
+      // The same fence written twice in one message is a restatement; two different ones are a collision —
+      // and where it hangs is part of what it is: one id under two parents is two follow-ups.
+      const seen = asks.get(r.id)
+      if (JSON.stringify([seen?.spec, seen?.when ?? null]) !== JSON.stringify([r.spec, r.when ?? null])) out.faults.push({ id: r.id, faults: [`two different questions in this message use \`id: ${r.id}\``] })
     } else asks.set(r.id, { spec: r.spec, ...(r.when ? { when: r.when } : {}) })
   }
   // Attach every follow-up to its parent. A copy of each spec, so attaching never mutates a read the
@@ -500,11 +562,38 @@ export function assembleQuestionFences(reads: readonly QuestionFenceRead[]): Ass
     }
     option.followUps = [...(option.followUps ?? []), specs.get(id)!]
   }
+  // A FOLLOW-UP THAT NEVER REACHES A ROOT REGISTERS NOTHING, so it is told why. Only a root registers, with
+  // its tree. A follow-up whose chain of `when:` parents ends at one that failed goes down with it, and one
+  // whose chain never ends — its own follow-up, or two that follow each other — hangs off nothing at all.
+  // Neither was ever a root or a failure, so before this check both vanished without a word: no row, no
+  // card (the web draws a follow-up inside its parent's), and no correction. Walked up the `when:` chain
+  // rather than down the attached tree, because a loop's tree is circular.
+  //
+  // The same walk measures each root's tree, so its DEPTH is refused here, by counting, before the shared
+  // validator is asked: that one recurses, and on a chain some 3,000 fences long it ran out of stack —
+  // thrown from the tailer's change hook, where nothing catches it.
+  const depth = new Map<string, number>()
+  for (const [id, a] of asks) {
+    if (!a.when || failed.has(id)) continue
+    const walked = new Set([id])
+    let at = a.when.parent
+    while (!walked.has(at) && !failed.has(at) && asks.get(at)?.when) {
+      walked.add(at)
+      at = asks.get(at)!.when!.parent
+    }
+    if (!walked.has(at) && !failed.has(at)) depth.set(at, Math.max(depth.get(at) ?? 1, walked.size + 1))
+    if (failed.has(at)) out.faults.push({ id, faults: [`\`when: ${a.when.parent} = ${a.when.option}\` hangs this question off \`${at}\`, which could not register — it goes with it, so write both again`] })
+    else if (at === id && walked.size === 1) out.faults.push({ id, faults: [`\`when: ${a.when.parent} = ${a.when.option}\` makes this question a follow-up of itself — \`when:\` names the EARLIER question whose option opens this one`] })
+    else if (walked.has(at)) out.faults.push({ id, faults: [`\`when: ${a.when.parent} = ${a.when.option}\` is part of a loop of follow-ups (${[...walked].slice(0, 6).map((w) => `\`${w}\``).join(" → ")} → ${walked.size > 6 ? "… → " : ""}\`${at}\`) — one of them has to be a question with no \`when:\``] })
+  }
   // A failed follow-up takes its own subtree with it, but never its parent: the parent stands on its own.
   for (const [id, a] of asks) {
     if (a.when || failed.has(id)) continue
     const spec = specs.get(id)!
-    const treeFaults = askedQuestionFaults(spec)
+    const deep = depth.get(id) ?? 1
+    const treeFaults = deep > ASK_MAX_DEPTH
+      ? [`the follow-up tree is ${deep} levels deep; the limit is ${ASK_MAX_DEPTH} — past that you are asking the human to fill in a form`]
+      : askedQuestionFaults(spec)
     if (treeFaults.length > 0) out.faults.push({ id, faults: treeFaults })
     else out.asks.push({ id, spec })
   }
