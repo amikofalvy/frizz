@@ -38,10 +38,13 @@
 //     [--start=rpc]         at 0, start a turn with a followUp over RPC — a send from ANOTHER tab. Use with
 //                           --action=none to watch a turn open, run and rest with nobody at the keyboard
 //     [--steers=1500,1900]  ms after 0 at which the page types a steer and presses Send, into the running turn
+//     [--drawer]            record the board's drawer (`/thread/<slug>`) instead of the thread page
 //     [--message=text] [--ms=9000] [--out=/abs/dir] [--w=1400] [--h=900]
 //
-// The page is `/thread/<slug>/full`; the drawer draws the same virtualized transcript. The queue page's
-// cards are a different surface (TodosView) and are not sampled here.
+// The page is `/thread/<slug>/full` unless `--drawer`. The board route opens a drawer only for a thread
+// that holds no queue card — one that is running, snoozed or done — so start its turn, snooze it or
+// complete it over RPC first; a thread resting in the queue opens there as its queue card, which is a
+// different surface (TodosView) and is not sampled here.
 //
 // Measured with it on 2026-10-13, scripted workers, 3+ runs per cell at 1400 and 820 wide, short and tall
 // threads: a send from any rest (steps, done, needs_input, bare, a question's answer) paints 2 states; a
@@ -86,6 +89,13 @@ try {
     window.__log = []
     const log = (e) => window.__log.push({ t: performance.now(), ...e })
     window.__mark = log
+    // The thread's own pane: the nearest ancestor of its scroller that holds a prompt box. The board
+    // route has another prompt box (the dispatch one) and one per queue card.
+    window.__pane = () => {
+      let n = document.querySelector("[data-drawer-transcript-scroll]")
+      while (n && !n.querySelector("[data-composer-box]")) n = n.parentElement
+      return n ?? document
+    }
     const Socket = window.WebSocket
     window.WebSocket = class extends Socket {
       constructor(...args) {
@@ -130,14 +140,16 @@ try {
     } catch {}
   }, slug)
 
-  await page.goto(`${url.replace(/\/$/, "")}/thread/${slug}/full`, { waitUntil: "networkidle2", timeout: 30_000 })
-  await page.waitForSelector("[data-drawer-transcript-scroll] [data-transcript-row-key]", { timeout: 20_000 })
+  await page.goto(`${url.replace(/\/$/, "")}/thread/${slug}${flags.drawer ? "" : "/full"}`, { waitUntil: "networkidle2", timeout: 30_000 })
+  await page.waitForSelector("[data-drawer-transcript-scroll] [data-transcript-row-key]", { timeout: 20_000 }).catch(() => {
+    throw new Error(flags.drawer ? "no drawer opened — a thread resting in the queue opens as its queue card on this route" : "no transcript on the page")
+  })
   await sleep(2500)
 
   // Stage the input without sending it.
   if (action === "steps") {
     const ticked = await page.evaluate(() => {
-      const box = document.querySelector("[data-steps-complete] button[role=checkbox]")
+      const box = window.__pane().querySelector("[data-steps-complete] button[role=checkbox]")
       box?.click()
       return Boolean(box)
     })
@@ -152,13 +164,13 @@ try {
   }
   if (action === "answer") {
     await click(await page.evaluateHandle((wanted) => {
-      const options = [...document.querySelectorAll("[data-registered-questions] [data-question-grid] > *")]
+      const options = [...window.__pane().querySelectorAll("[data-registered-questions] [data-question-grid] > *")]
       return (wanted ? options.find((e) => (e.textContent ?? "").includes(wanted)) : options[0]) ?? null
     }, flags.option ?? ""), "question option")
     await sleep(300)
   }
   const promptBox = async () => {
-    const box = await page.$("[data-composer-box] textarea")
+    const box = (await page.evaluateHandle(() => window.__pane().querySelector("[data-composer-box] textarea"))).asElement()
     if (!box) throw new Error("no prompt box on the page")
     await box.click()
   }
@@ -191,7 +203,7 @@ try {
           return { k: el.dataset.transcriptRowKey, y: Math.round(b.top - pane.top), h: Math.round(b.height), l: (el.innerText ?? "").replace(/\s+/g, " ").trim().slice(0, 34), live: Boolean(el.querySelector("[data-working-indicator]")) || undefined, op: opacity === 1 ? undefined : Math.round(opacity * 100) / 100 }
         }).filter(Boolean)
         const jump = [...document.querySelectorAll("button")].some((b) => /Jump to latest/.test(b.textContent ?? "") && b.getBoundingClientRect().height > 0 && getComputedStyle(b).visibility !== "hidden" && getComputedStyle(b).opacity !== "0")
-        const rect = (selector) => { const el = document.querySelector(selector); return el ? box4(el.getBoundingClientRect()) : null }
+        const rect = (selector) => { const el = window.__pane().querySelector(selector); return el ? box4(el.getBoundingClientRect()) : null }
         const chrome = { footer: rect("[data-thread-chat-footer]"), box: rect("[data-composer-box]"), scroller: box4(pane), rowsX: [...xs].join(" ") }
         window.__frames.push({ t: performance.now(), st: Math.round(scroller.scrollTop), max: Math.round(scroller.scrollHeight - scroller.clientHeight), rows, jump, chrome })
       }
@@ -211,7 +223,7 @@ try {
   const clock = await page.evaluate(() => ({ perf: performance.now(), wall: performance.timeOrigin + performance.now() }))
   const zero = await page.evaluate(() => { window.__mark({ ev: "ACTION" }); return performance.now() })
   const zeroWall = Date.now()
-  const pressSend = async () => click(await page.evaluateHandle(() => [...document.querySelectorAll("[data-composer-box] button[aria-label=Send]")].find((b) => !b.disabled && b.getBoundingClientRect().height > 0) ?? null), "enabled Send in the prompt box")
+  const pressSend = async () => click(await page.evaluateHandle(() => [...window.__pane().querySelectorAll("[data-composer-box] button[aria-label=Send]")].find((b) => !b.disabled && b.getBoundingClientRect().height > 0) ?? null), "enabled Send in the prompt box")
 
   const pending = []
   if (startRpc) {
@@ -274,7 +286,7 @@ try {
     lines.push({ t: f.t, text: `${at(f.t)}  ■ state ${states} st=${f.st}/${f.max}${f.jump ? " JUMP-TO-LATEST" : ""}\n${rowsOf(f)}` })
   }
   lines.sort((a, b) => a.t - b.t)
-  const report = `${lines.map((l) => l.text).join("\n")}\n\ngeometry states after the action: ${states}${firstSteer === undefined ? "" : ` (before the first steer: ${statesBeforeSteer}, from it: ${states - statesBeforeSteer})`}\nWorking row: ${workingFlips.join(", ") || "never shown"}\nopacity changes: ${opacityFlips}\npainted frames: ${painted.length} in ${outDir}/frames\npage errors: ${JSON.stringify(errors.filter((e) => !e.includes("404")).slice(0, 4))}\n`
+  const report = `${lines.map((l) => l.text).join("\n")}\n\ngeometry states after the action: ${states}${firstSteer === undefined ? "" : ` (before the first steer: ${statesBeforeSteer}, from it: ${states - statesBeforeSteer})`}\nWorking row: ${workingFlips.join(", ") || (before && working(before) ? "shown throughout" : "never shown")}\nopacity changes: ${opacityFlips}\npainted frames: ${painted.length} in ${outDir}/frames\npage errors: ${JSON.stringify(errors.filter((e) => !e.includes("404")).slice(0, 4))}\n`
   writeFileSync(join(outDir, "timeline.txt"), report)
   console.log(report)
 } finally {
