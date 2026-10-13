@@ -1,4 +1,4 @@
-import { futureSnoozedUntil, type ThreadView } from "@frizz/shared"
+import { awaitingFenceTitle, futureSnoozedUntil, type ThreadView } from "@frizz/shared"
 import type { SessionIndicatorKind } from "../groups.ts"
 import { awaitingProse, awaitingWaitClause, hintGloss } from "./awaitingPresentation.ts"
 import { toolActivityLabel } from "./toolActivity.ts"
@@ -124,6 +124,11 @@ export function rowSecondLine(
   // (awaitingPresentation's FENCE_SYNTAX_KEYS), so the line is the fence's own prose when it has any, and
   // otherwise the wait it names.
   const parked = t.lastFence?.kind === "awaiting" && /^`{3,}awaiting\b/.test((t.lastAssistant ?? "").trimStart()) ? t.lastFence : undefined
+  // A ```done FENCE ALONE is the same trap since 2026-10-13, when a done fence learned to open on
+  // `title: …` and `---`: the preview would hand the row "title: Fixed the cache ---". The fence was
+  // already split server-side, so the line is the worker's own heading for what landed, else the
+  // ledger's first line — which is what the preview gave for a done fence with no title.
+  const signedOff = t.lastFence?.kind === "done" && /^`{3,}done\b/.test((t.lastAssistant ?? "").trimStart()) ? t.lastFence : undefined
   const handoff = (): RowLine | null => {
     if (parked) {
       const prose = awaitingProse(parked)
@@ -131,10 +136,17 @@ export function rowSecondLine(
       const wait = awaitingWaitClause(parked.hints)
       if (wait) return { text: `${wait.charAt(0).toUpperCase()}${wait.slice(1)}` }
     }
+    if (signedOff) {
+      const title = awaitingFenceTitle(signedOff.hints)
+      const line = title ? handoffLine(title, true) : handoffLine(signedOff.body)
+      if (line) return line
+    }
     return handoffLine(t.lastAssistantLine, true) ?? handoffLine(t.lastAssistant)
   }
   if (kind === "needs-input") {
-    const registered = questionsLine((t.questions ?? []).map((q) => q.spec.question))
+    // The questions standing at this rest — the ones the row's mark is about. An older open one the
+    // worker has rested past keeps its card where it was asked and is not this row's line.
+    const registered = questionsLine((t.questions ?? []).filter((q) => q.standing !== false).map((q) => q.spec.question))
     if (registered) return { text: registered }
     const native = questionsLine((t.pendingAsk?.questions ?? []).map((q) => q.question))
     if (native) return { text: native }

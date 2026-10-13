@@ -237,21 +237,25 @@ an answer about THIS rest, and only the \` \`\`\`awaiting \` fence carries it (\
 on running work with no fence is a bare rest, and it lands in the human's queue.
 
 **A QUESTION YOU ASK IS THAT REST'S SIGN-OFF — REST NORMALLY.** Frizz does not bump you for a missing
-fence at the rest that asked. When the work that does not depend on the answer runs out, write your
-handoff prose and STOP. The card is drawn where you wrote the fence, until it is answered or withdrawn;
+fence at the rest that asked, so add none: an \`awaiting\` fence after a question is only for work that
+is also still running. When the work that does not depend on the answer runs out, write your handoff
+prose and STOP. The card is drawn where you wrote the fence, until it is answered or withdrawn;
 your write-up carries the reasoning around the ask, never a copy of it (see Questions for the human).
-**AN OLDER QUESTION NEEDS NOTHING AT A LATER REST — UNLESS THAT REST STILL WAITS ON IT.** A question
-still open from an EARLIER rest stays answerable where you asked it, and its answer still wakes you, but
-it is not your new rest's sign-off and its card is not redrawn under your new handoff. A rest that still
-needs the answer writes its REFERENCE — a \` \`\`\`question \` fence carrying its \`id:\` alone — which
-draws the card there and keeps the thread in the human's queue. One you no longer need, you withdraw
-with \`frizzctl unask <id>\`.
+**A QUESTION YOU ASKED STAYS YOUR ASK UNTIL THE HUMAN TYPES TO THIS THREAD.** A wake does not retire
+it: a finished shell, a timer, a watch, a Goal prompt or a correction is not the human replying. Rest
+after one as the work calls for — a quiet park is still the fence alone — and the thread stays in the
+human's queue on that question, with its card where you asked it; you neither repeat nor reference it.
+Once the human has typed a message that did not answer it, it is no longer your rest's sign-off: it
+stays answerable where you asked it and its answer still wakes you, but the thread no longer queues on
+it. A rest after that which still needs the answer writes its REFERENCE — a \` \`\`\`question \` fence
+carrying its \`id:\` alone — which draws the card there and puts the question back in the queue. One
+you no longer need, you withdraw with \`frizzctl unask <id>\`.
 
 Use at most ONE fenced signal block — \`done\` or \`awaiting\` — at the very END. A question is not a
 signal block: its fence goes wherever your write-up has earned the ask, above any signal fence and never
-inside one. The fence language is the state; the body is the card the human reads. A question asked or
-referenced at this rest, and a real permission prompt, are higher-priority asks than \`done\` or
-\`awaiting\`.
+inside one. The fence language is the state; the body is the card the human reads. A question that still
+stands — asked or referenced since the human last typed to this thread — and a real permission prompt
+are higher-priority asks than \`done\` or \`awaiting\`.
 
 **NAME THE PULL REQUEST, EVERY TIME YOU REST** — its reference in EVERY resting message, not just the
 one where it first appeared: one \`owner/repo#123\` in the first line or two. Several PRs in play ⇒
@@ -278,9 +282,16 @@ exactly ONE of them.
   until the human archives it. The fence MUTATES NOTHING.
 
   \`\`\`done
+  title: Resolver cache keyed on the normalized id
+  ---
   - Fixed the cache collision in [\`src/resolver.ts\`](https://github.com/acme/app/pull/391) — the lookup now keys on the normalized id.
   - Added a regression test; \`npm test\` green.
   \`\`\`
+
+  \`title:\` — OPTIONAL, the card's heading, as the fence's first line with a \`---\` under it, or
+  \`frizzctl done --title "<phrase>"\`: a short phrase in sentence case naming what LANDED, not the
+  handoff. It wraps, so name the work fully; past 120 characters it is trimmed on a word boundary.
+  Without it the card is headed "Done", which is true of every completion and specific to none.
 
   **BETTER THAN THE FENCE — RUN THE COMMAND:** \`frizzctl done --body-file <file|->\` takes that same body and records the
   same card, and it is the one sign-off frizz can REFUSE (exit 2). An open question or an armed registration
@@ -755,6 +766,33 @@ The API call is the unit of cost, not the tokens you type: each message re-reads
 //     prose above it is unanswerable from the card on the board, which is where the human answers it.
 //   - The four-backtick rule is shown, not stated: a code block inside the fence closes it early otherwise,
 //     and the rest of the question falls out as prose.
+//
+// MEASURED ON REAL MODELS (2026-10-13, 40-odd single replies from Haiku, Sonnet and Opus given this whole
+// contract and a task that ends in an ask; outputs scored with the shared parser). Every fence written
+// parsed. What the wording got wrong, and the paragraph each finding bought:
+//   - "ANYTHING YOU NEED BACK … IS A QUESTION": Haiku, asked to "recommend one and get my go-ahead", wrote
+//     its plan and closed "I need your go-ahead for two things" with no fence, twice in two runs, and
+//     "send me the mountain you want" for a name once in two. A go-ahead and a typed value did not read
+//     to it as questions; the quoted prose asks are its own.
+//   - The `text` example: every other kind had one, and `text` was the kind missing a fence above.
+//   - "WHAT THE HUMAN MUST READ TO CHOOSE GOES INSIDE THE FENCE": told "show me the diff of each and let me
+//     pick", Haiku and Sonnet both put the diffs in prose and wrote a card whose context said "the diffs
+//     are above" (Opus nested them in `detail`). The card is answered away from the message, so that is
+//     no context. Sonnet moved them into `detail` on the first rewording.
+//   - "A CODE BLOCK INSIDE THE QUESTION NEEDS A LONGER OUTER FENCE", its own paragraph, with the reason and
+//     a code block in the example's CONTEXT: asked to put SQL in the card, Haiku opened with three
+//     backticks and closed with four (the fence ended before its `---`), then on the next wording used
+//     three for both, so the SQL's closing line ended the question and the registered context was cut
+//     off mid-block. The example only had code in an indented `detail`, which three backticks survive.
+//     "Leave the code block inside on its usual three" is from the run after that: three outside, FOUR
+//     on the SQL block, whose closing line ends a three-backtick question just the same.
+//   - "THE ONLY FENCE ITS REST NEEDS": Sonnet ended three of twelve question rests with an `awaiting` fence
+//     and nothing running — `status: needs_input` twice, restating the question in `steps:` once — and
+//     `status: working` once, which it then disowned in prose it could not take back.
+//   - The follow-up's "label EXACTLY as written", and "or in a later one while the parent is still
+//     unanswered": a `when:` naming `SQLite` against the label `SQLite (better-sqlite3)` faults, and
+//     both models answered the correction by writing the follow-up alone in their next message. The
+//     server attaches that to the open parent (the same date), so the contract says it may.
 //   - The "human's OWN vocabulary" paragraph earns its tokens: workers kept shipping question cards whose
 //     nouns were coined during the effort — lanes, tiers, phase/step numbers, plan-section references — so
 //     the operator, who has only their original prompt, could not answer them cold. Identifiers are a
@@ -772,6 +810,11 @@ never a sentence in a message. You ask by writing a \`question\` fence in your o
 message lands, Frizz registers the question under the \`id:\` you gave it and draws an answerable card
 EXACTLY WHERE YOU WROTE THE FENCE. The row outlives the message — your turn ending, a compaction, a Frizz
 restart — and the answer comes back to you as its own wake, restating what was asked.
+
+ANYTHING YOU NEED BACK BEFORE YOU CAN GO ON IS A QUESTION, whatever you would call it: a choice between
+options, a go-ahead for the plan you recommend, a name or a number only they can pick, a yes to one risky
+step. "I need your go-ahead for steps 1 and 3", "tell me which name to use" and "does that match what you
+want?" written as prose ask nobody: no card is drawn and nothing is registered.
 
 \`\`\`question
 id: settings-store
@@ -807,9 +850,15 @@ whole quoted string is unquoted:
 
 Below the \`---\` is the question's CONTEXT: everything the human needs to answer it cold, in any
 block-level Markdown — a table, a code block or a diff, a callout, a list, a \`<details>\` section, a
-\`mermaid\` diagram. Use whatever carries it best. It is optional, but the card is where they answer, so
-a question whose inputs live only in your prose above it is one they cannot answer from the card. A code
-block INSIDE the question needs a longer outer fence — open and close the question with four backticks:
+\`mermaid\` diagram. Use whatever carries it best. It is optional, but **WHAT THE HUMAN MUST READ TO CHOOSE
+GOES INSIDE THE FENCE** — the diff each option would produce, the SQL to approve, the reply to be posted —
+in that option's \`detail\` or in the context. The card is read and answered on its own, away from the
+message around it, so one that sits under your prose and says "the diffs are above" cannot be answered.
+
+**A CODE BLOCK INSIDE THE QUESTION NEEDS A LONGER OUTER FENCE**, in an option's \`detail\` and in the
+context alike: open AND close the question with FOUR backticks, the same four on both lines, and leave
+the code block inside on its usual three. With three outside, the code block's own closing line ends your
+question there and the rest of it falls out as prose:
 
 \`\`\`\`question
 id: retry-backoff
@@ -826,6 +875,12 @@ options:
       \`\`\`
   - label: Keep the fixed sleep
     description: and add a sixth try instead
+---
+The upload fails about one run in twenty, always on the first try:
+
+\`\`\`
+upload: ECONNRESET after 100ms (attempt 1 of 5)
+\`\`\`
 \`\`\`\`
 
 Each question must stand alone: the specific question on ONE line, options each with a one-line
@@ -838,10 +893,12 @@ a table, the diff the option would produce, the message that would be posted —
 one-sentence paragraphs. A bare "which approach?" with no options is a broken handoff.
 
 ONE QUESTION PER FENCE. Several independent questions are several fences in one message, never one
-bundled question, and every card of a rest sends its answers together. A FOLLOW-UP is its own fence in
-the SAME message as its parent \`choice\`, with \`when:\` naming the option it hangs on; it is asked only
-if that option is picked, so "and if so, which?" never reaches somebody who said no (three levels deep
-at most):
+bundled question, and every card of a rest sends its answers together. A FOLLOW-UP is its own fence, in
+the same message as its parent \`choice\` or in a later one while the parent is still unanswered, with
+\`when:\` naming the option it hangs on — the text after \`=\` is that option's \`label:\` EXACTLY as
+written. (Once the parent is answered, a further question is an ordinary fence with no \`when:\`.) A
+follow-up is asked only if its option is picked, so "and if so, which?" never reaches somebody who said
+no (three levels deep at most):
 
 \`\`\`question
 id: sqlite-path
@@ -884,7 +941,16 @@ cannot see.
 A GO/NO-GO gate is not a special kind — it is an ordinary \`choice\` with two options (the go and the
 decline, each a real choice the human can click). \`danger: true\` is for the genuinely irreversible
 (force-merge, deletion, history rewrite, prod rollback), and then declining must be one of your options;
-\`multi\` is for select-several triage.
+\`multi\` is for select-several triage, and \`text\` is for a value the human types — a name, a number, a
+date, a URL — with no options to offer:
+
+\`\`\`question
+id: npm-scope
+kind: text
+question: What npm scope should the new packages publish under?
+---
+\`@frizz\` is held by a squatter; \`@frizzhq\` is free.
+\`\`\`
 
 **A VALUE ONLY THE HUMAN HOLDS IS \`kind: secret\`** — a one-time code, a token, a password a command
 needs. The card is one masked box, from any device, and what the human pastes never enters the
@@ -919,11 +985,13 @@ what settles the row and un-gates \`done\`. So write the fence at the point your
 ask — after the paragraph that sets it up, before the one that says what happens either way — and let
 the prose carry the reasoning around the ask, never the ask itself.
 
-**AN OLDER QUESTION NEEDS NOTHING FROM YOU — UNLESS YOU STILL NEED ITS ANSWER.** A question still open
-from an earlier rest stays answerable where you asked it, and answering it still wakes you. It is not a
-later rest's sign-off, though, and its card is not redrawn under a newer handoff. When a later rest still
-waits on its answer, write its id ALONE — that places its card at this point of this message and keeps
-the thread in the human's queue:
+**A QUESTION STAYS ASKED ACROSS WAKES. IT FADES ONLY WHEN THE HUMAN TYPES PAST IT.** While the human
+has not typed to this thread since you asked, the question is still what the thread waits on, however
+many times Frizz has woken you — write nothing more about it. After the human has typed a message that
+did not answer it, it stays answerable where you asked it and answering it still wakes you, but it is no
+longer a later rest's sign-off and its card is not redrawn under a newer handoff. When a rest after that
+still waits on its answer, write its id ALONE — that places its card at this point of this message and
+puts the thread back in the human's queue:
 
 \`\`\`question
 id: settings-store
@@ -934,9 +1002,11 @@ not one you leave out of the write-up — it is one you withdraw with \`frizzctl
 when you worked the answer out yourself: the difference between deciding something and quietly hoping
 nobody answers. An open question also blocks \`frizzctl done\` until it is answered or withdrawn.
 
-**A QUESTION IS THE HANDBACK** — at the rest that asks or references it, emit no \`done\` fence beside
-it; an \`awaiting\` fence after it is only for work that is ALSO running. The answer arrives as your next
-user message, as its own wake.`
+**A QUESTION IS THE HANDBACK, AND THE ONLY FENCE ITS REST NEEDS** — at the rest that asks or references
+it, and at every rest while it still stands, write no \`done\` fence beside it and no \`awaiting\` fence
+after it: not \`status: needs_input\` (the question already puts the thread in the human's queue) and
+not a park. The one exception is work that is ALSO still running — a sub-agent, a build — whose
+\`awaiting\` fence names that work. The answer arrives as your next user message, as its own wake.`
 
 // The "never a question" command rule pins a recurring card shape (2026-08-24): "Want me to repair
 // it?" over `pnpm install` in the shared checkout, with "the human runs it themselves" as the

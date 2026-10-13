@@ -16,7 +16,8 @@
 //   the fence. A run that draws the two threads identically proves nothing.
 // - `question-claims-bare`: only the cache question is open, and the final rest is BARE — no fence, no
 //   marker. The card stays in the asking handoff, and the tail draws "Rested without a sign-off": the
-//   old question is not that rest's ending (RestedCard questionsHere). The server nudges this shape.
+//   human typed past the question (the changelog message), so it no longer stands and is not that rest's
+//   ending (RestedCard, off the server's `standing`). The server nudges this shape.
 //
 // Follows the frizz-stack recipe: a session row + a JSONL the REAL tailer reads. No process.
 // Usage: nub scripts/seed-question-claims.mjs --home=/abs/temp-home --port=NNNN

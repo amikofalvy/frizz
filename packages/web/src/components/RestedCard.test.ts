@@ -18,15 +18,19 @@ test("a bare rest in the queue draws the card; a stall draws it whatever the mes
   assert.equal(showsRestedCard({ ...bare, runtime: "exited", crashed: true, lastFence: { kind: "done", body: "x", hints: [] } }, "```done\nx\n```"), true)
 })
 
-// A question asked at an EARLIER rest is not this rest's ending since 2026-10-05: its card stays where
-// it was asked unless a later fence names it, so a bare rest beside it would otherwise draw nothing at
-// all — the 2026-08-31 report ("Why was this able to come to rest without a proper handoff?").
-test("an open question counts as this rest's ending only where the caller says it renders here", () => {
+// WHETHER AN OPEN QUESTION IS THIS REST'S ENDING IS THE SERVER'S ANSWER (`standing` on each row), not a
+// reading of the transcript. Until 2026-10-13 the caller worked it out from where the card rendered, so
+// a worker that asked, was woken by a finished shell and rested again drew this card under a question
+// the board still queued the thread for. One the human has typed past (`standing: false`) is not an
+// ending — a bare rest beside it would otherwise draw nothing at all, the 2026-08-31 report ("Why was
+// this able to come to rest without a proper handoff?").
+test("an open question is this rest's ending while the server says it stands, wherever it was asked", () => {
   const text = "Changelog updated."
-  const asked = { ...bare, questions: [{ id: "q", spec: { question: "?", kind: "question" as const }, askedAt: "2026-08-27T20:00:00.000Z" }] }
-  assert.equal(showsRestedCard(asked, text, false), true, "carried from an earlier rest, named nowhere here: still a bare rest")
-  assert.equal(showsRestedCard(asked, text, true), false, "asked or named at this rest: the question is the ending")
-  assert.equal(showsRestedCard(asked, text), false, "no transcript reading: any open question counts, as before")
+  const question = { id: "q", spec: { question: "?", kind: "question" as const }, askedAt: "2026-08-27T20:00:00.000Z" }
+  assert.equal(showsRestedCard({ ...bare, questions: [{ ...question, standing: false }] }, text), true, "the human typed past it: still a bare rest")
+  assert.equal(showsRestedCard({ ...bare, questions: [{ ...question, standing: true }] }, text), false, "it stands — asked many machine wakes ago or at this rest — so the question is the ending")
+  assert.equal(showsRestedCard({ ...bare, questions: [{ ...question, standing: false }, { ...question, id: "r", standing: true }] }, text), false, "one of each: the standing one decides")
+  assert.equal(showsRestedCard({ ...bare, questions: [question] }, text), false, "a snapshot from before the flag: every open question stands, as before")
 })
 
 test("every ending with a card of its own keeps this one off", () => {
@@ -68,4 +72,51 @@ test("the two shapes render their own label", () => {
   const rested = renderToStaticMarkup(createElement(RestedCard, { thread: { crashed: false } }))
   assert.match(rested, /data-rested-card="bare"/)
   assert.match(rested, />Rested without a sign-off</)
+})
+
+// THE QUESTION FENCE (2026-10-13). A fence that tried the grammar and failed registers nothing and draws as
+// a code block, so the rest under it is a bare one — whatever its backticks. Before, three backticks at
+// the margin hid this card (the legacy reader counted the fence) and four showed it.
+test("on a thread that speaks the question fence, a fence that did not read is not a sign-off", () => {
+  const fenced: RestedCardThread = { ...bare, spawnedAt: "2026-10-13T20:30:00.000Z" }
+  const broken = (ticks: string) => `Which region?\n\n${ticks}question\nid: two-recs\nquestion: Which region?\noptions:\n  - a\n  - b\n${ticks}`
+  assert.equal(showsRestedCard(fenced, broken("```")), true)
+  assert.equal(showsRestedCard(fenced, broken("````")), true)
+  // Negative controls: a fence that reads is the rest's ending (its row may not have landed yet), a
+  // follow-up written alone still names its parent, and a free-form fence keeps the legacy reading.
+  assert.equal(showsRestedCard(fenced, "```question\nid: region\nkind: text\nquestion: Which region?\n```"), false)
+  assert.equal(showsRestedCard(fenced, "```question\nid: az\nkind: text\nwhen: region = us-east\nquestion: Which zone?\n```"), false)
+  assert.equal(showsRestedCard(fenced, "```question\nWhich region?\n\nA. us-east\nB. eu-west\n```"), false)
+  // A legacy thread's three-backtick fence is a question whatever its body opens on.
+  assert.equal(showsRestedCard({ ...bare, spawnedAt: "2026-09-01T12:00:00.000Z" }, broken("```")), false)
+  assert.equal(showsRestedCard(bare, broken("```")), false, "an unknown dispatch instant reads as legacy")
+})
+
+// A fence the server REFUSED asked the human nothing, exactly like one that did not read — but it reads
+// fine, so only the board can say (ThreadView.questionFaults, hung on the message by lib/questionFaults).
+test("on a thread that speaks the question fence, a rest whose only fence the server refused is a bare rest", () => {
+  const speaks: RestedCardThread = { ...bare, spawnedAt: "2026-10-14T00:00:00.000Z" }
+  const reused = "A different question:\n\n```question\nid: store\nkind: choice\nquestion: Which region?\noptions:\n  - label: us-east\n  - label: eu-west\n```"
+  assert.equal(showsRestedCard(speaks, reused), false, "no fault yet: the registrar is a second behind, and the question is about to be answerable")
+  assert.equal(showsRestedCard(speaks, reused, new Set()), false)
+  assert.equal(showsRestedCard(speaks, reused, new Set(["store"])), true, "refused: nobody was asked, and the card says Frizz is nudging the worker")
+  assert.equal(showsRestedCard(speaks, reused, new Set(["other"])), false, "a refusal of some other fence is not this one's")
+  // Beside a fence that held, the rest still ends on a question.
+  const both = `${reused}\n\n\`\`\`question\nid: fresh\nkind: text\nquestion: Ship it?\n\`\`\``
+  assert.equal(showsRestedCard(speaks, both, new Set(["store"])), false)
+})
+
+// A fence whose question CLOSED without an answer asks nobody either: the human dismissed it, Frizz
+// cancelled it because the thread runs autonomously, or the worker withdrew it.
+test("a rest whose only fence names a question that closed without an answer is a bare rest", () => {
+  const speaks: RestedCardThread = { ...bare, spawnedAt: "2026-10-14T00:00:00.000Z" }
+  const text = "I hit a fork.\n\n```question\nid: retry-policy\nkind: choice\nquestion: Retry or quarantine?\noptions:\n  - label: Retry\n  - label: Quarantine\n```"
+  assert.equal(showsRestedCard(speaks, text), false, "no row yet: about to be asked")
+  const closed = (state: "dismissed" | "withdrawn") => [{ id: "qst_1", handle: "retry-policy", state, askedAt: "2026-10-14T10:00:00.000Z" }]
+  assert.equal(showsRestedCard({ ...speaks, closedQuestions: closed("dismissed") }, text), true)
+  assert.equal(showsRestedCard({ ...speaks, closedQuestions: closed("withdrawn") }, text), true)
+  assert.equal(showsRestedCard({ ...speaks, closedQuestions: [{ ...closed("dismissed")[0], handle: "other" }] }, text), false, "some other question closed, not this one")
+  // …and it composes with a refusal in the same message.
+  const both = `${text}\n\n\`\`\`question\nid: ghost\n\`\`\``
+  assert.equal(showsRestedCard({ ...speaks, closedQuestions: closed("dismissed") }, both, new Set(["ghost"])), true)
 })

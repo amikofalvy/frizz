@@ -31,7 +31,8 @@ test("the card is the last rung of the one ladder, after the resting card", () =
     "the resting card, then the registered done, then the residual rung, then nothing",
   )
   // …and each of those rungs draws its own card, in the one renderer both paths call.
-  assert.match(chat, /case "registered-done":\n\s*return <FenceCard fenceKind="done" body=\{thread!\.lastFence!\.body\} hints=\{\[\]\} wrap=\{wrap\} \/>/)
+  // The fence's HINTS ride along: a registered done carries the worker's `title:` there (2026-10-13).
+  assert.match(chat, /case "registered-done":\n\s*return <FenceCard fenceKind="done" body=\{thread!\.lastFence!\.body\} hints=\{thread!\.lastFence!\.hints\} wrap=\{wrap\} \/>/)
   assert.match(chat, /case "rested":\n\s*return <RestedCard thread=\{thread!\} \/>/)
 })
 
@@ -50,7 +51,9 @@ test("the queue card draws the same card off the same predicate, through the sam
   const lastText = "const lastAgentText = lastAgentIdx >= 0 ? messages[lastAgentIdx]?.text : undefined"
   assert.ok(queue.includes(lastText))
   assert.ok(queue.includes("registeredDone: showsRegisteredDoneCard(thread, lastAgentText),"))
-  assert.ok(queue.includes("restedCard: showsRestedCard(thread, lastAgentText, questionsHere),"))
+  // …with the refused question fences of that same message, as the thread page passes them.
+  assert.ok(queue.includes("const lastAgentRefused = lastAgentIdx >= 0 ? messages[lastAgentIdx]?.refusedFences : undefined"))
+  assert.ok(queue.includes("restedCard: showsRestedCard(thread, lastAgentText, lastAgentRefused),"))
   assert.match(queue, /<RuntimeStatusLadder\n[\s\S]*?\n\s*wrap\n\s*\/>/)
   assert.doesNotMatch(queue, /<(FenceCard|RestedCard|LimitPauseCard|PendingAskCard|PermPromptBanner|AwaitingBackgroundCard)\b/, "no rung is drawn by hand beside the ladder")
 })

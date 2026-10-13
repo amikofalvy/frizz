@@ -29,6 +29,12 @@
 // rest never reads as a bare stop with an ask hidden above it, and this file only has to honour what the
 // worker said: a card stays where it was asked until a later rest claims it, and a claim moves it to the
 // end of that rest — under the fence that named it.
+//
+// WHETHER A QUESTION IS STILL THE THREAD'S ASK IS NOT DECIDED HERE. The server decides it — an open
+// question stands from when it was asked or last referenced until the human next TYPES to the thread
+// (server question-fences.ts standingQuestions) — and sends the answer on each row as `standing`. This
+// file only answers "which message does the card sit under", and the one thing it reads `standing` for is
+// a surface that cannot draw that message: see `from` on questionsByAnchor.
 
 import { type AskedQuestion, awaitingQuestions, questionHandles } from "@frizz/shared"
 import { splitFenceBlocks } from "./fenceBlocks.ts"
@@ -40,6 +46,9 @@ export interface AnchorMessage {
   at?: string
   /** The message's markdown, read only for an ```awaiting fence's `questions:` claim. */
   text?: string
+  /** The ids of this message's question fences the server REFUSED (lib/questionFaults): they name no
+   *  question, so they neither claim a card nor place one. */
+  refusedFences?: ReadonlySet<string>
 }
 
 /** A real human turn — a typed reply or one of frizz's own deliveries, which land as user records and
@@ -74,7 +83,20 @@ export function questionAnchorIndex(messages: readonly AnchorMessage[], askedAt:
     if (!Number.isFinite(at) || at <= asked) continue
     return i - 1
   }
-  return tail
+  // NO STAMPED TURN AFTER THE ASK — but the tail may still be the human's OWN SEND, not yet stamped. The
+  // surface appends an optimistic bubble with no instant (lib/transcript-sync mergeOptimistic) and the
+  // server's copy replaces it a few frames later. It is a turn, made just now, so it ends the rest it
+  // replies to exactly as its stamped copy will. Skipped with the unreadable instants above, it left the
+  // anchor ON the bubble: every card of that rest drew UNDER the human's newest message until the stamp
+  // landed, and a card a fence had placed fell out of its slot (placeQuestions scans from the anchor's
+  // rest, which was then the empty one after the bubble). Held open for 2.5s on a real stack, 2026-10-13:
+  // the answered card sat below the Answers bubble for the whole hold, then jumped back into the prose.
+  // Only a TRAILING run counts — an unstamped turn with stamped history after it is not this tab's send.
+  let end = tail
+  while (end >= 0 && isTurn(messages[end]) && !(messages[end].at && Number.isFinite(Date.parse(messages[end].at!)))) end--
+  // A transcript that is nothing but the bubble has no earlier rest: keep the tail, never the "above the
+  // loaded window" reading (-1), which would hoist the card to the top.
+  return end < 0 ? tail : end
 }
 
 /** The newest worker message that CLAIMS each question, keyed by the lowercased name it used: an
@@ -93,7 +115,7 @@ export function questionClaims(messages: readonly AnchorMessage[]): Map<string, 
         for (const id of awaitingQuestions(seg.hints)) claims.set(id.toLowerCase(), i)
       }
     }
-    for (const id of questionFenceIdsIn(m.text)) claims.set(id, i)
+    for (const id of questionFenceIdsIn(m.text, m.refusedFences)) claims.set(id, i)
   })
   return claims
 }
@@ -116,11 +138,21 @@ function claimOf(claims: ReadonlyMap<string, number>, q: { id?: string; spec?: A
  *  gathers them into one group at its own rest the same way.
  *
  *  `claims: false` reads the ASKING rest alone, ignoring any later fence — the reading lib/questionShadow's
- *  fold needs, because a fence restating a question must fold from the rest that asked it onward. */
-export function questionsByAnchor<Q extends { askedAt: string; id?: string; spec?: AskedQuestion }>(
+ *  fold needs, because a fence restating a question must fold from the rest that asked it onward.
+ *
+ *  `from` is the first message index the surface DRAWS (the queue card's window start; 0 for the drawer,
+ *  whose only undrawn messages are the ones not loaded yet). A question anchored above it has no message
+ *  to sit under, so the surface hoists its group to the top of what it shows — right for a question that
+ *  still STANDS, which must stay reachable from the card, and wrong for one the human has typed past
+ *  (`standing: false` from the server): that one headed the queue card above a newer handoff as though it
+ *  were the current ask, on a row the rail no longer marked as one (reported 2026-10-13). With `from` set,
+ *  a question that no longer stands is left out when its anchor is above the window, and is drawn only in
+ *  place — where its message is on screen. A row with no `standing` (a snapshot from before the flag)
+ *  reads as standing, as it does everywhere else (shared hasStandingQuestion). */
+export function questionsByAnchor<Q extends { askedAt: string; id?: string; spec?: AskedQuestion; standing?: boolean }>(
   messages: readonly AnchorMessage[],
   questions: readonly Q[],
-  opts: { claims?: boolean } = {},
+  opts: { claims?: boolean; from?: number } = {},
 ): Map<number, Q[]> {
   const byAnchor = new Map<number, Q[]>()
   const claims = opts.claims === false || questions.length === 0 ? undefined : questionClaims(messages)
@@ -128,6 +160,7 @@ export function questionsByAnchor<Q extends { askedAt: string; id?: string; spec
     let anchor = questionAnchorIndex(messages, q.askedAt)
     const claimedAt = claims ? claimOf(claims, q) : undefined
     if (claimedAt !== undefined && claimedAt > anchor) anchor = restEnd(messages, claimedAt)
+    if (opts.from !== undefined && q.standing === false && anchor < opts.from) continue
     const group = byAnchor.get(anchor)
     if (group) group.push(q)
     else byAnchor.set(anchor, [q])

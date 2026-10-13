@@ -185,7 +185,7 @@ function Fixture() {
         <RealChip />
       </div>
       {/* The Queue's narrow column. */}
-      <div className="md-body mt-6 w-[300px] text-[14px] [overflow-wrap:anywhere] [&_pre]:whitespace-pre-wrap [&_pre]:break-all"
+      <div className="md-body mt-6 w-[300px] text-[14px] [overflow-wrap:anywhere]"
         data-case="narrow" dangerouslySetInnerHTML={{ __html: mdToHtml([md("callout-title"), md("callout-long-title"), INLINE, OUTPUT, md("details-long")].join("\n\n")) }} />
     </main>
   )

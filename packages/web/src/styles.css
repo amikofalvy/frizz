@@ -1214,11 +1214,14 @@ a[href] {
 [data-question-option]:not(:has(> button:disabled)) {
   cursor: pointer;
 }
-/* An option's markdown BODY can carry a code block (a diff, the message that would be posted), and a
-   wide one h-scrolls — which needs its pixels OUT from under the stretched button, or wheel/drag
-   scrolling targets the button and the overflow is unreachable. Unlike a link, a click here must still
-   pick the option: the chip's div-level onClick routes it (QuestionBlockCard's Chip), skipping only
-   links and real text selections. */
+/* An option's markdown BODY can carry a code block (a diff, the message that would be posted). The
+   raise dates from when a wide block scrolled sideways: its pixels had to be OUT from under the
+   stretched button, or wheel/drag scrolling targeted the button and the overflow was unreachable.
+   Code wraps now (`.md-body pre`), so nothing here scrolls, and a fenced block paints above the button
+   anyway, through its positioned `.md-code` wrapper (hit-tested 2026-10-13 with this rule off); it
+   still matters to a `pre` that has no wrapper, a diagram's unparsed source. Unlike a link, a click
+   here must still pick the option: the chip's div-level onClick routes it (QuestionBlockCard's Chip),
+   skipping only links and real text selections. */
 [data-question-option] .md-body pre {
   position: relative;
   z-index: 1;
@@ -1284,11 +1287,20 @@ a[href] {
 [data-question-option] .md-body th {
   background: color-mix(in srgb, var(--color-fg) 6%, transparent);
 }
+/* CODE WRAPS, the way the prompt box does: a line breaks at its spaces, and a token longer than the
+   line breaks wherever it has to. On every surface — it scrolled sideways everywhere but the Queue's
+   column until 2026-10-13 (maintainer: "code blocks should auto-wrap, just like the prompt box"), which
+   hid the end of every long line behind a scroll nobody makes. `anywhere` rather than `break-word` so
+   a block's longest token never counts toward the width of whatever holds it. `overflow-x` is left as
+   the backstop it is on a Bash card (lib/diff/diff.css): anything that still cannot fit scrolls inside
+   the block, never the page. */
 .md-body pre {
   background: var(--color-bg);
   border: 1px solid var(--color-border);
   border-radius: var(--block-radius);
   padding: 0.75em 1em;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   overflow-x: auto;
 }
 .md-body pre code {
@@ -1588,9 +1600,10 @@ a[href] {
 }
 /* ── Fenced-code copy button ────────────────────────────────────────────────────────────────────
    lib/syntaxHighlight.ts wraps every fenced block in this span and appends the button; one delegated
-   listener (lib/copy-code.ts) does the copying. The wrapper exists because the `<pre>` above SCROLLS:
-   an absolutely-positioned button anchored to it rides the content and slides out of view the moment
-   a long line is scrolled sideways.
+   listener (lib/copy-code.ts) does the copying. The wrapper dates from when the `<pre>` above scrolled
+   sideways: an absolutely-positioned button anchored to a scroller rides the content and slides out of
+   view. Code wraps now, and the wrapper stays as the box a block's rows are framed in (see Framed code
+   blocks below).
 
    The wrapper is now what stands in the prose flow, so the block rhythm (--md-step) moves onto it and
    the `pre` inside gives its own margin up. The first/last-child resets have to name it explicitly:
@@ -1703,10 +1716,10 @@ a[href] {
   /* Opaque, and one step up from the `pre`'s own bg: a code line long enough to run under the button
      must be occluded rather than showing through it.
      THE BUTTON OVERLAYS THE FIRST LINE; it does not reserve room. Reserving would mean ~2.5em of
-     right padding on every line of every block, and in the Queue's narrow column (QUEUE_WRAP makes
-     those `pre`s wrap and break-all) that costs about three characters per line on every line — far
-     more than the one character the overlay can hide, on the first line, only while hovered. Every
-     code viewer this is modelled on overlays for the same reason. */
+     right padding on every line of every block, and code wraps at that edge, so in the Queue's narrow
+     column it costs about three characters per line on every line — far more than the one character
+     the overlay can hide, on the first line, only while hovered. Every code viewer this is modelled
+     on overlays for the same reason. */
   background: var(--color-panel-2);
   color: var(--color-muted);
   cursor: pointer;
@@ -1904,14 +1917,10 @@ a[href] {
   padding-left: 0;
   padding-right: 0;
 }
-/* As wide as its longest line when the block scrolls sideways, so a band reaches the end of the line it
-   colours and not just the edge of the viewport; never narrower than the block. Where code WRAPS (the
-   Queue's column, TranscriptCard QUEUE_WRAP) the longest line is no wider than the block, so this is
-   simply the block's width. */
+/* Code wraps (`.md-body pre`), so every line is as wide as the block, and a band under a line that
+   wraps runs border to border under each line it wraps to. */
 .md-body pre:is(.md-code-lined, .md-diff) > code {
   display: block;
-  width: fit-content;
-  min-width: 100%;
 }
 .md-body :is(.md-line, .md-diff-row) {
   display: block;
@@ -1975,12 +1984,9 @@ a[href] {
 }
 /* A hunk header divides the diff; the lines git writes about a file sit back from the code.
    The header ends in whatever line of code git found above the hunk, which is routinely longer than
-   anything in it, and a block must not scroll sideways for its own metadata. `width: 0` takes the row
-   out of the `code`'s width (a percentage min-width counts for nothing there) and `min-width` then
-   stretches it to whatever the code came to; the text is cut with an ellipsis. Copy still takes it all. */
+   anything in it, and a block must not grow a second line for its own metadata: it is the one row that
+   does not wrap, and the text is cut with an ellipsis. Copy still takes it all. */
 .md-body .md-diff-hunk {
-  width: 0;
-  min-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
