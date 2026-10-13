@@ -43,6 +43,7 @@ export const WAKE_QUIET_WINDOW_MS = 5 * 60_000
 export const WAKE_QUIET_EXEMPT_HINT_PREFIXES = [
   "answers:", "limit:", "interrupt-ended:",
   "signoff:", "park:question:", "park:retired:", "park:nameless:", "park:dead:",
+  "park:question-fence:",
 ] as const
 
 export function isQuietWindowExempt(hintKey: string): boolean {
