@@ -13,6 +13,9 @@
 //   4. `unask` takes the worker's own id; the card's `answerQuestions` settles the row by its `qst_…`.
 //   5. A settled id asked again with a different question is refused — ids are never reused.
 //   6. A thread dispatched before 2026-09-11 keeps the legacy grammar: the same fence registers nothing.
+//   7. A follow-up whose `when:` named the wrong label is refused without taking its parent down, and the
+//      corrected follow-up — written ALONE in a later message — attaches under the open parent's option,
+//      on the same card, with the parent's own instant unmoved.
 //
 // It leaves `qf-shot` with one open question placed mid-handoff, for a screenshot of the card in its slot.
 //
@@ -215,6 +218,28 @@ await until("qf-legacy on the board", () => threadOf("qf-legacy"))
 await sleep(2500)
 const legacyRows = execFileSync("sqlite3", [db, `SELECT count(*) FROM thread_question WHERE thread_slug = 'qf-legacy'`]).toString().trim()
 check("a thread dispatched before 2026-09-11 registers nothing from the fence", legacyRows === "0", `${legacyRows} rows`)
+
+// ---- 7: a follow-up that arrives later ------------------------------------------------------------------
+
+const late = worker({ slug: "qf-late", sessionId: "9f0e1a00-0000-4000-9000-0000000000d4", spawnedAt: minutesAgo(7), title: "Preferences store" })
+late.user("persist user preferences", minutesAgo(7))
+const prefsStore = ["```question", "id: prefs-store", "kind: choice", "question: Should user preferences persist in SQLite or in Postgres?", "options:", "  - label: SQLite (better-sqlite3)", "    recommended: true", "  - label: Postgres", "```"].join("\n")
+const prefsPath = (when) => ["```question", "id: prefs-sqlite-path", "kind: choice", `when: ${when}`, "question: Where should the SQLite preferences file live?", "options:", "  - label: Beside `data/sessions.db`", "  - label: Its own `data/prefs.db`", "```"].join("\n")
+const prefsAskedAt = late.say(`The store is your call.\n\n${prefsStore}\n\n${prefsPath("prefs-store = SQLite")}`)
+const parentOnly = await until("prefs-store on the board", async () => {
+  const t = await threadOf("qf-late")
+  return t?.questions?.length === 1 ? t : undefined
+})
+check("a wrong `when:` label leaves the parent registered, without the follow-up", parentOnly.questions[0].spec.handle === "prefs-store" && !parentOnly.questions[0].spec.options[0].followUps)
+late.say(`Its SQLite option is labelled \`SQLite (better-sqlite3)\`, so here is the follow-up again.\n\n${prefsPath("prefs-store = SQLite (better-sqlite3)")}`)
+const grown = await until("the follow-up under prefs-store", async () => {
+  const t = await threadOf("qf-late")
+  return t?.questions?.[0]?.spec.options?.[0].followUps?.length === 1 ? t : undefined
+})
+check("the corrected follow-up, written alone in a later message, attaches under the option it names", grown.questions[0].spec.options[0].followUps[0].handle === "prefs-sqlite-path")
+check("…on the SAME question: one row, asked when the parent was", grown.questions.length === 1 && grown.questions[0].id === parentOnly.questions[0].id && grown.questions[0].askedAt === prefsAskedAt)
+const lateRows = execFileSync("sqlite3", [db, `SELECT count(*) FROM thread_question WHERE thread_slug = 'qf-late'`]).toString().trim()
+check("…and no second row", lateRows === "1", `${lateRows} rows`)
 
 // ---- the screenshot fixture -----------------------------------------------------------------------------
 
