@@ -105,6 +105,8 @@ export interface NormalizedTail {
   liveTool?: LiveTool
   aiTitle?: string
   lastUserAt?: string
+  // Where the CURRENT REST began — see FoldState.restFromAt. Absent reads as `lastUserAt`.
+  restFromAt?: string
   lastUserText?: string // latest genuine human message (used to confirm wake-token delivery)
   // The FIRST genuine human turn. Read by the board to NAME an external session whose harness has not
   // named it — see foreignThreadView. Optional everywhere: a transcript with no human turn has none.
@@ -181,6 +183,13 @@ export interface FoldState {
   // guarded separately by storage's title_auto CAS).
   autoTitleSource?: "fallback" | "frizz" | "native"
   lastUserAt?: string // ISO8601 of the newest GENUINE (non-synthetic) human turn — the listing sort key
+  // WHERE THE CURRENT REST BEGAN: `lastUserAt`, except that a record carrying nothing but Frizz's own
+  // fence corrections (shared isOnlyParkCorrections) does not move it. A correction asks the worker to
+  // re-do the sign-off it just wrote, so the reply belongs to the same rest — and a question asked at
+  // that rest still stands at it (question-fences.ts standingQuestions). `lastUserAt` itself must keep
+  // moving on a correction: it is how every "the agent spoke last" guard knows one is unanswered.
+  // Absent (a tail cached before 2026-10-13) reads as `lastUserAt`.
+  restFromAt?: string
   lastUserText?: string // exact text of that genuine human turn when the backend records it
   // The FIRST genuine human turn, kept forever — set once and never overwritten. It is what names an
   // EXTERNAL session (one of the human's own terminals) when its harness has not named it: both

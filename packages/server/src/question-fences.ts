@@ -179,16 +179,21 @@ export function syncQuestionFences(
  * answerable where it was asked, and says nothing about this rest (maintainer 2026-10-13: questions "may
  * get registered and never answered, and then they just sort of fade away. I think it's probably fine").
  *
- * The rest starts at the newest human turn (`lastUserAt`) — the same boundary every other rest rule here
- * reads.
+ * The rest starts at the newest turn that was not one of Frizz's own fence corrections (`restFromAt`,
+ * else `lastUserAt`). Every other wake starts a new rest, as a human message does: the worker has news
+ * to act on, and says at its next rest whether it still needs the answer. A CORRECTION does not, because
+ * its reply is the same sign-off written again — "Re-send the same fence with that line added" — and
+ * read as a new rest it took a question asked seconds earlier out of the queue behind the very park
+ * Frizz had asked for (2026-10-13). The chat agrees by construction: it drops a correction record whole.
  */
 export function standingQuestions(
   rows: readonly ThreadQuestionRow[],
-  tele: { lastUserAt?: string; questionSightings?: readonly QuestionSighting[]; lastFence?: FenceView } | undefined,
+  tele: { lastUserAt?: string; restFromAt?: string; questionSightings?: readonly QuestionSighting[]; lastFence?: FenceView } | undefined,
 ): ThreadQuestionRow[] {
   const open = rows.filter((q) => q.state === "open")
   if (open.length === 0) return []
-  const restFrom = tele?.lastUserAt ? Date.parse(tele.lastUserAt) : Number.NEGATIVE_INFINITY
+  const from = tele?.restFromAt ?? tele?.lastUserAt
+  const restFrom = from ? Date.parse(from) : Number.NEGATIVE_INFINITY
   const named = new Set<string>()
   const index = handleIndex(rows)
   for (const sighting of tele?.questionSightings ?? []) {

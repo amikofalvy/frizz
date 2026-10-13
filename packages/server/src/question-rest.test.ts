@@ -8,10 +8,11 @@ import assert from "node:assert/strict"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { boardAskThread, needsAction, sectionOf } from "@frizz/shared"
+import { boardAskThread, mergedWakeMessage, needsAction, PARK_CORRECTION_NAMES_LEAD, sectionOf, wakeDeliveryToken } from "@frizz/shared"
 import { Bus } from "./bus.ts"
 import { createBoard } from "./board.ts"
 import type { Project } from "./project.ts"
+import { questionFenceCorrection } from "./question-fences.ts"
 import { createScheduler } from "./scheduler.ts"
 import { createStorage, type SessionRow } from "./storage.ts"
 import { applyRecord, newTailState, type SessionTelemetry, type Tailer } from "./tailer.ts"
@@ -41,7 +42,7 @@ function world(over: Partial<SessionRow> = {}) {
     turn: "idle", permPrompt: false, subAgents: [], bgShells: [], retiredShells: [], retiredSubAgents: [],
     lastActivityAt: s.lastActivityAt, lastAssistantAt: s.lastAssistantAt, lastAssistant: s.lastAssistant,
     lastAssistantLine: s.lastAssistantLine, questionSightings: s.questionSightings, pendingQuestion: false,
-    lastAssistantAllDone: s.lastAssistantAllDone, lastUserAt: s.lastUserAt, lastUserText: s.lastUserText,
+    lastAssistantAllDone: s.lastAssistantAllDone, lastUserAt: s.lastUserAt, restFromAt: s.restFromAt, lastUserText: s.lastUserText,
     lastFence: s.lastFence, ...extra,
   } as SessionTelemetry)
   const tailer = {
@@ -272,6 +273,76 @@ test("a legacy `questions:` claim makes the named open question stand; an answer
       assert.equal(w.storage.getSession("t")?.park_bumps ?? 0, 0)
       assert.equal(w.view().needsYou, true, `${name}: a rest waiting on nothing stays in the queue`)
       assert.deepEqual(w.view().questions, [])
+    } finally { w.close() }
+  }
+})
+
+// ── A fence correction is not a turn: the reply to it is the SAME rest ────────────────────────────────
+
+// Frizz's own correction lands in the transcript as a user record, and the standing rule read every user
+// record as the start of a new rest. So a question asked beside a fence Frizz then corrected stopped
+// standing the moment the worker did what the correction says ("Re-send the same fence with that line
+// added"): the thread left the queue seconds after asking, on a park the human never saw the question
+// behind. The chat already drops a correction record whole ("a fence correction is not a message",
+// transcript.ts), so the web read the two messages as one rest and the server did not.
+test("a question asked beside a park Frizz corrected still stands once the park is re-sent", async () => {
+  const w = world()
+  try {
+    w.extra.bgShells = [{ label: "the suite", startedAt: at(0), state: "running", id: "toolu_x", taskId: "bzvt" }] as never
+    w.user(0, "move the settings into a real store")
+    // No `status:` line — the answer-required contract corrects exactly that.
+    w.say(1, `One call to make while the suite runs.\n\n${choice("store")}\n\n${fence("awaiting", "shells: [bzvt]\nfor: 1h")}`)
+    await w.tick(1.25)
+    assert.deepEqual(w.deliveries(), [`park:needs-input:${at(1)}`])
+    assert.equal(w.view().needsYou, true, "queued on the question")
+    w.user(1.5, w.sent[0])
+    w.say(2, fence("awaiting", "status: working\nshells: [bzvt]\nfor: 1h"))
+    await w.tick(2.25)
+    const t = w.view()
+    assert.deepEqual(t.questions.map((q) => [q.spec.handle, q.standing]), [["store", true]], "the same rest, re-fenced: the question still stands")
+    assert.equal(t.needsYou, true, "and still queues the thread, whatever the park says")
+    assert.equal(needsAction(t), true)
+  } finally { w.close() }
+})
+
+test("fixing one broken question fence does not fade the valid one asked beside it", async () => {
+  const w = world()
+  try {
+    w.user(0, "publish the packages")
+    w.say(1, `Two calls.\n\n${choice("store")}\n\n${broken("scope")}`)
+    await w.tick(1.25)
+    assert.deepEqual(w.deliveries(), [`park:question-fence:${at(1)}`])
+    w.user(1.5, w.sent[0])
+    w.say(2, fence("question", "id: scope\nkind: text\nquestion: What npm scope should the packages publish under?"))
+    await w.tick(2.25)
+    assert.deepEqual(w.view().questions.map((q) => [q.spec.handle, q.standing]), [["store", true], ["scope", true]])
+    assert.deepEqual(w.deliveries(), [`park:question-fence:${at(1)}`], "and the corrected fault is not reported a second time")
+  } finally { w.close() }
+})
+
+test("only a record that is ALL corrections continues the rest: real news beside one starts a new rest", async () => {
+  const correction = `${PARK_CORRECTION_NAMES_LEAD}something that is not running, so it is not a park and your thread stayed in the queue.`
+  const cases = [
+    // Two corrections merged into one delivery (a broken question fence beside a dead park): still all
+    // corrections, so still the same rest.
+    { text: mergedWakeMessage([{ reason: "awaiting park named 1 dead item(s)", message: correction }, { reason: "1 question fence(s) could not register", message: questionFenceCorrection([{ at: at(1), id: "scope", faults: ["no `kind:`"] }]) }], Date.parse(at(3))), standing: true },
+    // A correction merged with a shell's completion: the worker has news to act on, so its next rest is a new one.
+    { text: mergedWakeMessage([{ reason: "awaiting park named 1 dead item(s)", message: correction }, { reason: "background shell finished", message: "Your background shell `bzvt` finished." }], Date.parse(at(3))), standing: false },
+    // As the runtime writes them: each delivery closed by its token, and two coalesced into one record.
+    { text: `${correction}\n\n${wakeDeliveryToken("d1")}`, standing: true },
+    { text: `${correction}\n\n${wakeDeliveryToken("d1")}\nYour background shell \`bzvt\` finished.\n\n${wakeDeliveryToken("d2")}`, standing: false },
+    // The human, quoting a correction's lead mid-sentence: a human turn.
+    { text: `Why did it say "${PARK_CORRECTION_NAMES_LEAD}nothing"?`, standing: false },
+  ]
+  for (const c of cases) {
+    const w = world()
+    try {
+      w.user(0, "move the settings into a real store")
+      w.say(1, `One call to make first.\n\n${choice("store")}`)
+      await w.tick(2)
+      w.user(3, c.text)
+      w.say(4, "Carrying on with the migration.")
+      assert.deepEqual(w.view().questions.map((q) => q.standing), [c.standing], c.text.slice(0, 60))
     } finally { w.close() }
   }
 })

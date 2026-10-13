@@ -1980,6 +1980,24 @@ export function isParkCorrection(text: string): boolean {
   return t.startsWith(PARK_CORRECTION_NAMES_LEAD) || t.startsWith(PARK_CORRECTION_RETIRED_LEAD) || t.startsWith(PARK_CORRECTION_QUESTION_LEAD) || t.startsWith(PARK_CORRECTION_NEEDS_INPUT_LEAD) || t.startsWith(QUESTION_FENCE_CORRECTION_LEAD)
 }
 
+/**
+ * Does this user record carry NOTHING but fence corrections — every delivery in it, and every wake of a
+ * merged one? The chat drops such a record whole ("a fence correction is not a message", server
+ * transcript.ts), and for the same reason it does not start a new REST: the worker's reply re-does the
+ * sign-off it was corrected on, so a question asked there is still that rest's question (server
+ * question-fences.ts standingQuestions). A correction delivered beside real news — a shell's completion,
+ * an answer, a Goal prompt — is a turn like any other.
+ */
+export function isOnlyParkCorrections(text: string): boolean {
+  const deliveries = splitWakeDeliveries(text).filter((d) => !isInjectedNoise(d))
+  if (deliveries.length === 0) return false
+  return deliveries.every((d) => {
+    if (isParkCorrection(d)) return true
+    const merged = parseMergedWake(d)
+    return merged !== null && merged.every((part) => isParkCorrection(part.body))
+  })
+}
+
 export function timerPromptMessage(prompt: string, fireAt: string): string {
   return `${prompt.trim()}\n\n(One-off timer, set for ${fireAt}. It has fired and will not repeat.)`
 }
