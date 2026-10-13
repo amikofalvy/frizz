@@ -38,6 +38,14 @@ test("a chip alone can head the card, and a card with no body draws no rule", ()
   assert.doesNotMatch(html({ icon: ListTodo, chip: "Awaiting human", label: "Sign in to npm" }), /data-card-rule/)
 })
 
+test("a chipped card can decline its rule, and keeps its body", () => {
+  // A bare ```done is its chip and its action band: the band's own border is the seam, so a rule above it
+  // would draw a second one around nothing.
+  const out = html({ icon: ListTodo, chip: "Done", label: null, ruled: false, children: "Mark as done" })
+  assert.doesNotMatch(out, /data-card-rule/)
+  assert.match(out, /class="card-md mt-\[17px\][^"]*">Mark as done</, "…and the band's border takes the rule's distance")
+})
+
 test("a card without a chip keeps the glyph-beside-title head", () => {
   const out = html({ icon: ListTodo, label: "Awaiting", children: "Waiting for an external update." })
   assert.doesNotMatch(out, /data-card-chip|data-card-rule|data-card-title/)

@@ -213,8 +213,9 @@ test("the resting card owns the heading, the glyph, the prose and the chips", ()
   // The fence it STATES is a parameter, defaulting to the thread's own — that default is the at-rest
   // case, and the parameter is what lets one card also state a fence the board has already dropped.
   assert.match(code, /const stated = fence \?\? \(thread\?\.lastFence\?\.kind === "awaiting" \? thread\.lastFence : undefined\)/)
-  assert.match(code, /awaitingBackgroundLabel\(work, hints\)/, "the heading reads the stated fence's hints")
-  assert.match(code, /icon=\{steps\.length > 0 \? ListTodo : shellsAlone\(work\) \? TerminalSquare : Hourglass\}/, "three titles, three glyphs, and no fourth — steps are the one wait on the reader")
+  assert.match(code, /chip=\{awaitingBackgroundChip\(work, hints\)\}/, "the chip reads the stated fence's hints")
+  assert.match(code, /const title = awaitingFenceTitle\(hints\)/, "…and so does the title under it")
+  assert.match(code, /icon=\{steps\.length > 0 \? ListTodo : shellsAlone\(work\) \? TerminalSquare : Hourglass\}/, "three chips, three glyphs, and no fourth — steps are the one wait on the reader")
   assert.match(code, /const prose = awaitingProseBlock\(stated\?\.body\)/)
   assert.match(code, /const unrowed = unrowedWatchRefs\(work, hints\)/, "a PR the table already rows gets no chip — one PR, one place")
   // THE VERBS ARE THE ONLY THINGS THE RUNTIME MAY CHANGE, and each is withheld rather than re-styled: a
