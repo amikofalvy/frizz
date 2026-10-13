@@ -520,7 +520,7 @@ export function answersInFlight(rows: readonly ThreadQuestionRow[], lastUserAt: 
     if (Number.isFinite(userAt) && userAt >= q.settled_at) continue
     if (q.state === "dismissed") {
       const spec = safeQuestionSpec(q.spec)
-      if (spec) dismissed.push({ question: spec.question })
+      if (spec) dismissed.push({ question: spec.question, ...(q.handle ? { handle: q.handle } : {}) })
       continue
     }
     if (q.state !== "answered") continue
@@ -530,7 +530,7 @@ export function answersInFlight(rows: readonly ThreadQuestionRow[], lastUserAt: 
   if (answers.length > 0) return questionAnswerMessage(answers, dismissed)
   // questionAnswerMessage would compose the same cancellation wake for an empty answers list; calling
   // the producer directly keeps this branch readable as what it is — frizz's own "nobody is coming".
-  return wakeOnDismissals && dismissed.length > 0 ? questionsCancelledWakeMessage(dismissed.length) : undefined
+  return wakeOnDismissals && dismissed.length > 0 ? questionsCancelledWakeMessage(dismissed.length, dismissed) : undefined
 }
 
 /** How long a stored answer excuses its thread from the queue while the wake carrying it has not landed.

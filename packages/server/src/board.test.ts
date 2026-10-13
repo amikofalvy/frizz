@@ -2269,7 +2269,12 @@ test("…UNLESS a wake is coming for the dismissals — the autonomy cancellatio
   // in flight fills — the question card gone, the residual "Rested without a sign-off" card in its
   // place (maintainer 2026-09-02). Same bytes as that wake, same spend: the worker receiving it.
   const dismissed = askedRow({ state: "dismissed", answer: null })
-  assert.equal(answersInFlight([dismissed], undefined, true), questionsCancelledWakeMessage(1))
+  assert.equal(answersInFlight([dismissed], undefined, true), questionsCancelledWakeMessage(1, [{ question: "SQLite or a JSON file?" }]))
+  // …and those bytes name the question by the worker's own id when its fence gave it one (2026-10-13).
+  assert.equal(
+    answersInFlight([{ ...dismissed, handle: "settings-store" }], undefined, true),
+    questionsCancelledWakeMessage(1, [{ question: "SQLite or a JSON file?", handle: "settings-store" }]),
+  )
   assert.equal(answersInFlight([dismissed], new Date(2000).toISOString(), true), undefined, "the wake landed")
   // The flag widens ONLY the dismissal-alone case; answers keep their message with or without it.
   assert.equal(answersInFlight([askedRow()], undefined, true), answersInFlight([askedRow()], undefined))

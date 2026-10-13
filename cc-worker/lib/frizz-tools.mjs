@@ -1693,9 +1693,25 @@ async function unask(args) {
   // A withdrawal that matched nothing is reported rather than swallowed: the id was wrong, the human
   // already answered it, or it is another thread's — and a worker that believes it withdrew a question
   // the human is still looking at will get an answer it has stopped expecting.
+  //
+  // AND IT NAMES WHAT ACTUALLY WENT. A follow-up rides inside its parent's row, so `unask sqlite-path`
+  // withdraws the `settings-store` it follows — the server answers with that id, and reporting the id
+  // the worker TYPED told it a question it never named was still on the human's board.
+  const root = typeof result?.id === "string" && result.id ? result.id : id
+  const viaFollowUp = root.toLowerCase() !== id.toLowerCase()
+  const settled = {
+    answered: `Question ${root} was already answered, so nothing was withdrawn — the answer reaches you as its own message.`,
+    dismissed: `Question ${root} was already dismissed by the human, so nothing was withdrawn — decide it yourself.`,
+    withdrawn: `Question ${root} was already withdrawn.`,
+  }
   const head = result?.withdrawn
-    ? `Question ${id} withdrawn. Its card is gone and the human will not be asked.`
-    : `No OPEN question ${id} on this thread — it was already answered or dismissed, or the id is not one of yours.`
+    ? viaFollowUp
+      ? `${id} is a follow-up of ${root}, and a follow-up is withdrawn with the question it follows — so ` +
+        `question ${root} was withdrawn, follow-ups and all. Its card is gone and the human will not be asked. ` +
+        `If you still need ${root} answered, ask it again under a new id.`
+      : `Question ${root} withdrawn. Its card is gone and the human will not be asked.`
+    : settled[result?.state] ??
+      `No OPEN question ${id} on this thread — it was already answered or dismissed, or the id is not one of yours.`
   return `${head}\n\n${openQuestionList(result)}`
 }
 

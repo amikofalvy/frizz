@@ -185,14 +185,12 @@ test("what the server keeps of a message — each fence's own source — reads t
 
 // ── Server against web ─────────────────────────────────────────────────────────────────────────────────
 
-// The one way the two differ: the web reads each fence ALONE, and the server refuses some for what the whole
-// message makes of them. A `when:` follow-up draws nothing of its own, so the only such fence the web still
-// cuts a slot for is a ROOT whose tree the server refused. ChatView draws it read-only from the fence's own
-// spec ("an ask with no row yet … never registers a fence it refused"), and it stays that way: a card the
-// human can read and never answer, until the worker's correction lands a new one.
-const WEB_ONLY: Record<string, string[]> = {
-  "a tree four deep": ["a"],
-}
+// The web reads each fence ALONE, and the server refuses some for what the whole message makes of them. A
+// `when:` follow-up draws nothing of its own, so the only fence the web could still cut a slot for that the
+// server refused is a ROOT whose tree was refused — and since 2026-10-13 no input here makes one: a
+// follow-up never takes its parent down (a fourth level is refused on its own fence, and the three sound
+// levels above it register), so the two agree on every message below.
+const WEB_ONLY: Record<string, string[]> = {}
 
 test("the web cuts a card slot for exactly the ids the server registers or references", () => {
   const differing: Record<string, { server: string[]; web: string[] }> = {}
@@ -203,8 +201,11 @@ test("the web cuts a card slot for exactly the ids the server registers or refer
     if (ids(v.server) !== ids(v.web)) differing[name] = { server: v.server, web: v.web }
   }
   assert.deepEqual(differing, Object.fromEntries(Object.entries(WEB_ONLY).map(([name, web]) => [name, { server: [], web }])))
-  // The control: the harness can see a difference — the server refuses the four-deep tree, with a fault.
-  assert.equal(view(inputs["a tree four deep"]).faults, 1)
+  // The four-deep tree: its root registers with three levels, and the fourth is refused by name.
+  assert.deepEqual([view(inputs["a tree four deep"]).server, view(inputs["a tree four deep"]).faults], [["a"], 1])
+  // The control: the harness can see a difference — a root the server refuses whole is still cut by the web.
+  const refusedRoot = view("```question\nid: m\nkind: choice\nquestion: Q?\noptions:\n  - label: A\n    recommended: true\n  - label: B\n    recommended: true\n```")
+  assert.deepEqual([refusedRoot.server, refusedRoot.web.length > 0 || refusedRoot.faults > 0], [[], true])
   assert.deepEqual(view(inputs.plain), { server: ["x"], faults: 0, web: ["x"], legacyCards: 0, marked: ["code"] })
 })
 
@@ -213,12 +214,16 @@ test("a follow-up is the server's through its root and the web's through its par
   assert.deepEqual(v.server, ["p"])
   assert.deepEqual(v.web, ["p"])
   assert.deepEqual(questionHandles(questionFencesIn(inputs["a follow-up beside its parent"]).asks[0].spec), ["p", "c"])
-  // …and one that hangs off nothing is refused by the server and drawn nowhere.
-  for (const name of ["an orphan follow-up", "a loop of follow-ups"]) {
-    const lost = view(inputs[name])
-    assert.deepEqual([lost.server, lost.web], [[], []], name)
-    assert.ok(lost.faults > 0, `${name}: the worker is told`)
-  }
+  // …and a loop hangs off nothing: refused by the server and drawn nowhere.
+  const lost = view(inputs["a loop of follow-ups"])
+  assert.deepEqual([lost.server, lost.web], [[], []])
+  assert.ok(lost.faults > 0, "a loop of follow-ups: the worker is told")
+  // A follow-up whose parent is NOT in its message is no longer refused here: it may hang off a question
+  // the thread already has open, so the reader hands it to the server unjudged (the registrar attaches it
+  // or refuses it by name — server question-fences.test.ts). The web still cuts no slot of its own for it.
+  const late = view(inputs["an orphan follow-up"])
+  assert.deepEqual([late.server, late.web, late.faults], [[], [], 0])
+  assert.equal(questionFencesIn(inputs["an orphan follow-up"]).followUps.length, 1)
 })
 
 test("a question holding a code block: the server registers it whole and the web cuts the same span", () => {
