@@ -463,184 +463,98 @@ const UNWATCH = {
   },
 }
 
-// ---- `ask` / `unask`: a question the human owes an answer to, as a ROW ------------------------------
+// ---- `ask` / `secret`: RETIRED, and `unask` -------------------------------------------------------------
+//
+// A QUESTION IS A ```question FENCE IN THE WORKER'S OWN MESSAGE (2026-10-13). The server reads every
+// assistant message, registers each new `id:` as a `thread_question` row, and reads an `id:`-only fence as
+// a reference to one that exists (packages/shared/src/question-fence.ts). `ask` worked — about 4 failures
+// in 220 calls — but 61% of those calls were the last tool call before the rest: a whole request spent
+// re-reading the context to register, and then a handoff that copied the minted id back into a placement
+// marker. See plans/rest-by-registration.md.
+//
+// BOTH COMMANDS STAY, AND REFUSE. A worker whose contract predates the fence still reaches for them, and
+// so does one that read `frizzctl ask` in a project's own docs; refusing at that moment, with the fence in
+// the refusal, teaches better than a command that is simply gone ("no such command" teaches nothing). The
+// refusal makes no RPC: the `ask` RPC itself stays for the server's own registrar, its seeds and its tests.
+// Neither is listed by `frizzctl --help`, and each MCP description is one line.
 
-// The question tree, generated rather than written three times over. MCP tool schemas are JSON Schema,
-// and a `$ref` cycle is the natural way to express a recursive shape — but client support for one is
-// uneven, and a schema a client silently drops is a tool a worker cannot call. ASK_MAX_DEPTH is 3, so
-// the nesting is INLINED to exactly that depth: `followUps` simply does not exist on the deepest level,
-// which makes the limit visible in the schema instead of being a refusal the worker meets at runtime.
-const ASK_MAX_DEPTH = 3
-/** @param {number} depth 1 = the root question. @returns {Record<string, unknown>} */
-function questionSchema(depth) {
-  const option = {
-    type: "object",
-    properties: {
-      label: { type: "string", description: "The choice itself, short — this is what the answer hands back to you." },
-      description: {
-        type: "string",
-        description:
-          "The trade-off, or the evidence — and it renders INSIDE the option, always visible, so this " +
-          "is where the human learns what they are choosing BEFORE they pick anything. ONE LINE is the " +
-          "default and it is right most of the time: name the trade-off and stop. Earn more than that " +
-          "and spend it on a shape they can SCAN — a short list, a table, a code block, the diff the " +
-          "option would produce, the exact message that would be posted. Never on a RUN OF " +
-          "ONE-SENTENCE PARAGRAPHS: four single sentences stacked with blank lines between them is the " +
-          "shape that keeps arriving, and it is the least readable one in a card this narrow. An " +
-          "option with no trade-off makes the human reconstruct your reasoning before they can choose; " +
-          "an option with four paragraphs makes them read an essay to answer one question.",
-      },
-      recommended: {
-        type: "boolean",
-        description:
-          "Mark the ONE option you would take, and put it first. At most one per pick-one question — a " +
-          "recommendation on two of three choices says nothing. ON A `multi`, MARK EVERY OPTION YOU " +
-          "WOULD TICK, or none: the human ticks several there, so one mark alone reads as \"pick only " +
-          "this\". IF YOU CAN MARK ONE, ASK YOURSELF WHY " +
-          "YOU ARE ASKING: you already know the answer, so implement it and say which way you went. " +
-          "This is for the fork you genuinely cannot take yourself.",
-      },
-      // `preview` (markdown revealed under the option once picked) is RETIRED from this schema
-      // (2026-09-01): detail that decides a choice must be visible before the choice, so it belongs in
-      // a rich `description` now. The server still ACCEPTS the field — an in-flight worker dispatched
-      // against the old schema keeps working, and the card folds it into the same always-visible body.
-      ...(depth < ASK_MAX_DEPTH
-        ? {
-            // No `maxItems` here either (four until 2026-09-03): the tree is bounded by its DEPTH, not
-            // by how many branches hang off one option.
-            followUps: {
-              type: "array",
-              description:
-                "Questions that become live ONLY if the human picks this option — the conditional " +
-                "branch. A branch nobody takes is never asked and never answered, so this is how you " +
-                "ask \"and if so, which?\" without asking it of somebody who said no. A `multi` " +
-                "question cannot carry these (several picked options would open several branches at " +
-                "once) and neither can a free-text one (there is no answer to branch on).",
-              items: questionSchema(depth + 1),
-            },
-          }
-        : {}),
-    },
-    required: ["label"],
-  }
-  return {
-    type: "object",
-    properties: {
-      question: {
-        type: "string",
-        description:
-          "THE QUESTION, on one line, in the human's own vocabulary. They have their original prompt " +
-          "and nothing else — not your plan, not your notes, not the names you coined while working. " +
-          "Lead with the behaviour, not the identifier. NO \"I\" AND NO \"you\": clicking an option is " +
-          "the HUMAN speaking, so first and second person flip between writer and reader. Name the " +
-          "actor outright instead.",
-      },
-      header: { type: "string", description: "A very short chip label for the card, 12 characters or so — \"Auth method\", \"Storage\"." },
-      kind: {
-        type: "string",
-        enum: ["question", "multi"],
-        description:
-          "`question` = pick ONE. `multi` = pick SEVERAL, for choices that are not mutually exclusive. " +
-          "A question with NO options at all is a free-text box, which is the right shape when you need " +
-          "a name, a value or a sentence rather than a decision between things you have enumerated.",
-      },
-      danger: {
-        type: "boolean",
-        description:
-          "The DESTRUCTIVE gate, and nothing softer: a force-push, a deletion, a history rewrite, a " +
-          "production rollback. It changes two things — the card wears the risk tone, and the human's " +
-          "x cannot dismiss it, because a generic close icon is not consent for something irreversible. " +
-          "Declining must therefore be one of your own options.",
-      },
-      // No `maxItems`: the count is the worker's to choose (maintainer 2026-09-03 — "allow arbitrary
-      // numbers of options"). A `multi` over a long list is a real shape; the card numbers every row (1–9 are its keys).
-      options: {
-        type: "array",
-        description:
-          "As many as the choice actually has — a fork of two, or a `multi` over twenty findings. " +
-          "Omit entirely for a free-text question.",
-        items: option,
-      },
-    },
-    required: ["question", "kind"],
-  }
-}
+/** What a refused `ask` prints, and what `frizzctl ask --help` prints: the fence, whole enough to write one
+ *  without the contract that taught it, because the worker reading it may have a contract that never did. */
+const ASK_RETIRED =
+  "NOT registered — `frizzctl ask` is retired (2026-10-13), and nothing was sent. Ask the human by writing " +
+  "a ```question fence in your own message instead: Frizz registers it when the message lands and draws " +
+  "its card exactly where you wrote it.\n\n" +
+  "```question\n" +
+  "id: settings-store\n" +
+  "kind: choice\n" +
+  "question: Should the settings store use SQLite or a JSON file?\n" +
+  "options:\n" +
+  "  - label: SQLite\n" +
+  "    description: transactional, and one store to back up\n" +
+  "    recommended: true\n" +
+  "  - label: JSON file\n" +
+  "    description: no dependency, hand-editable\n" +
+  "---\n" +
+  "Optional context, in any Markdown: a table, a diff, a callout, a <details> section.\n" +
+  "```\n\n" +
+  "- `id:` is yours to choose: a lowercase slug, unique in this thread for good.\n" +
+  "- `kind:` is `choice` (pick one), `multi` (pick several), `text` (free text) or `secret` (one masked " +
+  "box, for a token or a one-time code).\n" +
+  "- `question:` is one line. Each option takes `label:`, `description:` (one line), `recommended: true` " +
+  "and `detail: |` (an indented Markdown block). The question may also carry `danger: true` and a " +
+  "`header:` chip.\n" +
+  "- Every value is read verbatim to the end of its line. A code block inside the fence needs a longer " +
+  "outer fence (````question).\n" +
+  "- Several questions are several fences in one message. A follow-up is its own fence in the same message " +
+  "with `when: <parent id> = <option label>`.\n" +
+  "- At a later rest that still needs an answer, write a fence carrying that question's `id:` alone. " +
+  "Withdraw one you no longer need with `frizzctl unask <id>`.\n\n" +
+  "The question is your rest's sign-off and it does not end your turn: keep doing what does not depend " +
+  "on the answer, then rest normally. A fence Frizz cannot register comes back to you as a correction " +
+  "naming the fault."
+
+const SECRET_RETIRED =
+  "NOT registered — `frizzctl secret` is retired (2026-10-13), and nothing was sent. Ask for a value only " +
+  "the human holds with a `kind: secret` question fence in your own message:\n\n" +
+  "```question\n" +
+  "id: npm-otp\n" +
+  "kind: secret\n" +
+  "question: The npm one-time code for the maintainer account, to publish frizz-server\n" +
+  "```\n\n" +
+  "The card is one masked box, and what the human pastes never enters the transcript or your context. The " +
+  "answer's wake gives you the path of a private pipe that reads ONCE, within 15m: read it inside the " +
+  "command that uses it — `npm publish --otp \"$(cat '<path>')\"` — and never cat, echo or copy it on its " +
+  "own. A one-time code expires within a minute, so have the command ready before you rest. " +
+  "`frizzctl ask --help` shows the rest of the question fence."
 
 const ASK = {
   name: "ask",
-  description:
-    "ASK THE HUMAN SOMETHING YOU CANNOT DECIDE, as a ROW they still owe an answer to. THIS IS THE ONLY " +
-    "WAY TO ASK: the free-form ```question fence is retired (2026-09-11), and a fence with a question " +
-    "written in its body is plain prose — no card, no answer, no sign-off. The row renders as an " +
-    "answerable card on the board and in the thread, and it STAYS there: it survives your turn ending, " +
-    "a compaction, a restart, and the transcript scrolling past. A fence has the lifetime of the " +
-    "message carrying it, which is why a question written into one was unanswerable an hour later.\n\n" +
-    "YOUR DEFAULT IS TO DECIDE, AND THIS COMMAND DOES NOT CHANGE THAT. A reversible call costs minutes to " +
-    "redo; a round-trip to the human costs hours with the whole effort idle. Anything derivable from " +
-    "the code, the conventions or ordinary engineering judgement is yours: make it, say which way you " +
-    "went, and keep moving. THE TEST THAT CATCHES ALMOST EVERY BAD QUESTION: if you are about to mark " +
-    "one option `recommended`, you already know the answer — so implement it instead of asking.\n\n" +
-    "ASK WHEN A WRONG GUESS WOULD BE BOTH COSTLY AND HARD TO UNDO — something destructive or " +
-    "irreversible, an external-facing commitment, a security posture with real exposure, product or UX " +
-    "direction that is genuinely the human's taste to set. And ask when you KNOW the answer but cannot " +
-    "ACT on it: a merge, a publish, a spend, a comment that goes out under their name. Then the " +
-    "recommendation is the point, and it goes first.\n\n" +
-    "ASKING DOES NOT END YOUR TURN. A question waits on a person, so it carries no timeout and expires " +
-    "never — but you keep working. Do everything that does NOT depend on the answer first, and register " +
-    "the question at the moment you find it rather than saving it for the end.\n\n" +
-    "AND WHEN YOU DO STOP, THE QUESTION IS THAT REST'S SIGN-OFF — rest normally. Frizz draws the card " +
-    "at the rest that asked it whether you mention it or not, so nothing you write can hide one. The " +
-    "card draws itself at the tail of the rest the question was asked — never write the question into " +
-    "your handoff (one question, one card). AT EVERY LATER REST it is no longer your sign-off and frizz " +
-    "does not redraw it under your newer handoff: name it under `questions:` in an ```awaiting fence " +
-    "while you still need the answer (its card is drawn there), or withdraw it with `frizzctl unask <id>`. TO PLACE IT " +
-    "INSIDE YOUR PROSE instead, write " +
-    "an EMPTY fence naming the id this command printed — ```question qst_ab12cd34 on one line, ``` on " +
-    "the next — and the card renders there. One marker per question; nothing in the body; placement is " +
-    "optional, and every answer of the rest still sends together.\n\n" +
-    "SEVERAL AT ONCE IS ONE COMMAND. The card sends every answer as a unit, so a second `frizzctl ask` for a second " +
-    "question just makes the human send twice. Register them together.\n\n" +
-    "The answer comes back to you as its own wake, restating what was asked. Withdraw one you no longer " +
-    "need with `frizzctl unask <id>` — a question you have since answered yourself, still sitting on the human's " +
-    "board, is worse than never having asked it.\n\n" +
-    "ON AN AUTONOMOUS THREAD THIS REFUSES, and tells you the standing instruction you are working " +
-    "under. A thread carrying a rest Goal has already been told to keep going and decide for itself, " +
-    "so the refusal is that instruction arriving at the moment it matters. Decide, and say which way " +
-    "you went in your write-up. If the call is genuinely the human's — destructive or irreversible — " +
-    "put it in your FINAL MESSAGE instead of here; autonomous does not mean nobody is reading.\n\n" +
-    "AN ACT IS NOT A QUESTION. When the human must PERFORM something you cannot — sign in, approve, " +
-    "merge, press a button you may not — do not ask whether they will: list the steps under `steps:` " +
-    "in your ```awaiting fence. That works on an autonomous thread too, and their reply wakes you.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      // No `maxItems` (four until 2026-09-03): "several at once is one command" above, and a cap here told
-      // a worker with six to batch them and then refused the batch.
-      questions: {
-        type: "array",
-        minItems: 1,
-        description: "The questions to register, together. Each becomes its own card and its own row.",
-        items: questionSchema(1),
-      },
-    },
-    required: ["questions"],
-  },
+  description: "RETIRED (2026-10-13): ask the human by writing a ```question fence in your own message. This only refuses, and the refusal shows the fence.",
+  inputSchema: { type: "object", properties: {} },
 }
 
 const UNASK = {
   name: "unask",
   description:
-    "WITHDRAW A QUESTION you registered with `frizzctl ask`, by its id. Its card disappears and the human is " +
-    "never asked.\n\n" +
+    "WITHDRAW A QUESTION you asked, by its id — the `id:` you wrote in its ```question fence. Its card " +
+    "disappears and the human is never asked.\n\n" +
     "Use it the moment the question stops mattering: you worked out the answer yourself, the code moved " +
     "and the fork is gone, or you are about to finish. A stale question on someone's board is worse " +
-    "than no question — they answer it, and the answer is about a decision that no longer exists.\n\n" +
-    "You do NOT need this for a question that gets answered; that settles itself and wakes you. " +
-    "Withdrawing is YOUR move and is never reported back to you as news.",
+    "than no question — they answer it, and the answer is about a decision that no longer exists. An " +
+    "open question also blocks `frizzctl done` until it is answered or withdrawn.\n\n" +
+    "You do NOT need this for a question that gets answered; that settles itself and wakes you. Nor for " +
+    "one a later rest simply does not mention: an older question stays answerable where it was asked. " +
+    "Withdrawing is YOUR move and is never reported back to you as news. A withdrawn id is never asked " +
+    "again — a new question takes a new id.",
   inputSchema: {
     type: "object",
     properties: {
-      id: { type: "string", description: "The question id `frizzctl ask` printed, or that `frizzctl activity` lists. Only your own thread's." },
+      id: {
+        type: "string",
+        description:
+          "The question's id: the `id:` of its ```question fence, as `frizzctl activity` lists it — or a " +
+          "`qst_…` id an older `frizzctl ask` printed. Only your own thread's.",
+      },
     },
     required: ["id"],
   },
@@ -648,39 +562,8 @@ const UNASK = {
 
 const SECRET = {
   name: "secret",
-  description:
-    "ASK THE HUMAN FOR A SECRET VALUE — a one-time 2FA code, an API token, a password — that a command " +
-    "needs and you must never see. The human may be on a phone, far from this machine: this is how a " +
-    "code reaches a command without anyone typing into a terminal here.\n\n" +
-    "It registers a question like `frizzctl ask`, drawn as a card with ONE MASKED BOX. What the human pastes is " +
-    "held in Frizz's memory — never on disk — and served through a private named pipe whose path this " +
-    "command prints NOW. It never enters the transcript, the database or your context: the answer you are " +
-    "woken with names the path, not the value.\n\n" +
-    "THE PATH CAN BE READ ONCE, within 15 minutes of the answer; then it is gone. So read it INSIDE the " +
-    "command that uses it: `npm publish --otp \"$(cat '<path>')\"`, `<cmd> < '<path>'`. A value several " +
-    "commands need goes into a variable at the start of ONE Bash call: " +
-    "`T=\"$(cat '<path>')\"; cmd1 --token \"$T\"; cmd2 --token \"$T\"`. Never `cat` it bare, echo it, " +
-    "copy it into a file, or paste it into a message — any of those spends the one read and puts the " +
-    "value in the transcript. To discard an unread value, `rm` the path.\n\n" +
-    "A one-time code expires in about thirty seconds, so have the command ready BEFORE you rest: when the " +
-    "answer wakes you, run it at once.\n\n" +
-    "Like a question, it is your rest's sign-off and it gates `done` until answered; name it under " +
-    "`questions:` at later rests, withdraw it with `frizzctl unask <id>`. It is allowed on an autonomous thread — a " +
-    "credential is not something you can decide.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      question: {
-        type: "string",
-        description:
-          "What to paste, said so the human can answer cold: which account or service, which kind of " +
-          "value, and what it unlocks — \"The npm one-time code for the maintainer account, to publish " +
-          "frizz 0.16.0.\" NO \"I\" AND NO \"you\": name the actor outright.",
-      },
-      header: { type: "string", description: "A very short chip label for the card, 12 characters or so — \"npm OTP\", \"API token\"." },
-    },
-    required: ["question"],
-  },
+  description: "RETIRED (2026-10-13): ask for a value only the human holds with a `kind: secret` ```question fence in your own message. This only refuses, and the refusal shows the fence.",
+  inputSchema: { type: "object", properties: {} },
 }
 
 // STEER (2026-10-09): one thread messaging ANOTHER thread of the same project. Claude Code's own
@@ -754,7 +637,8 @@ const DONE = {
     "plan, doc or commissioned report written INTO A FILE. An open pull request is not done — the " +
     "merge is. An investigation headed for a fix is not done — the fix is. And a verdict that ends in " +
     "SOMEBODY SHOULD NOW DO SOMETHING (merge it, post this, pick one of these) is not done either: " +
-    "that is a `frizzctl ask`, carrying your recommendation as the first option.\n\n" +
+    "that is a question — a ```question fence in your message — carrying your recommendation as the " +
+    "first option.\n\n" +
     "THE TEST IS NEVER \"HAVE I STOPPED WORKING\". It is: WHAT IS LOST IF NOBODY EVER OPENS THIS " +
     "THREAD AGAIN? Name one thing and you are not done. Uncertain is not done.",
   inputSchema: {
@@ -824,12 +708,11 @@ const ACTIVITY = {
     "one of them, every QUESTION still owed an answer, and saved links/files with their lnk_ ids.\n\n" +
     "WHY YOU NEED IT: an ```awaiting fence names what you are waiting on BY ID, and frizz checks every " +
     "one against what is actually live. A name that matches nothing is not a park — you are bumped and " +
-    "your thread queues. The same goes for the ids `unwatch` and `unask` take, and for the id you put in " +
-    "an EMPTY ```question fence to PLACE a registered question in your handoff (a marker naming no open " +
-    "question of yours draws nothing). So if you have lost one (a " +
-    "compaction, a long turn, a wake you did not expect), run this rather than guessing. Guessing is " +
-    "the failure this command exists to remove — and it is the only way to read your open questions " +
-    "WITHOUT registering or withdrawing one.\n\n" +
+    "your thread queues. The same goes for the ids `unwatch` and `unask` take, and for the `id:` a " +
+    "```question fence references when a later rest still needs that question's answer. So if you have " +
+    "lost one (a compaction, a long turn, a wake you did not expect), run this rather than guessing. " +
+    "Guessing is the failure this command exists to remove — and it is how you read back your open " +
+    "questions, by the id you gave each one.\n\n" +
     "It takes nothing and changes nothing. You can only ever read your OWN thread.",
   inputSchema: { type: "object", properties: {}, required: [] },
 }
@@ -1029,24 +912,24 @@ async function activity() {
   const linksBlock = links.length === 0 ? "" : "\n\nSaved links and files (not running work; remove with `frizzctl unlink <id>`):\n" +
     links.map((link) => `  ${link.id}  ${link.kind}: ${link.label}\n    ${link.target}`).join("\n")
   // THE QUESTIONS GET THEIR OWN SECTION, because they are not running work: a question waits on a
-  // person. Since 2026-10-05 a fence names the ones still needed under `questions:` (and must name every
-  // open one), so the ready-to-paste fence below carries them too.
+  // person. Each is listed by the worker's own id (its fence's `id:`), the one `unask` takes and a
+  // reference fence names; a `qst_…` row `frizzctl ask` registered has no other. Since 2026-10-13 no
+  // fence has to name them — `questions:` is still read for older contracts, and taught nowhere — so the
+  // ready-to-paste fence below no longer carries them.
+  const questionId = (q) => String(q?.handle ?? q?.spec?.handle ?? q?.id ?? "")
   const askedBlock = questions.length === 0 ? "" : (
     `\n\n${questions.length} question${questions.length === 1 ? "" : "s"} still owed an answer:\n\n` +
-    questions.map((q) => `  question: ${q.id}\n    ${String(q?.spec?.question ?? "").replace(/\s+/g, " ").slice(0, 160)}`).join("\n") +
-    "\n\nEach one blocks `done` until it is answered or withdrawn, and draws its own card at the rest " +
-    "it was asked — never write it into a handoff; an EMPTY ```question fence naming its id places it " +
-    "inside your prose. `frizzctl unask <id>` the ones since decided. Any ```awaiting fence names EVERY open one " +
-    "under `questions:` or is refused, and at a rest after the one that asked, a question you neither " +
-    "name nor withdraw gets you bumped. In a fence: `questions: [" +
-    questions.map((q) => q.id).join(", ") + "]`"
+    questions.map((q) => `  question: ${questionId(q)}\n    ${String(q?.spec?.question ?? "").replace(/\s+/g, " ").slice(0, 160)}`).join("\n") +
+    "\n\nEach one blocks `done` until it is answered or withdrawn — `frizzctl unask <id>` the ones since " +
+    "decided. Its card stays where you asked it, and a later rest owes it nothing; a rest that still needs " +
+    "the answer writes a ```question fence carrying its `id:` alone, which draws the card there."
   )
   if (!items.length) {
     if (questions.length > 0) {
       return (
         "Nothing is RUNNING on this thread — no background shells, no sub-agents, no armed timers, no " +
-        "registered PRs. An ```awaiting fence can still wait on your open questions alone — " +
-        "`questions:` names the human as the wait, so it needs no other name and no `for:`." +
+        "registered PRs. Your open questions are not running work: they need no ```awaiting fence, and a " +
+        "rest that still needs an answer references its question instead." +
         askedBlock + linksBlock
       )
     }
@@ -1054,7 +937,7 @@ async function activity() {
       "Nothing is running on this thread — no background shells, no sub-agents, no armed timers, no " +
       "registered PRs, and no open questions.\n\nSo there is nothing to wait on: an ```awaiting fence " +
       "would have nothing to name, and a fence naming nothing is not a park. End with ```done, or " +
-      "register a question with `frizzctl ask` if you need the human." + linksBlock
+      "ask a ```question if you need the human." + linksBlock
     )
   }
   const lines = items.map((i) => {
@@ -1073,13 +956,9 @@ async function activity() {
   const block = Object.entries({ shells: byKind.shell, agents: byKind.agent, timers: byKind.timer, prs: byKind.pr, issues: byKind.issue, commands: byKind.command })
     .filter(([, ids]) => ids.length > 0)
     .map(([key, ids]) => `  ${key}: [${ids.join(", ")}]`)
-  // Every open question rides the fence too: a fence that leaves one out is refused, and a fence on
-  // questions always queues, so its `status:` answer is `needs_input` whatever else it names. Otherwise
-  // the template guesses from the kinds — a shell or a sub-agent is usually work that finishes by itself,
-  // a PR, an issue or a timer a watch — and the prose tells the worker to correct it.
-  const questionIds = questions.map((q) => q.id).filter(Boolean)
-  if (questionIds.length > 0) block.push(`  questions: [${questionIds.join(", ")}]`)
-  const status = questionIds.length > 0 ? "needs_input" : byKind.shell.length + byKind.agent.length > 0 ? "working" : "watching"
+  // The template guesses `status:` from the kinds — a shell or a sub-agent is usually work that finishes
+  // by itself, a PR, an issue or a timer a watch — and the prose tells the worker to correct it.
+  const status = byKind.shell.length + byKind.agent.length > 0 ? "working" : "watching"
   return (
     `${items.length} thing${items.length === 1 ? "" : "s"} running on this thread:\n\n${lines.join("\n")}\n\n` +
     "Name the ones you are ACTUALLY waiting on in your ```awaiting fence. The frontmatter is YAML — one " +
@@ -1781,58 +1660,20 @@ async function unwatch(args) {
 function openQuestionList(result) {
   const open = Array.isArray(result?.open) ? result.open : []
   if (!open.length) return "Nothing else is open on this thread — the human owes you no answer."
-  const lines = open.map((q) => `  ${q.id}  ${(q.spec?.question ?? "").split("\n")[0]}`)
+  const lines = open.map((q) => `  ${q.handle ?? q.spec?.handle ?? q.id}  ${(q.spec?.question ?? "").split("\n")[0]}`)
   return `Open on this thread now:\n${lines.join("\n")}`
 }
 
-/** The `ask` handler: register one or more questions the human owes an answer to.
- * @param {Record<string, unknown>} args @returns {Promise<string>} */
-async function ask(args) {
-  const slug = threadSlug()
-  const questions = Array.isArray(args.questions) ? args.questions : []
-  if (!questions.length) throw new Error("`questions` is required — at least one question to register")
-  const result = (await callRpc("ask", { slug, questions }))?.result
-  const registered = Array.isArray(result?.registered) ? result.registered : []
-  const lines = registered.map((q) => `  ${q.id}  ${(q.spec?.question ?? "").split("\n")[0]}`)
-  const head = registered.length === 1
-    ? `Registered 1 question. It is on the human's board now and it will stay there until they answer it.`
-    : `Registered ${registered.length} questions. They are on the human's board now and they will stay ` +
-      "there until answered — the card sends every answer as one batch."
-  return (
-    `${head}\n${lines.join("\n")}\n\n` +
-    "KEEP WORKING. A question waits on a person, carries no timeout and does not end your turn — do " +
-    "everything that does not depend on the answer while it sits there. The answer arrives as its own " +
-    "wake, restating what was asked.\n\n" +
-    "WITHDRAW ONE THE MOMENT IT STOPS MATTERING (`frizzctl unask <id>`), above all if you work the answer out " +
-    `yourself.\n\n${openQuestionList(result)}`
-  )
+/** The `ask` handler: RETIRED (2026-10-13). It refuses without calling Frizz, and the refusal is the fence.
+ * @returns {Promise<Refused>} */
+async function ask() {
+  return new Refused(ASK_RETIRED)
 }
 
-/** The `secret` handler: register ONE masked question, and hand back the pipe its value will be read from.
- *  It rides the `ask` RPC with `secret: true` — the card, the wake, the `done` gate and the `questions:`
- *  naming are all a question's — and the server is what keeps the value out of every one of them.
- * @param {Record<string, unknown>} args @returns {Promise<string>} */
-async function secret(args) {
-  const slug = threadSlug()
-  const question = typeof args.question === "string" ? args.question.trim() : ""
-  if (!question) throw new Error("`question` is required — say what the human should paste, and for what")
-  const header = typeof args.header === "string" && args.header.trim() ? args.header.trim() : undefined
-  const result = (await callRpc("ask", { slug, questions: [{ question, kind: "question", secret: true, ...(header ? { header } : {}) }] }))?.result
-  const registered = Array.isArray(result?.registered) ? result.registered[0] : undefined
-  const path = typeof registered?.secretPath === "string" ? registered.secretPath : ""
-  if (!registered?.id || !path) throw new Error("Frizz did not return the secret's file — this server predates `secret`; restart Frizz and retry")
-  // Quoted, because the macOS state dir is `~/Library/Application Support/…` and an unquoted path
-  // splits at the space.
-  const quoted = `'${path.replace(/'/g, `'\\''`)}'`
-  return (
-    `Registered secret request ${registered.id}. The human sees a masked box on the board.\n\n` +
-    `Once answered, the value can be read ONCE, within 15 minutes, at:\n  ${path}\n\n` +
-    `Read it INSIDE the command that uses it — \`--otp "$(cat ${quoted})"\` — and never cat, echo or copy ` +
-    "it on its own: that spends the one read. Several commands share it through a variable set at the " +
-    "start of ONE Bash call. Get the command ready now: the answer wakes you, and a one-time code expires " +
-    "within a minute.\n\n" +
-    `${openQuestionList(result)}`
-  )
+/** The `secret` handler: RETIRED with `ask` — a `kind: secret` question fence is how a value is asked for.
+ * @returns {Promise<Refused>} */
+async function secret() {
+  return new Refused(SECRET_RETIRED)
 }
 
 /** The `unask` handler: withdraw one registered question by id.
@@ -1840,7 +1681,7 @@ async function secret(args) {
 async function unask(args) {
   const slug = threadSlug()
   const id = typeof args.id === "string" ? args.id.trim() : ""
-  if (!id) throw new Error("`id` is required — take it from `frizzctl ask` or `frizzctl activity`")
+  if (!id) throw new Error("`id` is required — the `id:` of the question's fence, or what `frizzctl activity` lists")
   const result = (await callRpc("unask", { slug, id }))?.result
   // A withdrawal that matched nothing is reported rather than swallowed: the id was wrong, the human
   // already answered it, or it is another thread's — and a worker that believes it withdrew a question
@@ -1867,7 +1708,7 @@ async function done(args) {
   }
   // REFUSED, with everything that refuses it named by id, so the next move is a command and not a
   // guess. Reported as an ordinary result rather than thrown: this is a gate doing its job, not a fault.
-  const questions = (result?.blockingQuestions ?? []).map((q) => `  ${q.id}  ${(q.question ?? "").split("\n")[0]}`)
+  const questions = (result?.blockingQuestions ?? []).map((q) => `  ${q.handle ?? q.id}  ${(q.question ?? "").split("\n")[0]}`)
   const watches = (result?.blockingWatches ?? []).map((w) => `  ${w.id}  ${w.what}`)
   const parts = ["NOT marked done. This thread still holds work open."]
   if (questions.length) {
@@ -2091,42 +1932,31 @@ async function watchCommand(args) {
  *                Every argument is ALSO a `--flag`, and the whole set a JSON object through `--input`.
  *   then       — further positionals that depend on the first one's value, for the commands that
  *                switch on an `action` (`frizzctl timer cancel tmr_ab12`).
- *   wrap       — the one array argument a bare JSON array, or a single item, is taken to be
- *                (`ask` with one question object, or a list of them).
+ *   wrap       — the one array argument a bare JSON array, or a single item, is taken to be.
+ *   retired    — the text a retired command prints instead of running: its refusal, and its `--help`.
  *   examples   — real invocations, shown under the command's own help.
  *
  * `group` only orders the top-level listing.
  */
 const CLI = {
+  // RETIRED (2026-10-13): a question is a ```question fence. `retired` is the text the command prints in
+  // place of running — as its refusal (exit 2) and as its `--help` — and it keeps the command out of the
+  // top-level listing.
   ask: {
-    group: "Sign off",
-    summary: "Ask the human a question; registers an answerable card",
-    wrap: "questions",
-    examples: [
-      "frizzctl ask --input - <<'JSON'\n" +
-      '{"questions": [{\n' +
-      '  "question": "Should the settings store use SQLite or a JSON file?",\n' +
-      '  "kind": "question",\n' +
-      '  "options": [\n' +
-      '    {"label": "SQLite", "description": "transactional, matches how sessions are stored", "recommended": true},\n' +
-      '    {"label": "JSON file", "description": "zero deps, human-editable, racy under concurrent writes"}\n' +
-      "  ]\n" +
-      "}]}\n" +
-      "JSON",
-      "frizzctl ask --input questions.json",
-    ],
+    summary: "Retired: a question is a ```question fence in your own message",
+    retired: ASK_RETIRED,
+    examples: [],
   },
   unask: {
     group: "Sign off",
-    summary: "Withdraw a question you asked",
+    summary: "Withdraw a question you asked, by its id",
     positional: ["id"],
-    examples: ["frizzctl unask qst_ab12cd34"],
+    examples: ["frizzctl unask settings-store"],
   },
   secret: {
-    group: "Sign off",
-    summary: "Ask the human for a value only they hold (a token, a 2FA code)",
-    positional: ["question"],
-    examples: ['frizzctl secret "The npm one-time code for publishing frizz 0.14.0" --header "npm OTP"'],
+    summary: "Retired: a value only the human holds is a `kind: secret` question fence",
+    retired: SECRET_RETIRED,
+    examples: [],
   },
   done: {
     group: "Sign off",

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
+import { questionFenceBlocks, questionFencesIn } from "@frizz/shared"
 import { buildWorkerPrompt } from "./workerPrompt.ts"
 
 test("both worker backends receive the gerund activity-caption contract", () => {
@@ -53,58 +54,60 @@ test("the contract bounds the work to the task, not only the stopping", () => {
   }
 })
 
-// The placement rule's whole arc, because the contract has now taught four different things here and a
-// stale assertion would resurrect the wrong one. (1) 2026-08-28 morning, "Same question showing up twice
-// in a row": register-then-refence drew two cards, so the rule was "never also fence it". (2) The same
-// afternoon the maintainer reversed it ("it kind of makes sense to me for the agent to decide where
-// questions render in its own rest message"), and the fence became the PLACEMENT. (3) 2026-08-30 the
-// maintainer retired placement ("Retire mid-prose placement" — measured: 15 of 17 real markers sat at
-// the tail where the card lands anyway, 2 of 3,005 transcripts couched one mid-prose). (4) 2026-09-11 the
-// FREE-FORM fence was retired outright — `ask` had been "better than a fenced block" since 2026-08-26
-// while the contract went on teaching the fence, so workers wrote fences on every day from 2026-08-25 to
-// 2026-09-11, and nothing tracks a fence's answer — and the empty placement marker came BACK with it,
-// because a marker references a ROW: nothing about a question's lifecycle is guessed from prose. The card
-// still draws itself at its rest, a marker only moves it, and the contract must teach the withdrawal — a
-// question left out of the write-up is still open and still gates `done`.
-test("the contract teaches that a registered question draws itself, and how to unask one", () => {
-  for (const backend of ["claude", "codex"] as const) {
-    const prompt = buildWorkerPrompt(backend)
-    assert.match(prompt, /EVERY OPEN QUESTION DRAWS ITS OWN CARD AT ITS REST/)
-    assert.match(prompt, /draws NOTHING: one question, one card/)
-    // Leaving one out is not how a worker drops it — that is what `unask` is for.
-    assert.match(prompt, /it is one you\s+`unask`/)
-    // The 2026-08-28 grammar ("place them all, or unask") must stay gone: placement is optional now.
-    assert.doesNotMatch(prompt, /PLACE EVERY OPEN QUESTION/)
-    assert.doesNotMatch(prompt, /A REGISTERED QUESTION IS NEVER ALSO FENCED/)
-  }
-})
-
-// THE FREE-FORM ```question FENCE IS RETIRED (2026-09-11), and the contract has to say so where a worker
-// reads it — both in § Questions for the human and in the End-of-turn signals list, which is what a
-// worker reads when it STOPS. The one fence left is the EMPTY placement marker naming a registered id.
-test("the contract teaches ask as the only way to ask, and the empty marker as the only question fence", () => {
-  for (const backend of ["claude", "codex"] as const) {
+// THE QUESTION FENCE (2026-10-13). The contract has taught five things here, and a stale assertion would
+// resurrect the wrong one. (1) Until 2026-08-27 a free-form ```question fence was the only way to ask.
+// (2) `ask` registered a ROW beside it, and both were taught. (3) 2026-09-11 the free-form fence was
+// retired — nothing tracked its answer — and an empty ```question qst_… PLACEMENT marker moved a
+// registered card into the prose. (4) 2026-10-05 a later rest had to name every open question under
+// `questions:` or withdraw it. (5) 2026-10-13 the maintainer moved registration INTO the message: a
+// structured fence with a worker-chosen `id:` registers a row, an `id:`-only fence references one, and
+// no rest owes an old question anything. So: every question fence the contract writes must be one the
+// shared parser registers, and none of the retired spellings may come back.
+test("the contract teaches the structured question fence, and none of the grammars it replaced", () => {
+  for (const backend of ["claude", "codex", "acp"] as const) {
     const prompt = buildWorkerPrompt(backend)
     const c = prompt.replace(/\s+/g, " ")
-    assert.match(c, /THERE IS NO `question` FENCE ANY MORE/)
-    assert.match(c, /A QUESTION HAS NO FENCE ANY MORE/)
-    assert.match(c, /WAITING ON A PERSON TO DECIDE IS A REGISTERED QUESTION/)
-    assert.match(c, /AN OPEN REGISTERED QUESTION IS THE HANDBACK/)
-    // The marker, taught by example, and its two properties: optional, and one per question.
-    assert.match(prompt, /```question qst_ab12cd34\n```/)
-    assert.match(c, /TO PLACE A QUESTION INSIDE YOUR PROSE, WRITE AN EMPTY FENCE NAMING ITS ID/)
-    assert.match(c, /Placement is OPTIONAL/)
-    assert.match(c, /One marker per question/)
-    // Every question fence in the contract IS the marker: no fenced example with a question in its body.
-    const fences = prompt.match(/```question[^\n]*\n/g) ?? []
-    assert.deepEqual(fences, ["```question qst_ab12cd34\n"])
-    // And the free-form teaching is gone in every spelling it had.
-    assert.doesNotMatch(c, /put each question in its own fenced `question` block/)
-    assert.doesNotMatch(c, /Fence a question you did NOT register/)
-    assert.doesNotMatch(c, /```question ` block IS the handback/)
-    assert.doesNotMatch(c, /was retired 2026-08-30;\s*a marker you still write draws nothing/)
-    assert.doesNotMatch(c, /surface it as a ` ```question `/)
-    assert.doesNotMatch(c, /ask a ```question/)
+    // Every fence in the contract is one a worker could copy, so every one must READ: five asks of every
+    // kind the examples need, one follow-up, and the reference form.
+    const reads = questionFenceBlocks(prompt).map((b) => b.read)
+    assert.deepEqual(reads.filter((r) => r.form === "invalid"), [], backend)
+    assert.deepEqual(reads.map((r) => r.form), ["ask", "ask", "ask", "ask", "ask", "ref"], backend)
+    const asked = questionFencesIn(prompt)
+    // …and they assemble as one message would: the `when:` follow-up hangs on its parent's option.
+    assert.deepEqual(asked.faults, [], backend)
+    assert.ok(reads.some((r) => r.form === "ask" && r.spec.secret), `${backend}: the examples show a secret`)
+    // The grammar's moving parts, each taught where a worker reads it.
+    assert.match(c, /every value is read VERBATIM to the end of its line/)
+    assert.match(c, /Below the `---` is the question's CONTEXT/)
+    assert.match(c, /a table, a code block or a diff, a callout, a list, a `<details>` section, a `mermaid` diagram/)
+    assert.match(c, /A code block INSIDE the question needs a longer outer fence/)
+    assert.match(prompt, /^````question\n/m)
+    assert.match(c, /`when:` naming the option it hangs on/)
+    assert.match(c, /\*\*A VALUE ONLY THE HUMAN HOLDS IS `kind: secret`\*\*/)
+    assert.match(c, /\*\*ASKING DOES NOT END YOUR TURN\.\*\* A fence in a message you send mid-turn registers the moment that message lands/)
+    assert.match(c, /ON A THREAD CARRYING A GOAL, FRIZZ REFUSES THE QUESTION/)
+    assert.match(c, /a correction opening `⚠️ Your ```question fence` names the fault/)
+    assert.match(c, /`frizzctl unask <id>`/)
+    assert.match(c, /An open question also blocks `frizzctl done`/)
+    // Question QUALITY survives the move intact.
+    assert.match(c, /NO "I" AND NO "you" ANYWHERE IN A QUESTION/)
+    assert.match(c, /Write the question in the human's OWN vocabulary/)
+    assert.match(c, /A GO\/NO-GO gate is not a special kind — it is an ordinary `choice` with two options/)
+    assert.match(c, /put the one you would take FIRST and mark it `recommended: true`/)
+    // The card is drawn where the fence is written, so prose that restates it draws nothing.
+    assert.match(c, /EVERY QUESTION DRAWS ITS OWN CARD WHERE YOU WROTE IT/)
+    assert.match(c, /prose that repeats it draws NOTHING, one question is one card/)
+    // No rest owes an older question anything, and one it still needs is REFERENCED, not named.
+    assert.match(c, /AN OLDER QUESTION NEEDS NOTHING AT A LATER REST — UNLESS THAT REST STILL WAITS ON IT/)
+    assert.match(c, /A rest that still needs the answer writes its REFERENCE — a ` ```question ` fence carrying its `id:` alone/)
+    assert.match(c, /A QUESTION YOU ASK IS THAT REST'S SIGN-OFF — REST NORMALLY/)
+    // And every retired spelling stays gone: the command, the key, the marker and the per-rest rule.
+    assert.doesNotMatch(prompt, /frizzctl (ask|secret)\b/, backend)
+    assert.doesNotMatch(prompt, /questions: \[|`questions:`|qst_/, backend)
+    assert.doesNotMatch(prompt, /^\s*```question[ \t]+\S/m, backend)
+    assert.doesNotMatch(c, /placement marker|PLACE A QUESTION INSIDE YOUR PROSE/i, backend)
+    assert.doesNotMatch(c, /SAY WHERE EACH OLD QUESTION STANDS/, backend)
+    assert.doesNotMatch(c, /THERE IS NO `question` FENCE ANY MORE|A QUESTION HAS NO FENCE ANY MORE/, backend)
   }
 })
 
@@ -124,7 +127,7 @@ test("the contract teaches steps: as the wait on a human's act, and routes to it
     assert.match(c, /it always puts the thread in their queue/)
     assert.match(c, /anything else they need to tell you — a step that failed, the account they used — comes as that note or a message of their own/)
     assert.doesNotMatch(c, /Couldn't do it/)
-    assert.match(c, /\(`steps:` and `questions:` count: they name the human\.\)/)
+    assert.match(c, /\(`steps:` counts: it names the human\.\)/)
     // Every step is clickable and complete (maintainer 2026-10-08): links to the pages it names, taught
     // by a bad/good pair, and the example fence itself carries a link.
     assert.match(c, /EVERY STEP IS CLICKABLE AND COMPLETE — A STEP THAT MAKES THE HUMAN GO LOOKING IS A BROKEN STEP/)
@@ -142,7 +145,7 @@ test("the contract teaches steps: as the wait on a human's act, and routes to it
     assert.doesNotMatch(prompt, /steps:\n(?: {4}- [^\n]*\n)*? {4}- Run `npm login/)
     assert.match(c, /card, headed \*\*Awaiting human\*\*, shows the steps over one checkbox, \*\*I have completed this\*\*; ticked and sent, it comes back to you as their reply, `Done`/)
     // A decision is still a question; an act is steps — at every place the two used to blur.
-    assert.match(c, /A DECISION you need from them is a question, never a fence/)
+    assert.match(c, /A DECISION you need from them is a question, never an `awaiting` fence/)
     assert.match(c, /WAITING ON ONE TO ACT IS `steps:`/)
     assert.match(c, /Once nothing is left to DECIDE and only the human's act remains, the steps go to them under `steps:`/)
     assert.match(c, /Something the human must DO \("re-pull before you restart"\) is not a dangling idea either: hand it to them under `steps:`/)

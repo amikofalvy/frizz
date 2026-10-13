@@ -119,31 +119,12 @@ test("the frizz MCP server identifies as `frizz` and exposes its worker tools", 
     assert.deepEqual(Object.keys(list.result.tools[4].inputSchema.properties).sort(), ["for", "kind", "target"])
     assert.deepEqual(list.result.tools[5].inputSchema.required, ["id"])
     assert.deepEqual(Object.keys(list.result.tools[5].inputSchema.properties), ["id"])
-    // `ask` / `unask` — the same two-verb shape, for the question half of the same redesign. What is
-    // worth pinning is the TREE: the question schema nests to exactly ASK_MAX_DEPTH and no further, so
-    // the deepest option carries no `followUps` key at all. A `$ref` cycle would have been the natural
-    // JSON Schema for a recursive shape, but client support for one is uneven and a schema a client
-    // drops is a tool a worker cannot call — so the bound is INLINE, and visible to whoever reads it.
-    const askQuestion = list.result.tools[6].inputSchema.properties.questions.items
-    assert.deepEqual(list.result.tools[6].inputSchema.required, ["questions"])
-    assert.deepEqual(askQuestion.required, ["question", "kind"])
-    assert.deepEqual(askQuestion.properties.kind.enum, ["question", "multi"])
-    const depth = (node: { properties: { options: { items: { properties: Record<string, unknown> } } } }): number => {
-      const followUps = node.properties.options.items.properties.followUps as { items: typeof node } | undefined
-      return followUps ? 1 + depth(followUps.items) : 1
-    }
-    assert.equal(depth(askQuestion), 3)
-    // EVERY COUNT is unbounded — the questions per call, the options at every level, the follow-ups
-    // under every option. They carried `maxItems` of 4 / 8 / 4 until 2026-09-03, when the maintainer had
-    // the caps removed as arbitrary, so the schema must not advertise a bound the server no longer has.
-    // The one bound left is the DEPTH, pinned above.
-    assert.equal(list.result.tools[6].inputSchema.properties.questions.maxItems, undefined, "questions carry no maxItems")
-    for (let node = askQuestion, level = 1; node; level++) {
-      assert.equal(node.properties.options.maxItems, undefined, `options carry no maxItems at level ${level}`)
-      const followUps = node.properties.options.items.properties.followUps
-      if (followUps) assert.equal(followUps.maxItems, undefined, `followUps carry no maxItems at level ${level}`)
-      node = followUps?.items
-    }
+    // `ask` — RETIRED (2026-10-13): a question is a ```question fence in the worker's own message. The
+    // tool stays, so a worker whose contract predates the fence is taught it by the refusal, but it takes
+    // nothing and its description is one line.
+    assert.deepEqual(Object.keys(list.result.tools[6].inputSchema.properties), [])
+    assert.ok(!list.result.tools[6].description.includes("\n"), "a retired tool's description is one line")
+    assert.match(list.result.tools[6].description, /^RETIRED \(2026-10-13\)/)
     assert.deepEqual(list.result.tools[7].inputSchema.required, ["id"])
     assert.deepEqual(Object.keys(list.result.tools[7].inputSchema.properties), ["id"])
     // `done` takes the write-up and NOTHING ELSE. Its one argument list is the assertion that matters:
@@ -167,10 +148,9 @@ test("the frizz MCP server identifies as `frizz` and exposes its worker tools", 
     // parameter a model could aim at somebody else's thread.
     assert.deepEqual(list.result.tools[13].inputSchema.required, ["action"])
     assert.deepEqual(Object.keys(list.result.tools[13].inputSchema.properties), ["action", "target", "for", "id"])
-    // `secret` — one masked question. NO thread parameter, and nothing that could carry the value itself:
-    // the human types it into the card, never the worker into the call.
-    assert.deepEqual(list.result.tools[14].inputSchema.required, ["question"])
-    assert.deepEqual(Object.keys(list.result.tools[14].inputSchema.properties), ["question", "header"])
+    // `secret` — RETIRED with `ask`: a value only the human holds is a `kind: secret` question fence.
+    assert.deepEqual(Object.keys(list.result.tools[14].inputSchema.properties), [])
+    assert.match(list.result.tools[14].description, /^RETIRED \(2026-10-13\).*`kind: secret`/)
     // `steer` — a target and a message. NO sender parameter: the receiver is told which thread sent it,
     // so the sender comes from the env alone.
     assert.deepEqual(list.result.tools[15].inputSchema.required, ["to", "message"])
@@ -1063,29 +1043,13 @@ test("`watch` and `unwatch` register and withdraw against the CALLING thread", a
   }
 })
 
-// `ask` / `unask` OVER THE REAL STDIO TRANSPORT, same standard as `watch` above. What matters most here
-// is that the TREE survives the trip: the nested `followUps` a worker writes must arrive at the RPC
-// intact, because the whole point of the static tree is that frizz decides which branch is live from
-// the answer rather than the worker asking twice.
-test("`ask` and `unask` register and withdraw the CALLING thread's questions, tree intact", async () => {
+// `ask` AND `secret` OVER THE REAL STDIO TRANSPORT (retired 2026-10-13): each answers with the fence that
+// replaced it, as an ordinary result rather than an error — the call did what it is for — and neither
+// reaches the server, whatever it was given. `unask` still withdraws the CALLING thread's question, by
+// the worker's own id.
+test("`ask` and `secret` refuse with the fence, and `unask` withdraws the calling thread's question", async () => {
   const seen: Array<{ url: string; body: any }> = []
-  const spec = {
-    question: "Land the parser refactor on `main`?",
-    kind: "question",
-    options: [
-      {
-        label: "Land it",
-        description: "every gate is green",
-        recommended: true,
-        followUps: [{ question: "Tag a release too?", kind: "question", options: [{ label: "Tag 0.9.0" }, { label: "Not yet" }] }],
-      },
-      { label: "Hold it" },
-    ],
-  }
-  const replies: any[] = [
-    { registered: [{ id: "qst_aaa111", spec, askedAt: "2026-08-27T00:00:00.000Z" }], open: [{ id: "qst_aaa111", spec, askedAt: "2026-08-27T00:00:00.000Z" }] },
-    { withdrawn: true, open: [] },
-  ]
+  const replies: any[] = [{ withdrawn: true, open: [] }]
   const http = createServer((req, res) => {
     let body = ""
     req.on("data", (c) => (body += c))
@@ -1104,79 +1068,32 @@ test("`ask` and `unask` register and withdraw the CALLING thread's questions, tr
     rpc.send({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} })
     await rpc.next(1)
 
+    const spec = { question: "Land the parser refactor on `main`?", kind: "question", options: [{ label: "Land it", recommended: true }, { label: "Hold it" }] }
     rpc.send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "ask", arguments: { questions: [spec] } } })
     const asked = await rpc.next(2)
     assert.equal(asked.result.isError, undefined)
-    assert.deepEqual(seen[0], { url: "/_frizz/rpc/ask", body: { slug: "asking-thread", questions: [spec] } })
-    assert.match(asked.result.content[0].text, /Registered 1 question/)
-    assert.match(asked.result.content[0].text, /qst_aaa111 {2}Land the parser refactor on `main`\?/)
-    // THE STANDING INSTRUCTION, at the moment of temptation: asking does not end the turn. A worker
-    // that registers a question and then rests has stopped for an answer it was told not to wait for.
-    assert.match(asked.result.content[0].text, /KEEP WORKING/)
+    assert.match(asked.result.content[0].text, /^NOT registered — `frizzctl ask` is retired/)
+    assert.match(asked.result.content[0].text, /```question\nid: settings-store\n/)
 
-    rpc.send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "unask", arguments: { id: "qst_aaa111" } } })
-    const withdrawn = await rpc.next(3)
-    assert.deepEqual(seen[1], { url: "/_frizz/rpc/unask", body: { slug: "asking-thread", id: "qst_aaa111" } })
-    assert.match(withdrawn.result.content[0].text, /Question qst_aaa111 withdrawn/)
+    rpc.send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "secret", arguments: { question: "The npm one-time code." } } })
+    const secret = await rpc.next(3)
+    assert.equal(secret.result.isError, undefined)
+    assert.match(secret.result.content[0].text, /^NOT registered — `frizzctl secret` is retired/)
+    assert.match(secret.result.content[0].text, /kind: secret/)
+    assert.equal(seen.length, 0, "a retired tool reaches no server")
+
+    rpc.send({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "unask", arguments: { id: "settings-store" } } })
+    const withdrawn = await rpc.next(4)
+    assert.deepEqual(seen[0], { url: "/_frizz/rpc/unask", body: { slug: "asking-thread", id: "settings-store" } })
+    assert.match(withdrawn.result.content[0].text, /Question settings-store withdrawn/)
     assert.match(withdrawn.result.content[0].text, /Nothing else is open on this thread/)
 
-    // The refusals live in the HANDLER, not only in the schema.
-    const before = seen.length
-    rpc.send({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "ask", arguments: { questions: [] } } })
-    const empty = await rpc.next(4)
-    assert.equal(empty.result.isError, true)
-    assert.match(empty.result.content[0].text, /`questions` is required/)
+    // The refusal lives in the HANDLER, not only in the schema.
     rpc.send({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "unask", arguments: {} } })
     const noId = await rpc.next(5)
     assert.equal(noId.result.isError, true)
     assert.match(noId.result.content[0].text, /`id` is required/)
-    assert.equal(seen.length, before, "neither reached the server")
-  } finally {
-    rpc.kill()
-    http.close()
-  }
-})
-
-test("`secret` registers ONE masked question on the CALLING thread and hands back the quoted pipe path", async () => {
-  const seen: Array<{ url: string; body: any }> = []
-  const path = "/Users/x/Library/Application Support/Frizz/projects/p/secrets/asking-thread/qst_sec111"
-  const spec = { question: "The npm one-time code for the maintainer account.", kind: "question", secret: true, header: "npm OTP" }
-  const view = { id: "qst_sec111", spec, askedAt: "2026-10-08T00:00:00.000Z", secretPath: path }
-  const replies: any[] = [{ registered: [view], open: [view] }]
-  const http = createServer((req, res) => {
-    let body = ""
-    req.on("data", (c) => (body += c))
-    req.on("end", () => {
-      seen.push({ url: req.url ?? "", body: JSON.parse(body) })
-      res.writeHead(200, { "content-type": "application/json" })
-      res.end(JSON.stringify({ result: replies.shift() ?? null }))
-    })
-  })
-  await new Promise<void>((resolve) => http.listen(0, "127.0.0.1", resolve))
-  const port = (http.address() as { port: number }).port
-  const stateDir = mkdtempSync(join(tmpdir(), "frizz-mcp-"))
-  writeFileSync(join(stateDir, "server.lock"), JSON.stringify({ port }))
-  const rpc = startServer({ FRIZZ_STATE_DIR: stateDir, FRIZZ_THREAD_SLUG: "asking-thread" })
-  try {
-    rpc.send({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} })
-    await rpc.next(1)
-    rpc.send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "secret", arguments: { question: ` ${spec.question} `, header: "npm OTP" } } })
-    const asked = await rpc.next(2)
-    assert.equal(asked.result.isError, undefined)
-    // It rides the `ask` RPC — the card, the wake and the `done` gate are a question's.
-    assert.deepEqual(seen[0], { url: "/_frizz/rpc/ask", body: { slug: "asking-thread", questions: [spec] } })
-    const text = asked.result.content[0].text
-    assert.match(text, /Registered secret request qst_sec111/)
-    // QUOTED: the macOS state dir has a space in it, and an unquoted `$(cat …)` splits there.
-    assert.ok(text.includes(`"$(cat '${path}')"`), text)
-    assert.match(text, /read ONCE, within 15 minutes/)
-
-    const before = seen.length
-    rpc.send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "secret", arguments: { question: "  " } } })
-    const blank = await rpc.next(3)
-    assert.equal(blank.result.isError, true)
-    assert.match(blank.result.content[0].text, /`question` is required/)
-    assert.equal(seen.length, before, "a blank request never reaches the server")
+    assert.equal(seen.length, 1, "it never reached the server")
   } finally {
     rpc.kill()
     http.close()
@@ -1479,8 +1396,9 @@ test("`activity` with nothing running says so, and names the terminal states tha
     assert.equal(got.result.isError, undefined)
     assert.match(got.result.content[0].text, /Nothing is running on this thread/)
     assert.match(got.result.content[0].text, /```done/)
-    // The free-form question fence was retired (607c4c12); the way to ask is `ask`, and the copy says so.
-    assert.match(got.result.content[0].text, /register a question with `frizzctl ask`/)
+    // A question is a ```question fence since 2026-10-13, and the copy points there, not at `ask`.
+    assert.match(got.result.content[0].text, /ask a ```question if you need the human/)
+    assert.doesNotMatch(got.result.content[0].text, /frizzctl ask/)
   } finally {
     rpc.kill()
     http.close()
@@ -1557,15 +1475,16 @@ test("a call landing in a restart window waits for the server instead of failing
 })
 
 // THE QUESTIONS ARE READ OUT TOO, in their own section (maintainer 2026-08-28: "Is there a way for the
-// agent to read out the current set of watchers and questions?"). They must NOT reach the fence block:
-// a question waits on a person, and there is no `questions:` key in the awaiting grammar to hold one.
-test("`activity` reads the open questions back, with the ids a marker places them by and a fence names them by", async () => {
+// agent to read out the current set of watchers and questions?"), each by the worker's own id where it
+// has one — the id `unask` takes and a reference fence names — and a legacy `qst_…` where it does not.
+// They do NOT reach the ready fence (2026-10-13): no rest has to name an open question any more.
+test("`activity` reads the open questions back by the worker's own ids, and keeps them out of the fence", async () => {
   const http = createServer((_req, res) => {
     res.writeHead(200, { "content-type": "application/json" })
     res.end(JSON.stringify({ result: {
       activity: [{ kind: "shell", id: "bzvtnt3ig", label: "Running the suite", since: "2026-08-28T09:00:00.000Z" }],
       questions: [
-        { id: "qst_ab12cd34ef56", spec: { question: "Should the settings store use SQLite or a JSON file?", kind: "question" }, askedAt: "2026-08-28T09:05:00.000Z" },
+        { id: "qst_ab12cd34ef56", handle: "settings-store", spec: { question: "Should the settings store use SQLite or a JSON file?", kind: "question", handle: "settings-store" }, askedAt: "2026-08-28T09:05:00.000Z" },
         { id: "qst_0011223344ff", spec: { question: "Which dist-tag should 4.5.0 publish under?", kind: "question" }, askedAt: "2026-08-28T09:05:00.000Z" },
       ],
     } }))
@@ -1581,14 +1500,14 @@ test("`activity` reads the open questions back, with the ids a marker places the
     rpc.send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "activity", arguments: {} } })
     const text = (await rpc.next(2)).result.content[0].text
     assert.match(text, /2 questions still owed an answer/)
-    for (const id of ["qst_ab12cd34ef56", "qst_0011223344ff"]) assert.match(text, new RegExp(id))
-    assert.match(text, /Should the settings store use SQLite or a JSON file\?/)
-    // The ready fence names the shell AND every open question under `questions:` (2026-10-05): a fence
-    // beside open questions must name each one the worker still needs, or frizz refuses the park.
+    assert.match(text, /question: settings-store\n {4}Should the settings store use SQLite or a JSON file\?/)
+    assert.doesNotMatch(text, /qst_ab12cd34ef56/, "a question the worker named is read back by that name")
+    assert.match(text, /question: qst_0011223344ff\n/, "a legacy row has only its minted id")
+    assert.match(text, /a ```question fence carrying its `id:` alone/)
     const fence = text.slice(text.indexOf("```awaiting"), text.indexOf("```\n\nDrop the lines"))
     assert.match(fence, /shells: \[bzvtnt3ig\]/)
-    assert.match(fence, /questions: \[qst_ab12cd34ef56, qst_0011223344ff\]/)
-    assert.match(fence, /status: needs_input/, "a fence on questions always needs the human")
+    assert.doesNotMatch(fence, /questions:/)
+    assert.match(fence, /status: working/)
   } finally {
     rpc.kill()
     http.close()
