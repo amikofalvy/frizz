@@ -49,6 +49,15 @@ export function childPath(parent: string, optionIndex: number, followUpIndex: nu
   return `${parent}/${optionIndex}.${followUpIndex}`
 }
 
+/** The card's body above the options: the question line, then — for a question a ```question fence asked
+ *  (shared question-fence.ts) — the fence's markdown CONTEXT below its `---`, as a separate block: a table,
+ *  a diff, a callout, whatever the human needs to answer cold. The question stays its own paragraph, so it
+ *  heads the card exactly as it did before any context existed; the answer restates only that line. */
+export function questionBodyMd(spec: Pick<AskedQuestion, "question" | "context">): string {
+  const context = spec.context?.trim()
+  return context ? `${spec.question}\n\n${context}` : spec.question
+}
+
 /** Convert one question node into the neutral model the card renders. */
 export function toParsedQuestion(spec: AskedQuestion): { question: ParsedQuestion; optionLabels: string[] } {
   const options = spec.options ?? []
@@ -58,7 +67,7 @@ export function toParsedQuestion(spec: AskedQuestion): { question: ParsedQuestio
       kind: spec.kind,
       danger: spec.danger === true,
       ...(spec.secret ? { secret: true } : {}),
-      contextMd: spec.question,
+      contextMd: questionBodyMd(spec),
       options: parts.map((p) => p.line),
       recommendedIdxs: options.flatMap((o, i) => (o.recommended ? [i] : [])),
       ...(parts.some((p) => p.body) ? { optionBodies: parts.map((p) => p.body) } : {}),

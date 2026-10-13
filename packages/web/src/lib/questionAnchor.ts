@@ -1,6 +1,7 @@
 // WHERE A REGISTERED QUESTION SITS IN THE TRANSCRIPT: at the newest rest that CLAIMS it — the rest it
-// was asked at, or a later rest whose ```awaiting fence names it under `questions:`. Never at a rest that
-// says nothing about it.
+// was asked at, or a later rest that names it: a ```question fence carrying its `id:` (2026-10-13), or an
+// ```awaiting fence listing it under `questions:` (the older form, still read). Never at a rest that says
+// nothing about it.
 //
 // A ```question fence needs none of this — it IS a message, so it renders where it was written. A
 // REGISTERED question is a row in `thread_question` with no message to live in, so its position is a
@@ -29,8 +30,9 @@
 // worker said: a card stays where it was asked until a later rest claims it, and a claim moves it to the
 // end of that rest — under the fence that named it.
 
-import { awaitingQuestions } from "@frizz/shared"
+import { type AskedQuestion, awaitingQuestions, questionHandles } from "@frizz/shared"
 import { splitFenceBlocks } from "./fenceBlocks.ts"
+import { questionFenceIdsIn } from "./questionBlocks.ts"
 
 export interface AnchorMessage {
   role: string
@@ -75,18 +77,37 @@ export function questionAnchorIndex(messages: readonly AnchorMessage[], askedAt:
   return tail
 }
 
-/** The newest worker message whose ```awaiting fence names each question under `questions:`, keyed by
- *  lowercased id. A message with no awaiting fence costs one substring test. */
+/** The newest worker message that CLAIMS each question, keyed by the lowercased name it used: an
+ *  ```awaiting fence naming it under `questions:` (a `qst_…` id — the key is still read for workers whose
+ *  contract predates the question fence, though no longer taught), or a ```question fence carrying its
+ *  `id:` — a reference, or the ask restated (2026-10-13: the `id:`-only fence replaced `questions:` as the
+ *  way a worker says it still needs an answer at this rest). A name is a row id or a handle; questionsByAnchor
+ *  matches both. A message with neither fence costs two substring tests. */
 export function questionClaims(messages: readonly AnchorMessage[]): Map<string, number> {
   const claims = new Map<string, number>()
   messages.forEach((m, i) => {
-    if (m.role !== "assistant" || !m.text || !m.text.includes("```awaiting")) return
-    for (const seg of splitFenceBlocks(m.text)) {
-      if (seg.kind !== "fence" || seg.fenceKind !== "awaiting") continue
-      for (const id of awaitingQuestions(seg.hints)) claims.set(id, i)
+    if (m.role !== "assistant" || !m.text) return
+    if (m.text.includes("```awaiting")) {
+      for (const seg of splitFenceBlocks(m.text)) {
+        if (seg.kind !== "fence" || seg.fenceKind !== "awaiting") continue
+        for (const id of awaitingQuestions(seg.hints)) claims.set(id.toLowerCase(), i)
+      }
     }
+    for (const id of questionFenceIdsIn(m.text)) claims.set(id, i)
   })
   return claims
+}
+
+/** The newest claim on this question under any of its names — its row id or a handle in its tree. */
+function claimOf(claims: ReadonlyMap<string, number>, q: { id?: string; spec?: AskedQuestion }): number | undefined {
+  let newest: number | undefined
+  const take = (name: string) => {
+    const at = claims.get(name.toLowerCase())
+    if (at !== undefined && (newest === undefined || at > newest)) newest = at
+  }
+  if (q.id) take(q.id)
+  if (q.spec) for (const h of questionHandles(q.spec)) take(h)
+  return newest
 }
 
 /** Every question grouped by the message index it renders after, so a call site walks the transcript once
@@ -96,7 +117,7 @@ export function questionClaims(messages: readonly AnchorMessage[]): Map<string, 
  *
  *  `claims: false` reads the ASKING rest alone, ignoring any later fence — the reading lib/questionShadow's
  *  fold needs, because a fence restating a question must fold from the rest that asked it onward. */
-export function questionsByAnchor<Q extends { askedAt: string; id?: string }>(
+export function questionsByAnchor<Q extends { askedAt: string; id?: string; spec?: AskedQuestion }>(
   messages: readonly AnchorMessage[],
   questions: readonly Q[],
   opts: { claims?: boolean } = {},
@@ -105,7 +126,7 @@ export function questionsByAnchor<Q extends { askedAt: string; id?: string }>(
   const claims = opts.claims === false || questions.length === 0 ? undefined : questionClaims(messages)
   for (const q of questions) {
     let anchor = questionAnchorIndex(messages, q.askedAt)
-    const claimedAt = q.id ? claims?.get(q.id.toLowerCase()) : undefined
+    const claimedAt = claims ? claimOf(claims, q) : undefined
     if (claimedAt !== undefined && claimedAt > anchor) anchor = restEnd(messages, claimedAt)
     const group = byAnchor.get(anchor)
     if (group) group.push(q)

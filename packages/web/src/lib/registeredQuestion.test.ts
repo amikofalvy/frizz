@@ -251,3 +251,21 @@ test("a SECRET question carries its flag into the card model, and an ordinary on
   assert.equal(toParsedQuestion({ question: "Token?", kind: "question", secret: true }).question.secret, true)
   assert.equal("secret" in toParsedQuestion({ question: "Name?", kind: "question" }).question, false)
 })
+
+// ---- THE QUESTION FENCE's CONTEXT (2026-10-13) ----
+
+test("a fence's context renders under the question line as its own markdown block; the answer restates only the line", () => {
+  const spec: AskedQuestion = { ...STORE, handle: "settings-store", context: "| Store | Crash-safe |\n|---|---|\n| SQLite | yes |" }
+  const { question } = toParsedQuestion(spec)
+  assert.equal(question.contextMd, "Where should the settings live?\n\n| Store | Crash-safe |\n|---|---|\n| SQLite | yes |")
+  const answer = registeredAnswer({ id: "qst_a", spec }, new Map([[ROOT_PATH, pick(0)]]))
+  assert.equal(answer?.question, "Where should the settings live?")
+  assert.deepEqual(answer?.chosen, ["SQLite"])
+  // The settled card keeps the context too: in a fence-asked thread the card is the only place it is drawn.
+  const [root] = settledQuestionNodes(spec, { questionId: "qst_a", question: spec.question, chosen: ["SQLite"] })
+  assert.match(root.question.contextMd, /\| SQLite \| yes \|/)
+})
+
+test("no context, no change: the body is the question line alone", () => {
+  assert.equal(toParsedQuestion({ ...STORE, context: "   " }).question.contextMd, "Where should the settings live?")
+})

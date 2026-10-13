@@ -2,7 +2,7 @@
 // one off as an answerable card WITHIN the message's narrative flow (prose stays in place). Pure
 // string logic, no DOM — unit-testable.
 
-import { insideFence } from "@frizz/shared"
+import { insideFence, questionFenceBlocks, type QuestionFenceRead } from "@frizz/shared"
 
 // The two answer MODES a ```question block can carry (the info-string picks one):
 //   question — single-select (radio feel) OR freetext; the default.
@@ -44,7 +44,11 @@ export type MessageSegment =
   // `registeredId` is set only when the info-string named one (```question qst_ab12cd34): the fence is
   // then a PLACEMENT for that registered row — see lib/questionShadow — rather than a question of its
   // own. Absent, not undefined, so a segment still deep-equals the plain shape it had before.
-  | { kind: "question"; text: string; questionKind: QuestionKind; danger: boolean; registeredId?: string }
+  // `fence` is set only on a thread that speaks THE QUESTION FENCE (shared question-fence.ts — every thread
+  // dispatched after QUESTION_FENCE_RETIRED_AT), and only for a fence that reads as an ask or a reference:
+  // its `id:` names a registered row the way `registeredId` does, so it is a placement too. See
+  // splitMessageQuestions.
+  | { kind: "question"; text: string; questionKind: QuestionKind; danger: boolean; registeredId?: string; fence?: Exclude<QuestionFenceRead, { form: "invalid" }> }
 
 // Opening fence begins a line: ```question, an OPTIONAL info-string of one or more space-separated
 // tokens (e.g. ```question multi, ```question danger), then a newline;
@@ -116,6 +120,61 @@ export function splitQuestionBlocks(text: string): MessageSegment[] {
   const rest = text.slice(lastIndex)
   if (rest.trim()) segments.push({ kind: "prose", text: rest })
   return healOrphanedOptions(segments)
+}
+
+// ---- THE QUESTION FENCE (2026-10-13) ----
+//
+// A thread dispatched after QUESTION_FENCE_RETIRED_AT asks by writing a structured ```question fence —
+// `id:`, `kind:`, `question:`, `options:`, then markdown context under `---` (shared question-fence.ts,
+// which the server reads to register each new id as a row). A fence carrying `id:` alone REFERENCES a
+// question that already exists. Either way the fence's id names a ROW, so the fence is a placement for
+// that row's card exactly as the legacy empty ```question qst_… marker is (lib/questionShadow): the card is
+// drawn from the row, never from these bytes, and the one Send carries it.
+//
+// THE SHARED READER DECIDES WHAT IS A FENCE, so this module cannot disagree with the server about which
+// fences registered: questionFenceBlocks skips a sample quoted inside a longer outer fence, reads a
+// ````question opener (a fence whose context carries a code block), and leaves the legacy info-string forms
+// (```question qst_…, ```question multi) to splitQuestionBlocks.
+//
+// AN INVALID READ IS LEFT EXACTLY WHERE IT WAS. A post-cutover thread's history holds free-form fences the
+// worker wrote between 2026-09-11 and this grammar, and a fence the server refused; none of them reads as
+// an ask, and each keeps the rendering it had (splitQuestionBlocks over the same bytes), so nothing already
+// on screen changes shape.
+
+/** A message's segments under the grammar its thread speaks. `fenceGrammar` false (a legacy thread, or a
+ *  surface that has no registered rows to resolve against) is splitQuestionBlocks unchanged. */
+export function splitMessageQuestions(text: string, fenceGrammar: boolean): MessageSegment[] {
+  if (!fenceGrammar || !text.includes("```question")) return splitQuestionBlocks(text)
+  const blocks = questionFenceBlocks(text).filter((b) => b.read.form !== "invalid")
+  if (blocks.length === 0) return splitQuestionBlocks(text)
+  const out: MessageSegment[] = []
+  let at = 0
+  for (const b of blocks) {
+    out.push(...splitQuestionBlocks(text.slice(at, b.start)))
+    const read = b.read as Exclude<QuestionFenceRead, { form: "invalid" }>
+    out.push({
+      kind: "question",
+      text: b.body,
+      questionKind: read.form === "ask" && read.spec.kind === "multi" ? "multi" : "question",
+      danger: read.form === "ask" && read.spec.danger === true,
+      fence: read,
+    })
+    at = b.end
+  }
+  out.push(...splitQuestionBlocks(text.slice(at)))
+  return out
+}
+
+/** The ids a message's question fences NAME, lowercased, in order: an ask (not a `when:` follow-up, which
+ *  lives inside its parent's card and is named by the parent's fence) or a reference. */
+export function questionFenceIdsIn(text: string): string[] {
+  if (!text.includes("```question")) return []
+  const out: string[] = []
+  for (const b of questionFenceBlocks(text)) {
+    const r = b.read
+    if (r.form === "ref" || (r.form === "ask" && !r.when)) out.push(r.id.toLowerCase())
+  }
+  return out
 }
 
 // ---- Orphaned-option self-heal ----
@@ -199,8 +258,13 @@ function takeOrphanRun(prose: string, lastId: string | null): { run: string; res
 // messages, but a question is a decision the human owes, not disposable chatter, so a middle message
 // that carries one keeps its row. Goes through the real splitter so a QUOTED fence (one inside an outer
 // code block) is correctly NOT a question here either.
+//
+// A QUESTION FENCE counts too (splitMessageQuestions), including a ````question whose context carries a code
+// block, which the legacy splitter never sees. That also covers the second or two before the server
+// registers the fence's row: the message already asks, so it is not a bare rest (RestedCard).
 export function hasQuestionBlock(text: string): boolean {
-  return text.includes("```question") && splitQuestionBlocks(text).some((s) => s.kind === "question")
+  if (!text.includes("```question")) return false
+  return splitQuestionBlocks(text).some((s) => s.kind === "question") || questionFenceIdsIn(text).length > 0
 }
 
 // The parsed innards of one ```question block: the context prose (options + trailing recommendation
