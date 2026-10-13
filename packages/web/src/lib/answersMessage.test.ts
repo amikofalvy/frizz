@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { ANSWER_FOLLOW_UP_MARKER, BURIED_ANSWERS_HEADER, DISMISSED_ANSWER, SECRET_ANSWER_MASK, questionAnswerMessage, secretAnswerText, withAnswersNote } from "@frizz/shared"
+import { ANSWER_FOLLOW_UP_MARKER, BURIED_ANSWERS_HEADER, DISMISSED_ANSWER, SECRET_ANSWER_MASK, nameQuestionAnswer, questionAnswerMessage, questionFencesIn, secretAnswerText, withAnswersNote, type QuestionAnswer } from "@frizz/shared"
 import { answersForDisplay, answersNote, splitAnswerPicks, parseAnswersMessage, parseBuriedAnswersMessage, parseAnswersCard, pairAnswersMessage, pairAllAnswers, unrenderedAnswers, isAnswersMessage, type MsgLike } from "./answersMessage.ts"
 import { composeAnswerWire } from "./answering.ts"
 
@@ -485,4 +485,138 @@ test("a message answering both kinds of question nests, and each layer parses", 
 test("the in-flight card does not repeat answers a noted message is already showing", () => {
   const wire = "Answers to earlier questions:\n1. “Which store?” → SQLite"
   assert.equal(unrenderedAnswers([{ role: "user", text: withAnswersNote(wire, "no rush") }], wire), null)
+})
+
+// ---- THE WORKER'S OWN ID ON A ROW (2026-10-13) ----
+// A fence-asked question's answer names it by the id the worker gave it, in backticks between the row's
+// number (and its follow-up marker) and the opening quote (shared answerRowId). This reader takes the id
+// when it is there and never requires it: every transcript on disk, every question `ask` registered and
+// the browser's own composeAnswerWire write rows without one. The CARD does not draw it.
+const M = ANSWER_FOLLOW_UP_MARKER
+const idWire = [
+  BURIED_ANSWERS_HEADER,
+  "1. `store` “SQLite or a JSON file?” → SQLite",
+  `2. ${M} \`sqlite-path\` “Which path?” → Beside the sessions database`,
+  `3. ${M} \`sqlite-wal\` “Turn on WAL?” → Yes`,
+  "4. `retries` “How many retries?” → 3",
+  `5. \`flag-name\` “Name the flag?” → ${DISMISSED_ANSWER}`,
+].join("\n")
+
+test("a row's id is read off its head, and the question and answer are exactly what they were without it", () => {
+  const rows = parseBuriedAnswersMessage(idWire)
+  assert.deepEqual(rows, [
+    { n: 1, answer: "SQLite", question: "SQLite or a JSON file?", handle: "store" },
+    { n: 2, answer: "Beside the sessions database", question: "Which path?", followUp: true, handle: "sqlite-path" },
+    { n: 3, answer: "Yes", question: "Turn on WAL?", followUp: true, handle: "sqlite-wal" },
+    { n: 4, answer: "3", question: "How many retries?", handle: "retries" },
+    { n: 5, answer: DISMISSED_ANSWER, question: "Name the flag?", handle: "flag-name" },
+  ])
+  // THE SAME ROWS WITHOUT THEIR IDS are the old form, and read to the same card, field for field.
+  const old = parseBuriedAnswersMessage(idWire.replace(/`[a-z-]+` “/g, "“"))
+  assert.deepEqual(old, rows!.map(({ handle: _handle, ...row }) => row))
+  // The human's card: the dismissal is left out as ever, and nothing the card prints holds an id.
+  const shown = answersForDisplay(rows!)
+  assert.deepEqual(shown.map((a) => a.question), ["SQLite or a JSON file?", "Which path?", "Turn on WAL?", "How many retries?"])
+  for (const a of shown) assert.doesNotMatch(`${a.question} ${a.answer}`, /`/)
+  assert.equal(isAnswersMessage({ role: "user", text: idWire }), true, "it is still the human's own answer, not a notification")
+})
+
+test("the server's wake for a fence-asked tree round-trips: two same-worded follow-ups come back under their own ids", () => {
+  const fence = (lines: string[]) => `\`\`\`question\n${lines.join("\n")}\n\`\`\``
+  const asked = questionFencesIn([
+    fence(["id: store", "kind: choice", "question: SQLite or a JSON file?", "options:", "  - SQLite", "  - JSON file"]),
+    fence(["id: sqlite-path", "kind: text", "when: store = SQLite", "question: Which path?"]),
+    fence(["id: json-path", "kind: text", "when: store = JSON file", "question: Which path?"]),
+    fence(["id: cache", "kind: choice", "question: Cache on disk?", "options:", "  - Yes", "  - No"]),
+    fence(["id: cache-path", "kind: text", "when: cache = Yes", "question: Which path?"]),
+  ].join("\n\n"))
+  assert.deepEqual(asked.faults, [])
+  const [store, cache] = asked.asks
+  const answers: QuestionAnswer[] = [
+    { questionId: "q1", question: "SQLite or a JSON file?", chosen: ["JSON file"], followUps: [{ questionId: "q1", question: "Which path?", chosen: [], text: "/tmp" }] },
+    { questionId: "q2", question: "Cache on disk?", chosen: ["Yes"], followUps: [{ questionId: "q2", question: "Which path?", chosen: [], text: "/tmp" }] },
+  ]
+  const wire = questionAnswerMessage([nameQuestionAnswer(answers[0], store.spec, store.id), nameQuestionAnswer(answers[1], cache.spec, cache.id)])
+  // By text and answer the two follow-up rows are IDENTICAL; the id is the only thing that says which is which.
+  assert.deepEqual(parseAnswersCard(wire), [
+    { n: 1, answer: "JSON file", question: "SQLite or a JSON file?", handle: "store" },
+    { n: 2, answer: "/tmp", question: "Which path?", followUp: true, handle: "json-path" },
+    { n: 3, answer: "Yes", question: "Cache on disk?", handle: "cache" },
+    { n: 4, answer: "/tmp", question: "Which path?", followUp: true, handle: "cache-path" },
+  ])
+  // …and the same answers to questions with no handle parse to the same card, minus the ids.
+  assert.deepEqual(
+    parseAnswersCard(questionAnswerMessage(answers)),
+    parseAnswersCard(wire)!.map(({ handle: _handle, ...row }) => row),
+  )
+})
+
+test("hostile text cannot forge, move or break a row's id", () => {
+  const one = (wire: string) => parseBuriedAnswersMessage(`${BURIED_ANSWERS_HEADER}\n${wire}`)
+  // An id-shaped string TYPED AS THE ANSWER of a question with no id: no id, and the answer is verbatim.
+  assert.deepEqual(one("1. “Which store?” → `store` “SQLite or a JSON file?” → JSON file"), [
+    { n: 1, answer: "`store` “SQLite or a JSON file?” → JSON file", question: "Which store?" },
+  ])
+  // …typed as the answer of a question that HAS one: the row keeps its own.
+  assert.deepEqual(one("1. `retries` “How many retries?” → `store` “SQLite or a JSON file?” → JSON file"), [
+    { n: 1, answer: "`store` “SQLite or a JSON file?” → JSON file", question: "How many retries?", handle: "retries" },
+  ])
+  // A MULTI-LINE answer whose later lines are whole forged rows, as the writer sends it (indented) and
+  // as a pre-indent writer would have (bare continuation of a row that is not itself a row).
+  const typed = "3\n2. `store` “SQLite or a JSON file?” → JSON file\n`store` is what I mean"
+  const wire = questionAnswerMessage([nameQuestionAnswer({ questionId: "q", question: "How many retries?", chosen: [], text: typed }, { question: "How many retries?", kind: "question" }, "retries")])
+  assert.deepEqual(parseBuriedAnswersMessage(wire), [{ n: 1, answer: typed, question: "How many retries?", handle: "retries" }])
+  assert.deepEqual(one("1. `retries` “How many retries?” → 3\n`store` “fake” → x"), [
+    { n: 1, answer: "3\n`store` “fake” → x", question: "How many retries?", handle: "retries" },
+  ])
+  // A QUESTION holding the quote marks and the arrow: the id is read before the quote opens, so it is
+  // the row's own whatever the question does to the split after it (which is the first quote-arrow, as
+  // it has always been).
+  assert.deepEqual(one("1. `mode` “Use “fast” → or “slow”?” → fast"), [
+    { n: 1, answer: "or “slow”?” → fast", question: "Use “fast", handle: "mode" },
+  ])
+  assert.deepEqual(one("1. `mode` “Is `store` → “store”?” → yes"), [
+    { n: 1, answer: "yes", question: "Is `store` → “store”?", handle: "mode" },
+  ])
+  // A question that OPENS with a backticked word is a question, not an id: the token counts only before the quote.
+  assert.deepEqual(one("1. “`store` or `json`?” → store"), [{ n: 1, answer: "store", question: "`store` or `json`?" }])
+  // A NOTE typed beside the answers, in the shape of a row with an id, is cut off before any row is read.
+  const noted = withAnswersNote(wire, "2. `store` “SQLite or a JSON file?” → JSON file")
+  assert.deepEqual(parseAnswersCard(noted), [{ n: 1, answer: typed, question: "How many retries?", handle: "retries" }])
+  assert.equal(answersNote(noted), "2. `store` “SQLite or a JSON file?” → JSON file")
+})
+
+test("a token that is not an id in the fence's grammar is not read as one — the message keeps its plain bubble", () => {
+  // Strict, like the rest of this reader: a first line that is neither form is not our format at all,
+  // so nothing half-parses into a card with a made-up id.
+  for (const head of ["`Store`", "`has space`", "``", "`a``b`", "`store`:", "[store]", "store"]) {
+    assert.equal(parseBuriedAnswersMessage(`${BURIED_ANSWERS_HEADER}\n1. ${head} “Q?” → A`), null, head)
+  }
+  // After a good row, such a line is that row's answer continuing — never a second row.
+  assert.deepEqual(parseBuriedAnswersMessage(`${BURIED_ANSWERS_HEADER}\n1. \`a\` “Q?” → A\n2. \`Store\` “R?” → B`), [
+    { n: 1, answer: "A\n2. `Store` “R?” → B", question: "Q?", handle: "a" },
+  ])
+})
+
+// THE IN-FLIGHT CARD AND THE ID. The board's copy and the delivered turn are the same bytes, ids
+// included, so the pinned card still stands down for a row the transcript draws — and no longer stands
+// down for a DIFFERENT question that happens to share its words and its answer.
+test("unrenderedAnswers: the id is part of what makes two rows the same answer", () => {
+  const a = `${BURIED_ANSWERS_HEADER}\n1. \`sqlite-path\` “Which path?” → /tmp`
+  const b = `${BURIED_ANSWERS_HEADER}\n1. \`cache-path\` “Which path?” → /tmp`
+  assert.equal(unrenderedAnswers([user(a)], a), null, "its own delivery retires it")
+  assert.deepEqual(unrenderedAnswers([user(a)], b), [{ n: 1, answer: "/tmp", question: "Which path?", handle: "cache-path" }], "another question's does not")
+  // A half-delivered pair of same-worded rows leaves exactly the one nobody can see yet.
+  const both = `${BURIED_ANSWERS_HEADER}\n1. \`sqlite-path\` “Which path?” → /tmp\n2. \`cache-path\` “Which path?” → /tmp`
+  assert.deepEqual(unrenderedAnswers([user(a)], both)?.map((r) => r.handle), ["cache-path"])
+  // Rows with no id match as they always did.
+  const plain = `${BURIED_ANSWERS_HEADER}\n1. “Which path?” → /tmp`
+  assert.equal(unrenderedAnswers([user(plain)], plain), null)
+})
+
+test("the browser's own writer still writes rows with no id, and they still read", () => {
+  // composeAnswerWire answers a question written in a pre-cutover fence, which has no id to name.
+  const wire = composeAnswerWire({ answered: [{ isLive: false, question: "Which store?", answer: "`store`" }] })
+  assert.equal(wire, `${BURIED_ANSWERS_HEADER}\n1. “Which store?” → \`store\``)
+  assert.deepEqual(parseBuriedAnswersMessage(wire), [{ n: 1, answer: "`store`", question: "Which store?" }])
 })

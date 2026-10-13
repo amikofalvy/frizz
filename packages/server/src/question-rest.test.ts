@@ -235,7 +235,8 @@ test("answering a faded question wakes the worker at a done rest and at a watchi
         await w.tick(8)
       }
       assert.equal(w.sent.length, 1, `${shape}: one wake`)
-      assert.match(w.sent[0], /^Answers to earlier questions:\n1\. “SQLite or a JSON file\?” → SQLite/)
+      // The wake names the question by the id its fence gave it, ahead of the restated text (2026-10-13).
+      assert.match(w.sent[0], /^Answers to earlier questions:\n1\. `store` “SQLite or a JSON file\?” → SQLite\n/)
     } finally { w.close() }
   }
 })
@@ -512,6 +513,8 @@ test("restFromAt moves only on a message the human typed, in a record of its own
     ["a wake and then the human's message, joined into one record", `${wake(shell)}\n${typed}`, true],
     ["a typed message that quotes a correction's lead", `Why did it say "${PARK_CORRECTION_NAMES_LEAD}nothing"?`, true],
     ["an answer's delivery", wake(questionAnswerMessage([{ questionId: "qst_aaaaaaaaaaaa", question: "SQLite or a JSON file?", chosen: ["SQLite"] }])), false],
+    // …and one that names its question by the worker's own id is the same delivery (2026-10-13).
+    ["an answer's delivery naming its question by id", wake(questionAnswerMessage([{ questionId: "qst_aaaaaaaaaaaa", question: "SQLite or a JSON file?", chosen: ["SQLite"], handle: "settings-store" }])), false],
     ["another thread's steer", formatThreadMessage({ slug: "release-train", title: "Release train" }, "Rebase when you can."), false],
     ["another Claude session's message", `Another Claude session sent a message:\n<cross-session-message from="uds:/tmp/x.sock" from-name="frizz-11">\nping\n</cross-session-message>`, false],
     ["the Retry button's sentence", RETRY_FOLLOW_UP, false],

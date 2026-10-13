@@ -22,7 +22,8 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { X } from "lucide-react"
-import type { AskedQuestion, ClosedQuestionView, QuestionAnswer, RegisteredQuestionView, SettledQuestionView, ThreadView } from "@frizz/shared"
+import { nameQuestionAnswer } from "@frizz/shared"
+import type { AskedQuestion, ClosedQuestionView, NamedQuestionAnswer, QuestionAnswer, RegisteredQuestionView, SettledQuestionView, ThreadView } from "@frizz/shared"
 import { rpc } from "../api/rpc.ts"
 import { draftKey, draftStore, useDraftValues, useProjectDir } from "../lib/drafts.ts"
 import { clearSteered, markSteered } from "../lib/steering.ts"
@@ -67,8 +68,11 @@ export interface RegisteredAnswering {
 /** The staged answers as the prompt box's send needs them, with the three edges of that send. */
 export interface RegisteredTake {
   answers: QuestionAnswer[]
-  /** The same answers as the human may read them back — a secret's value never reaches a bubble. */
-  display: QuestionAnswer[]
+  /** The same answers as the human may read them back — a secret's value never reaches a bubble —
+   *  each named by the id its question was asked under, as the server names it in the message it
+   *  composes (shared nameQuestionAnswer). The optimistic bubble is drawn from these, and the in-flight
+   *  card stands down for a row the transcript already draws only when the two agree on that id. */
+  display: NamedQuestionAnswer[]
   /** The send has committed locally: the cards grey in place. */
   onOptimistic: () => void
   onSuccess: () => void
@@ -228,7 +232,7 @@ export function useRegisteredAnswering(thread: ThreadView | undefined): Register
     }
     return {
       answers: staged,
-      display: displayed(pairs),
+      display: displayed(pairs).map((answer, i) => nameQuestionAnswer(answer, pairs[i].q.spec, pairs[i].q.handle)),
       onOptimistic: () => {
         setError(undefined)
         settleOptimistically(slug, pairs)
