@@ -50,7 +50,10 @@ export const QUESTION_FENCE_KINDS = ["choice", "multi", "text", "secret"] as con
 export type QuestionFenceKind = (typeof QUESTION_FENCE_KINDS)[number]
 
 /** Every key the front matter understands, in the order the contract teaches them. Anything else is
- *  refused by name, so a typo (`recomended`) is a correction rather than a silently ignored line. */
+ *  refused by name, so a typo (`recomended`) is a correction rather than a silently ignored line.
+ *  `header` is READ but not taught: `AskedQuestion.header` came from the `ask` tool, where it was
+ *  described as the card's chip, and no surface has ever drawn it — so a worker that writes one is not
+ *  faulted for it, and none is told to. */
 export const QUESTION_FENCE_KEYS = ["id", "kind", "question", "options", "danger", "header", "when"] as const
 export const QUESTION_FENCE_OPTION_KEYS = ["label", "description", "recommended", "detail"] as const
 

@@ -803,7 +803,6 @@ whole quoted string is unquoted:
 | \`question\` | Required. ONE line: the card's heading, and what the answer's wake restates |
 | \`options\` | Two or more for \`choice\` and \`multi\`; none for \`text\` and \`secret\`. Each \`- \` item takes \`label\` (required), \`description\` (one line), \`recommended: true\`, and \`detail\`, an indented Markdown block drawn inside the option. A bare \`- Label\` is a label alone |
 | \`danger\` | \`true\` for the genuinely irreversible: the card turns red and the human's × cannot dismiss it |
-| \`header\` | The card's chip label, 24 characters at most |
 | \`when\` | \`<parent id> = <option label>\`: a follow-up, asked only if that option is picked (below) |
 
 Below the \`---\` is the question's CONTEXT: everything the human needs to answer it cold, in any

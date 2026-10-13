@@ -501,8 +501,7 @@ const ASK_RETIRED =
   "- `kind:` is `choice` (pick one), `multi` (pick several), `text` (free text) or `secret` (one masked " +
   "box, for a token or a one-time code).\n" +
   "- `question:` is one line. Each option takes `label:`, `description:` (one line), `recommended: true` " +
-  "and `detail: |` (an indented Markdown block). The question may also carry `danger: true` and a " +
-  "`header:` chip.\n" +
+  "and `detail: |` (an indented Markdown block). The question may also carry `danger: true`.\n" +
   "- Every value is read verbatim to the end of its line. A code block inside the fence needs a longer " +
   "outer fence (````question).\n" +
   "- Several questions are several fences in one message. A follow-up is its own fence in the same message " +

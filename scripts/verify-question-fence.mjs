@@ -168,7 +168,7 @@ check("a choice with two options, SQLite recommended", q.spec.kind === "question
 const follow = q.spec.options?.find((o) => o.label === "SQLite")?.followUps?.[0]
 check("the `when:` follow-up hangs under SQLite with its own handle", follow?.handle === "sqlite-path" && follow?.question === "Where should the database file live?")
 check("the body below `---` is the question's context, table included", q.spec.context?.includes("| JSON file | no | last write wins |") === true)
-check("the header chip came through", q.spec.header === "Settings store")
+check("an untaught `header:` is still accepted rather than faulted", q.spec.header === "Settings store")
 check("the thread queues on it", asked.needsYou === true)
 check("the quoted sample registered nothing", !asked.questions.some((x) => x.spec.handle === "quoted-sample"))
 
