@@ -89,7 +89,7 @@ test("a mermaid fence keeps its name on the block too, whatever its case, and on
   assert.match(renderHighlightedCode("x\n", "mermaidjs"), /class="hljs language-plaintext"/)
 })
 
-test("long lines remain intact for the surface CSS to scroll or wrap", () => {
+test("long lines remain intact for the stylesheet to wrap", () => {
   const longToken = "x".repeat(1_024)
   const html = renderHighlightedCode(longToken, "plaintext")
   assert.equal(html.match(/<code[^>]*>([\s\S]*)<\/code>/)?.[1], `${longToken}\n`)

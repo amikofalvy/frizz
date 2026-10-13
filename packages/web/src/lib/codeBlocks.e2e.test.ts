@@ -294,7 +294,7 @@ test("marked lines, rendered diffs and long blocks draw, copy and open on the sh
     await page.click("[data-case=edit-card] [aria-expanded=false]")
     const editCard = await page.$eval("[data-case=edit-card] .frizz-diff-body", (body) => {
       const del = body.querySelector<HTMLElement>(".frizz-diff-line[data-type=del]")!
-      const ctx = body.querySelector<HTMLElement>(".frizz-diff-line[data-type=ctx]")!
+      const ctx = body.querySelector<HTMLElement>(".frizz-diff-line[data-type=context]")!
       const code = del.querySelector<HTMLElement>(".frizz-diff-code")!
       const range = document.createRange()
       range.selectNodeContents(code)
