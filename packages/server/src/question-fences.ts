@@ -172,19 +172,27 @@ export function syncQuestionFences(
 }
 
 /**
- * The open questions that STAND at the thread's current rest — the ones that queue it and sign the rest
- * off. A question stands at the rest that asked it, and at any later rest that references it: an
- * `id:` fence, the worker restating its fence, or (for a worker whose contract predates the fence) an
- * ```awaiting fence naming it under `questions:`. An older question nobody references stays open and
- * answerable where it was asked, and says nothing about this rest (maintainer 2026-10-13: questions "may
- * get registered and never answered, and then they just sort of fade away. I think it's probably fine").
+ * The open questions that STAND — the ones that queue the thread, mark its row and sign its rest off.
  *
- * The rest starts at the newest turn that was not one of Frizz's own fence corrections (`restFromAt`,
- * else `lastUserAt`). Every other wake starts a new rest, as a human message does: the worker has news
- * to act on, and says at its next rest whether it still needs the answer. A CORRECTION does not, because
- * its reply is the same sign-off written again — "Re-send the same fence with that line added" — and
- * read as a new rest it took a question asked seconds earlier out of the queue behind the very park
- * Frizz had asked for (2026-10-13). The chat agrees by construction: it drops a correction record whole.
+ * A question stands from when it was ASKED, or last REFERENCED, until the HUMAN TYPES A MESSAGE to the
+ * thread after that. A reference is an `id:` fence, the worker restating its fence, or (for a worker
+ * whose contract predates the fence) an ```awaiting fence naming it under `questions:`. Once the human
+ * has typed past it, the question FADES: still open, still answerable in the message that asked it, but
+ * no longer what the thread is waiting on (maintainer 2026-10-13: questions "may get registered and
+ * never answered, and then they just sort of fade away. I think it's probably fine") — until the worker
+ * references it again.
+ *
+ * ONLY A MESSAGE THE HUMAN WROTE MOVES THE BOUNDARY (`restFromAt`, the fold's reading of shared
+ * isHumanTypedMessage). Nothing Frizz delivers does: no wake of any kind, no correction, no sign-off
+ * reminder, no Goal prompt, no timer or watch wake, no limit resume, no other thread's steer, and not
+ * the delivery of an ANSWER to a different question — answering one of two is not replying past the
+ * other, and the human has the card's × for that. The first cut of this rule (2026-10-13, same day)
+ * read every user record as the boundary, the way the rest rules around it do, and a question asked
+ * beside a `status: working` park left the queue the moment its shell finished and the worker re-parked
+ * with the fence alone — which is exactly what the contract tells a worker a quiet park is. The human
+ * had not seen the question yet. A machine event is not a reply.
+ *
+ * `lastUserAt` is the fallback for a tail folded before `restFromAt` existed.
  */
 export function standingQuestions(
   rows: readonly ThreadQuestionRow[],

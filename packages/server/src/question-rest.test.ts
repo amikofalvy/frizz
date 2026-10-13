@@ -8,11 +8,10 @@ import assert from "node:assert/strict"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { boardAskThread, mergedWakeMessage, needsAction, PARK_CORRECTION_NAMES_LEAD, sectionOf, wakeDeliveryToken } from "@frizz/shared"
+import { boardAskThread, formatThreadMessage, humanGapNote, limitResumeSteer, mergedWakeMessage, needsAction, PARK_CORRECTION_NAMES_LEAD, parkExpiredWakeMessage, prWatchWakeMessage, questionAnswerMessage, restPromptMessage, RETRY_FOLLOW_UP, sectionOf, shellDoneMessage, signoffNudgeMessage, timerPromptMessage, wakeDeliveryToken } from "@frizz/shared"
 import { Bus } from "./bus.ts"
 import { createBoard } from "./board.ts"
 import type { Project } from "./project.ts"
-import { questionFenceCorrection } from "./question-fences.ts"
 import { createScheduler } from "./scheduler.ts"
 import { createStorage, type SessionRow } from "./storage.ts"
 import { applyEvent, applyRecord, newTailState, type SessionTelemetry, type Tailer } from "./tailer.ts"
@@ -42,7 +41,7 @@ function world(over: Partial<SessionRow> = {}) {
     turn: "idle", permPrompt: false, subAgents: [], bgShells: [], retiredShells: [], retiredSubAgents: [],
     lastActivityAt: s.lastActivityAt, lastAssistantAt: s.lastAssistantAt, lastAssistant: s.lastAssistant,
     lastAssistantLine: s.lastAssistantLine, questionSightings: s.questionSightings, pendingQuestion: false,
-    lastAssistantAllDone: s.lastAssistantAllDone, lastUserAt: s.lastUserAt, restFromAt: s.restFromAt, lastUserText: s.lastUserText,
+    lastAssistantAllDone: s.lastAssistantAllDone, lastUserAt: s.lastUserAt, restFromAt: s.restFromAt, questionCorrectedAt: s.questionCorrectedAt, lastUserText: s.lastUserText,
     lastFence: s.lastFence, ...extra,
   } as SessionTelemetry)
   const tailer = {
@@ -53,15 +52,20 @@ function world(over: Partial<SessionRow> = {}) {
   let clock = Date.parse(at(0))
   const scheduler = createScheduler({
     wakeQuietWindowMs: 0, storage, fetchPr: async () => undefined, fetchGithubReview: async () => [],
-    tailer, resume: async (_slug: string, message: string) => { sent.push(message) }, log: () => {}, now: () => clock,
+    tailer, resume: async (_slug: string, message: string, deliveryId: string) => { sent.push(`${message}\n\n${wakeDeliveryToken(deliveryId)}`) }, log: () => {}, now: () => clock,
   } as never)
   const project: Project = { dir, id: "p", name: "fixture", label: "fixture", stateDir: dir, cwdSlug: "fixture" }
   const board = createBoard(project, storage, new Bus(), tailer, "question-rest", { claudeBrokerDaemonAlive: () => true })
   return {
+    /** Every delivery the scheduler sent, as it lands in the transcript: the message and its token. */
     storage, scheduler, board, sent, extra,
     /** Tick the scheduler with its clock at `minute`. */
     tick: async (minute: number) => { clock = Date.parse(at(minute)); await scheduler.tick() },
+    /** A user record: the human's message, or a delivery of Frizz's (pass what `sent` holds, or `wake(…)`). */
     user: (minute: number, text: string) => applyRecord(s, { type: "user", timestamp: at(minute), message: { role: "user", content: text } } as never),
+    /** A message queued behind a running turn: the runtime's own record of it, before any delivery. */
+    queued: (minute: number, text: string) => applyRecord(s, { type: "queue-operation", operation: "enqueue", timestamp: at(minute), content: text } as never),
+    fold: s,
     say: (minute: number, text: string) => applyRecord(s, { type: "assistant", timestamp: at(minute), message: { role: "assistant", content: [{ type: "text", text }], stop_reason: "end_turn" } } as never),
     deliveries: () => storage.db.prepare("SELECT fence_id FROM wake_delivery WHERE thread_slug = ? ORDER BY rowid").all(slug).map((r) => (r as { fence_id: string }).fence_id),
     view: () => board.refresh().threads.find((x) => x.id === slug)!,
@@ -277,14 +281,13 @@ test("a legacy `questions:` claim makes the named open question stand; an answer
   }
 })
 
-// ── A fence correction is not a turn: the reply to it is the SAME rest ────────────────────────────────
+// ── Nothing Frizz delivers is the human replying past a question ───────────────────────────────────────
 
-// Frizz's own correction lands in the transcript as a user record, and the standing rule read every user
-// record as the start of a new rest. So a question asked beside a fence Frizz then corrected stopped
-// standing the moment the worker did what the correction says ("Re-send the same fence with that line
-// added"): the thread left the queue seconds after asking, on a park the human never saw the question
-// behind. The chat already drops a correction record whole ("a fence correction is not a message",
-// transcript.ts), so the web read the two messages as one rest and the server did not.
+// The first cut of the standing rule bounded a rest by the newest user record of any kind, and Frizz's
+// own deliveries are user records. The first casualty found was a fence correction: a question asked
+// beside a fence Frizz then corrected stopped standing the moment the worker did what the correction says
+// ("Re-send the same fence with that line added"). The rule since 2026-10-13: only a message the HUMAN
+// TYPED moves the boundary (shared isHumanTypedMessage, folded into `restFromAt`).
 test("a question asked beside a park Frizz corrected still stands once the park is re-sent", async () => {
   const w = world()
   try {
@@ -320,40 +323,239 @@ test("fixing one broken question fence does not fade the valid one asked beside 
   } finally { w.close() }
 })
 
-test("only a record that is ALL corrections continues the rest: real news beside one starts a new rest", async () => {
-  const correction = `${PARK_CORRECTION_NAMES_LEAD}something that is not running, so it is not a park and your thread stayed in the queue.`
-  const cases = [
-    // Two corrections merged into one delivery (a broken question fence beside a dead park): still all
-    // corrections, so still the same rest.
-    { text: mergedWakeMessage([{ reason: "awaiting park named 1 dead item(s)", message: correction }, { reason: "1 question fence(s) could not register", message: questionFenceCorrection([{ at: at(1), id: "scope", faults: ["no `kind:`"] }]) }], Date.parse(at(3))), standing: true },
-    // A correction merged with a shell's completion: the worker has news to act on, so its next rest is a new one.
-    { text: mergedWakeMessage([{ reason: "awaiting park named 1 dead item(s)", message: correction }, { reason: "background shell finished", message: "Your background shell `bzvt` finished." }], Date.parse(at(3))), standing: false },
-    // As the runtime writes them: each delivery closed by its token, and two coalesced into one record.
-    { text: `${correction}\n\n${wakeDeliveryToken("d1")}`, standing: true },
-    { text: `${correction}\n\n${wakeDeliveryToken("d1")}\nYour background shell \`bzvt\` finished.\n\n${wakeDeliveryToken("d2")}`, standing: false },
-    // The human, quoting a correction's lead mid-sentence: a human turn.
-    { text: `Why did it say "${PARK_CORRECTION_NAMES_LEAD}nothing"?`, standing: false },
+/** A delivery of Frizz's as it lands in a worker's transcript: the message, then its token (context.ts). */
+const wake = (message: string, id = "d1") => `${message}\n\n${wakeDeliveryToken(id)}`
+const LIVE = (taskId: string) => ({ label: "the suite", startedAt: at(0), state: "running", id: `toolu_${taskId}`, taskId })
+const quietPark = (taskId: string) => fence("awaiting", `status: working\nshells: [${taskId}]\nfor: 1h`)
+
+// THE CASE THE RULE EXISTS FOR. The contract tells a worker that a quiet park is "the fence alone", so a
+// worker that asks a question and parks on a build re-parks with no reference when the build wakes it —
+// and under the old boundary the question left the queue right there, before the human had seen it.
+test("a question beside a `status: working` park survives every machine wake: still standing, still queued, still an ask", async () => {
+  const wakes: [string, string][] = [
+    ["a shell finishing", wake(shellDoneMessage({ taskId: "bzvt", label: "the suite", status: "completed" }))],
+    ["a timer", wake(timerPromptMessage("check whether the release went out", at(2)))],
+    ["a PR watch", wake(prWatchWakeMessage({ target: "acme/app#12", checks: { verdict: "passing", summary: "3 of 3 passed" } } as never))],
+    ["a Goal prompt", wake(restPromptMessage("Keep going until the suite is green."))],
+    ["the sign-off reminder", wake(signoffNudgeMessage())],
+    ["a fence correction", wake(`${PARK_CORRECTION_NAMES_LEAD}something that is not running, so it is not a park and your thread stayed in the queue.`)],
+    ["a park expiring", wake(parkExpiredWakeMessage(["- `shells: [bzvt]` — still running"]))],
+    ["a limit resume", wake(limitResumeSteer("session"))],
+    ["several wakes held and delivered together", wake(mergedWakeMessage([{ reason: "background shell finished", message: shellDoneMessage({ taskId: "bzvt", label: "the suite", status: "completed" }) }, { reason: "timer", message: timerPromptMessage("check the release", at(2)) }], Date.parse(at(3))))],
+    ["another thread's steer", formatThreadMessage({ slug: "release-train", title: "Release train" }, "The release went out; rebase when you can.")],
+    ["a background child's report", `<agent-message from="general-purpose">\nThe audit is written up.\n</agent-message>`],
+    ["the rail's Retry", RETRY_FOLLOW_UP],
   ]
-  for (const c of cases) {
+  for (const [name, text] of wakes) {
     const w = world()
     try {
+      w.extra.bgShells = [LIVE("bzvt")] as never
       w.user(0, "move the settings into a real store")
-      w.say(1, `One call to make first.\n\n${choice("store")}`)
+      w.say(1, `One call to make while the suite runs.\n\n${choice("store")}\n\n${quietPark("bzvt")}`)
       await w.tick(2)
-      w.user(3, c.text)
-      w.say(4, "Carrying on with the migration.")
-      assert.deepEqual(w.view().questions.map((q) => q.standing), [c.standing], c.text.slice(0, 60))
+      assert.equal(w.view().needsYou, true, `${name}: queued on the question`)
+      // The wake lands, the worker reads the result and starts the next piece of work — fence alone.
+      w.user(3, text)
+      w.extra.bgShells = [LIVE("bnext")] as never
+      w.say(4, quietPark("bnext"))
+      await w.tick(5)
+      const t = w.view()
+      assert.deepEqual(t.questions.map((q) => [q.spec.handle, q.standing]), [["store", true]], `${name}: the question still stands`)
+      assert.equal(t.needsYou, true, `${name}: the thread is still in the queue`)
+      assert.equal(needsAction(t), true, `${name}: and its row is still an ask`)
+      assert.deepEqual(w.deliveries(), [], `${name}: nothing to correct, nothing to nudge`)
     } finally { w.close() }
   }
 })
 
-test("the normalized (codex, ACP) fold keeps the same boundary: a correction moves lastUserAt and not restFromAt", () => {
-  const s = newTailState("c", "sid-c", "/dev/null")
-  applyEvent(s, { kind: "user-message", at: at(0), text: "move the settings into a real store", synthetic: false } as never)
-  assert.equal(s.restFromAt, at(0))
-  applyEvent(s, { kind: "user-message", at: at(2), text: `${PARK_CORRECTION_NAMES_LEAD}nothing to wait on, so it is not a park.\n\n${wakeDeliveryToken("d1")}`, synthetic: false } as never)
-  assert.equal(s.lastUserAt, at(2), "the guards that ask whether the agent spoke last still see the correction")
-  assert.equal(s.restFromAt, at(0), "the rest did not restart")
-  applyEvent(s, { kind: "user-message", at: at(4), text: "thanks, carry on", synthetic: false } as never)
-  assert.equal(s.restFromAt, at(4))
+test("the human typing past a question fades it; a reference brings it back until the human next types", async () => {
+  const w = world()
+  try {
+    w.extra.bgShells = [LIVE("bzvt")] as never
+    w.user(0, "move the settings into a real store")
+    w.say(1, `One call to make first.\n\n${choice("store")}`)
+    await w.tick(2)
+    // The human replies, and not to the question. The worker gets on with it and parks.
+    w.user(3, "leave that for now and get the migration running")
+    w.say(4, quietPark("bzvt"))
+    await w.tick(5)
+    let t = w.view()
+    assert.deepEqual(t.questions.map((q) => q.standing), [false], "replied past: it has faded")
+    assert.equal(t.needsYou, false, "out of the queue")
+    assert.equal(needsAction(t), false, "and not an ask")
+    // The shell finishes; this rest still needs the answer, so the worker references it.
+    w.user(6, wake(shellDoneMessage({ taskId: "bzvt", label: "the suite", status: "completed" })))
+    w.say(7, `The migration is in. The store is the last open call.\n\n${fence("question", "id: store")}`)
+    await w.tick(8)
+    t = w.view()
+    assert.deepEqual(t.questions.map((q) => q.standing), [true], "referenced: it stands again")
+    assert.equal(t.needsYou, true)
+    // Another machine wake, and a rest that says nothing about it: the reference still holds.
+    w.user(9, wake(timerPromptMessage("check the release", at(9)), "d2"))
+    w.extra.bgShells = [LIVE("bnext")] as never
+    w.say(10, quietPark("bnext"))
+    await w.tick(11)
+    assert.deepEqual(w.view().questions.map((q) => q.standing), [true], "a reference lasts until the human next types")
+    assert.equal(w.view().needsYou, true)
+    // …and the human typing again is what ends it.
+    w.user(12, "still not ready to decide that")
+    w.say(13, quietPark("bnext"))
+    await w.tick(14)
+    assert.deepEqual(w.view().questions.map((q) => q.standing), [false])
+    assert.equal(w.view().needsYou, false)
+    assert.deepEqual(w.deliveries(), [], "none of it drew a correction or a nudge")
+  } finally { w.close() }
+})
+
+test("answering one of two questions is not replying past the other", async () => {
+  const w = world()
+  try {
+    w.extra.bgShells = [LIVE("bzvt")] as never
+    w.user(0, "publish the packages")
+    w.say(1, `Two calls.\n\n${choice("store")}\n\n${fence("question", "id: scope\nkind: text\nquestion: What npm scope should the packages publish under?")}`)
+    await w.tick(2)
+    const store = w.storage.listThreadQuestions("t").find((q) => q.handle === "store")!
+    w.storage.answerThreadQuestion(store.id, JSON.stringify({ questionId: store.id, question: "SQLite or a JSON file?", chosen: ["SQLite"] }), Date.parse(at(3)))
+    await w.tick(3.5)
+    assert.match(w.sent[0], /^Answers to earlier questions:/)
+    // The answer's own delivery, exactly as the scheduler sent it; then the worker acts on it and parks.
+    w.user(4, w.sent[0])
+    w.say(5, quietPark("bzvt"))
+    await w.tick(6)
+    const t = w.view()
+    assert.deepEqual(t.questions.map((q) => [q.spec.handle, q.standing]), [["scope", true]], "the unanswered one still stands")
+    assert.equal(t.needsYou, true)
+    assert.equal(needsAction(t), true)
+  } finally { w.close() }
+})
+
+test("a question asked mid-turn outranks a ```done fence many machine wakes later", async () => {
+  const w = world()
+  try {
+    w.user(0, "move the settings into a real store")
+    w.say(1, `Before I go on:\n\n${choice("store")}\n\nNow running the migration.`)
+    w.say(1.5, "Migration running.")
+    for (const [i, text] of [shellDoneMessage({ taskId: "bzvt", label: "the migration", status: "completed" }), timerPromptMessage("check the release", at(3)), restPromptMessage("Keep going until the suite is green.")].entries()) {
+      w.user(2 + i * 2, wake(text, `d${i}`))
+      w.say(3 + i * 2, `Step ${i + 1} finished.`)
+      await w.tick(3.5 + i * 2)
+    }
+    w.say(9, `Everything else is in.\n\n${fence("done", "- Landed the migration on main.")}`)
+    await w.tick(10)
+    const t = w.view()
+    assert.equal(t.lastFence?.kind, "done")
+    assert.deepEqual(t.questions.map((q) => q.standing), [true], "nobody has replied to it")
+    assert.equal(t.needsYou, true)
+    assert.equal(needsAction(t), true, "the row is the question's, not the done's")
+    assert.equal(boardAskThread(t), true)
+    // And the bare rests on the way never drew the sign-off reminder: a standing question signs a rest off.
+    assert.deepEqual(w.deliveries(), [], "SOURCE 9 stayed quiet at every bare rest behind the question")
+  } finally { w.close() }
+})
+
+test("SOURCE 9 still nudges a bare rest once the human has typed past the question", async () => {
+  const w = world()
+  try {
+    w.user(0, "move the settings into a real store")
+    w.say(1, `One call to make first.\n\n${choice("store")}`)
+    await w.tick(2)
+    w.user(3, "leave that for now")
+    w.say(4, "Carrying on.")
+    await w.tick(5)
+    assert.deepEqual(w.deliveries(), [`signoff:${at(4)}`], "the negative control: a faded question signs nothing off")
+  } finally { w.close() }
+})
+
+// SOURCE 14 reads the same boundary. Its window used to open at the newest user record of any kind, so a
+// fault written mid-turn was dropped if any wake landed before the worker went idle.
+test("a broken fence written mid-turn is still corrected when a wake lands before the worker goes idle — once", async () => {
+  const w = world()
+  try {
+    w.user(0, "publish the packages")
+    w.say(1, `Before I go on:\n\n${broken("scope")}\n\nNow building.`)
+    // A timer fires mid-turn (the clock-driven wakes do not wait for rest), and the turn runs on.
+    w.user(2, wake(timerPromptMessage("check the release", at(2))))
+    w.say(3, "Built. Waiting on the scope.")
+    await w.tick(4)
+    assert.deepEqual(w.deliveries(), [`park:question-fence:${at(3)}`], "the fault predates the wake and is still news")
+    assert.match(w.sent[0], /`scope` — `kind: choice` needs two or more options/)
+    // The correction lands and the worker rests again without fixing it: told once, not again.
+    w.user(5, w.sent[0])
+    w.say(6, "Noted.")
+    await w.tick(7)
+    await w.tick(8)
+    assert.deepEqual(w.deliveries().filter((id) => id.startsWith("park:question-fence:")), [`park:question-fence:${at(3)}`])
+    // A fault the human has typed past is moot.
+    w.user(9, "forget the scope question")
+    w.say(10, "Done with that.")
+    await w.tick(11)
+    assert.deepEqual(w.deliveries().filter((id) => id.startsWith("park:question-fence:")), [`park:question-fence:${at(3)}`])
+  } finally { w.close() }
+})
+
+// ── The fold's boundary, record by record ─────────────────────────────────────────────────────────────
+
+test("restFromAt moves only on a message the human typed, in a record of its own or sharing one with a wake", () => {
+  const typed = "leave that for now and finish the migration"
+  const shell = shellDoneMessage({ taskId: "bzvt", label: "the suite", status: "completed" })
+  const cases: [string, string, boolean][] = [
+    ["a typed message", typed, true],
+    ["a typed message carrying the clock note the router appends after a long silence", `${typed}\n\n${humanGapNote(Date.parse(at(240)), at(0))}`, true],
+    ["a wake", wake(shell), false],
+    ["two wakes the runtime joined into one record", `${wake(shell, "d1")}\n${wake(timerPromptMessage("check", at(1)), "d2")}`, false],
+    ["a wake and then the human's message, joined into one record", `${wake(shell)}\n${typed}`, true],
+    ["a typed message that quotes a correction's lead", `Why did it say "${PARK_CORRECTION_NAMES_LEAD}nothing"?`, true],
+    ["an answer's delivery", wake(questionAnswerMessage([{ questionId: "qst_aaaaaaaaaaaa", question: "SQLite or a JSON file?", chosen: ["SQLite"] }])), false],
+    ["another thread's steer", formatThreadMessage({ slug: "release-train", title: "Release train" }, "Rebase when you can."), false],
+    ["another Claude session's message", `Another Claude session sent a message:\n<cross-session-message from="uds:/tmp/x.sock" from-name="frizz-11">\nping\n</cross-session-message>`, false],
+    ["the Retry button's sentence", RETRY_FOLLOW_UP, false],
+    ["the Retry sentence inside a typed message", `${RETRY_FOLLOW_UP} And skip the docs.`, true],
+  ]
+  for (const [name, text, moves] of cases) {
+    const s = newTailState("t", "sid-t", "/dev/null")
+    applyRecord(s, { type: "user", timestamp: at(0), message: { role: "user", content: "move the settings into a real store" } } as never)
+    applyRecord(s, { type: "user", timestamp: at(5), message: { role: "user", content: text } } as never)
+    assert.equal(s.restFromAt, moves ? at(5) : at(0), name)
+    // The normalized (codex, ACP) fold reads the same predicate.
+    const c = newTailState("c", "sid-c", "/dev/null")
+    applyEvent(c, { kind: "user-message", at: at(0), text: "move the settings into a real store", synthetic: false } as never)
+    applyEvent(c, { kind: "user-message", at: at(5), text, synthetic: false } as never)
+    assert.equal(c.restFromAt, moves ? at(5) : at(0), `${name} (normalized)`)
+    assert.equal(c.lastUserAt, at(5), `${name}: lastUserAt still moves — it is the row-order key`)
+  }
+})
+
+test("a message typed while the worker is mid-turn moves the boundary when it was typed, not when it was delivered", async () => {
+  const typed = "also bump the version"
+  // QUEUED AHEAD OF A WAKE: the runtime joins the two, and the merged record reads as one delivery
+  // ending in the wake's token. The queue's own record is what says the human typed.
+  const w = world()
+  try {
+    w.user(0, "move the settings into a real store")
+    w.say(1, `One call to make first.\n\n${choice("store")}\n\nNow running the migration.`)
+    w.queued(2, typed)
+    w.queued(2.5, wake(timerPromptMessage("check the release", at(2.5))))
+    w.user(3, `${typed}\n${wake(timerPromptMessage("check the release", at(2.5)))}`)
+    w.say(4, "Bumped it.")
+    await w.tick(5)
+    assert.equal(w.fold.restFromAt, at(2), "the instant the human typed")
+    assert.deepEqual(w.view().questions.map((q) => q.standing), [false], "the human message wins: they replied past the question")
+  } finally { w.close() }
+  // TYPED BEFORE THE QUESTION EXISTED: the human queues a message, the worker asks a question before the
+  // queue drains, and then reads the message. That is not a reply past the question.
+  const v = world()
+  try {
+    v.user(0, "move the settings into a real store")
+    v.say(1, "Reading the settings layer.")
+    v.queued(2, typed)
+    v.say(2.5, `One call to make first.\n\n${choice("store")}`)
+    v.user(3, typed)
+    v.say(4, "Bumped it.")
+    await v.tick(5)
+    assert.equal(v.fold.restFromAt, at(2))
+    assert.deepEqual(v.view().questions.map((q) => q.standing), [true], "asked after the human typed: it stands")
+    // The same words typed again later are a new message, not the queued one delivered twice.
+    v.user(6, typed)
+    assert.equal(v.fold.restFromAt, at(6))
+  } finally { v.close() }
 })

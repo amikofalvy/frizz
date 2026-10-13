@@ -1980,24 +1980,6 @@ export function isParkCorrection(text: string): boolean {
   return t.startsWith(PARK_CORRECTION_NAMES_LEAD) || t.startsWith(PARK_CORRECTION_RETIRED_LEAD) || t.startsWith(PARK_CORRECTION_QUESTION_LEAD) || t.startsWith(PARK_CORRECTION_NEEDS_INPUT_LEAD) || t.startsWith(QUESTION_FENCE_CORRECTION_LEAD)
 }
 
-/**
- * Does this user record carry NOTHING but fence corrections — every delivery in it, and every wake of a
- * merged one? The chat drops such a record whole ("a fence correction is not a message", server
- * transcript.ts), and for the same reason it does not start a new REST: the worker's reply re-does the
- * sign-off it was corrected on, so a question asked there is still that rest's question (server
- * question-fences.ts standingQuestions). A correction delivered beside real news — a shell's completion,
- * an answer, a Goal prompt — is a turn like any other.
- */
-export function isOnlyParkCorrections(text: string): boolean {
-  const deliveries = splitWakeDeliveries(text).filter((d) => !isInjectedNoise(d))
-  if (deliveries.length === 0) return false
-  return deliveries.every((d) => {
-    if (isParkCorrection(d)) return true
-    const merged = parseMergedWake(d)
-    return merged !== null && merged.every((part) => isParkCorrection(part.body))
-  })
-}
-
 export function timerPromptMessage(prompt: string, fireAt: string): string {
   return `${prompt.trim()}\n\n(One-off timer, set for ${fireAt}. It has fired and will not repeat.)`
 }
@@ -3907,7 +3889,7 @@ export function activeBandThread(t: ThreadView): boolean {
  * with no card for it at that rest (the 2026-08-31 report again: "marked as a question status, but
  * there is no question").
  */
-export function hasStandingQuestion(t: Pick<ThreadView, "questions">): boolean {
+export function hasStandingQuestion(t: { readonly questions?: readonly { readonly standing?: boolean }[] }): boolean {
   return (t.questions ?? []).some((q) => q.standing !== false)
 }
 
@@ -5305,6 +5287,50 @@ export function parseThreadMessage(text: string): { slug: string; title: string;
   const body = rest.slice(open[0].length, close).trim()
   if (!slug || !body) return undefined
   return { slug, title: attributes.get("from-title") || slug, body }
+}
+
+// ---- DID THE HUMAN TYPE THIS? ---------------------------------------------------------------------
+// The one question behind "has the human replied past this question?" (server question-fences.ts
+// standingQuestions): an open question stands from when it was asked or last referenced until the HUMAN
+// TYPES A MESSAGE to the thread, and nothing Frizz delivers is that. Until 2026-10-13 every user record
+// counted, so a question asked beside a `status: working` park left the human's queue the moment a shell
+// finished and woke the worker — before the human had seen it.
+//
+// A user record reaches a worker's transcript from five senders, and only the first is the human:
+//
+//   • the human's own message — a follow-up typed into Frizz, or the prompt that dispatched the thread.
+//     It carries nothing of Frizz's but, after a long silence, the clock note the router appends
+//     (humanGapNote), which is why this is defined by what the others carry rather than by a mark of its own;
+//   • every wake the scheduler delivers — a correction, the sign-off reminder, a Goal or heartbeat
+//     prompt, a timer, a PR, issue or command watch, a shell's completion, a limit resume, and the ANSWER
+//     to a question: each ends in its delivery token (wakeDeliveryToken, appended on the one path they
+//     all take), so isWakeDelivery names them all;
+//   • another thread's `frizzctl steer` (parseThreadMessage) and another Claude session's message
+//     (parseCrossSessionMessage), which ride the follow-up path with no token;
+//   • a background child's report to its parent (parseAgentMessage);
+//   • harness plumbing (isInjectedNoise) and the runtime's interrupt receipt (isInterruptMarker).
+//
+// Retry (the rail, the thread header, the queue card) and the limit card's "Continue now" are the
+// messages the human SENDS without typing: buttons that post one fixed sentence. It says nothing about
+// any question, so it does not count either.
+/** What Retry and "Continue now" send (web lib/retrySession.ts and ChatView's LimitPauseCard post this constant). */
+export const RETRY_FOLLOW_UP = "Continue exactly where you left off."
+
+/** Is this ONE message — a single delivery, as it was queued or sent — the human's own typed words? */
+export function isHumanTypedMessage(text: string): boolean {
+  if (!text.trim()) return false
+  if (isInjectedNoise(text) || isInterruptMarker(text) || isWakeDelivery(text)) return false
+  if (parseThreadMessage(text) || parseCrossSessionMessage(text) || parseAgentMessage(text)) return false
+  return stripHumanGapNote(text).trim() !== RETRY_FOLLOW_UP
+}
+
+/** The human-typed messages a user RECORD carries. The runtime merges whatever was queued while the
+ *  worker was mid-turn into one record (splitWakeDeliveries), so a wake and the human's message can
+ *  share one — and the human's message is still a message. One blind spot, which the fold covers from the
+ *  queue's own records: a human message queued AHEAD of a wake is not separable from it here, because the
+ *  only boundary a record carries is the token that ENDS a delivery (server tailer.ts noteQueuedMessage). */
+export function humanTypedMessagesIn(text: string): string[] {
+  return splitWakeDeliveries(text).filter(isHumanTypedMessage)
 }
 
 // ---- THE PR-WATCHER WAKE STEER (scheduler ↔ chat card) -------------------------------------------

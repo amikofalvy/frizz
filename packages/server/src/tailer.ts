@@ -5,7 +5,7 @@ import { promisify } from "node:util"
 import { basename, join, win32 } from "node:path"
 import { homedir, tmpdir } from "node:os"
 import type { AskQuestion, AwaitingHint, CodexModel, LiveTool } from "@frizz/shared"
-import { insideFence, isAllInjectedNoise, isInterruptMarker, isOnlyParkCorrections, parseAskUserQuestionInput, parseCrossSessionMessage, PermissionMode, questionFenceBlocks, questionFencesLive, saysAllDone, splitAwaitingFrontmatter, splitDoneFrontmatter } from "@frizz/shared"
+import { humanTypedMessagesIn, insideFence, isAllInjectedNoise, isHumanTypedMessage, isInterruptMarker, parseAskUserQuestionInput, parseCrossSessionMessage, parseMergedWake, PermissionMode, QUESTION_FENCE_CORRECTION_LEAD, questionFenceBlocks, questionFencesLive, saysAllDone, splitAwaitingFrontmatter, splitDoneFrontmatter, splitWakeDeliveries } from "@frizz/shared"
 import type { Bus } from "./bus.ts"
 import { permMarkerPath, type Project } from "./project.ts"
 import { isBrokerClaudeRow, isHeadlessRow } from "./storage.ts"
@@ -1405,6 +1405,57 @@ function isLocalCommandReceipt(content: unknown): boolean {
   return LOCAL_COMMAND_RECEIPT.test(userMessageText(content).trim())
 }
 
+// ---- WHEN THE HUMAN LAST TYPED, for the question registry (FoldState.restFromAt) ------------------
+// `isHumanSpeaking` below answers "did a person OR Frizz put a message in front of the model" — Frizz's
+// own deliveries pass it, by design, because they move the row and close a rest. An open question asks
+// the narrower thing: did the HUMAN write something since it was asked (shared isHumanTypedMessage)?
+//
+// Two records can say yes. The user record itself — any human-typed message among the deliveries it
+// carries. And, for a message typed while the worker was mid-turn, its `queue-operation enqueue`, which
+// carries that one message alone at the instant it was written. The queue's record matters twice over:
+// it is the human's real instant (the worker may ask a question between the typing and the drain, and
+// the human did not reply past a question that did not exist yet), and it is the only place a human
+// message queued AHEAD of a wake can be told apart — the runtime joins the two with a newline, and the
+// merged record then reads as one delivery ending in the wake's token.
+const QUEUED_HUMAN_TEXTS_MAX = 16
+
+function noteQueuedMessage(state: FoldState, rec: Record): void {
+  if ((rec as { operation?: unknown }).operation !== "enqueue" || typeof rec.content !== "string" || typeof rec.timestamp !== "string") return
+  if (!isHumanTypedMessage(rec.content)) return
+  state.restFromAt = rec.timestamp
+  state.queuedHumanTexts = [...(state.queuedHumanTexts ?? []), rec.content].slice(-QUEUED_HUMAN_TEXTS_MAX)
+}
+
+/** Was this human-typed message already counted when it was queued? True for one queued message, or for
+ *  a run of them the runtime joined with newlines (it trims the run's outer ends, nothing inside). */
+function wasQueued(queued: readonly string[], message: string): boolean {
+  const text = message.trim()
+  for (let from = 0; from < queued.length; from++) {
+    for (let to = from; to < queued.length; to++) {
+      if (queued.slice(from, to + 1).join("\n").trim() === text) return true
+    }
+  }
+  return false
+}
+
+function noteUserRecordForQuestions(state: FoldState, text: string, at: string): void {
+  const queued = state.queuedHumanTexts ?? []
+  // A message the queue already announced moved the boundary when it was typed; delivering it is not the
+  // human typing again. Anything else human-typed in this record is new, and the boundary is now.
+  if (humanTypedMessagesIn(text).some((message) => !wasQueued(queued, message))) state.restFromAt = at
+  // The queue drains into the record that delivers it, so whatever it held is spent — kept past here, a
+  // stale entry would swallow the human typing the same words again later.
+  if (queued.length > 0) state.queuedHumanTexts = undefined
+  if (carriesQuestionFenceCorrection(text)) state.questionCorrectedAt = at
+}
+
+/** Does this user record deliver a ```question fence correction — alone, or as one wake of a merged delivery? */
+function carriesQuestionFenceCorrection(text: string): boolean {
+  if (!text.includes(QUESTION_FENCE_CORRECTION_LEAD)) return false
+  const leads = (body: string) => body.trimStart().startsWith(QUESTION_FENCE_CORRECTION_LEAD)
+  return splitWakeDeliveries(text).some((delivery) => leads(delivery) || (parseMergedWake(delivery) ?? []).some((part) => leads(part.body)))
+}
+
 // Did the HUMAN produce this user record, or did the machinery? EVERY `type:"user"` record reaches the
 // fold — the human's prompt, a tool_result echoed back mid-turn, a peer's message, a task-notification,
 // a wake pulse, the runtime's own interrupt receipt — and only the first is a person taking a turn.
@@ -2540,8 +2591,7 @@ export function applyRecord(state: TailState, rec: Record): void {
     // gate above, deliberately: "did the human take a turn" has exactly one answer per record.
     if (humanSpoke && typeof rec.timestamp === "string") {
       state.lastUserAt = rec.timestamp
-      // The rest boundary moves with it unless the record is nothing but fence corrections (FoldState.restFromAt).
-      if (!isOnlyParkCorrections(userMessageText(rec.message?.content))) state.restFromAt = rec.timestamp
+      noteUserRecordForQuestions(state, userMessageText(rec.message?.content), rec.timestamp)
       // SET ONCE. This is what names an external session whose harness never named it, so it has to be
       // the turn the conversation STARTED on, not the newest one.
       if (state.firstUserText === undefined) {
@@ -2570,6 +2620,8 @@ export function applyRecord(state: TailState, rec: Record): void {
   }
   // all other types (attachment, queue-operation, last-prompt, mode,
   // bridge-session, file-history-snapshot, system) are sidecar metadata — ignored for turn state.
+  // …but a message QUEUED behind a running turn is the human typing, at the instant they typed it.
+  if (type === "queue-operation") noteQueuedMessage(state, rec)
   // Sub-agent completion rides queue-operation AND attachment records (each a <task-notification>
   // carrier — see notificationText), so it's checked for EVERY record regardless of type (the helper
   // self-guards on shape + tracked ids).
@@ -2673,7 +2725,7 @@ export function applyEvent(state: FoldState, ev: NormalizedEvent): void {
         state.lastAssistantHasQuestion = false
         if (typeof ev.at === "string") {
           state.lastUserAt = ev.at
-          if (!isOnlyParkCorrections(typeof ev.text === "string" ? ev.text : "")) state.restFromAt = ev.at
+          noteUserRecordForQuestions(state, typeof ev.text === "string" ? ev.text : "", ev.at)
         }
         // Keep the delivery-confirmation pair atomic. A genuine non-text user event may still bump
         // row activity, but its newer timestamp must never retain text from an older human turn.
@@ -5975,7 +6027,7 @@ export function createTailer(deps: TailerDeps): Tailer {
       // thread has no row and reads as legacy, which is what `questionFencesLive` does with unknown.
       const pendingQuestion = s.lastAssistantHasQuestion && questionFencesLive(row?.spawned_at)
       const nowMs = now()
-      return { turn: s.turn, permPrompt: s.permPrompt, permPolicy: s.permPolicy, permDenies: s.permDenies, model: s.model, effort: s.effort, profileAt: s.profileAt, profileRevision: s.profileRevision, permissionMode: s.permissionMode, permissionModeAt: s.permissionModeAt, permissionModeRevision: s.permissionModeRevision, lastActivityAt: s.lastActivityAt, lastAssistantAt: s.lastAssistantAt, lastAssistant: s.lastAssistant, lastAssistantLine: s.lastAssistantLine, liveTool: newestLiveTool(s), aiTitle: s.aiTitle, customTitle: s.customTitle, customTitleRevision: s.customTitleRevision, subAgents: subAgentViews(s, nowMs), droppedReports: [...s.queuedReports.values()], bgShells: [...bgShellViews(s), ...codexBgShellViews(s)], retiredShells: retiredShellViews(s), retiredSubAgents: retiredSubAgentViews(s), questionSightings: s.questionSightings, pendingAsk: s.pendingAsk, pendingQuestion, lastAssistantAllDone: s.lastAssistantAllDone, lastUserAt: s.lastUserAt, restFromAt: s.restFromAt, lastUserText: s.lastUserText, firstUserText: s.firstUserText, lastFence: s.lastFence, noTranscript: s.noTranscript, authFault: s.authFault, apiFault: s.apiFault, providerError: s.providerError, limitFault: s.limitFault, contextTokens: s.contextTokens, contextWindow: s.contextWindow, lastCompactionAt: s.lastCompactionAt }
+      return { turn: s.turn, permPrompt: s.permPrompt, permPolicy: s.permPolicy, permDenies: s.permDenies, model: s.model, effort: s.effort, profileAt: s.profileAt, profileRevision: s.profileRevision, permissionMode: s.permissionMode, permissionModeAt: s.permissionModeAt, permissionModeRevision: s.permissionModeRevision, lastActivityAt: s.lastActivityAt, lastAssistantAt: s.lastAssistantAt, lastAssistant: s.lastAssistant, lastAssistantLine: s.lastAssistantLine, liveTool: newestLiveTool(s), aiTitle: s.aiTitle, customTitle: s.customTitle, customTitleRevision: s.customTitleRevision, subAgents: subAgentViews(s, nowMs), droppedReports: [...s.queuedReports.values()], bgShells: [...bgShellViews(s), ...codexBgShellViews(s)], retiredShells: retiredShellViews(s), retiredSubAgents: retiredSubAgentViews(s), questionSightings: s.questionSightings, pendingAsk: s.pendingAsk, pendingQuestion, lastAssistantAllDone: s.lastAssistantAllDone, lastUserAt: s.lastUserAt, restFromAt: s.restFromAt, questionCorrectedAt: s.questionCorrectedAt, lastUserText: s.lastUserText, firstUserText: s.firstUserText, lastFence: s.lastFence, noTranscript: s.noTranscript, authFault: s.authFault, apiFault: s.apiFault, providerError: s.providerError, limitFault: s.limitFault, contextTokens: s.contextTokens, contextWindow: s.contextWindow, lastCompactionAt: s.lastCompactionAt }
     },
     // The CURRENT fresh foreign session ids (mtime within FOREIGN_FRESH_MS, capped), mtime-desc. Kept
     // as the last scan's result — recomputed at most every FOREIGN_SCAN_EVERY ticks.

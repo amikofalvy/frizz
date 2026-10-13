@@ -51,7 +51,7 @@ test("the queue card draws the same card off the same predicate, through the sam
   const lastText = "const lastAgentText = lastAgentIdx >= 0 ? messages[lastAgentIdx]?.text : undefined"
   assert.ok(queue.includes(lastText))
   assert.ok(queue.includes("registeredDone: showsRegisteredDoneCard(thread, lastAgentText),"))
-  assert.ok(queue.includes("restedCard: showsRestedCard(thread, lastAgentText, questionsHere),"))
+  assert.ok(queue.includes("restedCard: showsRestedCard(thread, lastAgentText),"))
   assert.match(queue, /<RuntimeStatusLadder\n[\s\S]*?\n\s*wrap\n\s*\/>/)
   assert.doesNotMatch(queue, /<(FenceCard|RestedCard|LimitPauseCard|PendingAskCard|PermPromptBanner|AwaitingBackgroundCard)\b/, "no rung is drawn by hand beside the ladder")
 })

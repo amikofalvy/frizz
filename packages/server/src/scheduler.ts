@@ -2151,12 +2151,18 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   // not, and tells the worker at rest. Its question never reached the human, and nothing else would say
   // so: a malformed fence draws as an inert block, and the rest reads as signed off.
   //
-  // ONE CORRECTION PER REST, at rest only, for faults in THIS rest's messages (newer than the human's
-  // last turn) — an older rest's mistakes were either corrected then or are moot now, and a refold after
-  // a restart replays the whole ring. A fault the worker already fixed later in the same rest — the same
-  // id registered or referenced after it — is not news. Counted against PARK_BUMP_MAX with the other
-  // fence corrections; a fence that registers gives the allowance back (syncQuestionFences).
-  /** Each thread whose CURRENT rest carries a ```question fence that could not register, keyed to that
+  // ONE CORRECTION PER REST, at rest only, for the faults the worker has NOT BEEN TOLD ABOUT: the ones in
+  // messages newer than both the human's last typed message (`restFromAt`, the boundary a question
+  // stands across) and the last correction of this kind Frizz delivered (`questionCorrectedAt`). Older
+  // than the first, the human has moved the thread on and the mistake is moot; older than the second, it
+  // was in that correction. A refold after a restart replays the whole ring, and both instants come from
+  // the transcript, so it reads the same window. Until 2026-10-13 the window opened at the newest USER
+  // RECORD of any kind, so a broken fence written mid-turn was forgotten if a timer or another wake
+  // landed before the worker went idle: its question never reached the human and nothing said so.
+  // A fault the worker already fixed later — the same id registered or referenced after it — is not
+  // news. Counted against PARK_BUMP_MAX with the other fence corrections; a fence that registers gives
+  // the allowance back (syncQuestionFences).
+  /** Each thread whose CURRENT rest wrote a ```question fence that could not register, keyed to that
    *  rest's instant — rebuilt by evalQuestionFences on every tick, corrected or not (the cap may have
    *  silenced it). SOURCE 12 reads it so an honoured park beside such a fence does not hand back the
    *  allowance the fence is spending. */
@@ -2178,9 +2184,10 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       // The agent must have spoken last, and the turn must have reached the model — SOURCE 9's guards.
       const spokeAt = tele.lastAssistantAt
       if (!spokeAt) continue
-      const restFrom = tele.lastUserAt ? Date.parse(tele.lastUserAt) : Number.NEGATIVE_INFINITY
-      if (Date.parse(spokeAt) <= restFrom) continue
+      if (tele.lastUserAt && Date.parse(spokeAt) <= Date.parse(tele.lastUserAt)) continue
       if (tele.authFault || tele.apiFault) continue
+      const instant = (at: string | undefined) => (at ? Date.parse(at) : Number.NEGATIVE_INFINITY)
+      const restFrom = Math.max(instant(tele.restFromAt ?? tele.lastUserAt), instant(tele.questionCorrectedAt))
       const rows = deps.storage.listThreadQuestions(row.slug)
       const fixedAfter = (id: string | undefined, at: string): boolean => {
         if (!id) return false
@@ -2191,7 +2198,9 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       }
       const faults = sync.faults.filter((f) => Date.parse(f.at) > restFrom && !fixedAfter(f.id, f.at))
       if (faults.length === 0) continue
-      questionFaultRests.set(row.slug, spokeAt)
+      // Only a fault written at THIS rest withholds the allowance: that is the worker repeating the
+      // mistake. An older one still waiting to be told (the cap silenced it) must not also pin the count.
+      if (faults.some((f) => Date.parse(f.at) > instant(tele.lastUserAt))) questionFaultRests.set(row.slug, spokeAt)
       if ((row.park_bumps ?? 0) >= PARK_BUMP_MAX) continue
       const fenceId = parkFenceId(QUESTION_FENCE_CAUSE, spokeAt)
       const deliveryId = wakeDeliveryId(row.slug, row.session_id, fenceId)

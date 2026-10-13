@@ -105,8 +105,10 @@ export interface NormalizedTail {
   liveTool?: LiveTool
   aiTitle?: string
   lastUserAt?: string
-  // Where the CURRENT REST began — see FoldState.restFromAt. Absent reads as `lastUserAt`.
+  // When the human last TYPED a message to the thread — see FoldState.restFromAt. Absent reads as `lastUserAt`.
   restFromAt?: string
+  // When Frizz last delivered a ```question fence correction — see FoldState.questionCorrectedAt.
+  questionCorrectedAt?: string
   lastUserText?: string // latest genuine human message (used to confirm wake-token delivery)
   // The FIRST genuine human turn. Read by the board to NAME an external session whose harness has not
   // named it — see foreignThreadView. Optional everywhere: a transcript with no human turn has none.
@@ -183,13 +185,24 @@ export interface FoldState {
   // guarded separately by storage's title_auto CAS).
   autoTitleSource?: "fallback" | "frizz" | "native"
   lastUserAt?: string // ISO8601 of the newest GENUINE (non-synthetic) human turn — the listing sort key
-  // WHERE THE CURRENT REST BEGAN: `lastUserAt`, except that a record carrying nothing but Frizz's own
-  // fence corrections (shared isOnlyParkCorrections) does not move it. A correction asks the worker to
-  // re-do the sign-off it just wrote, so the reply belongs to the same rest — and a question asked at
-  // that rest still stands at it (question-fences.ts standingQuestions). `lastUserAt` itself must keep
-  // moving on a correction: it is how every "the agent spoke last" guard knows one is unanswered.
-  // Absent (a tail cached before 2026-10-13) reads as `lastUserAt`.
+  // WHEN THE HUMAN LAST TYPED A MESSAGE TO THIS THREAD (shared isHumanTypedMessage) — the boundary an
+  // open question stands across (question-fences.ts standingQuestions). Unlike `lastUserAt` it does NOT
+  // move for anything Frizz delivers: a wake of any kind, a correction, a Goal prompt, an answer's
+  // delivery, another thread's steer. Those all land as user records, and reading them as "the human
+  // replied past the question" took a question out of the queue the moment a shell woke its worker
+  // (2026-10-13). `lastUserAt` itself keeps moving on every one of them: it is the row-order key, and
+  // how every "the agent spoke last" guard knows a delivery is unanswered.
+  // A message typed while the worker is mid-turn moves it at the instant it was QUEUED, which is when
+  // the human wrote it (applyRecord, noteQueuedMessage). Absent (a tail cached before 2026-10-13) reads
+  // as `lastUserAt`.
   restFromAt?: string
+  // The human messages QUEUED and not yet seen delivered, oldest first — so the record that delivers one
+  // does not move `restFromAt` a second time, to an instant later than the human wrote it. Bounded.
+  queuedHumanTexts?: string[]
+  // When Frizz last DELIVERED a ```question fence correction (QUESTION_FENCE_CORRECTION_LEAD, alone or
+  // inside a merged delivery). Every fault in a message older than this has been told to the worker, so
+  // SOURCE 14 reports only the ones after it.
+  questionCorrectedAt?: string
   lastUserText?: string // exact text of that genuine human turn when the backend records it
   // The FIRST genuine human turn, kept forever — set once and never overwritten. It is what names an
   // EXTERNAL session (one of the human's own terminals) when its harness has not named it: both
