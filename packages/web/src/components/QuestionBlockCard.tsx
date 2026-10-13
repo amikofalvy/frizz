@@ -407,6 +407,7 @@ export function QuestionBlockCard({
                 <>
                   <textarea
                     ref={taRef}
+                    data-1p-ignore
                     rows={1}
                     disabled
                     tabIndex={-1}

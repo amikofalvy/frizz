@@ -1424,11 +1424,14 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
   // Working… rung included. `errorVisible` reads the window this card draws, where a provider-error row
   // survives the fold (lib/queueCollapse), so the card and that row never double up.
   const lastAgentText = lastAgentIdx >= 0 ? messages[lastAgentIdx]?.text : undefined
+  // …and the question fences of that same message the server refused (lib/questionFaults): code blocks,
+  // so a rest whose only fence was refused is a bare one here exactly as on the thread page.
+  const lastAgentRefused = lastAgentIdx >= 0 ? messages[lastAgentIdx]?.refusedFences : undefined
   const queueStatus: RuntimeStatusState = {
     thread,
     showWorking: running,
     registeredDone: showsRegisteredDoneCard(thread, lastAgentText),
-    restedCard: showsRestedCard(thread, lastAgentText, lastAgentIdx >= 0 ? messages[lastAgentIdx]?.refusedFences : undefined),
+    restedCard: showsRestedCard(thread, lastAgentText, lastAgentRefused),
     errorVisible: providerErrorVisible(visible, thread.providerError),
   }
   const queueRung = runtimeStatusRung(queueStatus)
