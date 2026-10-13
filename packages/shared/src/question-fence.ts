@@ -40,7 +40,7 @@
 // indented block under a key (`detail: |`) is taken as written.
 
 import { parse as parseYaml } from "yaml"
-import { fencedInteriors } from "./code-fences.ts"
+import { fencedInteriors, questionFenceClose } from "./code-fences.ts"
 import type { AskedOption, AskedQuestion } from "./index.ts"
 import { ASK_MAX_DEPTH, askedQuestionFaults } from "./index.ts"
 
@@ -96,7 +96,7 @@ const OPENER_RE = /^( {0,3})(`{3,})question[ \t]*$/
 /** Every question fence in a message, in order, skipping one that sits inside another code block — a
  *  worker DOCUMENTING the grammar wraps its sample in a longer fence, and that sample is not an ask. An
  *  unclosed fence is not a block: the renderer would run it to the end of the message, and nothing that
- *  never finished is registered. */
+ *  never finished is registered — nor corrected, since a turn interrupted mid-fence is nobody's mistake. */
 export function questionFenceBlocks(text: string): QuestionFenceBlock[] {
   if (!text.includes("question")) return []
   const quoted = fencedInteriors(text)
@@ -113,27 +113,28 @@ export function questionFenceBlocks(text: string): QuestionFenceBlock[] {
     const m = OPENER_RE.exec(line)
     if (!m || inside(lineStart)) continue
     const ticks = m[2].length
-    // CommonMark's closer: a bare run of backticks at least as long as the opener, up to 3 spaces in.
-    let close = -1
+    // Where it ends is the shared scanner's call (code-fences.ts questionFenceClose): a code block written
+    // inside the fence, opened with an info string, is stepped over rather than taken for the closer.
+    const end = questionFenceClose(lines, i + 1, ticks)
+    if (!end) break
+    const close = end.close
     let closeEnd = offset
-    for (let j = i + 1, at = offset; j < lines.length; j++) {
-      const candidate = lines[j].replace(/\r$/, "")
-      at += lines[j].length + 1
-      const c = /^ {0,3}(`{3,})[ \t]*$/.exec(candidate)
-      if (c && c[1].length >= ticks) {
-        close = j
-        closeEnd = Math.min(at, text.length)
-        break
-      }
-    }
-    if (close === -1) break
+    for (let j = i + 1; j <= close; j++) closeEnd += lines[j].length + 1
+    closeEnd = Math.min(closeEnd, text.length)
     // AN INDENTED FENCE GIVES ITS INDENT BACK (CommonMark: up to the opener's indentation comes off every
     // content line). A fence written inside a list item sits at the item's content column, body and all,
     // and read with that indent left on, every key was "indented under nothing" and the fence had "no
     // `id:`" — a correction that named nothing the worker could see wrong.
     const dedent = new RegExp(`^ {0,${m[1].length}}`)
     const body = lines.slice(i + 1, close).map((l) => l.replace(/\r$/, "").replace(dedent, "")).join("\n")
-    out.push({ start: lineStart, end: closeEnd, body, read: readQuestionFence(body) })
+    const read = readQuestionFence(body)
+    // CUT SHORT: the only line that closes this fence is one that closes a code block inside it. The read
+    // nearly always says so itself (its context or a detail ends inside the open block); where the block
+    // sat somewhere no value reaches, it is said here, so a cut-off fence never registers.
+    const cut = end.cutShort && read.form !== "invalid"
+      ? { form: "invalid" as const, id: read.id, faults: [`the fence is cut off inside a code block: its last line closes that block, and nothing closes the fence. ${FENCE_LENGTH_FIX}`] }
+      : read
+    out.push({ start: lineStart, end: closeEnd, body, read: cut })
     // Resume after the closer; the offsets of the skipped lines are already counted in closeEnd.
     offset = closeEnd
     i = close
@@ -191,23 +192,19 @@ function openFenceIn(markdown: string): string | undefined {
   return /^ {0,3}(`{3,}|~{3,})/.exec(opener)?.[1]
 }
 
-// WHY AN OPEN CODE BLOCK IS REFUSED. It is the mark of a fence that closed early: the closing ``` of a code
-// block written inside a ```question fence is, to every markdown reader, the fence's own closer. The
-// question then registered with its context cut off mid-block, and everything the worker wrote after it —
-// the rest of the context, then the real closer, which now OPENS a block — rendered as code to the end of
-// the message, a later ```question fence included, which registered nothing and was told nothing. Nothing
-// else about the first fence is wrong, so this is named here or it is never named. (A real Haiku reply and
-// a two-question probe both did it on the first day, 2026-10-13.)
+// WHY AN OPEN CODE BLOCK IS REFUSED. It is the mark of a fence that was cut off: the fence ended on a line
+// that closes a code block INSIDE it, so the question would register with its context stopped mid-block, and
+// everything the worker wrote after that line would render as code. The scanner steps over a nested block
+// that opens with an info string (code-fences.ts questionFenceClose), so what still arrives here is the
+// fence whose own closer is missing — a real Haiku reply closed its ````sql block and never the question,
+// 2026-10-13 — and a block the worker opened and never closed. Nothing else about such a fence is wrong, so
+// it is named here or it is never named.
 //
 // A ~~~ block cannot close a backtick fence, so one left open is only what it looks like.
+const FENCE_LENGTH_FIX = "Write it again with room for the block: the `question` lines take four backticks (````question to open, ```` to close); the code block inside keeps three"
 function openFenceFault(where: string, run: string): string {
   if (run[0] === "~") return `${where} ends inside a ${run} code block that is never closed — close it with ${run} on a line of its own`
-  const longer = "`".repeat(run.length + 1)
-  return (
-    `${where} ends inside an unclosed ${run} code block. If you did close it, that closing line closed this question fence instead — ` +
-    "a fence ends at the first bare run of backticks as long as its own — and everything after it in your message, a later question fence included, reads as code. " +
-    `Give the question fence more backticks than the block inside it: open it with ${longer}question and close it with ${longer}`
-  )
+  return `${where} ends inside an unclosed ${run} code block: the fence is cut off there, and whatever follows it in your message reads as code. ${FENCE_LENGTH_FIX}`
 }
 
 /** A value as MARKDOWN: a block keeps its lines; an inline value with continuations joins them. */

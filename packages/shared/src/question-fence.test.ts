@@ -1,5 +1,7 @@
 import assert from "node:assert/strict"
+import { readFileSync } from "node:fs"
 import test from "node:test"
+import { fencedInteriors } from "./code-fences.ts"
 import { AskedQuestionSchema, askedQuestionFaults } from "./index.ts"
 import { assembleQuestionFences, questionFenceBlocks, questionFencesIn, questionHandles, readQuestionFence } from "./question-fence.ts"
 
@@ -251,73 +253,166 @@ test("the same id under two different parents is a collision, not a restatement"
   assert.deepEqual(questionFencesIn(`${parent}\n${child("X")}\n${child("X")}`).faults, [])
 })
 
-test("a code block the fence's own closing line cut short is refused, and the fix is named", () => {
-  // The inner ``` closes a ```question fence: the context ends inside an open code block, and the rest of
-  // the message would render as one.
-  const early = "```question\nid: x\nkind: text\nquestion: Q?\n---\nRun this:\n```bash\nls\n```\nand tell me.\n```"
-  const blocks = questionFenceBlocks(early)
-  assert.equal(blocks[0].read.form, "invalid")
-  assert.match(faultsIn(early), /^the body below `---` ends inside an unclosed ``` code block\..*open it with ````question and close it with ````$/s)
-  assert.equal(blocks[0].read.form === "invalid" && blocks[0].read.id, "x")
-  // The same mistake inside an option's detail, written at an indent a closing fence still counts at.
-  const inDetail = "```question\nid: y\nkind: choice\nquestion: Q?\noptions:\n- label: A\n  detail: |\n   ```diff\n   -a\n   ```\n- B\n```"
-  assert.match(faultsIn(inDetail), /option 1: its detail ends inside an unclosed ``` code block/)
-  // A four-backtick block inside a four-backtick fence is the same mistake one size up, and the fix is too.
-  assert.match(faultsIn("````question\nid: x\nkind: text\nquestion: Q?\n---\n````md\nsample\n````\n````"), /open it with `````question and close it with `````$/)
-  // A ~~~ block cannot close a backtick fence, so one left open is only an unclosed block — and one that
-  // is closed is fine under a three-backtick fence.
-  assert.match(faultsIn("```question\nid: x\nkind: text\nquestion: Q?\n---\n~~~sql\nSELECT 1\n```"), /ends inside a ~~~ code block that is never closed — close it with ~~~/)
-  assert.deepEqual(questionFencesIn("```question\nid: x\nkind: text\nquestion: Q?\n---\n~~~sql\nSELECT 1\n~~~\n```").faults, [])
-  // Negative controls: the longer outer fence, and a detail indented past where a closer counts.
-  assert.deepEqual(questionFencesIn("````question\nid: x\nkind: text\nquestion: Q?\n---\nRun this:\n```bash\nls\n```\nand tell me.\n````").faults, [])
-  assert.deepEqual(questionFencesIn("```question\nid: y\nkind: choice\nquestion: Q?\noptions:\n  - label: A\n    detail: |\n      ```diff\n      -a\n      ```\n  - B\n```").faults, [])
+// ── A code block inside the fence ──────────────────────────────────────────────────────────────────────
+//
+// The models lane's real replies (fixtures/question-fence): Haiku wrote the outer fence too short in 4 of 6
+// runs, whatever the contract said. So a nested block that opens with an info string is stepped over
+// (code-fences.ts questionFenceClose), and what cannot be read whole is refused by name.
+
+const fixture = (name: string) => readFileSync(new URL(`./fixtures/question-fence/${name}.md`, import.meta.url), "utf8")
+
+test("a code block with an info string inside a question fence is part of the question, whatever the two fences' lengths", () => {
+  const sql = "ALTER TABLE orders ADD COLUMN archived_at timestamptz;"
+  const ask = (outer: string, inner: string) => `${outer}question\nid: x\nkind: text\nquestion: Q?\n---\nRun this:\n\n${inner}sql\n${sql}\n${inner}\n\nand tell me.\n${outer}`
+  for (const [outer, inner] of [["```", "```"], ["```", "````"], ["````", "```"], ["````", "````"], ["```", "~~~"], ["```", "`````"]]) {
+    const out = questionFencesIn(`Lead.\n\n${ask(outer, inner)}\n\nAfter.`)
+    assert.deepEqual(out.faults, [], `${outer} outside, ${inner} inside`)
+    assert.equal(out.asks[0]?.spec.context, `Run this:\n\n${inner}sql\n${sql}\n${inner}\n\nand tell me.`, `${outer} outside, ${inner} inside`)
+  }
+  // Two blocks in one context, and one in an option's detail at an indent a fence line still counts at.
+  const two = questionFencesIn("```question\nid: x\nkind: text\nquestion: Q?\n---\n```sql\nUP\n```\n\nRollback:\n\n```sql\nDOWN\n```\n```")
+  assert.equal(two.asks[0]?.spec.context, "```sql\nUP\n```\n\nRollback:\n\n```sql\nDOWN\n```")
+  const inDetail = questionFencesIn("```question\nid: y\nkind: choice\nquestion: Q?\noptions:\n- label: A\n  detail: |\n   ```diff\n   -a\n   ```\n- B\n```")
+  assert.deepEqual(inDetail.faults, [])
+  assert.deepEqual(inDetail.asks[0]?.spec.options, [{ label: "A", description: "```diff\n-a\n```" }, { label: "B" }])
+  // The offsets take the whole fence, so what is left of the message is only what was written around it.
+  const text = `Lead.\n\n${ask("```", "```")}\n\nAfter.`
+  const [block] = questionFenceBlocks(text)
+  assert.equal(text.slice(0, block.start) + text.slice(block.end), "Lead.\n\n\nAfter.")
 })
 
-test("a fence cut short by its own code block takes a later question in the message with it — and says so", () => {
-  // The models lane's probe (adv-models-runs/probes/three-tick-context-code.md), from a real reply shape.
-  // The first fence closes at the SQL block's closer; its real closer then OPENS a block that runs through
-  // the second fence, which is therefore quoted code: it registers nothing and no fault can name it. So the
-  // first fence's fault has to carry the news.
-  const message = [
-    "The migration is ready; approve it from the card.",
-    "",
-    "```question",
-    "id: orders-archived-at",
-    "kind: choice",
-    "question: Should this migration run against production?",
-    "options:",
-    "  - label: Run it",
-    "    recommended: true",
-    "  - label: Hold it",
-    "---",
-    "The exact statements:",
-    "",
-    "```sql",
-    "ALTER TABLE orders ADD COLUMN archived_at timestamptz;",
-    "```",
-    "",
-    "Both are safe to re-run after a failure.",
-    "```",
-    "",
-    "```question",
-    "id: orders-backfill",
-    "kind: choice",
-    "question: Should archived rows be backfilled in the same deploy?",
-    "options:",
-    "  - Backfill now",
-    "  - Leave it for a follow-up",
-    "```",
-  ].join("\n")
-  const out = questionFencesIn(message)
-  assert.deepEqual(out.asks, [], "the truncated question does not register")
-  assert.deepEqual(out.faults.map((f) => f.id), ["orders-archived-at"])
-  assert.match(out.faults[0].faults.join("\n"), /everything after it in your message, a later question fence included, reads as code/)
-  // Written as the fault says, both register, whole.
-  const fixed = message.replace("```question\nid: orders-archived-at", "````question\nid: orders-archived-at").replace("failure.\n```", "failure.\n````")
-  const whole = questionFencesIn(fixed)
-  assert.deepEqual(whole.faults, [])
-  assert.deepEqual(whole.asks.map((a) => a.id), ["orders-archived-at", "orders-backfill"])
-  assert.match(whole.asks[0].spec.context ?? "", /Both are safe to re-run after a failure\.$/)
+test("what stays CommonMark: a bare inner fence closes the question, and a detail four spaces in is not a fence line", () => {
+  // No info string: nothing tells this opener from the question's own closer, so it is the closer — the
+  // reading every markdown renderer gives it, and the one that was here before.
+  const bare = "```question\nid: x\nkind: text\nquestion: Q?\n---\nRun this:\n```\nls\n```\nand tell me.\n```"
+  const blocks = questionFenceBlocks(bare)
+  assert.equal(blocks.length, 1)
+  assert.equal(blocks[0].read.form === "ask" && blocks[0].read.spec.context, "Run this:")
+  assert.equal(bare.slice(blocks[0].end), "ls\n```\nand tell me.\n```")
+  // The taught shape: a detail's code block sits six spaces in, where no line is a fence line at all.
+  const taught = questionFencesIn("```question\nid: y\nkind: choice\nquestion: Q?\noptions:\n  - label: A\n    detail: |\n      ```diff\n      -a\n      ```\n  - B\n```")
+  assert.deepEqual(taught.faults, [])
+  assert.equal(taught.asks[0]?.spec.options?.[0].description, "```diff\n-a\n```")
+})
+
+test("a fence whose only closing line closes a code block inside it is refused, with the fix spelled out", () => {
+  const FIX = /the `question` lines take four backticks \(````question to open, ```` to close\); the code block inside keeps three$/
+  // The inner block is closed and the question never is: under the nested reading nothing closes the
+  // fence, and under CommonMark's the SQL's closer does — with the context stopped inside the block.
+  const cut = "Lead.\n\n```question\nid: x\nkind: text\nquestion: Q?\n---\nRun this:\n\n````sql\nSELECT 1\n````\n\nNotes the worker meant for the card."
+  const out = questionFencesIn(cut)
+  assert.deepEqual(out.asks, [])
+  assert.deepEqual(out.faults.map((f) => f.id), ["x"])
+  assert.match(out.faults[0].faults.join("\n"), /^the body below `---` ends inside an unclosed ```` code block: the fence is cut off there/)
+  assert.match(out.faults[0].faults.join("\n"), FIX)
+  // The same inside an option's detail.
+  const inDetail = questionFencesIn("```question\nid: y\nkind: choice\nquestion: Q?\noptions:\n- label: A\n  detail: |\n   ```diff\n   -a\n   ```\n- B")
+  assert.match(inDetail.faults[0].faults.join("\n"), /option 1: its detail ends inside an unclosed ``` code block/)
+  // A block that sits where no value reaches still cannot register.
+  const stray = questionFenceBlocks("```question\nid: z\n```sql\nSELECT 1\n```")
+  assert.equal(stray[0].read.form, "invalid")
+  // A ~~~ block cannot close a backtick fence, so one left open is only an unclosed block.
+  assert.match(faultsIn("```question\nid: x\nkind: text\nquestion: Q?\n---\n~~~sql\nSELECT 1\n```"), /ends inside a ~~~ code block that is never closed — close it with ~~~/)
+})
+
+test("a fence with no closing line under either reading is ignored: a turn interrupted mid-fence earns no correction", () => {
+  for (const tail of [
+    "```question\nid: x\nkind: text\nquestion: Q?",
+    "```question\nid: x\nkind: text\nquestion: Q?\n---\nRun this:\n\n```sql\nSELECT",
+    "````question\nid: x\nkind: text\nquestion: Q?\n---\n```sql\nSELECT 1\n```\nstill writing",
+  ]) {
+    assert.deepEqual(questionFenceBlocks(`Lead.\n\n${tail}`), [], tail)
+    assert.deepEqual(questionFencesIn(`Lead.\n\n${tail}`), { asks: [], refs: [], faults: [] }, tail)
+  }
+})
+
+test("the models lane's replies, verbatim", () => {
+  // Three backticks outside, three on two inner sql blocks.
+  const v1 = questionFencesIn(fixture("haiku-three-outside-three-inside"))
+  assert.deepEqual(v1.faults, [])
+  assert.deepEqual(v1.asks.map((a) => a.id), ["orders-archived-at-prod"])
+  assert.match(v1.asks[0].spec.context ?? "", /^```sql\n-- Migration: add nullable archived_at to orders\./)
+  assert.match(v1.asks[0].spec.context ?? "", /Rollback, if needed:\n\n```sql\nDROP INDEX CONCURRENTLY IF EXISTS orders_archived_at_idx;\nALTER TABLE orders DROP COLUMN IF EXISTS archived_at;\n```$/)
+  // Three outside, FOUR on the inner block.
+  const v2b = questionFencesIn(fixture("haiku-three-outside-four-inside"))
+  assert.deepEqual(v2b.faults, [])
+  assert.deepEqual(v2b.asks.map((a) => a.id), ["orders-archived-at-migration"])
+  assert.match(v2b.asks[0].spec.context ?? "", /^The SQL, to run outside a transaction:\n\n````sql\n-- up\n/)
+  assert.match(v2b.asks[0].spec.context ?? "", /I will write the migration file in the matching format for your tool and report the result\.$/)
+  // Three outside, four inside, and the question itself never closed: refused by name, not dropped.
+  const v3 = questionFencesIn(fixture("haiku-four-inside-never-closed"))
+  assert.deepEqual(v3.asks, [])
+  assert.deepEqual(v3.faults.map((f) => f.id), ["approve-archived-at-migration"])
+  assert.match(v3.faults[0].faults.join("\n"), /ends inside an unclosed ```` code block.*the `question` lines take four backticks/s)
+  // Opened with three, closed with four, the SQL written after it: a whole question with no context.
+  const v0 = questionFencesIn(fixture("haiku-three-open-four-close"))
+  assert.deepEqual(v0.faults, [])
+  assert.deepEqual(v0.asks.map((a) => a.id), ["approve-orders-archived-at-migration"])
+  assert.equal(v0.asks[0].spec.context, undefined)
+  // The probe: the first fence holds a sql block, and the second used to be swallowed as quoted code.
+  const probe = questionFencesIn(fixture("probe-two-questions-code-in-context"))
+  assert.deepEqual(probe.faults, [])
+  assert.deepEqual(probe.asks.map((a) => a.id), ["orders-archived-at", "orders-backfill"])
+  assert.match(probe.asks[0].spec.context ?? "", /^The exact statements:\n\n```sql\n[^]*```\n\nBoth are safe to re-run after a failure\.$/)
+})
+
+// ── The shared scanner every other reader is built on ──────────────────────────────────────────────────
+
+/** `fencedInteriors` as it was before a question fence learned to nest — CommonMark to the letter. */
+function commonMarkInteriors(text: string): [number, number][] {
+  const out: [number, number][] = []
+  let offset = 0
+  let open: { char: string; len: number; from: number } | null = null
+  for (const line of text.split("\n")) {
+    const next = offset + line.length + 1
+    const m = line.replace(/\r$/, "").match(/^ {0,3}(`{3,}|~{3,})(.*)$/)
+    if (open) {
+      if (m && m[1][0] === open.char && m[1].length >= open.len && m[2].trim() === "") {
+        out.push([open.from, offset])
+        open = null
+      }
+    } else if (m && !(m[1][0] === "`" && m[2].includes("`"))) {
+      open = { char: m[1][0], len: m[1].length, from: Math.min(next, text.length) }
+    }
+    offset = next
+  }
+  if (open) out.push([open.from, text.length])
+  return out
+}
+
+test("only a ```question fence nests: every other fence, and a legacy question marker, scans exactly as before", () => {
+  let seed = 7
+  const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648
+  const pick = <T,>(from: readonly T[]): T => from[Math.floor(rnd() * from.length)]
+  // Fence soup: every opener and closer shape, at every indent, with every info string EXCEPT a bare
+  // `question` — including the legacy forms that carry tokens after it.
+  const lines = ["```", "````", "~~~", "~~~~", "```sql", "````md", "~~~ts", "```done", "```awaiting", "```question qst_ab12cd34ef56", "```question multi", "```question danger", "```questions", "```Question", "~~~question", "``` `x`", "prose", "", "id: x", "    ```", "   ```js", "> ```sql", "- item"]
+  let differing = 0
+  for (let n = 0; n < 3000; n++) {
+    const text = Array.from({ length: 1 + Math.floor(rnd() * 14) }, () => pick(lines)).join(pick(["\n", "\n", "\r\n"]))
+    try {
+      assert.deepEqual(fencedInteriors(text), commonMarkInteriors(text))
+    } catch (err) {
+      differing++
+      if (differing === 1) throw new Error(`${JSON.stringify(text)}\n${String(err)}`)
+    }
+  }
+  // The control: with a bare ```question in the soup the two readings DO part ways, so the comparison bites.
+  const nested = "```question\nid: x\n---\n```sql\nSELECT 1\n```\nmore\n```\n\n```done\n```"
+  assert.notDeepEqual(fencedInteriors(nested), commonMarkInteriors(nested))
+  assert.deepEqual(fencedInteriors(nested).map(([from, to]) => nested.slice(from, to)), ["id: x\n---\n```sql\nSELECT 1\n```\nmore\n", ""])
+})
+
+test("a question fence quoted inside a longer fence is still prose, nested block and all", () => {
+  const sample = "```question\nid: x\nkind: text\nquestion: Q?\n---\n```sql\nSELECT 1\n```\n```"
+  for (const [open, close] of [["````md", "````"], ["`````", "`````"], ["~~~", "~~~"]]) {
+    const text = `Here is the grammar:\n\n${open}\n${sample}\n${close}\n\nThat is all.`
+    assert.deepEqual(questionFenceBlocks(text), [], open)
+    assert.deepEqual(fencedInteriors(text), commonMarkInteriors(text), open)
+    assert.equal(fencedInteriors(text).length, 1, open)
+  }
+  // …and the same sample unquoted is one question, so the test above is not passing on a broken sample.
+  assert.deepEqual(questionFencesIn(sample).asks.map((a) => a.id), ["x"])
 })
 
 test("an option's keys are read as keys wherever they sit — never folded into the label above them", () => {

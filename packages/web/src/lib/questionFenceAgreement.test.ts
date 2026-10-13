@@ -14,9 +14,11 @@
 
 import { test } from "node:test"
 import assert from "node:assert/strict"
+import { readFileSync } from "node:fs"
 import { Lexer, type Token } from "marked"
 import { questionFenceBlocks, questionFencesIn, questionHandles } from "@frizz/shared"
-import { questionFenceIdsIn, splitMessageQuestions } from "./questionBlocks.ts"
+import { splitFenceBlocks } from "./fenceBlocks.ts"
+import { questionFenceIdsIn, splitMessageQuestions, splitQuestionBlocks } from "./questionBlocks.ts"
 
 const TEXT = "id: x\nkind: text\nquestion: Q?"
 const fence = (body: string, ticks = "```") => `${ticks}question\n${body}\n${ticks}`
@@ -65,41 +67,19 @@ function view(text: string): View {
 
 // ── The inputs ─────────────────────────────────────────────────────────────────────────────────────────
 
-const PROBE_CONTEXT_CODE = [
-  "The migration is ready; approve it from the card.",
-  "",
-  "```question",
-  "id: orders-archived-at",
-  "kind: choice",
-  "question: Should this migration run against production?",
-  "options:",
-  "  - label: Run it",
-  "    recommended: true",
-  "  - label: Hold it",
-  "---",
-  "The exact statements:",
-  "",
-  "```sql",
-  "ALTER TABLE orders ADD COLUMN archived_at timestamptz;",
-  "```",
-  "",
-  "Both are safe to re-run after a failure.",
-  "```",
-  "",
-  "```question",
-  "id: orders-backfill",
-  "kind: choice",
-  "question: Should archived rows be backfilled in the same deploy?",
-  "options:",
-  "  - Backfill now",
-  "  - Leave it for a follow-up",
-  "```",
-].join("\n")
+// The models lane's real replies and its probe, verbatim (shared fixtures/question-fence — the same files
+// the parser's own tests read).
+const fixture = (name: string) => readFileSync(new URL(`../../../shared/src/fixtures/question-fence/${name}.md`, import.meta.url), "utf8")
+const REPLY_THREE_THREE = fixture("haiku-three-outside-three-inside")
+const REPLY_THREE_FOUR = fixture("haiku-three-outside-four-inside")
+const REPLY_NEVER_CLOSED = fixture("haiku-four-inside-never-closed")
+const REPLY_LONGER_CLOSER = fixture("haiku-three-open-four-close")
+const PROBE_TWO_QUESTIONS = fixture("probe-two-questions-code-in-context")
 
 const PROBE_DETAIL_CODE = fence("id: retry-backoff\nkind: choice\nquestion: Which backoff?\noptions:\n  - label: Exponential\n    detail: |\n      ```diff\n      -  await sleep(100)\n      ```\n  - label: Keep the fixed sleep")
 
-// A real Haiku reply's shape: opened with three backticks, closed with four, the SQL written after it.
-const HAIKU_LONGER_CLOSER = "The SQL is in the card below.\n\n```question\nid: approve-migration\nkind: choice\nquestion: Run this migration?\noptions:\n  - Approve and run\n  - Decline\n````\n\n**Run as one migration.**\n\n```sql\nSET lock_timeout = '5s';\n```\n\nTell me if your naming differs."
+// A question holding a code block, written with the outer fence no longer than the inner one.
+const NESTED = fence(`${TEXT}\n---\nRun this:\n\n\`\`\`sql\nSELECT 1\n\`\`\`\n\nand tell me.`)
 
 const handMade: Record<string, string> = {
   plain: `Lead.\n\n${fence(TEXT)}\n\nAfter.`,
@@ -139,9 +119,18 @@ const handMade: Record<string, string> = {
   "a tree four deep": `${choice("a")}\n${choice("b", "a = go")}\n${choice("c", "b = go")}\n${fence("id: d\nkind: text\nwhen: c = go\nquestion: D?")}`,
   "two questions on one id": `${fence(TEXT)}\n${fence("id: x\nkind: text\nquestion: Different?")}`,
   "context with a longer outer fence": `${fence(`${TEXT}\n---\n\`\`\`sh\nls\n\`\`\`\nmore`, "````")}\n\nTail.`,
-  "probe: three-tick fence, code in its context": PROBE_CONTEXT_CODE,
+  "code in the context, fences the same length": `Lead.\n\n${NESTED}\n\nAfter.`,
+  "code in the context, then a second question": `${NESTED}\n\n${fence("id: y\nkind: text\nquestion: Y?")}`,
+  "code in the context, then a done fence": `${NESTED}\n\n\`\`\`done\nShipped.\n\`\`\``,
+  "code in the context, then an awaiting fence": `${NESTED}\n\n\`\`\`awaiting\nstatus: blocked\n\`\`\``,
+  "code in the context, the question never closed": `Lead.\n\n\`\`\`question\n${TEXT}\n---\n\`\`\`\`sql\nSELECT 1\n\`\`\`\`\n\nNotes.`,
+  "a bare code block in the context": `${fence(`${TEXT}\n---\nRun:\n\`\`\`\nls\n\`\`\`\ntell me`)}`,
+  "probe: two questions, code in the first one's context": PROBE_TWO_QUESTIONS,
   "probe: three-tick fence, code in a detail": PROBE_DETAIL_CODE,
-  "probe: opened with three, closed with four": HAIKU_LONGER_CLOSER,
+  "reply: three outside, three inside": REPLY_THREE_THREE,
+  "reply: three outside, four inside": REPLY_THREE_FOUR,
+  "reply: four inside, the question never closed": REPLY_NEVER_CLOSED,
+  "reply: opened with three, closed with four": REPLY_LONGER_CLOSER,
 }
 
 const wrappers: Record<string, (s: string) => string> = {
@@ -232,20 +221,66 @@ test("a follow-up is the server's through its root and the web's through its par
   }
 })
 
-test("the models lane's three reproductions", () => {
-  // Code in the context of a three-backtick fence: refused, and the second fence — swallowed by the block
-  // the first one's real closer opened — is drawn by nobody. The fault is the only word the worker gets.
-  const cut = view(PROBE_CONTEXT_CODE)
-  assert.deepEqual([cut.server, cut.web, cut.faults], [[], [], 1])
-  assert.equal(questionFencesIn(PROBE_CONTEXT_CODE).faults[0].id, "orders-archived-at")
-  // Code in a detail, indented past where a closing fence counts: whole, on both sides.
-  const detail = view(PROBE_DETAIL_CODE)
-  assert.deepEqual([detail.server, detail.web, detail.faults], [["retry-backoff"], ["retry-backoff"], 0])
-  // Opened with three, closed with four: a complete question with no context, and the SQL after it is the
-  // message's prose. Both sides agree; nothing was cut off, so nothing is refused.
-  const longer = view(HAIKU_LONGER_CLOSER)
-  assert.deepEqual([longer.server, longer.web, longer.faults], [["approve-migration"], ["approve-migration"], 0])
-  assert.equal(questionFencesIn(HAIKU_LONGER_CLOSER).asks[0].spec.context, undefined)
+test("a question holding a code block: the server registers it whole and the web cuts the same span", () => {
+  // The four replies and the probe, each as [what registers, how many corrections].
+  const expected: [string, string[], number][] = [
+    ["reply: three outside, three inside", ["orders-archived-at-prod"], 0],
+    ["reply: three outside, four inside", ["orders-archived-at-migration"], 0],
+    // Its sql block is closed and the question never is: refused by name, and drawn by nobody as a card.
+    ["reply: four inside, the question never closed", [], 1],
+    // A whole question with no context; the SQL after it is the message's own prose.
+    ["reply: opened with three, closed with four", ["approve-orders-archived-at-migration"], 0],
+    // The second question used to be swallowed by the block the first one's real closer opened.
+    ["probe: two questions, code in the first one's context", ["orders-archived-at", "orders-backfill"], 0],
+    ["probe: three-tick fence, code in a detail", ["retry-backoff"], 0],
+  ]
+  for (const [name, ids, faults] of expected) {
+    const v = view(inputs[name])
+    assert.deepEqual([v.server, v.web, v.faults], [ids, ids, faults], name)
+  }
+  // THE SPAN. What the web hands marked is the message with each question cut out at the shared reader's
+  // offsets — so no half of a fence is left behind for marked to open a code block on.
+  for (const name of ["code in the context, fences the same length", "reply: three outside, three inside", "reply: three outside, four inside", "probe: two questions, code in the first one's context"]) {
+    const segments = splitMessageQuestions(inputs[name], true)
+    const prose = segments.flatMap((s) => (s.kind === "prose" ? [s.text] : []))
+    for (const text of prose) assert.doesNotMatch(text, /^ {0,3}(`{3,}|~{3,})/m, `${name}: no fence line is left in the prose`)
+    assert.deepEqual(prose.flatMap((text) => markedView(text)), [], name)
+    // …and the card's context is the worker's whole body, its code block closed.
+    for (const s of segments) {
+      if (s.kind !== "question" || s.fence?.form !== "ask" || !s.fence.spec.context?.includes("sql")) continue
+      const context = new Lexer({ gfm: true }).lex(s.fence.spec.context)
+      assert.ok(context.some((t) => t.type === "code" && (t as { lang?: string }).lang === "sql"), `${name}: the context draws a sql block`)
+      for (const t of context) if (t.type === "code") assert.match(t.raw.trimEnd(), /\n`{3,}$/, `${name}: and every block in it is closed`)
+    }
+  }
+  assert.deepEqual(splitMessageQuestions(inputs["code in the context, fences the same length"], true).map((s) => (s.kind === "prose" ? s.text : s.fence?.id)), ["Lead.\n\n", "x", "\nAfter."])
+})
+
+test("a done or awaiting fence written after a question that holds a code block is still a signal fence", () => {
+  for (const [name, kind] of [["code in the context, then a done fence", "done"], ["code in the context, then an awaiting fence", "awaiting"]] as const) {
+    const segments = splitFenceBlocks(inputs[name])
+    assert.deepEqual(segments.map((s) => (s.kind === "fence" ? s.fenceKind : "prose")), ["prose", kind], name)
+    // The prose run it leaves is the question, whole, which the question splitter then cuts as one card.
+    const prose = segments[0].kind === "prose" ? segments[0].text : ""
+    assert.deepEqual(splitMessageQuestions(prose, true).map((s) => (s.kind === "question" ? s.fence?.id : "prose")), ["x"], name)
+  }
+  // The control: the same signal fence inside a code block that really is open stays quoted.
+  assert.deepEqual(splitFenceBlocks("```sql\nSELECT 1\n\n```done\nShipped.\n```").map((s) => s.kind), ["prose"])
+})
+
+test("a legacy thread reads its fences as it always did", () => {
+  // A placement marker (an info string with a token after `question`) and a ```question multi block are
+  // not the nesting grammar: nothing about where they end, or what follows them, moves.
+  const marker = "Before.\n\n```question qst_abcdef123456\n```\n\nAfter, with code:\n\n```sql\nSELECT 1\n```\n\n```done\nShipped.\n```"
+  assert.deepEqual(splitFenceBlocks(marker).map((s) => (s.kind === "fence" ? s.fenceKind : "prose")), ["prose", "done"])
+  assert.deepEqual(splitQuestionBlocks(marker).map((s) => (s.kind === "question" ? s.registeredId : "prose")), ["prose", "qst_abcdef123456", "prose"])
+  const multi = "```question multi\nWhich?\n- A. x\n- B. y\n```\n\n```sql\nSELECT 1\n```\n\n```awaiting\nstatus: blocked\n```"
+  assert.deepEqual(splitFenceBlocks(multi).map((s) => (s.kind === "fence" ? s.fenceKind : "prose")), ["prose", "awaiting"])
+  assert.deepEqual(splitQuestionBlocks(multi).map((s) => (s.kind === "question" ? s.questionKind : "prose")), ["multi", "prose"])
+  // A free-form ```question block — the legacy grammar's own ask — followed by a second one.
+  const freeForm = "```question\nWhich store?\n- A. SQLite\n- B. JSON\n```\n\nAnd:\n\n```question\nWhich port?\n```"
+  assert.deepEqual(splitQuestionBlocks(freeForm).map((s) => s.kind), ["question", "prose", "question"])
+  assert.deepEqual(splitMessageQuestions(freeForm, false), splitQuestionBlocks(freeForm))
 })
 
 // ── Both against the renderer ──────────────────────────────────────────────────────────────────────────
