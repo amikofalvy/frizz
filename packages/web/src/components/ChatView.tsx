@@ -49,7 +49,8 @@ import { useFailedDeliveryActions } from "../lib/failedDelivery.ts"
 import { useDeliverQueuedNow, useDeliverQueuedNowSupported } from "../lib/deliverQueuedNow.ts"
 import { SessionMessageLine } from "./SessionMessageLine.tsx"
 import { lastAskIndex, messagePresentationText } from "../lib/messagePresentation.ts"
-import { steeredSinceRest, useSteeredAt } from "../lib/steering.ts"
+import { inQueuedTail, withRestReplyInline } from "../lib/restReply.ts"
+import { steeredSinceRest, useSteeredAt, useTurnHeldForTranscript } from "../lib/steering.ts"
 import { snoozePresetInstant, formatSnoozeWake } from "../lib/snooze.ts"
 import { noteGithubRefs } from "../lib/githubHovercards.ts"
 import { ICON_LABEL_NUDGE } from "../lib/iconAlign.ts"
@@ -270,22 +271,31 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
   // useLiveAnswering's `liveMsg` identity check compares objects from THIS same list.
   const messages = useMemo(() => q.data?.messages ?? [], [q.data])
   const liveTranscriptShells = useMemo(() => transcriptBackgroundShells(messages), [messages])
-  const presentationMessages = useMemo(() => withoutLiveTranscriptBackgroundTools(messages), [messages])
+  const steerStamp = useSteeredAt()[slug]
+  // The send that ends a rest draws where it will land, stamped with the instant this tab sent it — see
+  // lib/restReply.
+  const presentationMessages = useMemo(
+    () => withRestReplyInline(withoutLiveTranscriptBackgroundTools(messages), steerStamp === undefined ? undefined : new Date(steerStamp).toISOString()),
+    [messages, steerStamp],
+  )
   // Cut over presentationMessages, not messages: the coalesced entries below carry a messageIndex into
   // THIS list, and comparing the two index spaces is how a live fence gets marked settled.
   const lastAgentIdx = useMemo(() => lastAssistantIndex(presentationMessages), [presentationMessages])
   // A SEND ENDS THE REST IN THE RENDER THAT DRAWS ITS GHOST BUBBLE — not seconds later, when the board
   // reports the turn (lib/steering.ts steeredSinceRest). Everything below reads this thread, so the
   // resting card, the awaiting fence and the sign-off rung all give way to Working… in that same render.
-  const steerStamp = useSteeredAt()[slug]
-  const thread = useMemo(
+  const steered = useMemo(
     () => steeredSinceRest(boardThread, presentationMessages, lastAgentIdx, steerStamp),
     [boardThread, presentationMessages, lastAgentIdx, steerStamp],
   )
+  // …and at the turn's other end, a rest the board reports before the transcript carries the reply leaves
+  // the turn on screen until it does, so the Working row and the reply trade places in one render
+  // (lib/steering.ts useTurnHeldForTranscript).
+  const thread = useTurnHeldForTranscript(steered, presentationMessages)
   const running = thread?.runtime === "running" || thread?.runtime === "spawning"
   // …and the Working line's clock starts at that send. Until the turn lands, the newest landed message
   // is the rest's own, which would caption the fresh run with the hours since the agent last spoke.
-  const steerSince = thread !== boardThread ? thread?.lastUserAt : undefined
+  const steerSince = steered !== boardThread ? steered?.lastUserAt : undefined
   // NO AWAITING CARD WHILE THE THREAD RUNS. An awaiting card states a REST — "the worker stopped here, on
   // these waits" — and a spinning thread is not at rest on anything, so every fence in the window is
   // stale: the cut sits past the last message. At rest the cut is the last assistant message, and the
@@ -563,8 +573,9 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
                 )
               },
               // QUEUED (optimistic, not-yet-in-the-log) messages are pinned to the very BOTTOM
-              // (rendered after the working/pending indicators, below) — not interleaved here.
-              (m) => !!m.queued,
+              // (rendered after the working/pending indicators, below) — not interleaved here. The send
+              // that ends a rest is the exception, drawn here as its landed copy will be (lib/restReply).
+              inQueuedTail,
             )}
             {/* THE RUNTIME-STATUS SLOT, through the one ladder the virtualized path draws too — see
                 runtimeStatusRung. The gate, the spacing and the rungs are all that one answer, so this
@@ -604,7 +615,7 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
                 in the logs"). mergeOptimistic keeps them at the tail of `messages`; here they render
                 as a group after everything. Once confirmed, the optimistic copy is consumed and the
                 real message renders in its natural place above. */}
-            {messages.some((m) => m.queued) && <VSpace />}
+            {presentationMessages.some(inQueuedTail) && <VSpace />}
             {/* flex flex-col MIRRORS the parent scroll container (line ~162) so each Message root's
                 `self-end` engages here exactly as it does for a landed message. Without it this group
                 is a plain block, self-end is inert, and a multi-line bubble stretches to 85% and floats
@@ -615,7 +626,7 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
                 whenever a message this pass SKIPS (an event, anything messageRendersNothing) sat
                 between two queued sends, butting the two bubbles together. */}
             <div className="flex flex-col gap-3.5">
-              {messages.map((m, i) => (m.queued ? <Message key={`q${i}`} m={m} paired={paired[i]} /> : null))}
+              {presentationMessages.map((m, i) => (inQueuedTail(m) ? <Message key={`q${i}`} m={m} paired={paired[i]} /> : null))}
             </div>
           </>
         )}
@@ -1091,7 +1102,7 @@ function VirtualizedThreadTranscript({
     if (hasRuntimeRow) next.push({ key: "runtime-status", kind: "runtime-status" })
     let queuedGap = hasRuntimeRow || messageRows.length > 0 ? STEP : 0
     messages.forEach((message, messageIndex) => {
-      if (!message.queued) return
+      if (!inQueuedTail(message)) return
       const key = `queued:${message.deliveryId ?? message.sourceId ?? messageIndex}`
       next.push({ key, kind: "queued", message, messageIndex, gap: queuedGap })
       queuedGap = STEP
@@ -2022,7 +2033,7 @@ export function messageHasRenderableText(m: ChatMessage, staleAwaiting?: boolean
 export function workingIndicatorGap(messages: readonly ChatMessage[]): number {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]
-    if (m.queued || messageRendersNothing(m)) continue
+    if (inQueuedTail(m) || messageRendersNothing(m)) continue
     // Under a PICTURE it takes the picture's own gap — the pair the maintainer reported (a picture card
     // with the shimmer under it; an image `Read` then, a delivery now). See PICTURE_STEP.
     if (messageTailIsPicture(m)) return PICTURE_STEP

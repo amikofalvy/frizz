@@ -1,4 +1,5 @@
 import type { ChatMessage } from "../hooks.ts"
+import { inQueuedTail } from "./restReply.ts"
 import { agentCompletionCall } from "./subAgentCompletion.ts"
 
 // WHEN THE "Agent rested" HAIRLINE SAYS NOTHING THE READER CANNOT ALREADY SEE.
@@ -43,7 +44,7 @@ export function isRedundantRestDivider(
   // divider it duplicates must not save it.
   for (let i = index + 1; i < messages.length; i++) {
     const next = messages[i]
-    if (next.queued || rendersNothing(next)) continue
+    if (inQueuedTail(next) || rendersNothing(next)) continue
     return Boolean(next.boundary) || next.wake === true || agentCompletionCall(next) !== undefined
   }
   return true // nothing below it: the runtime-status slot is the tail's own answer

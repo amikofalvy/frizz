@@ -1,4 +1,4 @@
-import { useMemo } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { proxy, useSnapshot } from "valtio"
 import type { ThreadView, TranscriptMessage } from "@frizz/shared"
 
@@ -147,6 +147,66 @@ export function steeredSinceRest(
   // The instant this stretch of work began, for the Working line's clock: the send itself when this tab
   // made it, else the server's projected bubble. The board's own lastUserAt names the PREVIOUS turn here.
   return steeredFields(t, local ? new Date(at!).toISOString() : ghostAt ?? t.lastUserAt)
+}
+
+// THE REST THE TRANSCRIPT HAS NOT REACHED YET — steeredSinceRest's mirror, at the other end of the turn.
+//
+// One tailer tick sees a worker's last record and the end of its turn together, and the server reports
+// them on two channels in a fixed order: the board delta saying `turn-idle` goes out synchronously from
+// that tick, and the transcript push carrying the record follows a microtask and a ~20ms projection read
+// later (tailer.ts calls onChange before onTranscriptChange; app-socket.ts flushTranscriptChanges). The
+// client widens the gap: a board write paints in a microtask, a transcript write on TanStack Query's
+// setTimeout(0). So the thread view painted a frame with the Working row gone and the reply not yet
+// there — the transcript shrank by the row and then grew by the reply (measured on real Haiku workers,
+// 2026-10-13: the board led by 17-23ms on every turn end, and a frame landed in the gap every time).
+//
+// So while the board reports a rest the transcript has not reached, the view keeps presenting the turn
+// it was already showing, and the reply and the rest land in one render. "Not reached": the board's
+// lastAssistantAt (the worker's own last record) is newer than anything in the transcript, AND the
+// transcript has no rest boundary after the turn's opening message — the boundary is the projection's own
+// word that the turn ended (transcript.ts restMessage), so a transcript carrying it has caught up even
+// where the instants disagree. Only a turn this view was already drawing is held, so a thread opened at
+// rest over an older cached transcript reads as rested as it always has; and never for longer than
+// REST_CATCH_UP_MS, so a transcript that never catches up cannot keep a rested thread spinning.
+export const REST_CATCH_UP_MS = 1_500
+
+export type RestEvidence = Pick<TranscriptMessage, "role" | "kind" | "boundary" | "at">
+
+export function transcriptBehindRest(t: ThreadView | undefined, messages: readonly RestEvidence[]): boolean {
+  if (!t || (t.runtime !== "turn-idle" && t.runtime !== "exited")) return false
+  const said = Date.parse(t.lastAssistantAt ?? "")
+  if (!Number.isFinite(said)) return false
+  for (const m of messages) if (Date.parse(m.at ?? "") >= said) return false
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (m.kind === "event" && m.boundary === "rest") return false
+    if (m.role === "user") break
+  }
+  return true
+}
+
+/** The thread as the thread view should present it: the board's, unless it reports a rest the transcript
+ *  has not reached while the view was showing the turn — then the turn, for at most REST_CATCH_UP_MS.
+ *  Returned by identity whenever nothing is held. */
+export function useTurnHeldForTranscript(t: ThreadView | undefined, messages: readonly RestEvidence[]): ThreadView | undefined {
+  const behind = transcriptBehindRest(t, messages)
+  const key = behind ? t!.lastAssistantAt : undefined
+  // What the LAST COMMIT presented: read during render, written after commit, so the first render that
+  // finds the transcript behind asks whether the frame on screen was the running one.
+  const shownRunning = useRef(false)
+  const [expired, setExpired] = useState<string | undefined>(undefined)
+  useEffect(() => {
+    if (key === undefined) return
+    const timer = setTimeout(() => setExpired(key), REST_CATCH_UP_MS)
+    return () => clearTimeout(timer)
+  }, [key])
+  const held = key !== undefined && expired !== key && shownRunning.current
+  const presented = held ? steeredFields(t!, t!.lastUserAt) : t
+  const running = presented?.runtime === "running" || presented?.runtime === "spawning"
+  useEffect(() => {
+    shownRunning.current = running
+  }, [running])
+  return presented
 }
 
 // Apply the overlay across a board's threads. A thread with no live steer is returned BY IDENTITY, so

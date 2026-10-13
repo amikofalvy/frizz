@@ -1,6 +1,7 @@
 import type { TranscriptMessage, TranscriptToolCall } from "@frizz/shared"
 import type { ChatMessage } from "../hooks.ts"
 import { localPathBase } from "./localPathBase.ts"
+import { inQueuedTail } from "./restReply.ts"
 import { abbreviateHome, isRooted, pathPrefixPattern } from "./paths.ts"
 
 export interface ToolActivityMessage {
@@ -330,12 +331,14 @@ export function coalesceToolActivityMessages(messages: readonly ChatMessage[]): 
   messages.forEach((message, messageIndex) => {
     if (transparentAssistantMessage(message)) return
     // A QUEUED bubble is pinned to the BOTTOM of the pane and never drawn inline (every row builder
-    // skips it), so it is not a visible block between the messages it happens to sit between — and it
+    // skips it — all but the send that ends a rest, lib/restReply, which draws as its landed copy will
+    // and so takes this path exactly as that copy does), so it is not a visible block between the
+    // messages it happens to sit between — and it
     // must not end a run. It used to: a steer typed mid-turn split one live run in two, stranding the
     // calls above it as a settled `Ran N tool calls` digest for no cause the reader could see. It still
     // takes its slot in `out` — the callers that pin it read this list — it simply leaves `activityTail`
     // alone.
-    if (message.queued) {
+    if (inQueuedTail(message)) {
       out.push({ message, messageIndex })
       return
     }
@@ -429,7 +432,7 @@ export function liveToolActivityRun(
 /** The newest entry the turn has actually landed — a queued bubble is pinned elsewhere and interrupts nothing. */
 function newestLandedEntry(entries: readonly ToolActivityMessage[]): ToolActivityMessage | undefined {
   for (let i = entries.length - 1; i >= 0; i--) {
-    if (!entries[i].message.queued) return entries[i]
+    if (!inQueuedTail(entries[i].message)) return entries[i]
   }
   return undefined
 }
@@ -484,7 +487,7 @@ export function historicalToolActivityMessages(
   let liveTailMessage: ChatMessage | undefined
   for (let i = entries.length - 1; i >= 0; i--) {
     const message = entries[i].message
-    if (message.queued) continue
+    if (inQueuedTail(message)) continue
     if (messageToolTail(message)) liveTailMessage = message
     break
   }
