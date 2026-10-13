@@ -451,15 +451,15 @@ test("loadWorkerPrompt: the backend-AGNOSTIC core is present in BOTH contracts",
     // suite (the 2026-07-25 restructure broke ~15 assertions purely on rewrapped lines).
     const c = raw.replace(/\s+/g, " ")
     for (const fence of [/```done/, /```awaiting/]) assert.match(raw, fence) // fence grammar
-    // The ONLY question fence left is the empty placement marker (the free-form fence was retired
-    // 2026-09-11); workerPrompt.test.ts pins that every question fence in the contract IS the marker.
-    assert.match(raw, /```question qst_/)
+    // A question is a structured ```question fence (2026-10-13); workerPrompt.test.ts pins that every
+    // question fence in the contract is one the shared parser registers or references.
+    assert.match(raw, /```question\nid: settings-store\nkind: choice\n/)
     if (kind === "codex") assert.match(raw, /## Thread types/) // claude's lean contract drops it
     assert.match(raw, /## Quality bar/)
     assert.match(raw, /## The stop criterion/)
     // THE CURRENT AWAITING GRAMMAR (2026-08-24): YAML frontmatter, PLURAL keys taking LISTS. `human:` used
     // to be pinned here; it is deleted, because it parked a thread in Snoozed and nothing ever fired it.
-    // Waiting on a person is a registered question now (`frizzctl ask`), and this asserts the contract
+    // Waiting on a person is a question now (a ```question fence), and this asserts the contract
     // says so rather than merely omitting the old kind.
     assert.match(c, /shells: \[bzvtnt3ig\]/)
     assert.match(c, /for: 2h/)
@@ -525,12 +525,15 @@ test("end-state contract: a fenceless rest is a DEFECT, done checks, awaiting pa
     // each recorded a row frizz read as a sign-off and would not bump for (scheduler SOURCE 9 again). The
     // instruction that must survive is "always sign off", plus the fact that a registration is one.
     //
+    // `ask` left it on 2026-10-13 for the fence that registers a question as its message lands — which
+    // is still a row, so the rule reads "`frizzctl done` records a ROW, and so does a question".
+    //
     // `watch` LEFT THAT LIST ON 2026-10-01. A registration says when the worker wakes; where the thread
     // sits meanwhile is the fence's `status:` answer (`needs_input:` until 2026-10-05), so a rest on
     // running work always takes the fence (board.needsInputQueues, scheduler evalSignoffNudges).
     assert.match(c, /ALWAYS SIGN OFF/)
     assert.doesNotMatch(c, /ALWAYS SIGN OFF WITH A FENCE/, "a fence is no longer the only way to sign off")
-    assert.match(c, /`frizzctl done` and `frizzctl ask` each record a ROW, and frizz reads both as a sign-off/)
+    assert.match(c, /`frizzctl done` records a ROW, and so does a question: Frizz registers a ` ```question ` fence the moment the message carrying it lands\. Frizz reads both as a sign-off/)
     assert.doesNotMatch(c, /frizz reads all three as a sign-off/, "a watch alone is no longer a sign-off")
     assert.match(c, /A WAIT IS THE ONE EXCEPTION, and it always takes the fence/)
     // THE ANSWER IS A PLACE (2026-10-05): one required line, three words, one per band — never a second
@@ -684,8 +687,9 @@ test("session-seed is a SLIM runtime pointer, not a fourth full contract copy", 
   assert.match(SESSION_SEED, /\.frizz\/threads\//)
   assert.doesNotMatch(SESSION_SEED, /scratch\.md/, "no filename is reserved in the scratch directory")
   for (const fence of [/```done/, /```awaiting/]) assert.match(SESSION_SEED, fence)
-  // A question is a registered row; the seed names `frizzctl ask` and the empty placement marker only.
-  assert.match(SESSION_SEED, /a question is a registered row, `frizzctl ask`/)
+  // A question is a ```question fence (2026-10-13): the seed names it, and never the retired command.
+  assert.match(SESSION_SEED, /the ```question fence that asks the human/)
+  assert.doesNotMatch(SESSION_SEED, /frizzctl (ask|secret)|placement marker/)
   assert.doesNotMatch(SESSION_SEED, /mcp__frizz__/)
   assert.doesNotMatch(SESSION_SEED, /```done \/ ```awaiting \/ ```question/)
   assert.doesNotMatch(SESSION_SEED, /RUNTIME RELEASE GATE:/)

@@ -20,7 +20,7 @@
  *               be bare where the registry says so (`frizzctl title "Fix queue focus"`).
  *   JSON        `--input <file>`, `--input -` for stdin, or a JSON object as the first argument — the
  *               same object the command's schema describes. This is `gh api --input`, and it is what
- *               makes a nested payload (`ask`) or a long one sayable at all.
+ *               makes a nested payload or a long one sayable at all.
  *   text files  any text argument also takes `--<name>-file <path|->` — `gh pr create --body-file`.
  *
  * STDIN IS NEVER READ UNLESS `-` ASKS FOR IT. An agent's shell hands a command an open pipe more often
@@ -29,6 +29,11 @@
  *
  * EXIT CODES: 0 the command did what it says; 1 it failed, or was called wrongly; 2 it REFUSED — a gate
  * that held (`done` with a question still open), so `frizzctl done … || …` can tell the two apart.
+ *
+ * A RETIRED COMMAND (`ask`, `secret`: a question is a ```question fence since 2026-10-13) is still a
+ * command, because the worker that reaches for one is the worker that needs to be told what replaced it.
+ * It refuses whatever it is given — no argument is parsed, so no usage error can stand in front of the
+ * lesson, and stdin is never read — and its `--help` is the same text. `frizzctl --help` does not list it.
  */
 import { readFileSync } from "node:fs"
 import { CLI, HANDLERS, Refused, TOOLS } from "../lib/frizz-tools.mjs"
@@ -281,7 +286,7 @@ function topHelp() {
     "",
     "Arguments arrive three ways, and they combine (a flag wins over JSON):",
     `  flags        ${NAME} watch shell bzvtnt3ig --for 2h`,
-    `  JSON         ${NAME} ask --input questions.json     (--input - reads stdin; a '{…}' first argument works too)`,
+    `  JSON         ${NAME} goal start --input goal.json   (--input - reads stdin; a '{…}' first argument works too)`,
     `  text files   any text argument takes --<name>-file <path|->:   ${NAME} done --body-file handoff.md`,
     "",
     "Text holding backticks, $ or quotes goes through a file or a QUOTED heredoc, never a double-quoted",
@@ -347,6 +352,12 @@ function commandHelp(tool) {
   ].join("\n")
 }
 
+/** A retired command's page: its one-line summary, then the text it refuses with — printed as written,
+ *  never wrapped, because it carries a fence the worker copies. @param {any} tool */
+function retiredHelp(tool) {
+  return `${NAME} ${hyphen(tool.name)} — ${CLI[tool.name].summary}\n\n${CLI[tool.name].retired}`
+}
+
 /** Whether the arguments ask for help, read the way parseArgs reads them: a `-h` that is a flag's
  *  VALUE (`steer other --message -h`) is the message, not a request for help, and the command must run
  *  rather than print help and exit 0 having sent nothing. Its own pass, with no side effects, so that
@@ -377,10 +388,12 @@ async function main(argv) {
   if (!first || first === "--help" || first === "-h" || first === "help") {
     const about = first === "help" && rest[0] ? toolNamed(rest[0]) : undefined
     if (first === "help" && rest[0] && !about) throw new UsageError(unknownCommand(rest[0]))
-    return { code: 0, out: about ? commandHelp(about) : topHelp() }
+    return { code: 0, out: about ? (CLI[about.name]?.retired ? retiredHelp(about) : commandHelp(about)) : topHelp() }
   }
   const tool = toolNamed(first)
   if (!tool) throw new UsageError(unknownCommand(first))
+  const retired = CLI[tool.name]?.retired
+  if (retired) return rest.includes("--help") || rest.includes("-h") ? { code: 0, out: retiredHelp(tool) } : { code: 2, out: retired }
   const asked = helpAsked(tool, rest)
   if (asked === "help") return { code: 0, out: commandHelp(tool) }
   if (asked === "schema") return { code: 0, out: JSON.stringify(tool.inputSchema, null, 2) }
@@ -414,11 +427,11 @@ function distance(a, b) {
 /** @param {string} raw */
 function unknownCommand(raw) {
   const want = under(raw.toLowerCase())
-  const near = TOOLS.filter((t) => t.name.includes(want) || want.includes(t.name) || distance(t.name, want) <= 2).map((t) => hyphen(t.name))
+  const near = TOOLS.filter((t) => !CLI[t.name]?.retired && (t.name.includes(want) || want.includes(t.name) || distance(t.name, want) <= 2)).map((t) => hyphen(t.name))
   return (
     `\`${NAME}\` has no command ${JSON.stringify(raw)}.` +
     (near.length ? ` Did you mean: ${near.join(", ")}?` : "") +
-    `\nCommands: ${TOOLS.map((t) => hyphen(t.name)).join(", ")}.\nRun \`${NAME} --help\` for what each one does.`
+    `\nCommands: ${TOOLS.filter((t) => !CLI[t.name]?.retired).map((t) => hyphen(t.name)).join(", ")}.\nRun \`${NAME} --help\` for what each one does.`
   )
 }
 

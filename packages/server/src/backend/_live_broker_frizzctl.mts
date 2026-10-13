@@ -180,15 +180,17 @@ try {
   await bridge.followUp({
     threadSlug: b.slug, sessionId: b.sessionId, cwd,
     text: "Now run this exact shell command with the Bash tool as ONE call. It is three lines — a heredoc — and must be sent exactly as written:\n\n" +
-      "frizzctl ask --input - <<'EOF'\n" +
-      '{"question":"Ship the `beta` build?","kind":"question","options":[{"label":"Yes","description":"go"},{"label":"No","description":"wait"}]}\n' +
+      "frizzctl link --input - <<'EOF'\n" +
+      '{"label":"Ship the `beta` build","target":"https://example.com/beta"}\n' +
       "EOF\n\n" +
       "Then reply with the single line HEREDOC-RAN and stop. If the command is refused or needs approval, do not try anything else.",
   })
   const heredoc = await turn(b, "HEREDOC-RAN")
   ok("4b. a quoted heredoc into `--input -` ran with no approval card", heredoc.said && heredoc.cards.length === 0, describe(heredoc.cards) || assistantText(b.sessionId).slice(-200))
-  const asked = requests("ask", b.slug)
-  ok("4b. …and the question reached Frizz intact", asked.length === 1 && asked[0]!.body.questions?.[0]?.question === "Ship the `beta` build?", JSON.stringify(asked.map((s) => s.body)))
+  // `link`, not `ask`: `ask` refuses without calling Frizz since 2026-10-13 (a question is a fence), and
+  // what this proves is the heredoc-of-JSON shape, which `link --input -` takes the same way.
+  const linked = requests("upsertOwnLink", b.slug)
+  ok("4b. …and the JSON reached Frizz intact", linked.length === 1 && linked[0]!.body.label === "Ship the `beta` build", JSON.stringify(linked.map((s) => s.body)))
   for (const card of heredoc.cards) cancel(b, card)
 
   await bridge.followUp({
