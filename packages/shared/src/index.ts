@@ -3206,11 +3206,11 @@ export interface NamedQuestionAnswer extends QuestionAnswer {
   followUps?: NamedQuestionAnswer[]
 }
 
-/** Stamp an answer with the ids its question was asked under: the row's own `handle` for the root, and
- *  for each follow-up the handle its node carries in the stored spec tree. `handle` absent — a question
- *  `ask` registered — names nothing, at any depth: the row's column is what says a fence asked it, and a
- *  `handle` key inside a spec that arrived through the `ask` RPC is not one the worker was ever told
- *  it could be answered by.
+/** Stamp an answer with the ids its question was asked under: the root's from its row (`handle`) or,
+ *  failing that, from the root of its stored spec — one id wherever both exist, and the spec is all a
+ *  browser has (the board's question view carries no `handle` of its own) — and each follow-up's from
+ *  the node it answers in that spec tree. A question with no handle anywhere, which is every question
+ *  `ask` registered, is named nowhere and its answer comes back as it went in.
  *
  *  A follow-up is found the way the card that produced the answer built it (the web's registeredAnswer):
  *  only a pick-one opens a branch, and the answer lists the taken option's follow-ups in the option's own
@@ -3235,7 +3235,7 @@ export function nameQuestionAnswer(answer: QuestionAnswer, spec: AskedQuestion |
       ...(id ? { handle: id } : {}),
     }
   }
-  return handle ? walk(answer, spec, handle) : walk(answer, undefined, undefined)
+  return walk(answer, spec, handle || spec?.handle)
 }
 
 /** The answer as it reaches the worker — one message, composed here so the RPC, the delivery and any

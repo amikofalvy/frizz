@@ -496,7 +496,7 @@ export function safeQuestionAnswer(raw: string | null): QuestionAnswer | undefin
  *  (2026-10-13) is named all the same, because nothing about it was missing from the row. */
 export function wakeQuestionAnswer(q: Pick<ThreadQuestionRow, "answer" | "spec" | "handle">): NamedQuestionAnswer | undefined {
   const parsed = safeQuestionAnswer(q.answer)
-  return parsed && nameQuestionAnswer(parsed, q.handle ? safeQuestionSpec(q.spec) : undefined, q.handle)
+  return parsed && nameQuestionAnswer(parsed, safeQuestionSpec(q.spec), q.handle)
 }
 
 /** THE ANSWER THE HUMAN HAS ALREADY SENT, WHICH THE WORKER HAS NOT SEEN YET — as the exact message the

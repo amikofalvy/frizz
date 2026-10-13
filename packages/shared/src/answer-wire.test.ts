@@ -53,14 +53,23 @@ test("stamping a question that has no handle changes nothing — whatever its sp
   assert.equal(questionAnswerMessage([nameQuestionAnswer(plain, spec, undefined)]), before)
   assert.equal(questionAnswerMessage([nameQuestionAnswer(plain, spec, null)]), before)
   assert.equal(questionAnswerMessage([nameQuestionAnswer(plain, undefined, undefined)]), before)
-  // A `handle` key inside a spec that came through the `ask` RPC is not an id the worker asked under:
-  // the row's own column says a fence asked it, and that column is empty here.
-  const handled: AskedQuestion = { ...spec, handle: "store", options: [{ label: "SQLite", followUps: [{ handle: "store-path", question: "Where should the database file live?", kind: "question" }] }] }
-  assert.equal(questionAnswerMessage([nameQuestionAnswer(plain, handled, undefined)]), before)
-  // …and a `handle` the request smuggled in is dropped by the stamp, at every depth.
+  // A `handle` the request smuggled in is dropped by the stamp, at every depth.
   const smuggled = { ...plain, handle: "forged", followUps: [{ ...plain.followUps![0], handle: "forged-too" }] } as unknown as QuestionAnswer
   assert.equal(questionAnswerMessage([nameQuestionAnswer(smuggled, spec, undefined)]), before)
   assert.deepEqual(nameQuestionAnswer(plain, spec, undefined), plain, "the stamp returns the answer itself, field for field")
+})
+
+test("the spec's own handles name a question whose row was not passed — all a browser has", () => {
+  // The board's question view carries the spec and no `handle` beside it, so the prompt box's optimistic
+  // bubble stamps from the tree alone, and must land on the bytes the server composes from the row.
+  const spec: AskedQuestion = {
+    handle: "store", question: "SQLite or a JSON file?", kind: "question",
+    options: [{ label: "SQLite", followUps: [{ handle: "store-path", question: "Where should the database file live?", kind: "question" }] }, { label: "JSON file" }],
+  }
+  const fromRow = questionAnswerMessage([nameQuestionAnswer(plain, spec, "store")])
+  assert.equal(questionAnswerMessage([nameQuestionAnswer(plain, spec, undefined)]), fromRow)
+  assert.equal(fromRow.split("\n")[1], "1. `store` “SQLite or a JSON file?” → SQLite")
+  assert.equal(fromRow.split("\n")[2], "2. ⤷ `store-path` “Where should the database file live?” → ~/.frizz/settings.db")
 })
 
 test("neither RPC that takes an answer accepts a `handle` on it", () => {

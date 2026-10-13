@@ -70,8 +70,9 @@ export interface RegisteredTake {
   answers: QuestionAnswer[]
   /** The same answers as the human may read them back — a secret's value never reaches a bubble —
    *  each named by the id its question was asked under, as the server names it in the message it
-   *  composes (shared nameQuestionAnswer). The optimistic bubble is drawn from these, and the in-flight
-   *  card stands down for a row the transcript already draws only when the two agree on that id. */
+   *  composes (shared nameQuestionAnswer; the id is read off the spec, which is all the board's view
+   *  of a question carries). The optimistic bubble is drawn from these, and the in-flight card stands
+   *  down for a row the transcript already draws only when the two agree on that id. */
   display: NamedQuestionAnswer[]
   /** The send has committed locally: the cards grey in place. */
   onOptimistic: () => void

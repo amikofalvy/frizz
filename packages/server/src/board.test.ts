@@ -2319,10 +2319,10 @@ test("a fence-asked question in flight is named by its id, and so is the follow-
 
 test("a question with no handle composes the wire it always did, byte for byte, beside one that has one", () => {
   assert.equal(answersInFlight([askedRow()], undefined), "Answers to earlier questions:\n1. “SQLite or a JSON file?” → SQLite")
-  // A `handle` inside the SPEC of a row whose own column is empty (the `ask` RPC stores what it is
-  // given) is not an id the worker asked under.
-  const smuggled = askedRow({ spec: JSON.stringify({ handle: "store", question: "SQLite or a JSON file?", kind: "question", options: [{ label: "SQLite" }] }) })
-  assert.equal(answersInFlight([smuggled], undefined), "Answers to earlier questions:\n1. “SQLite or a JSON file?” → SQLite")
+  // A handle that is not an id in the fence's grammar (a row written by hand) is left off rather than
+  // written where it could break the row.
+  const odd = askedRow({ handle: "Not An Id", spec: JSON.stringify({ handle: "Not An Id", question: "SQLite or a JSON file?", kind: "question", options: [{ label: "SQLite" }] }) })
+  assert.equal(answersInFlight([odd], undefined), "Answers to earlier questions:\n1. “SQLite or a JSON file?” → SQLite")
   assert.equal(
     answersInFlight([
       askedRow(),
