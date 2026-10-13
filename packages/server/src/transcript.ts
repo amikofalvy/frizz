@@ -120,7 +120,9 @@ function compactionMessage(sourceId: string, at: string | undefined, preTokens?:
 // not the client sniffing the shape of the messages around it: claude writes `stop_reason:"end_turn"`
 // on the record that ends the turn, codex brackets the turn with task_complete/turn_aborted. Those are
 // the SAME two signals the tailer's turn model already runs on (backend/claude.ts, backend/codex.ts),
-// so the divider and the board's idle state can never disagree.
+// so the divider and the board's idle state agree. They did not, for one tick, while a broker session's
+// final `assistant` event still read `running` after its end_turn record had been folded — the `result`
+// trails that write by a few ms. resolveRuntimeTurn's `caughtUp` is what closes that gap.
 const REST_LABEL = "Agent rested"
 function restMessage(sourceId: string, at: string | undefined): TranscriptMessage {
   return { sourceId, role: "assistant", kind: "event", boundary: "rest", text: REST_LABEL, tools: [], parts: [], at }
@@ -628,6 +630,25 @@ export function createTranscriptFold(identityPrefix = "claude"): TranscriptFold 
   // FIFO reconstruction below walks repeats one at a time.
   interface QueuedEntry { key: string; message: TranscriptMessage }
   const queuedPending: QueuedEntry[] = []
+  // A QUEUED BUBBLE IS NOT IN THE FLOW UNTIL IT IS DELIVERED. The enqueue record is written the moment
+  // the human hits Send, which is anywhere inside the turn — but the worker reads the message only at the
+  // next point its provider hands it over: a tool boundary, or the END of the turn when the turn has no
+  // tools. Pushing the bubble into `out` at its enqueue put a steer sent during a 900-word answer ABOVE
+  // that answer once it was delivered, so the chat read as though the answer replied to it, and the steer
+  // the reader was watching at the bottom of the screen jumped ~2000px up (measured 2026-10-13 on a real
+  // Haiku worker). So a still-queued bubble is held OUTSIDE `out` and `projected()` draws it after
+  // everything — the tail is where a pending send belongs — and the record that delivers it `place`s it
+  // at the delivery point: after the reply and its rest divider for a text turn, after the tool call it
+  // was handed over at for a mid-turn pickup. Placed once, never moved again: the attachment that follows
+  // a content-bearing removal re-resolves the SAME object (see the removal arm).
+  const placed = new Set<TranscriptMessage>()
+  function place(m: TranscriptMessage): void {
+    m.queued = false
+    if (placed.has(m)) return
+    placed.add(m)
+    out.push(m)
+    lastAssistantId = null // a delivered human message breaks the assistant-record merge chain
+  }
   // A just-delivered queued message's text — so an immediately-following NORMAL user record carrying the
   // identical text (a belt-and-suspenders guard; unobserved in the evidence) doesn't double-render.
   let deliveredDedupe: string | null = null
@@ -704,11 +725,11 @@ export function createTranscriptFold(identityPrefix = "claude"): TranscriptFold 
   function resolveQueuedThrough(entry: QueuedEntry): void {
     for (const e of queuedPending) {
       if (e === entry) break
-      e.message.queued = false
+      place(e.message)
     }
   }
-  // Resolve a pending bubble IN PLACE — same object, same position, just un-gray it — plus everything
-  // queued ahead of it. Returns whether the bubble is ALREADY IN `out` (true even when the backstop
+  // Resolve a pending bubble — same object, un-grayed and PLACED at this delivery (see `place`) — plus
+  // everything queued ahead of it. Returns whether the bubble is ALREADY IN `out` (true even when the backstop
   // un-grayed it early), which is what tells a caller not to render a second copy; false means this
   // delivery has no bubble yet and the caller should emit one.
   function resolveQueued(key: string): boolean {
@@ -716,7 +737,7 @@ export function createTranscriptFold(identityPrefix = "claude"): TranscriptFold 
     if (!entry) return false
     if (entry.message.queued) resolveQueuedThrough(entry)
     dropQueued(entry)
-    entry.message.queued = false
+    place(entry.message)
     return true
   }
 
@@ -809,18 +830,18 @@ export function createTranscriptFold(identityPrefix = "claude"): TranscriptFold 
       const content = typeof rec.content === "string" ? normalizeNewlines(rec.content) : ""
       if (op === "enqueue" && content.trim() && !isInjectedNoise(content) && !dropCorrection(content)) {
         // Undelivered → a grayed "queued" user bubble (queued:true reuses the client's optimistic-send
-        // styling). Do NOT reset lastAssistantId: this bubble is transient (it may be spliced out on
-        // delivery), and the assistant-merge tail-role check already blocks merging across a live bubble.
+        // styling), held OUTSIDE `out` until its delivery places it (see `placed`). Do NOT reset
+        // lastAssistantId: the bubble is not in the flow yet, so an assistant message split across
+        // records around this enqueue still merges into one.
         // `text` stays the RAW queued content — it is the key `queuedPending` matches the delivery
         // against (trimmed only at comparison, see findQueued) — so a wake token riding a queued
         // follow-up is dropped only for display.
         const queuedProjection = userProjection(content, out.length === 0)
         const m: TranscriptMessage = { sourceId, role: "user", text: content, ...queuedProjection, tools: [], parts: [], at: thisTs, queued: true }
-        out.push(m)
         queuedPending.push({ key: content, message: m })
       } else if ((op === "remove" || op === "dequeue" || op === "popAll") && content.trim()) {
         // A content-bearing removal is Claude Code DEQUEUEING the message into the turn. Resolve the
-        // bubble IN PLACE — un-gray it where the human sent it — and leave it registered so the
+        // bubble — un-gray it and place it HERE, where the worker took it — and leave it registered so the
         // `queued_command` attachment that follows re-resolves the SAME object instead of pushing a
         // second copy.
         //
@@ -844,7 +865,7 @@ export function createTranscriptFold(identityPrefix = "claude"): TranscriptFold 
         // drained past everything ahead of it.
         if (entry) {
           resolveQueuedThrough(entry)
-          entry.message.queued = false
+          place(entry.message)
         }
       }
       return
@@ -877,8 +898,8 @@ export function createTranscriptFold(identityPrefix = "claude"): TranscriptFold 
       // the removal above, an image-bearing queued message disappeared from the chat for good.
       const prompt = normalizeNewlines(attachmentPromptText(att.prompt))
       if (prompt.trim() && humanDelivery && att.commandMode === "prompt" && !isInjectedNoise(prompt) && !dropCorrection(prompt)) {
-        // Resolve the pending bubble IN PLACE — same object, same position, just un-gray it. Never emit
-        // a second copy (the enqueue already placed it where the human hit send).
+        // Resolve the pending bubble — the same object, un-grayed and placed at this delivery. Never emit
+        // a second copy (the enqueue already made the bubble when the human hit send).
         if (!resolveQueued(prompt)) {
           // Attachment-only: an older session with no queue-operations, or an enqueue that scrolled out of
           // the render window. Emit the delivered message fresh at the attachment's position.
@@ -1008,8 +1029,8 @@ export function createTranscriptFold(identityPrefix = "claude"): TranscriptFold 
           const key = findQueued(metaText) ? metaText : peerSessionQueuedKey(metaText, unresolvedQueuedKeys())
           const pending = (key === undefined ? undefined : findQueued(key)) ?? findCrossSessionQueued(metaText)
           // …but that message is not plumbing: it is another session's instruction to this one, and the
-          // human reading the thread needs it as much as the agent did. So it stays where its enqueue put
-          // it (un-grayed), and an idle delivery with no enqueue in the window renders here instead.
+          // human reading the thread needs it as much as the agent did. So its bubble is un-grayed and
+          // placed here, and an idle delivery with no enqueue in the window renders here instead.
           if (rec.isSidechain !== true && parseCrossSessionMessage(metaText)) {
             if (pending) {
               resolveQueued(pending.key)
@@ -1279,8 +1300,13 @@ export function createTranscriptFold(identityPrefix = "claude"): TranscriptFold 
   // that matters most, since it is the CURRENT one: the agent has stopped and it is the reader's move.
   // Reading it through the accessor also keeps the incremental fold and a one-shot re-parse projecting
   // the identical array, which is exactly what verifyIncrementalParse asserts.
+  //
+  // …and the still-queued bubbles after both, in send order: they are not in `out` until delivered (see
+  // `placed`). A bubble the isMeta arm resolved away was de-registered, so it is gone from here too.
   function projected(): TranscriptMessage[] {
-    return pendingRest ? [...out, restMessage(pendingRest.sourceId, pendingRest.at)] : out
+    const waiting = queuedPending.filter((e) => e.message.queued && !placed.has(e.message)).map((e) => e.message)
+    if (!pendingRest && waiting.length === 0) return out
+    return [...out, ...(pendingRest ? [restMessage(pendingRest.sourceId, pendingRest.at)] : []), ...waiting]
   }
   return {
     ingest,

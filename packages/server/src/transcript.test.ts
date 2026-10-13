@@ -1538,6 +1538,65 @@ test("a queued follow-up between assistant turns leaves the assistant cards inta
   assert.equal(msgs.filter((m) => m.role === "assistant" && m.kind === undefined).length, 2) // …between two intact assistant turns
 })
 
+// A STEER IS DRAWN WHERE IT IS DELIVERED, NOT WHERE IT WAS SENT. Real shape (Claude Code SDK broker,
+// Haiku, 2026-10-13): a steer sent while the worker writes a long tool-free answer is ENQUEUED before
+// that answer's record exists, and the provider hands it over only after the turn ends — an empty
+// dequeue and an ordinary user record. Placing the bubble at its enqueue drew the steer ABOVE a 1952px
+// answer it did not prompt, and the live chat jumped it ~2000px up the moment it was delivered.
+const steerSdkUser = (text: string, ts: string) => JSON.stringify({ type: "user", timestamp: ts, message: { role: "user", content: text }, promptSource: "sdk" })
+const essayTurn = [
+  steerSdkUser("Write a 900-word essay.", "2026-07-01T00:00:00.000Z"),
+  enqueue("Also: mention pineapple.", "2026-07-01T00:00:03.000Z"),
+  restLine("essay", "Release engineering is the discipline…", "2026-07-01T00:00:14.000Z"),
+]
+const shape = (msgs: TranscriptMessage[]) => msgs.map((m) => (m.boundary === "rest" ? "rest" : `${m.role}${m.queued ? "/Q" : ""}:${m.text.slice(0, 12)}`))
+
+test("a steer still queued behind a finished text turn sits at the TAIL, after the reply and its rest", () => {
+  // The answer has landed, the steer has not been read yet. It must still be the last thing in the
+  // array: the client's steer overlay keys on a human send AFTER the newest assistant message, and a
+  // bubble left at its enqueue made Working drop out for ~1s while the steer was still waiting.
+  assert.deepEqual(shape(parseTranscript(essayTurn.join("\n"))), ["user:Write a 900-", "assistant:Release engi", "rest", "user/Q:Also: mentio"])
+})
+
+test("a steer delivered after a text turn lands AFTER the reply and its rest divider, where the new turn starts", () => {
+  const msgs = parseTranscript([
+    ...essayTurn,
+    JSON.stringify({ type: "queue-operation", operation: "dequeue", timestamp: "2026-07-01T00:00:14.100Z" }),
+    steerSdkUser("Also: mention pineapple.", "2026-07-01T00:00:14.100Z"),
+    restLine("reply", "Pineapple.", "2026-07-01T00:00:17.000Z"),
+  ].join("\n"))
+  assert.deepEqual(shape(msgs), ["user:Write a 900-", "assistant:Release engi", "rest", "user:Also: mentio", "assistant:Pineapple.", "rest"])
+  // …and it keeps the enqueue's sourceId, so the live chat swaps the ghost for it without a remount.
+  assert.equal(msgs.filter((m) => m.role === "user").length, 2)
+})
+
+test("a steer picked up at a TOOL BOUNDARY stays after the call it was handed over at (real 2026-10-13 shape)", () => {
+  // enqueue during `sleep 10` → the tool_result → the queued_command attachment → a content removal.
+  const steer = "Also: mention pineapple."
+  const msgs = parseTranscript([
+    steerSdkUser("Please go ahead.", "2026-07-01T00:00:00.000Z"),
+    JSON.stringify({ type: "assistant", timestamp: "2026-07-01T00:00:02.000Z", message: { id: "t1", stop_reason: "tool_use", content: [{ type: "tool_use", id: "s1", name: "Bash", input: { command: "sleep 10" } }] } }),
+    enqueue(steer, "2026-07-01T00:00:05.000Z"),
+    JSON.stringify({ type: "user", timestamp: "2026-07-01T00:00:12.000Z", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "s1", content: "" }] } }),
+    JSON.stringify({ type: "attachment", timestamp: "2026-07-01T00:00:05.000Z", attachment: { type: "queued_command", prompt: steer, commandMode: "prompt", source_uuid: "u1" } }),
+    removeOp("remove", steer, "2026-07-01T00:00:12.100Z"),
+    JSON.stringify({ type: "assistant", timestamp: "2026-07-01T00:00:14.000Z", message: { id: "t2", stop_reason: "tool_use", content: [{ type: "tool_use", id: "s2", name: "Bash", input: { command: "sleep 10" } }] } }),
+  ].join("\n"))
+  assert.deepEqual(shape(msgs), ["user:Please go ah", "assistant:", "user:Also: mentio", "assistant:"])
+  assert.equal(msgs[1].tools[0].status, "completed")
+})
+
+test("an assistant message split across records around an enqueue still folds into ONE bubble", () => {
+  // The queued bubble is not in the flow until it is delivered, so it no longer cuts the merge chain.
+  const msgs = parseTranscript([
+    restLine("m1", "First half.", "2026-07-01T00:00:01.000Z", "tool_use"),
+    enqueue("a steer", "2026-07-01T00:00:01.500Z"),
+    restLine("m1", "Second half.", "2026-07-01T00:00:02.000Z"),
+  ].join("\n"))
+  assert.deepEqual(shape(msgs), ["assistant:First half.\n", "rest", "user/Q:a steer"])
+  assert.equal(msgs[0].text, "First half.\n\nSecond half.")
+})
+
 // An autonomous /loop wakeup is ENQUEUED like a human follow-up (gray bubble) but DELIVERED as an
 // isMeta harness record — not the human's words. The isMeta drop must also splice out the pending
 // queued bubble, or it lingers forever as a stuck "queued" message (thread review-nubjs-nub-515-2).
