@@ -18,7 +18,7 @@ import { readFileSync } from "node:fs"
 import { Lexer, type Token } from "marked"
 import { questionFenceBlocks, questionFencesIn, questionHandles } from "@frizz/shared"
 import { splitFenceBlocks } from "./fenceBlocks.ts"
-import { questionFenceIdsIn, splitMessageQuestions, splitQuestionBlocks } from "./questionBlocks.ts"
+import { followUpParentsIn, questionFenceIdsIn, splitMessageQuestions, splitQuestionBlocks } from "./questionBlocks.ts"
 
 const TEXT = "id: x\nkind: text\nquestion: Q?"
 const fence = (body: string, ticks = "```") => `${ticks}question\n${body}\n${ticks}`
@@ -30,9 +30,12 @@ interface View {
   server: string[]
   /** How many fences the server would answer with a correction. */
   faults: number
-  /** Ids the web cuts a card slot for (a `when:` follow-up draws inside its parent's card, so it is not one). */
+  /** Ids the web cuts a card slot for: an ask or a reference, then the parent a `when:` follow-up names when
+   *  that parent is not in the message (the follow-up's fence is then the slot its parent's card moves to —
+   *  a follow-up may be written in a later message than its parent; beside its parent it draws inside the
+   *  parent's card and is no slot of its own). */
   web: string[]
-  /** Fences the web hands to the LEGACY free-form card: an invalid read keeps the rendering it had. */
+  /** Fences the web hands to the LEGACY free-form card: only a fence that never tried this grammar. */
   legacyCards: number
   /** What marked makes of the whole message: every `question` code block, and every fence it read as HTML. */
   marked: string[]
@@ -59,7 +62,10 @@ function view(text: string): View {
   return {
     server: [...assembled.asks.map((a) => a.id), ...assembled.refs],
     faults: assembled.faults.length,
-    web: segments.flatMap((s) => (s.kind === "question" && s.fence && !(s.fence.form === "ask" && s.fence.when) ? [s.fence.id] : [])),
+    web: (() => {
+      const own = segments.flatMap((s) => (s.kind === "question" && s.fence && !(s.fence.form === "ask" && s.fence.when) ? [s.fence.id] : []))
+      return [...own, ...followUpParentsIn(text).filter((parent) => !own.includes(parent))]
+    })(),
     legacyCards: segments.filter((s) => s.kind === "question" && !s.fence).length,
     marked: markedView(text),
   }
@@ -190,8 +196,12 @@ test("what the server keeps of a message — each fence's own source — reads t
 // cuts a slot for is a ROOT whose tree the server refused. ChatView draws it read-only from the fence's own
 // spec ("an ask with no row yet … never registers a fence it refused"), and it stays that way: a card the
 // human can read and never answer, until the worker's correction lands a new one.
+// A follow-up whose parent is not in its message is the other: the web cuts the parent's slot there (the
+// parent may be an open question of an earlier message — only the thread's rows can say), while this
+// message alone gives the server's assembly nothing to register.
 const WEB_ONLY: Record<string, string[]> = {
   "a tree four deep": ["a"],
+  "an orphan follow-up": ["p"],
 }
 
 test("the web cuts a card slot for exactly the ids the server registers or references", () => {
@@ -213,12 +223,14 @@ test("a follow-up is the server's through its root and the web's through its par
   assert.deepEqual(v.server, ["p"])
   assert.deepEqual(v.web, ["p"])
   assert.deepEqual(questionHandles(questionFencesIn(inputs["a follow-up beside its parent"]).asks[0].spec), ["p", "c"])
-  // …and one that hangs off nothing is refused by the server and drawn nowhere.
-  for (const name of ["an orphan follow-up", "a loop of follow-ups"]) {
-    const lost = view(inputs[name])
-    assert.deepEqual([lost.server, lost.web], [[], []], name)
-    assert.ok(lost.faults > 0, `${name}: the worker is told`)
-  }
+  // …and a loop hangs off nothing: refused by the server and drawn nowhere.
+  const lost = view(inputs["a loop of follow-ups"])
+  assert.deepEqual([lost.server, lost.web], [[], []])
+  assert.ok(lost.faults > 0, "the worker is told")
+  // An orphan names a parent outside the message. This message alone registers nothing; the web keeps the
+  // slot for that parent's card, which draws only if the thread has an open row by that name.
+  const orphan = view(inputs["an orphan follow-up"])
+  assert.deepEqual([orphan.server, orphan.web], [[], ["p"]])
 })
 
 test("a question holding a code block: the server registers it whole and the web cuts the same span", () => {
@@ -311,11 +323,15 @@ test("what the shared reader takes for a fence, against what marked would have d
   ])
 })
 
-test("a fence the server refuses is drawn by the legacy card only when it is three backticks at the margin", () => {
-  // An invalid read "keeps the rendering it had": splitQuestionBlocks over the same bytes. That reader knows
-  // one opener — ```question at column 0 — so the same mistake draws three different ways.
-  assert.equal(view(inputs["an invalid kind"]).legacyCards, 1)
-  assert.equal(view(inputs["an invalid four-backtick fence"]).legacyCards, 0)
-  assert.deepEqual(view(inputs["an invalid four-backtick fence"]).marked, ["code"])
-  assert.equal(view(indented(inputs["an invalid kind"], "  ")).legacyCards, 0)
+test("a fence that tried the grammar and failed is a code block, whatever its backticks or indent", () => {
+  // It used to "keep the rendering it had": splitQuestionBlocks over the same bytes. That reader knows one
+  // opener — ```question at column 0 — so the same mistake drew as the legacy card there and as a code block
+  // with four backticks or an indent. The web now hands none of them to the legacy card.
+  for (const text of [inputs["an invalid kind"], inputs["an invalid four-backtick fence"], indented(inputs["an invalid kind"], "  ")]) {
+    assert.equal(view(text).legacyCards, 0)
+    assert.deepEqual(view(text).marked, ["code"])
+    assert.deepEqual(splitMessageQuestions(text, true).map((s) => s.kind), ["prose"])
+  }
+  // Negative control: a free-form fence (no key opens its body) is still the legacy card on such a thread.
+  assert.equal(view("```question\nShip tonight?\n\nA. Yes\nB. No\n```").legacyCards, 1)
 })
