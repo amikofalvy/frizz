@@ -276,6 +276,11 @@ export interface ParsedQuestion {
   // typed in it never enters the draft store. Only a registered question carries it.
   secret?: boolean
   contextMd: string
+  // SUPPORTING markdown under the ask: a ```question fence's body below its `---` (shared
+  // question-fence.ts) — a table, a diff, a callout. Drawn under `contextMd` at the card's description
+  // strength, so the question still reads as the ask and this as what informs it. Only a registered
+  // question asked by a fence carries it.
+  detailMd?: string
   // Option labels with any inline "recommended" marker stripped out (the badge conveys it instead).
   options: string[]
   // The recommended options' indices, ascending; empty if none. A pick-ONE question carries at most

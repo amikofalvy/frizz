@@ -92,6 +92,7 @@ export function QuestionBlockCard({
     [question, raw, questionKind, danger],
   )
   const html = useMarkdownHtml(parsed.contextMd)
+  const detailHtml = useMarkdownHtml(parsed.detailMd ?? "")
   const trailingHtml = useMarkdownHtml(parsed.trailingMd ?? "")
   const recIdxs = parsed.recommendedIdxs
   const recHtml = useInlineMarkdownHtml(parsed.recommendation ?? "")
@@ -175,6 +176,15 @@ export function QuestionBlockCard({
       {html && (
         <div className="text-fg">
           <LinkedHtml className={`md-body${wrap ? ` ${QUEUE_WRAP}` : ""}`} html={html} />
+        </div>
+      )}
+      {/* The CONTEXT a question fence carries below its `---` (detailMd): what informs the ask — a table,
+          a diff, a callout — at the card's own description strength (TranscriptCard's fg/75), so the
+          question above stays the brightest line. 13px apart: the md-body's own paragraph step, so the
+          two blocks read as one body broken where the worker broke it. */}
+      {parsed.detailMd && (
+        <div data-question-context className={html ? "mt-[13px]" : undefined}>
+          <LinkedHtml className={`md-body${wrap ? ` ${QUEUE_WRAP}` : ""}`} html={detailHtml} />
         </div>
       )}
       {(parsed.options.length > 0 || interactive) && (
