@@ -16,8 +16,17 @@
 //   7. A follow-up whose `when:` named the wrong label is refused without taking its parent down, and the
 //      corrected follow-up — written ALONE in a later message — attaches under the open parent's option,
 //      on the same card, with the parent's own instant unmoved.
+//   8. The openers a markdown reader takes for the same block register too: a `~~~question` fence (its
+//      context holding a ```sql block) and a capitalised ```Question, each asked at the record's own
+//      instant. The same forms QUOTED — inside a fence of the other character, in a blockquote — register
+//      nothing. A reference written in either form makes its question stand again after the human has typed
+//      past it; a malformed tilde fence is on the board as a refused fence, by name; and on a legacy thread
+//      neither form registers anything.
+//   9. A bare option label that opens on `Word:` (`- Yes: merge it`) is refused with ONE fault per line,
+//      each giving the line to write — and that line, written, registers.
 //
-// It leaves `qf-shot` with one open question placed mid-handoff, for a screenshot of the card in its slot.
+// It leaves `qf-shot` with one open question placed mid-handoff, for a screenshot of the card in its slot,
+// and `qf-openers-shot` with a tilde question, a capitalised one and their quoted samples in its newest message.
 //
 // Boot a stack first (see .agents/skills/frizz-stack), then:
 //   nub scripts/verify-question-fence.mjs --home=/abs/temp-home --port=NNNN
@@ -241,7 +250,141 @@ check("…on the SAME question: one row, asked when the parent was", grown.quest
 const lateRows = execFileSync("sqlite3", [db, `SELECT count(*) FROM thread_question WHERE thread_slug = 'qf-late'`]).toString().trim()
 check("…and no second row", lateRows === "1", `${lateRows} rows`)
 
-// ---- the screenshot fixture -----------------------------------------------------------------------------
+// ---- 8: a tilde fence and a capitalised info string ------------------------------------------------------
+
+const TILDE_FENCE = [
+  "~~~question",
+  "id: migration-window",
+  "kind: choice",
+  "question: When should the `archived_at` migration run?",
+  "options:",
+  "  - label: Tonight, in the maintenance window",
+  "    recommended: true",
+  "  - label: With the next release",
+  "---",
+  "It takes a lock on `orders` for the length of the index build:",
+  "",
+  "```sql",
+  "ALTER TABLE orders ADD COLUMN archived_at timestamptz;",
+  "CREATE INDEX CONCURRENTLY orders_archived_at_idx ON orders (archived_at);",
+  "```",
+  "",
+  "The window tonight is 02:00 to 03:00 UTC.",
+  "~~~",
+].join("\n")
+const CAPITAL_FENCE = ["```Question", "id: release-notes-owner", "kind: text", "question: Who should the release notes name as the owner of the migration?", "```"].join("\n")
+const QUOTED_TILDE = ["```md", "~~~question", "id: quoted-tilde", "kind: text", "question: Only an example, on tildes", "~~~", "```"].join("\n")
+const QUOTED_IN_TILDE = ["~~~md", "```question", "id: quoted-in-tilde", "kind: text", "question: Only an example, inside a tilde block", "```", "~~~"].join("\n")
+const QUOTED_BLOCKQUOTE = ["> ```Question", "> id: quoted-blockquote", "> kind: text", "> question: Only an example, in a blockquote", "> ```"].join("\n")
+const OPENERS_HANDOFF = [
+  "**Needs you** — the migration is written and dry-run; when it runs and who owns it are yours to say.",
+  "",
+  TILDE_FENCE,
+  "",
+  "One more thing only you know:",
+  "",
+  CAPITAL_FENCE,
+  "",
+  "For the record, these three are samples of the grammar, quoted, and ask nothing:",
+  "",
+  QUOTED_TILDE,
+  "",
+  QUOTED_IN_TILDE,
+  "",
+  QUOTED_BLOCKQUOTE,
+  "",
+  "The migration file is committed on `main` and has not been applied anywhere.",
+].join("\n")
+
+const openers = worker({ slug: "qf-openers", sessionId: "9f0e1a00-0000-4000-9000-0000000000e5", spawnedAt: minutesAgo(5), title: "Archive migration" })
+openers.user("add archived_at to orders", minutesAgo(5))
+openers.say("Reading the schema.", minutesAgo(4))
+await until("qf-openers on the board", () => threadOf("qf-openers"))
+const openersAt = openers.say(OPENERS_HANDOFF)
+const twoForms = await until("both new-form questions on the board", async () => {
+  const t = await threadOf("qf-openers")
+  return t?.questions?.length === 2 ? t : undefined
+})
+const byHandle = (t, handle) => t.questions.find((x) => x.spec.handle === handle)
+const windowQ = byHandle(twoForms, "migration-window")
+const ownerQ = byHandle(twoForms, "release-notes-owner")
+check("a `~~~question` fence registers, under the worker's id", windowQ !== undefined && /^qst_/.test(windowQ.id))
+check("…asked at the record's own timestamp", windowQ?.askedAt === openersAt, `${windowQ?.askedAt} vs ${openersAt}`)
+check("…its context whole, the ```sql block inside it closed", windowQ?.spec.context?.includes("```sql\nALTER TABLE orders") === true && windowQ.spec.context.endsWith("The window tonight is 02:00 to 03:00 UTC."))
+check("a capitalised ```Question fence registers", ownerQ?.spec.question === "Who should the release notes name as the owner of the migration?" && ownerQ.askedAt === openersAt)
+check("the thread queues on them, both standing", twoForms.needsYou === true && twoForms.questions.every((x) => x.standing === true))
+const openerRows = () => execFileSync("sqlite3", [db, `SELECT handle FROM thread_question WHERE thread_slug = 'qf-openers' ORDER BY handle`]).toString().trim().split("\n").filter(Boolean)
+check("the three quoted samples registered nothing", openerRows().join(",") === "migration-window,release-notes-owner", openerRows().join(","))
+check("…and nothing in the message was refused", !twoForms.questionFaults?.length, JSON.stringify(twoForms.questionFaults ?? []))
+
+// The human types past both; a reference in each new form makes its question stand again.
+openers.user("leave the notes for now — what was the lock again?")
+await until("both questions to fade once the human has typed", async () => {
+  const t = await threadOf("qf-openers")
+  return t?.questions?.length === 2 && t.questions.every((x) => x.standing === false) ? t : undefined
+})
+openers.say(["It is a brief `ACCESS EXCLUSIVE` lock for the column, and none for the concurrent index build.", "", "The window is still yours to pick:", "", "~~~question", "id: migration-window", "~~~"].join("\n"))
+const referenced = await until("the tilde reference to make migration-window stand", async () => {
+  const t = await threadOf("qf-openers")
+  return byHandle(t, "migration-window")?.standing === true ? t : undefined
+})
+check("an `id:`-only `~~~question` references the open question: it stands again, the other does not", byHandle(referenced, "release-notes-owner")?.standing === false && referenced.questions.length === 2)
+openers.user("ok")
+// (A reference stands when its message is LATER than the human's; two appends in one millisecond are not.)
+await until("migration-window to fade again", async () => byHandle(await threadOf("qf-openers"), "migration-window")?.standing === false)
+openers.say(["And the owner, when you have it:", "", "```QUESTION", "id: release-notes-owner", "```"].join("\n"))
+await until("the capitalised reference to make release-notes-owner stand", async () => byHandle(await threadOf("qf-openers"), "release-notes-owner")?.standing === true)
+check("…and so does one written ```QUESTION", openerRows().length === 2, `${openerRows().length} rows`)
+
+// A malformed fence in the new form is refused BY NAME, where it used to be a code block nobody mentioned.
+openers.user("one more?")
+await sleep(50)
+openers.say(["~~~question", "id: backfill-batch", "kind: pick", "question: How large should each backfill batch be?", "~~~"].join("\n"))
+const refusedTilde = await until("the malformed tilde fence on the board as a refused fence", async () => {
+  const t = await threadOf("qf-openers")
+  return t?.questionFaults?.some((f) => f.id === "backfill-batch") ? t : undefined
+})
+check("a malformed `~~~question` is on the board as a refused fence, its fault named", refusedTilde.questionFaults.find((f) => f.id === "backfill-batch").faults.join(" ").includes("`kind: pick`"), refusedTilde.questionFaults.find((f) => f.id === "backfill-batch").faults.join(" "))
+
+// On a legacy thread neither form is the fence: the registrar reads nothing there, as before.
+legacy.say(`${TILDE_FENCE}\n\n${CAPITAL_FENCE}`)
+await sleep(2500)
+const legacyAfter = execFileSync("sqlite3", [db, `SELECT count(*) FROM thread_question WHERE thread_slug = 'qf-legacy'`]).toString().trim()
+check("a thread dispatched before 2026-09-11 registers nothing from the new forms either", legacyAfter === "0", `${legacyAfter} rows`)
+
+// ---- 9: a bare option label that opens on `Word:` ----------------------------------------------------------
+
+const colon = worker({ slug: "qf-colon", sessionId: "9f0e1a00-0000-4000-9000-0000000000f6", spawnedAt: minutesAgo(5), title: "Merge the PR" })
+colon.user("review the PR and tell me", minutesAgo(5))
+const mergeFence = (options) => ["```question", "id: merge-now", "kind: choice", "question: Merge the pull request now?", "options:", ...options, "```"].join("\n")
+colon.say(`The review is clean.\n\n${mergeFence(["  - Yes: merge it", "  - No: leave it open"])}`)
+const colonRefused = await until("the colon-label fence on the board as a refused fence", async () => {
+  const t = await threadOf("qf-colon")
+  return t?.questionFaults?.some((f) => f.id === "merge-now") ? t : undefined
+})
+const colonFaults = colonRefused.questionFaults.filter((f) => f.id === "merge-now").flatMap((f) => f.faults)
+check("`- Yes: merge it` is refused with one fault per line, and nothing registers", colonFaults.length === 2 && colonRefused.questions.length === 0, `${colonFaults.length} fault(s)`)
+check("…the first naming the line and the line to write", colonFaults[0]?.includes("`- Yes: merge it` reads as a key named `Yes`") && colonFaults[0].endsWith('a label that holds a colon is written `- label: "Yes: merge it"`'), colonFaults[0])
+check("…the second its own line to write", colonFaults[1] === 'option 2: `- No: leave it open` reads as a key named `No` too — write `- label: "No: leave it open"`', colonFaults[1])
+// The worker writes the lines the fault gave it.
+colon.say(`Written the way the correction says.\n\n${mergeFence(['  - label: "Yes: merge it"', '  - label: "No: leave it open"'])}`)
+const colonFixed = await until("the corrected fence to register", async () => {
+  const t = await threadOf("qf-colon")
+  return t?.questions?.length === 1 ? t : undefined
+})
+check("the lines the fault spelled register, labels whole", colonFixed.questions[0].spec.options.map((o) => o.label).join(" | ") === "Yes: merge it | No: leave it open", colonFixed.questions[0].spec.options.map((o) => o.label).join(" | "))
+
+// ---- the screenshot fixtures ----------------------------------------------------------------------------
+
+// `qf-openers-shot`: the new-form handoff as the NEWEST message, so the page shows both cards in their slots
+// with the three quoted samples drawn as the code blocks they are.
+const openersShot = worker({ slug: "qf-openers-shot", sessionId: "9f0e1a00-0000-4000-9000-0000000000a7", spawnedAt: minutesAgo(5), title: "Archive migration — tilde and capitalised fences" })
+openersShot.user("add archived_at to orders", minutesAgo(5))
+openersShot.say("Reading the schema.", minutesAgo(4))
+openersShot.say(OPENERS_HANDOFF)
+await until("qf-openers-shot's two questions on the board", async () => (await threadOf("qf-openers-shot"))?.questions?.length === 2)
+console.log(`      screenshot fixture: qf-openers-shot`)
+
 
 const shot = worker({ slug: "qf-shot", sessionId: "9f0e1a00-0000-4000-9000-0000000000c3", spawnedAt: minutesAgo(6), title: "Settings store — open question" })
 shot.user("move the settings into a real store", minutesAgo(6))

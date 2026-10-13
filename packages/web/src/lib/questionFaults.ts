@@ -32,7 +32,7 @@
 // message is the only one a fault's instant can land in. Without this the original question's fence
 // turned into a code block for those frames and its card jumped out of the prose and back.
 import type { AskedQuestion, QuestionFenceFaultView } from "@frizz/shared"
-import { questionFenceBlocks } from "@frizz/shared"
+import { mayHoldQuestionFence, questionFenceBlocks } from "@frizz/shared"
 import { resolveQuestionName } from "./questionShadow.ts"
 
 export interface FaultMessage {
@@ -83,7 +83,7 @@ export function refusedFencesByMessage(
     if (!ids) {
       ids = new Set()
       const text = messages[i].text
-      if (messages[i].role === "assistant" && text?.includes("```question")) {
+      if (messages[i].role === "assistant" && text && mayHoldQuestionFence(text)) {
         for (const b of questionFenceBlocks(text)) if (b.read.form !== "invalid") ids.add(b.read.id.toLowerCase())
       }
       idsAt.set(i, ids)

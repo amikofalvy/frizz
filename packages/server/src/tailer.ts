@@ -5,7 +5,7 @@ import { promisify } from "node:util"
 import { basename, join, win32 } from "node:path"
 import { homedir, tmpdir } from "node:os"
 import type { AskQuestion, AwaitingHint, CodexModel, LiveTool } from "@frizz/shared"
-import { humanTypedMessagesIn, insideFence, isAllInjectedNoise, isHumanTypedMessage, isInterruptMarker, parseAskUserQuestionInput, parseCrossSessionMessage, parseMergedWake, PermissionMode, QUESTION_FENCE_CORRECTION_LEAD, questionFenceBlocks, questionFencesLive, saysAllDone, splitAwaitingFrontmatter, splitDoneFrontmatter, splitWakeDeliveries } from "@frizz/shared"
+import { humanTypedMessagesIn, insideFence, isAllInjectedNoise, isHumanTypedMessage, isInterruptMarker, mayHoldQuestionFence, parseAskUserQuestionInput, parseCrossSessionMessage, parseMergedWake, PermissionMode, QUESTION_FENCE_CORRECTION_LEAD, questionFenceBlocks, questionFencesLive, saysAllDone, splitAwaitingFrontmatter, splitDoneFrontmatter, splitWakeDeliveries } from "@frizz/shared"
 import type { Bus } from "./bus.ts"
 import { permMarkerPath, type Project } from "./project.ts"
 import { isBrokerClaudeRow, isHeadlessRow } from "./storage.ts"
@@ -1214,7 +1214,7 @@ export function parseLine(line: string): Record | null {
 // the fences are kept, each block's source verbatim. The same message seen twice — a normalized backend
 // carries its final answer on both the text event and the turn-end bracket — is noted once.
 function noteQuestionFences(state: FoldState, at: string | undefined, text: string | undefined): void {
-  if (!at || !text || !text.includes("question")) return
+  if (!at || !text || !mayHoldQuestionFence(text)) return
   const blocks = questionFenceBlocks(text)
   if (blocks.length === 0) return
   const sighting: QuestionSighting = { at, text: blocks.map((b) => text.slice(b.start, b.end).trimEnd()).join("\n\n") }

@@ -767,6 +767,16 @@ The API call is the unit of cost, not the tokens you type: each message re-reads
 //     prose above it is unanswerable from the card on the board, which is where the human answers it.
 //   - The four-backtick rule is shown, not stated: a code block inside the fence closes it early otherwise,
 //     and the rest of the question falls out as prose.
+//   - "A label with a colon in it takes the key": the sentence above the table calls a colon safe in any
+//     VALUE, and the cell called a bare `- Label` a label, so `- Yes: merge it` read as allowed. It is
+//     refused (the same shape as `- lable: SQLite`, which must not pass for a label), and the fault gives
+//     the line to write; these words are there so the first try does not need it.
+//
+// WHAT THE READER TAKES AND THE CONTRACT DOES NOT TEACH (third round, 2026-10-13). A `~~~question` fence, a
+// capitalised info string (`Question`) and a space before the word register exactly as the taught fence
+// does (shared code-fences.ts questionFenceOpener): each used to draw as a code block and say nothing to
+// anyone. They are tolerated, never advertised — one spelling in every example, the fix in every
+// correction worded for three backticks (four around a code block) and a lowercase `question`.
 //
 // MEASURED ON REAL MODELS (2026-10-13, 40-odd single replies from Haiku, Sonnet and Opus given this whole
 // contract and a task that ends in an ask; outputs scored with the shared parser). Every fence written
@@ -845,7 +855,7 @@ whole quoted string is unquoted:
 | \`id\` | Required. Your own name for the question: lowercase letters, digits, \`-\`, \`_\` and \`.\`, up to 64. Unique in this thread FOR GOOD — an id once answered or withdrawn is never asked again |
 | \`kind\` | Required. \`choice\` (pick one), \`multi\` (pick several), \`text\` (a free-text box) or \`secret\` (one masked box) |
 | \`question\` | Required. ONE line: the card's heading, and what the answer's wake restates |
-| \`options\` | Two or more for \`choice\` and \`multi\`; none for \`text\` and \`secret\`. Each \`- \` item takes \`label\` (required), \`description\` (one line), \`recommended: true\`, and \`detail\`, an indented Markdown block drawn inside the option. A bare \`- Label\` is a label alone |
+| \`options\` | Two or more for \`choice\` and \`multi\`; none for \`text\` and \`secret\`. Each \`- \` item takes \`label\` (required), \`description\` (one line), \`recommended: true\`, and \`detail\`, an indented Markdown block drawn inside the option. A bare \`- Label\` is a label alone; a label with a colon in it takes the key (\`- label: Yes: merge it\`) |
 | \`danger\` | \`true\` for the genuinely irreversible: the card turns red and the human's × cannot dismiss it |
 | \`when\` | \`<parent id> = <option label>\`: a follow-up, asked only if that option is picked (below) |
 
