@@ -30,6 +30,15 @@ test("dictation is on by default and only a stored boolean turns it off", () => 
   assert.equal(parseStoredPrefs(JSON.stringify({ dictation: "off", diffsRedefaulted: true })).dictation, true)
 })
 
+test("code wraps by default and only a stored boolean turns it off", () => {
+  assert.equal(parseStoredPrefs(null).wrapCode, true)
+  assert.equal(parseStoredPrefs("not-json").wrapCode, true)
+  // A blob stored before the setting existed carries no key, and reads as the default.
+  assert.equal(parseStoredPrefs(JSON.stringify({ compactDiffs: true, diffsRedefaulted: true })).wrapCode, true)
+  assert.equal(parseStoredPrefs(JSON.stringify({ wrapCode: false, diffsRedefaulted: true })).wrapCode, false)
+  assert.equal(parseStoredPrefs(JSON.stringify({ wrapCode: "off", diffsRedefaulted: true })).wrapCode, true)
+})
+
 test("the rail's edited-files fold is open by default and only a boolean folds it", () => {
   assert.equal(parseStoredPrefs(null).railFilesCollapsed, false)
   assert.equal(parseStoredPrefs("not-json").railFilesCollapsed, false)

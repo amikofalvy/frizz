@@ -59,11 +59,16 @@ Object.defineProperty(window, "Notification", {
   value: { permission: "denied", requestPermission: async () => "denied" },
 })
 
-const [{ SettingsDrawer }, { queryClient }, { TooltipProvider }] = await Promise.all([
+const [{ SettingsDrawer }, { queryClient }, { TooltipProvider }, { initCodeWrap }] = await Promise.all([
   import("./components/SettingsDrawer.tsx"),
   import("./main.tsx"),
   import("./components/Tooltip.tsx"),
+  import("./lib/codeWrap.ts"),
 ])
+
+// main.tsx skips its whole init for this page, so the one a drawer row can be SEEN to drive — the
+// "Wrap code" preference reaching <html> — is installed here, as the app installs it.
+initCodeWrap()
 
 createRoot(document.getElementById("root")!).render(
   <QueryClientProvider client={queryClient}>

@@ -75,7 +75,7 @@ test("the drawer is one untabbed list of interface preferences, with no project 
   // (The note above the component NAMES the retired tab in prose; what must be gone is the markup.)
   assert.doesNotMatch(source, /role="tab(?:list)?"|SettingsTabs|label: "(?:Project|Frizz) settings"/)
   const fields = [...source.matchAll(/<SettingsField label="([^"]+)"/g)].map((m) => m[1])
-  assert.deepEqual(fields, ["Appearance", "Project sidebar", "Density", "Queue order", "Dictation", "Desktop notifications", "Local file links"])
+  assert.deepEqual(fields, ["Appearance", "Project sidebar", "Density", "Wrap code", "Queue order", "Dictation", "Desktop notifications", "Local file links"])
   // The triage prompt has exactly one editor, and it is the picker's.
   assert.doesNotMatch(source, /GithubPromptEditor|githubPrompt|<textarea/)
   assert.match(promptPopoverSource, /<GithubPromptEditor draft=\{draft\} onChange=\{update\} rows=\{14\} \/>/)
@@ -168,6 +168,21 @@ test("diff density is a Comfortable|Compact pair, densest on the right, compact 
   assert.match(toggle, /prefs\.compactDiffs = o\.v/)
   assert.doesNotMatch(source, /label="Compact mode"/)
   assert.doesNotMatch(source, /function CompactToggle/)
+})
+
+// What the row DOES — the preference reaching <html>, surviving a reload and never touching the server —
+// is pinned in a real browser by settingsAutosave.e2e.test.ts, and what the stylesheet then does to a
+// block by lib/codeBlocks.e2e.test.ts. This guards the wiring those two depend on.
+test("wrap code is an Off|On browser preference with its own explanation, mirrored onto the page at boot", () => {
+  assert.match(source, /label="Wrap code" help=\{SETTINGS_HELP\.wrapCode\}/)
+  const toggle = source.slice(source.indexOf("function WrapCodeToggle"), source.indexOf("function DensityToggle"))
+  assert.match(toggle, /<OnOffToggle value=\{wrapCode\} onChange=\{\(on\) => \(prefs\.wrapCode = on\)\} \/>/)
+  assert.match(helpSource, /\bwrapCode:/)
+  // Client-only: it must not have grown a key in the server's settings draft.
+  assert.doesNotMatch(source, /draft\.wrapCode/)
+  const main = readFileSync(new URL("../main.tsx", import.meta.url), "utf8")
+  assert.match(main, /import \{ initCodeWrap \} from "\.\/lib\/codeWrap\.ts"/)
+  assert.match(main, /\n  initCodeWrap\(\)\n/)
 })
 
 test("help tooltip uses custom accessible, touch-capable paragraph layout", () => {
