@@ -62,8 +62,26 @@ export function SendSplitButton({
   onMenuClosed?: () => void
 }) {
   const tone = armed ? "bg-fg text-bg" : "bg-panel-2 text-muted"
+  // A hovered half tints toward the page rather than fading: the fill under it is the pill's own, so a
+  // fade would show the same colour through and nothing would change.
+  const hover = armed ? "hover:bg-bg/10" : ""
   return (
-    <span data-send-split data-send-mode={mode} className="absolute bottom-2 flex h-7" style={{ right, width: SEND_SPLIT_WIDTH }}>
+    // THE PILL PAINTS THE FILL, ONCE, and its halves paint only their hover tint. With each piece painting
+    // its own, the press put the edges between them between device pixels, both edges were antialiased over
+    // the dark prompt box, and a dark line showed down each side of the seam. Now what shows through is the
+    // fill itself.
+    //
+    // THE PRESS SHRINKS THE WHOLE PILL, never the half under the pointer. Scaled alone, the word's half
+    // pulled in from the seam and the caret, which stayed full size: a short pill with a tall square-cornered
+    // stub stuck to its right (maintainer 2026-10-13: "This animation when you do a mouse down"). Only a
+    // press on Send shrinks it: the caret opens its menu on pointer-down, and a pill shrinking under a
+    // menu that just appeared reads as a wobble.
+    <span
+      data-send-split
+      data-send-mode={mode}
+      className={`absolute bottom-2 flex h-7 rounded-lg transition-[color,background-color,scale] ${tone} ${armed ? "has-[[data-send]:active]:scale-95" : ""}`}
+      style={{ right, width: SEND_SPLIT_WIDTH }}
+    >
       <button
         type="button"
         data-send
@@ -77,14 +95,14 @@ export function SendSplitButton({
         aria-label="Send"
         style={{ width: SEND_SPLIT_LABEL_WIDTH, paddingLeft: LABEL_PAD_LEFT }}
         // Never `transition-all`: it animates box-shadow, which holds the hover edge back (styles.css).
-        className={`flex items-center rounded-l-lg text-[12px] font-medium leading-none outline-none transition-[color,background-color,opacity,scale] focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-bg ${tone} ${armed ? "hover:opacity-90 active:scale-95" : ""}`}
+        className={`flex items-center rounded-l-lg text-[12px] font-medium leading-none outline-none transition-[color,background-color] focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-bg ${hover}`}
       >
         {/* The word never changes, so nothing beside the button moves when the way of sending does. */}
         {busy ? <Loader2 size={14} strokeWidth={2.5} className="animate-spin" /> : <span data-send-label>Send</span>}
       </button>
-      {/* The hairline is its own 1px column wearing the button's fill, so the two halves read as one
-          surface with a short rule on it rather than as two buttons with a gap between them. */}
-      <span aria-hidden className={`flex items-center ${armed ? "bg-fg" : "bg-panel-2"}`} style={{ width: SEND_SPLIT_SEAM_WIDTH }}>
+      {/* The hairline is its own 1px column on the pill's fill, so the two halves read as one surface
+          with a short rule on it rather than as two buttons with a gap between them. */}
+      <span aria-hidden className="flex items-center" style={{ width: SEND_SPLIT_SEAM_WIDTH }}>
         <span className={`h-3.5 w-px ${armed ? "bg-bg/25" : "bg-fg/15"}`} />
       </span>
       <RadixMenu.Root modal={false}>
@@ -94,7 +112,7 @@ export function SendSplitButton({
             data-send-menu
             aria-label="Choose how this is sent"
             style={{ width: SEND_SPLIT_CARET_WIDTH, paddingLeft: CARET_PAD_LEFT }}
-            className={`flex items-center rounded-r-lg outline-none transition-[color,background-color,opacity] focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-bg ${tone} ${armed ? "hover:opacity-90" : "hover:text-fg"}`}
+            className={`flex items-center rounded-r-lg outline-none transition-[color,background-color] focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-bg ${armed ? hover : "hover:text-fg"}`}
           >
             <ChevronDown data-send-caret size={13} strokeWidth={2.5} />
           </button>

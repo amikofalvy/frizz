@@ -182,8 +182,10 @@ export async function checkSurfaceStates({ page, url, font, palette, out, check,
   await contrast("selected-question")
   const outlineContract = await page.evaluate(() => {
     const question = getComputedStyle(document.querySelector('.bg-question'))
+    // The split pill paints the fill; its Send half paints only a hover tint over it.
+    const fill = getComputedStyle(document.querySelector('[data-send-split]'))
     const send = getComputedStyle(document.querySelector('[data-send-split] [data-send]'))
-    return { question: [question.backgroundColor, question.borderTopColor, question.borderTopWidth], send: [send.backgroundColor, send.color] }
+    return { question: [question.backgroundColor, question.borderTopColor, question.borderTopWidth], send: [fill.backgroundColor, send.color] }
   })
   if (palette === 'light') assert.deepEqual(outlineContract.question, ['rgb(255, 255, 255)', 'rgb(220, 220, 220)', '1px'])
   assert.notEqual(outlineContract.send[0], outlineContract.send[1], 'The armed Send keeps its word legible on its fill')
