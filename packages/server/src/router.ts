@@ -3645,7 +3645,15 @@ export function createRouter(ctx: AppContext) {
         const target = findOwnQuestion(input.slug, input.id)
         const withdrawn = target ? ctx.storage.withdrawThreadQuestion(input.slug, target.id, Date.now()) : false
         if (withdrawn) ctx.board.refresh()
-        return { withdrawn, open: openQuestionViews(input.slug) }
+        // NAMED BACK, by the worker's own id for the row. `sqlite-path` resolves to the `settings-store`
+        // it is a follow-up of, and until this said so the command reported "Question sqlite-path
+        // withdrawn" over a parent question the worker never named and may still have wanted answered.
+        // The state is the row's as the call found it — why nothing was withdrawn, when nothing was.
+        return {
+          withdrawn,
+          ...(target ? { id: target.handle ?? target.id, state: target.state } : {}),
+          open: openQuestionViews(input.slug),
+        }
       },
     }),
 

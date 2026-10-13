@@ -260,12 +260,22 @@ export function createQuestionRegistrar(deps: {
         const signature = `${row.session_id}|${sightings.length}|${newest.at}|${newest.text.length}`
         if (seen.get(row.slug) === signature) continue
         seen.set(row.slug, signature)
-        const sync = syncQuestionFences(deps.storage, {
-          slug: row.slug,
-          spawnedAt: row.spawned_at,
-          sightings,
-          autonomousGoal: autonomousGoalOf(row),
-        })
+        // ONE THREAD'S FAILURE IS ITS OWN. A throw here used to leave the loop, so every thread after
+        // this one in the registry waited for the next change to reach it. The signature is recorded
+        // first on purpose: a failure that repeats is logged once per change rather than on every poll,
+        // and the scheduler's own pass (evalQuestionFences, every tick, no memo) is the retry.
+        let sync: QuestionFenceSync
+        try {
+          sync = syncQuestionFences(deps.storage, {
+            slug: row.slug,
+            spawnedAt: row.spawned_at,
+            sightings,
+            autonomousGoal: autonomousGoalOf(row),
+          })
+        } catch (err) {
+          deps.log?.(`questions: ${row.slug} sweep failed: ${err instanceof Error ? err.message : String(err)}`)
+          continue
+        }
         if (sync.registered.length > 0) {
           registered = true
           deps.log?.(`questions: ${row.slug} registered ${sync.registered.map((q) => q.handle).join(", ")}`)

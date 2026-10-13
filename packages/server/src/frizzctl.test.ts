@@ -396,6 +396,31 @@ test("exit 0 is done, 1 is a failure, and 2 is a gate that held", async () => {
   }
 })
 
+test("unask reports the question that actually went, and why nothing did when nothing did", async () => {
+  // The server resolves a follow-up's id to the root it rides in (router `unask`); each reading below is
+  // what the worker is told for one answer of that call.
+  const answers: Record<string, unknown> = {
+    "sqlite-path": { withdrawn: true, id: "settings-store", state: "open", open: [] },
+    "settings-store": { withdrawn: true, id: "settings-store", state: "open", open: [] },
+    "npm-scope": { withdrawn: false, id: "npm-scope", state: "answered", open: [] },
+    "retry-backoff": { withdrawn: false, id: "retry-backoff", state: "dismissed", open: [] },
+    "no-such-id": { withdrawn: false, open: [] },
+  }
+  const fake = await fakeFrizz((procedure, body) => (procedure === "unask" ? { result: answers[body.id] } : undefined))
+  try {
+    const out = async (id: string) => (await run(["unask", id], { env: worker(fake) })).stdout
+    const viaFollowUp = await out("sqlite-path")
+    assert.match(viaFollowUp, /^sqlite-path is a follow-up of settings-store/)
+    assert.match(viaFollowUp, /question settings-store was withdrawn, follow-ups and all/)
+    assert.match(await out("settings-store"), /^Question settings-store withdrawn\./)
+    assert.match(await out("npm-scope"), /^Question npm-scope was already answered, so nothing was withdrawn — the answer reaches you as its own message\./)
+    assert.match(await out("retry-backoff"), /^Question retry-backoff was already dismissed by the human/)
+    assert.match(await out("no-such-id"), /^No OPEN question no-such-id on this thread/)
+  } finally {
+    fake.close()
+  }
+})
+
 // `watch-command` (2026-10-11): the server runs the check, so what the command line owes is the right
 // body, the refusal as exit 2 (it is the permission gate holding, with the background-shell fallback in
 // it), a first check that already passed read as "nothing armed", and `unwatch` reaching the right RPC.
