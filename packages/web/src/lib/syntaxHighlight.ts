@@ -121,11 +121,10 @@ export function escapeHtml(text: string): string {
 // element to hang a button on. That is the same constraint the sanitizer's local-file link already lives
 // under (markdown.ts), and the click is likewise handled by one delegated listener — lib/copy-code.ts.
 //
-// The WRAPPER dates from when `<pre>` scrolled sideways: a button positioned inside a scroller rides the
-// content and slides out of view the moment a long line is scrolled, so the anchor had to be an element
-// that does not scroll. Code wraps now (styles.css `.md-body pre`); the wrapper stays as the frame a
-// block's title, tabs and show-all button are drawn in (lib/codeBlock.ts). A SPAN rather than a div for
-// the reason markdown.ts's frameImage gives —
+// The WRAPPER exists because `<pre>` is the scroller (`overflow-x: auto`, and with the Wrap code setting
+// off a long line really does scroll): a button positioned inside it rides the content and slides out of
+// view the moment a long line is scrolled, so the anchor has to be an element that does not scroll. A
+// SPAN rather than a div for the reason markdown.ts's frameImage gives —
 // this HTML is re-parsed by the browser when a surface injects it, and a non-phrasing wrapper makes the
 // parser restructure the block around it; `.md-code` supplies the display/position it needs.
 //

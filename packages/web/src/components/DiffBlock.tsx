@@ -41,7 +41,8 @@ export function PathLink({ path, className = "", children }: { path: string; cla
 // (consecutive same-file edits merge upstream in collapseTools): a bordered block with a header row
 // (clickable file path + summed +N/−N counts) and a syntax-highlighted, line-numbered body. Multiple
 // edits stack as sequential hunk groups under the one header, divided by a hairline. A long line
-// wraps under its own code (lib/diff/diff.css). In compact mode the body is hidden — the
+// wraps under its own code, or with the Wrap code setting off the body scrolls sideways, never the
+// page (lib/diff/diff.css). In compact mode the body is hidden — the
 // header alone shows — and its explicit chevron control expands that one block.
 export function DiffBlock({ edits, meta }: { edits: TranscriptEdit[]; meta?: React.ReactNode }) {
   const { compactDiffs } = useSnapshot(prefs)

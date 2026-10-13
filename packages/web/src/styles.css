@@ -1214,14 +1214,11 @@ a[href] {
 [data-question-option]:not(:has(> button:disabled)) {
   cursor: pointer;
 }
-/* An option's markdown BODY can carry a code block (a diff, the message that would be posted). The
-   raise dates from when a wide block scrolled sideways: its pixels had to be OUT from under the
-   stretched button, or wheel/drag scrolling targeted the button and the overflow was unreachable.
-   Code wraps now (`.md-body pre`), so nothing here scrolls, and a fenced block paints above the button
-   anyway, through its positioned `.md-code` wrapper (hit-tested 2026-10-13 with this rule off); it
-   still matters to a `pre` that has no wrapper, a diagram's unparsed source. Unlike a link, a click
-   here must still pick the option: the chip's div-level onClick routes it (QuestionBlockCard's Chip),
-   skipping only links and real text selections. */
+/* An option's markdown BODY can carry a code block (a diff, the message that would be posted), and
+   with Wrap code off a wide one h-scrolls — which needs its pixels OUT from under the stretched
+   button, or wheel/drag scrolling targets the button and the overflow is unreachable. Unlike a link,
+   a click here must still pick the option: the chip's div-level onClick routes it (QuestionBlockCard's
+   Chip), skipping only links and real text selections. */
 [data-question-option] .md-body pre {
   position: relative;
   z-index: 1;
@@ -1287,19 +1284,26 @@ a[href] {
 [data-question-option] .md-body th {
   background: color-mix(in srgb, var(--color-fg) 6%, transparent);
 }
-/* CODE WRAPS, the way the prompt box does: a line breaks at its spaces, and a token longer than the
-   line breaks wherever it has to. On every surface — it scrolled sideways everywhere but the Queue's
-   column until 2026-10-13 (maintainer: "code blocks should auto-wrap, just like the prompt box"), which
-   hid the end of every long line behind a scroll nobody makes. `anywhere` rather than `break-word` so
-   a block's longest token never counts toward the width of whatever holds it. `overflow-x` is left as
-   the backstop it is on a Bash card (lib/diff/diff.css): anything that still cannot fit scrolls inside
-   the block, never the page. */
+/* CODE WRAPS BY DEFAULT, the way the prompt box does: a line breaks at its spaces, and a token longer
+   than the line breaks wherever it has to (maintainer 2026-10-13: "code blocks should auto-wrap, just
+   like the prompt box"). It is a SETTING — "Wrap code", a browser preference that lib/codeWrap.ts
+   mirrors onto <html> as `data-code-wrap` — and Off is what every surface but the Queue's column did
+   until that day: each line stays on one line and its block scrolls sideways.
+
+   The choice travels as ONE custom property, read here and by the Edit card's rows (lib/diff/diff.css).
+   A surface that wraps whatever the setting says — a card's narrow column, TranscriptCard QUEUE_WRAP —
+   sets the property on itself and wins by inheritance, with no selector to out-rank. `anywhere` rather
+   than `break-word` so a wrapped block's longest token never counts toward the width of whatever holds
+   it. `overflow-x` is the sideways scroll when the setting is off, and a backstop when it is on. */
+html[data-code-wrap="off"] {
+  --code-wrap: pre;
+}
 .md-body pre {
   background: var(--color-bg);
   border: 1px solid var(--color-border);
   border-radius: var(--block-radius);
   padding: 0.75em 1em;
-  white-space: pre-wrap;
+  white-space: var(--code-wrap, pre-wrap);
   overflow-wrap: anywhere;
   overflow-x: auto;
 }
@@ -1600,10 +1604,9 @@ a[href] {
 }
 /* ── Fenced-code copy button ────────────────────────────────────────────────────────────────────
    lib/syntaxHighlight.ts wraps every fenced block in this span and appends the button; one delegated
-   listener (lib/copy-code.ts) does the copying. The wrapper dates from when the `<pre>` above scrolled
-   sideways: an absolutely-positioned button anchored to a scroller rides the content and slides out of
-   view. Code wraps now, and the wrapper stays as the box a block's rows are framed in (see Framed code
-   blocks below).
+   listener (lib/copy-code.ts) does the copying. The wrapper exists because the `<pre>` above SCROLLS
+   when Wrap code is off: an absolutely-positioned button anchored to it rides the content and slides
+   out of view the moment a long line is scrolled sideways.
 
    The wrapper is now what stands in the prose flow, so the block rhythm (--md-step) moves onto it and
    the `pre` inside gives its own margin up. The first/last-child resets have to name it explicitly:
@@ -1716,10 +1719,10 @@ a[href] {
   /* Opaque, and one step up from the `pre`'s own bg: a code line long enough to run under the button
      must be occluded rather than showing through it.
      THE BUTTON OVERLAYS THE FIRST LINE; it does not reserve room. Reserving would mean ~2.5em of
-     right padding on every line of every block, and code wraps at that edge, so in the Queue's narrow
-     column it costs about three characters per line on every line — far more than the one character
-     the overlay can hide, on the first line, only while hovered. Every code viewer this is modelled
-     on overlays for the same reason. */
+     right padding on every line of every block, and wrapped code breaks at that edge, so in the
+     Queue's narrow column it costs about three characters per line on every line — far more than the
+     one character the overlay can hide, on the first line, only while hovered. Every code viewer this
+     is modelled on overlays for the same reason. */
   background: var(--color-panel-2);
   color: var(--color-muted);
   cursor: pointer;
@@ -1917,10 +1920,14 @@ a[href] {
   padding-left: 0;
   padding-right: 0;
 }
-/* Code wraps (`.md-body pre`), so every line is as wide as the block, and a band under a line that
-   wraps runs border to border under each line it wraps to. */
+/* Where code WRAPS (the default, and always in a card's column) every line is as wide as the block,
+   and a band under a line that wraps runs border to border under each line it wraps to. With Wrap code
+   off the block scrolls sideways, and this is as wide as its longest line, so a band reaches the end of
+   the line it colours and not just the edge of the viewport; never narrower than the block. */
 .md-body pre:is(.md-code-lined, .md-diff) > code {
   display: block;
+  width: fit-content;
+  min-width: 100%;
 }
 .md-body :is(.md-line, .md-diff-row) {
   display: block;
@@ -1984,9 +1991,13 @@ a[href] {
 }
 /* A hunk header divides the diff; the lines git writes about a file sit back from the code.
    The header ends in whatever line of code git found above the hunk, which is routinely longer than
-   anything in it, and a block must not grow a second line for its own metadata: it is the one row that
-   does not wrap, and the text is cut with an ellipsis. Copy still takes it all. */
+   anything in it, and a block must neither grow a second line nor scroll sideways for its own
+   metadata: it is the one row that never wraps. `width: 0` takes the row out of the `code`'s width (a
+   percentage min-width counts for nothing there) and `min-width` then stretches it to whatever the
+   code came to; the text is cut with an ellipsis. Copy still takes it all. */
 .md-body .md-diff-hunk {
+  width: 0;
+  min-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

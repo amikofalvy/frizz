@@ -312,6 +312,43 @@ test("marked lines, rendered diffs and long blocks draw, copy and open on the sh
     assert.equal(editCard.hangs, true, "a wrapped line continues under its code, not under its number or sign")
     assert.ok(Math.abs(editCard.rowWidth - editCard.bodyWidth) < 1, `the wrapped line's tint spans the card: ${editCard.rowWidth}px of ${editCard.bodyWidth}px`)
 
+    // ── Wrap code, off ────────────────────────────────────────────────────────────────────────────
+    // The setting is a browser preference that lib/codeWrap.ts mirrors onto <html>; the fixture's
+    // button writes the same preference the Settings row does. Blocks that are already drawn follow
+    // it: every line keeps to one line, and its block scrolls sideways instead.
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.codeWrap), "on")
+    await page.click("[data-wrap-code]")
+    await page.waitForFunction(() => document.documentElement.dataset.codeWrap === "off")
+    const unwrapped = await page.evaluate(() => {
+      const pre = document.querySelector<HTMLElement>("[data-case=marked-wide] pre")!
+      const band = pre.querySelector<HTMLElement>(".is-marked")!
+      const short = pre.querySelector<HTMLElement>(".md-line:not(.is-marked)")!
+      const scrolls = (el: Element) => el.scrollWidth - el.clientWidth
+      return {
+        scrolls: scrolls(pre),
+        lines: band.getBoundingClientRect().height / short.getBoundingClientRect().height,
+        band: band.getBoundingClientRect().width,
+        scrollWidth: pre.scrollWidth,
+        diff: scrolls(document.querySelector("[data-case=diff-wide] pre")!),
+        git: scrolls(document.querySelector("[data-case=diff-git] pre")!),
+        editCard: scrolls(document.querySelector("[data-case=edit-card] .frizz-diff-body")!),
+        narrow: [...document.querySelectorAll("[data-case=narrow] pre")].map(scrolls),
+      }
+    })
+    assert.ok(unwrapped.scrolls > 100, `with wrapping off the long marked line scrolls its block, by ${unwrapped.scrolls}px`)
+    assert.ok(Math.abs(unwrapped.lines - 1) < 0.05, `and is drawn on one line, not ${unwrapped.lines}`)
+    // The band is as long as the line, not as wide as the viewport.
+    assert.ok(Math.abs(unwrapped.band - unwrapped.scrollWidth) < 1, `band ${unwrapped.band}px of ${unwrapped.scrollWidth}px`)
+    assert.ok(unwrapped.diff > 100, "a wide diff fence scrolls sideways")
+    assert.ok(unwrapped.editCard > 100, "the Edit card's body scrolls sideways")
+    // A hunk header longer than the code under it is still cut, rather than being what makes a block scroll.
+    assert.equal(unwrapped.git, 0)
+    assert.deepEqual(unwrapped.narrow, [0, 0, 0], "a card's narrow column wraps whatever the setting says")
+    // And back on, the same blocks wrap again.
+    await page.click("[data-wrap-code]")
+    await page.waitForFunction(() => document.documentElement.dataset.codeWrap === "on")
+    assert.equal(await page.$eval("[data-case=marked-wide] pre", (pre) => pre.scrollWidth - pre.clientWidth), 0)
+
     // Inside an answer chip the button is above the chip's stretched hit area, so the click reaches it.
     const hit = await page.$eval("[data-case=chip] .md-code-expand", (button) => {
       // elementFromPoint answers only inside the viewport, and the chip is below the fold.
