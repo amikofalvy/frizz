@@ -75,12 +75,18 @@ async function fakeFrizz(answer: (procedure: string, body: any) => { status?: nu
 
 interface Ran { code: number | null; stdout: string; stderr: string }
 
+/** This process's environment minus the Frizz identity a test runner inside a worker would leak in:
+ *  left set, FRIZZ_SERVER_LOCK points a child at the LIVE server the worker belongs to. */
+function unleaked(): NodeJS.ProcessEnv {
+  return { ...process.env, FRIZZ_THREAD: "", FRIZZ_THREAD_SLUG: "", FRIZZ_STATE_DIR: "", FRIZZ_PERM_DIR: "", FRIZZ_SERVER_LOCK: "", FRIZZ_PROJECT_ID: "" }
+}
+
 /** One invocation. `env` REPLACES the Frizz identity a test runner inside a worker would leak in. */
 function run(argv: string[], opts: { env?: Record<string, string>; stdin?: string; cwd?: string; holdStdinOpen?: boolean } = {}): Promise<Ran> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [FRIZZCTL, ...argv], {
       cwd: opts.cwd ?? mkdtempSync(join(tmpdir(), "frizzctl-cwd-")),
-      env: { ...process.env, FRIZZ_THREAD: "", FRIZZ_THREAD_SLUG: "", FRIZZ_STATE_DIR: "", FRIZZ_PERM_DIR: "", FRIZZ_SERVER_LOCK: "", FRIZZ_PROJECT_ID: "", ...opts.env },
+      env: { ...unleaked(), ...opts.env },
       stdio: ["pipe", "pipe", "pipe"],
     })
     let stdout = ""
@@ -242,7 +248,7 @@ test("a body through a quoted heredoc reaches Frizz byte for byte — backticks,
     const script = `frizzctl done --body-file - <<'EOF'\n${body}\nEOF`
     const ran = await new Promise<Ran>((resolve) => {
       const child = spawn("sh", ["-c", script], {
-        env: { ...process.env, ...worker(fake), FRIZZ_THREAD_SLUG: "", FRIZZ_NODE: process.execPath, PATH: `${BIN}${delimiter}${process.env.PATH}` },
+        env: { ...unleaked(), ...worker(fake), FRIZZ_THREAD_SLUG: "", FRIZZ_NODE: process.execPath, PATH: `${BIN}${delimiter}${process.env.PATH}` },
         stdio: ["ignore", "pipe", "pipe"],
       })
       let stdout = ""
@@ -468,7 +474,7 @@ test("every example in every command's help runs as written", async () => {
         const ran = await new Promise<Ran>((resolve) => {
           const child = spawn("sh", ["-c", example], {
             cwd,
-            env: { ...process.env, ...worker(fake), FRIZZ_THREAD_SLUG: "", FRIZZ_NODE: process.execPath, PATH: `${BIN}${delimiter}${process.env.PATH}` },
+            env: { ...unleaked(), ...worker(fake), FRIZZ_THREAD_SLUG: "", FRIZZ_NODE: process.execPath, PATH: `${BIN}${delimiter}${process.env.PATH}` },
             stdio: ["ignore", "pipe", "pipe"],
           })
           let stdout = ""
@@ -511,7 +517,7 @@ test("every frizzctl example the worker contract writes out runs as written, and
         const ran = await new Promise<Ran>((resolve) => {
           const child = spawn("sh", ["-c", example], {
             cwd: mkdtempSync(join(tmpdir(), "frizzctl-contract-")),
-            env: { ...process.env, ...worker(fake), FRIZZ_THREAD_SLUG: "", FRIZZ_NODE: process.execPath, PATH: `${BIN}${delimiter}${process.env.PATH}` },
+            env: { ...unleaked(), ...worker(fake), FRIZZ_THREAD_SLUG: "", FRIZZ_NODE: process.execPath, PATH: `${BIN}${delimiter}${process.env.PATH}` },
             stdio: ["ignore", "pipe", "pipe"],
           })
           let stdout = ""
