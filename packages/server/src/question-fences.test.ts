@@ -511,7 +511,7 @@ test("a fence under a refused question is refused by name too — nothing in a m
     const clash = { at: at(1), text: `${choice("spent", "A different question?")}\n\n${child("under-spent", "spent = SQLite")}` }
     const out = sync(h.storage, [clash])
     assert.deepEqual(out.faults.map((f) => f.id), ["spent", "under-spent"])
-    assert.match(out.faults[1].faults[0], /it follows `spent`, which could not be asked/)
+    assert.equal(out.faults[1].faults[0], "its `when:` hangs this question off `spent`, which could not register — it goes with it, so write both again")
     assert.deepEqual(unaccounted(h.storage, out, clash), [])
     const auto = { at: at(2), text: `${choice("auto")}\n\n${child("under-auto", "auto = SQLite")}` }
     const refused = sync(h.storage, [auto], { autonomousGoal: "Keep going." })
