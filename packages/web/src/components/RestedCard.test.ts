@@ -91,3 +91,32 @@ test("on a thread that speaks the question fence, a fence that did not read is n
   assert.equal(showsRestedCard({ ...bare, spawnedAt: "2026-09-01T12:00:00.000Z" }, broken("```")), false)
   assert.equal(showsRestedCard(bare, broken("```")), false, "an unknown dispatch instant reads as legacy")
 })
+
+// A fence the server REFUSED asked the human nothing, exactly like one that did not read — but it reads
+// fine, so only the board can say (ThreadView.questionFaults, hung on the message by lib/questionFaults).
+test("on a thread that speaks the question fence, a rest whose only fence the server refused is a bare rest", () => {
+  const speaks: RestedCardThread = { ...bare, spawnedAt: "2026-10-14T00:00:00.000Z" }
+  const reused = "A different question:\n\n```question\nid: store\nkind: choice\nquestion: Which region?\noptions:\n  - label: us-east\n  - label: eu-west\n```"
+  assert.equal(showsRestedCard(speaks, reused), false, "no fault yet: the registrar is a second behind, and the question is about to be answerable")
+  assert.equal(showsRestedCard(speaks, reused, new Set()), false)
+  assert.equal(showsRestedCard(speaks, reused, new Set(["store"])), true, "refused: nobody was asked, and the card says Frizz is nudging the worker")
+  assert.equal(showsRestedCard(speaks, reused, new Set(["other"])), false, "a refusal of some other fence is not this one's")
+  // Beside a fence that held, the rest still ends on a question.
+  const both = `${reused}\n\n\`\`\`question\nid: fresh\nkind: text\nquestion: Ship it?\n\`\`\``
+  assert.equal(showsRestedCard(speaks, both, new Set(["store"])), false)
+})
+
+// A fence whose question CLOSED without an answer asks nobody either: the human dismissed it, Frizz
+// cancelled it because the thread runs autonomously, or the worker withdrew it.
+test("a rest whose only fence names a question that closed without an answer is a bare rest", () => {
+  const speaks: RestedCardThread = { ...bare, spawnedAt: "2026-10-14T00:00:00.000Z" }
+  const text = "I hit a fork.\n\n```question\nid: retry-policy\nkind: choice\nquestion: Retry or quarantine?\noptions:\n  - label: Retry\n  - label: Quarantine\n```"
+  assert.equal(showsRestedCard(speaks, text), false, "no row yet: about to be asked")
+  const closed = (state: "dismissed" | "withdrawn") => [{ id: "qst_1", handle: "retry-policy", state, askedAt: "2026-10-14T10:00:00.000Z" }]
+  assert.equal(showsRestedCard({ ...speaks, closedQuestions: closed("dismissed") }, text), true)
+  assert.equal(showsRestedCard({ ...speaks, closedQuestions: closed("withdrawn") }, text), true)
+  assert.equal(showsRestedCard({ ...speaks, closedQuestions: [{ ...closed("dismissed")[0], handle: "other" }] }, text), false, "some other question closed, not this one")
+  // …and it composes with a refusal in the same message.
+  const both = `${text}\n\n\`\`\`question\nid: ghost\n\`\`\``
+  assert.equal(showsRestedCard({ ...speaks, closedQuestions: closed("dismissed") }, both, new Set(["ghost"])), true)
+})

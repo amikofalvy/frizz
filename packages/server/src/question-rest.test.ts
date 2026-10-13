@@ -12,6 +12,7 @@ import { boardAskThread, formatThreadMessage, humanGapNote, limitResumeSteer, me
 import { Bus } from "./bus.ts"
 import { createBoard } from "./board.ts"
 import type { Project } from "./project.ts"
+import { createQuestionFaultBook } from "./question-fences.ts"
 import { createScheduler } from "./scheduler.ts"
 import { createStorage, type SessionRow } from "./storage.ts"
 import { applyEvent, applyRecord, newTailState, type SessionTelemetry, type Tailer } from "./tailer.ts"
@@ -50,12 +51,14 @@ function world(over: Partial<SessionRow> = {}) {
   } as unknown as Tailer
   const sent: string[] = []
   let clock = Date.parse(at(0))
+  // One book for both, as in the server's context: the scheduler's pass writes it, the board reads it.
+  const questionFaults = createQuestionFaultBook()
   const scheduler = createScheduler({
-    wakeQuietWindowMs: 0, storage, fetchPr: async () => undefined, fetchGithubReview: async () => [],
+    wakeQuietWindowMs: 0, storage, fetchPr: async () => undefined, fetchGithubReview: async () => [], questionFaults,
     tailer, resume: async (_slug: string, message: string, deliveryId: string) => { sent.push(`${message}\n\n${wakeDeliveryToken(deliveryId)}`) }, log: () => {}, now: () => clock,
   } as never)
   const project: Project = { dir, id: "p", name: "fixture", label: "fixture", stateDir: dir, cwdSlug: "fixture" }
-  const board = createBoard(project, storage, new Bus(), tailer, "question-rest", { claudeBrokerDaemonAlive: () => true })
+  const board = createBoard(project, storage, new Bus(), tailer, "question-rest", { claudeBrokerDaemonAlive: () => true, questionFaults: (x) => questionFaults.of(x) })
   return {
     /** Every delivery the scheduler sent, as it lands in the transcript: the message and its token. */
     storage, scheduler, board, sent, extra,
@@ -561,4 +564,68 @@ test("a message typed while the worker is mid-turn moves the boundary when it wa
     v.user(6, typed)
     assert.equal(v.fold.restFromAt, at(6))
   } finally { v.close() }
+})
+
+// ── A REFUSED fence is not a reference ───────────────────────────────────────────────────────────────
+
+// A worker reuses an open question's id for a DIFFERENT question, after the human has typed past the
+// first. The registrar refuses the second fence. Read by id alone it was also a reference to the first:
+// the old question stood again, the thread queued on a question its newest message never mentions, and a
+// rest that had asked nothing read as signed off. The fault says the fence named nothing.
+test("a fence refused for reusing an open question's id does not make that question stand again", async () => {
+  const w = world()
+  try {
+    w.user(0, "move the settings into a real store")
+    w.say(1, `One call to make first.\n\n${choice("store")}`)
+    await w.tick(2)
+    assert.deepEqual(w.view().questions.map((q) => q.standing), [true])
+    w.user(3, "do the docs first")
+    w.say(4, "Docs are in.")
+    await w.tick(5)
+    assert.deepEqual(w.view().questions.map((q) => q.standing), [false], "the human typed past it: it has faded")
+    // The reuse: same id, a different question.
+    w.user(6, "and the region?")
+    w.say(7, fence("question", "id: store\nkind: choice\nquestion: Which region?\noptions:\n  - label: us-east\n  - label: eu-west"))
+    await w.tick(8)
+    const view = w.view()
+    assert.deepEqual(view.questionFaults?.map((f) => [f.at, f.id]), [[at(7), "store"]], "the board carries the refusal")
+    assert.deepEqual(view.questions.map((q) => [q.spec.question, q.standing]), [["SQLite or a JSON file?", false]], "still faded: the refused fence referenced nothing")
+    assert.ok(w.deliveries().some((id) => id.startsWith("park:question-fence:")), "and the worker is corrected for it")
+    // Negative control: a real reference at the next rest does make it stand.
+    w.user(9, w.sent[w.sent.length - 1])
+    w.say(10, fence("question", "id: store"))
+    await w.tick(11)
+    assert.deepEqual(w.view().questions.map((q) => q.standing), [true])
+  } finally { w.close() }
+})
+
+// ── A question that closed without an answer is still a fence in the transcript ──────────────────────
+
+test("the view lists fence-asked questions that were dismissed or withdrawn, so their fences do not read as asked", async () => {
+  const w = world()
+  try {
+    w.user(0, "go")
+    w.say(1, `Two calls.\n\n${choice("store")}\n\n${choice("region")}`)
+    await w.tick(2)
+    assert.equal("closedQuestions" in w.view(), false, "nothing closed: no field")
+    const [store, region] = w.storage.listThreadQuestions("t")
+    w.storage.dismissThreadQuestion(store.id, Date.parse(at(3)))
+    w.storage.withdrawThreadQuestion("t", region.id, Date.parse(at(3)))
+    assert.deepEqual(w.view().closedQuestions?.map((q) => [q.handle, q.state, q.askedAt]), [["store", "dismissed", at(1)], ["region", "withdrawn", at(1)]])
+    assert.deepEqual(w.view().questions, [])
+  } finally { w.close() }
+})
+
+test("a Goal thread's question is on the view as dismissed from the first board that sees its fence", async () => {
+  const w = world()
+  try {
+    w.storage.setRecurringPromptBySlug("t", { prompt: "Keep going until the suite is green.", stopHook: true, heartbeat: false, postCompaction: false, intervalMs: null, armedAt: at(0) })
+    w.user(0, "go")
+    w.say(1, `One call to make first.\n\n${choice("store")}`)
+    await w.tick(2)
+    const view = w.view()
+    assert.deepEqual(view.closedQuestions?.map((q) => [q.handle, q.state]), [["store", "dismissed"]])
+    assert.deepEqual(view.questions, [], "never an open card")
+    assert.equal(view.questionFaults, undefined, "and not a fault: it is on the record")
+  } finally { w.close() }
 })

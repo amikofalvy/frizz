@@ -8,7 +8,7 @@ import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import watcher from "@parcel/watcher"
 import type { BoardSnapshot, ClaudeModel, ThreadView, RuntimeState, ThreadRecurringPrompt, ProviderError } from "@frizz/shared"
-import { standingQuestions } from "./question-fences.ts"
+import { standingQuestions, type QuestionFenceFault } from "./question-fences.ts"
 import { AskedQuestionSchema, BoardDiffer, PermissionMode, SnoozeUntil, ThreadSlug, awaitingNeedsInput, formatElapsed, awaitingStatus, awaitingSteps, isDirectSubAgent, splitDoneFrontmatter, needsInputRequired, questionAnswerMessage, questionsCancelledWakeMessage, type AskedQuestion, type PermissionMode as PermissionModeValue, type QuestionAnswer, type QuestionDismissal } from "@frizz/shared"
 import type { Bus } from "./bus.ts"
 import type { Project } from "./project.ts"
@@ -1655,6 +1655,9 @@ function sessionThreadView(
   // The pinned Claude runtime's resolved catalogue (claude-models.ts peekClaudeModels), for the edition a
   // thread runs against the one its family now resolves to. Undefined until the first probe lands.
   claudeCatalogue: readonly ClaudeModel[] | undefined = undefined,
+  // The ```question fences this thread's latest sync REFUSED (question-fences.ts QuestionFaultBook), so
+  // the web can draw each as the code block it is instead of a card. Undefined when it refused nothing.
+  questionFaults: readonly QuestionFenceFault[] | undefined = undefined,
 ): ThreadView {
   // A REGISTERED completion is presented to everything below as the ```done fence it replaces — same
   // shape, same three predicates, same card — so the two cannot render as two different endings while
@@ -1712,12 +1715,22 @@ function sessionThreadView(
   // sessionIndicatorKind, shared needsAction): told only "open", they marked a parked or finished thread
   // [?] for a question the queue no longer held it on. An older open question stays answerable where it
   // was asked, and on the card, but says nothing about where this rest sits (2026-10-13).
-  const standingIds = new Set(standingQuestions(questionRows, rawTele).map((q) => q.id))
+  const standingIds = new Set(standingQuestions(questionRows, rawTele, questionFaults).map((q) => q.id))
   const questions: ThreadView["questions"] = []
   for (const q of questionRows) {
     if (q.state !== "open") continue
     const spec = safeQuestionSpec(q.spec)
     if (spec) questions.push({ id: q.id, spec, askedAt: new Date(q.asked_at).toISOString(), standing: standingIds.has(q.id) })
+  }
+  // The FENCE-ASKED questions that closed WITHOUT an answer: dismissed (by the human's ×, or by Frizz the
+  // moment an autonomous thread wrote one) or withdrawn by the worker. Their fences are still in the
+  // transcript, and a fence with no open and no answered row is otherwise drawn as a question about to
+  // become answerable — so a Goal thread's cancelled question sat on the page looking asked (seen on a
+  // stack, 2026-10-13). Only rows with a handle: a question the `ask` RPC registered has no fence to draw.
+  const closedQuestions: NonNullable<ThreadView["closedQuestions"]> = []
+  for (const q of questionRows) {
+    if ((q.state !== "dismissed" && q.state !== "withdrawn") || !q.handle) continue
+    closedQuestions.push({ id: q.id, handle: q.handle, state: q.state, askedAt: new Date(q.asked_at).toISOString() })
   }
   // The dismissal-only case counts as in flight EXACTLY when a cancellation wake is coming — an armed
   // rest Goal with text, the same gate the scheduler's evalQuestionAnswers wakes on. Anything looser
@@ -1869,6 +1882,11 @@ function sessionThreadView(
     pendingAsk: tele?.pendingAsk ? { questions: tele.pendingAsk.questions } : undefined,
     pendingQuestion: tele?.pendingQuestion ?? false,
     questions,
+    ...(closedQuestions.length > 0 ? { closedQuestions } : {}),
+    // Absent unless something was refused.
+    ...(questionFaults && questionFaults.length > 0
+      ? { questionFaults: questionFaults.map((f) => ({ at: f.at, ...(f.id ? { id: f.id } : {}), faults: [...f.faults] })) }
+      : {}),
     answersInFlight: inFlightAnswers,
     deliveryInFlight: deliveryInFlight || undefined,
     lastUserAt: tele?.lastUserAt,
@@ -2070,6 +2088,8 @@ export interface BoardManagerDeps {
   claudeBrokerDaemonAlive?: ClaudeBrokerLivenessReader
   /** The pinned Claude runtime's resolved catalogue, read synchronously per build (peekClaudeModels). */
   claudeModels?: () => readonly ClaudeModel[] | undefined
+  /** What a thread's latest question-fence sync refused (question-fences.ts QuestionFaultBook). */
+  questionFaults?: (slug: string) => readonly QuestionFenceFault[] | undefined
 }
 
 export function createBoard(
@@ -2085,6 +2105,7 @@ export function createBoard(
   const codexTurnLiveness = deps.codexTurnLiveness ?? (() => undefined)
   const claudeBrokerDaemonAlive = deps.claudeBrokerDaemonAlive ?? (() => true)
   const claudeModels = deps.claudeModels ?? (() => undefined)
+  const questionFaults = deps.questionFaults ?? (() => undefined)
   let cached: BoardSnapshot | null = null
   let parcelSub: watcher.AsyncSubscription | null = null
   let watchSetup: Promise<void> | null = null
@@ -2190,6 +2211,7 @@ export function createBoard(
         github,
         issueBook,
         claudeModels(),
+        questionFaults(row.slug),
       ))
     }
     for (const key of pendingInteractionCache.keys()) {

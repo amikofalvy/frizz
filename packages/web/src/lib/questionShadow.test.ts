@@ -332,3 +332,11 @@ test("a later rest's `when:` follow-up claims its parent's card into that messag
   const silent = later.map((m, i) => (i === 3 ? { ...m, text: "Docs are in." } : m))
   assert.deepEqual([...placeQuestions(silent, [FENCED_ROW]).placed.keys()], [1])
 })
+
+test("a row known only by its handle — a question that closed without an answer — still resolves by that name", () => {
+  const closed = { id: "qst_closed00001", handle: "Retry-Policy", closed: "dismissed" as const }
+  assert.deepEqual(questionNames(closed), ["qst_closed00001", "retry-policy"])
+  assert.equal(resolveQuestionName("retry-policy", [closed]), closed)
+  assert.equal(resolveQuestionName("QST_closed00001", [closed]), closed)
+  assert.equal(resolveQuestionName("other", [closed]), undefined)
+})

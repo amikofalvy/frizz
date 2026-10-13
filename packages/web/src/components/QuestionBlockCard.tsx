@@ -62,6 +62,7 @@ export function QuestionBlockCard({
   aside,
   label,
   settled,
+  pending,
 }: {
   /** Producer 1: the raw body of a ```question fence, parsed here. */
   raw?: string
@@ -86,6 +87,11 @@ export function QuestionBlockCard({
    *  `text` an answer that named none, and neither ⇒ the ask ended unanswered, which renders a muted
    *  "Not answered" note. */
   settled?: { chosenIdxs: number[]; text?: string }
+  /** A question that is about to become answerable — a ```question fence in the second before the server
+   *  registers its row (UnregisteredQuestionCard). Read-only, but drawn with the ROWS the answerable card
+   *  has: the free-text row, disabled. Without it the card grew by that row the moment it went live
+   *  (393 → 430.5px on a two-option choice, measured 2026-10-13), pushing everything under it down. */
+  pending?: boolean
 }) {
   const parsed = useMemo(
     () => question ?? parseQuestionBlock(raw ?? "", questionKind ?? "question", danger),
@@ -187,7 +193,7 @@ export function QuestionBlockCard({
           <LinkedHtml className={`md-body${wrap ? ` ${QUEUE_WRAP}` : ""}`} html={detailHtml} />
         </div>
       )}
-      {(parsed.options.length > 0 || interactive) && (
+      {(parsed.options.length > 0 || interactive || pending) && (
         // Options stack in a SINGLE full-width column (maintainer 2026-07-10: a 2-col grid read as
         // ragged, uneven columns with dead whitespace once option text got long). One chip per row;
         // the free-text row keeps col-span-full so the "something else…" answer gets the whole line.
@@ -380,6 +386,46 @@ export function QuestionBlockCard({
               }`}
             />
             )}
+            </div>
+          )}
+          {/* THE SAME ROW BEFORE IT CAN BE TYPED IN (`pending`): the identical box — the same textarea, sized
+              by the same effect — disabled. With options it wears the plain numeral the read-only option
+              rows wear, and that is why its placeholder is drawn as TEXT over the box rather than by the
+              textarea: Chrome gives a textarea that cannot be edited (disabled, read-only or inert, all
+              three measured 2026-10-13) no first-line baseline, so a numeral baseline-aligned beside it
+              dropped 12px to the box's bottom edge and stretched the row 4.5px. The overlay repeats the
+              box's border and padding, so its line sits exactly where the textarea's own would, and the
+              numeral rides that line's baseline as it does in every option row. */}
+          {!interactive && pending && (
+            <div data-question-pending-text className="relative col-span-full">
+              {parsed.secret ? (
+                <>
+                  <input type="password" disabled tabIndex={-1} aria-hidden placeholder="Paste the value…" className="block w-full rounded-md border border-border bg-transparent py-1.5 pl-3 pr-3 text-[12px] leading-snug text-fg/90 outline-none placeholder:text-muted-80" />
+                  <SecretCaption className="mt-2 text-[11px] leading-snug text-muted" />
+                </>
+              ) : (
+                <>
+                  <textarea
+                    ref={taRef}
+                    data-1p-ignore
+                    rows={1}
+                    disabled
+                    tabIndex={-1}
+                    aria-hidden
+                    placeholder={parsed.options.length > 0 ? undefined : "Type your answer…"}
+                    className="block w-full min-w-0 resize-none overflow-hidden rounded-md border border-border bg-transparent px-3 py-1.5 text-[12px] leading-snug outline-none placeholder:text-muted-80"
+                  />
+                  {parsed.options.length > 0 && (
+                    <div aria-hidden className="pointer-events-none absolute inset-0 flex items-baseline border border-transparent py-1.5 pr-3 text-[12px] leading-snug text-muted-80">
+                      {/* 12 + the 1px border = the 13px every option row's numeral starts at; 8px on to the text. */}
+                      <span className="ml-3 mr-2 flex">
+                        <OptionKey n={parsed.options.length + 1} live={false} />
+                      </span>
+                      <span className="min-w-0 truncate">{isMulti ? "Add a note…" : "Something else…"}</span>
+                    </div>
+                  )}
+                </>
+              )}
             </div>
           )}
         </div>

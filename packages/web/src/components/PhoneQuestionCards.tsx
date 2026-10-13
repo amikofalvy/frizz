@@ -1,7 +1,7 @@
 import { createContext, useContext } from "react"
 import { Keyboard } from "lucide-react"
 import type { RegisteredQuestionView } from "@frizz/shared"
-import { useMarkdownHtml } from "../lib/useMarkdown.ts"
+import { useInlineMarkdownHtml, useMarkdownHtml } from "../lib/useMarkdown.ts"
 import { LinkedHtml } from "./LinkedHtml.tsx"
 
 // ON A PHONE THE TRANSCRIPT'S QUESTIONS ARE A READING SURFACE (mockup v2 §3, "The questions in the
@@ -61,7 +61,7 @@ function CompactQuestion({ q, n }: { q: RegisteredQuestionView; n: number }) {
         <div key={i} data-compact-option className="flex gap-2 py-0.5 pl-[30px] pr-3.5 text-muted">
           <span className="w-3 shrink-0 font-bold tabular-nums">{i + 1}</span>
           <span className="min-w-0">
-            {option.label}
+            <InlineLabel md={option.label} />
             {option.recommended && <span className="ml-1 text-[11px] font-semibold text-accent">RECOMMENDED</span>}
           </span>
         </div>
@@ -105,4 +105,12 @@ export function PhoneAnswerBar({ count, onAnswer, onReply }: { count: number; on
       </button>
     </>
   )
+}
+
+/** An option's label as the INLINE markdown it is — a worker writes `SQLite` or **Keep both** in a label
+ *  and the desktop chip renders it (QuestionBlockCard's Chip). Printed as text, the phone's sheet and list showed the
+ *  backticks and asterisks themselves (2026-10-13; the grammar's own example label has a code span). */
+export function InlineLabel({ md }: { md: string }) {
+  const html = useInlineMarkdownHtml(md)
+  return <LinkedHtml as="span" className="md-inline" html={html} />
 }
