@@ -124,3 +124,25 @@ test("a fence-asked question answered after a later reference stays in the refer
   const blind = settledQuestionPositions(messages, [settled("qst_a", "2026-10-13T10:02:00Z", "2026-10-13T10:08:00Z")])
   assert.equal(blind.placed.size, 0)
 })
+
+test("the answer's own optimistic bubble cannot pull the card it answers out of its fence slot", () => {
+  // The prompt box's send appends the Answers bubble with no instant and settles the card `pending` in
+  // the same commit. The bubble IS the answer, so it is outside what the card stood in.
+  const spec = { handle: "settings-store", question: "Which store?", kind: "question" as const }
+  const messages = [
+    msg("user", "2026-10-13T10:00:00Z"),
+    msg("assistant", "2026-10-13T10:02:00Z", "Lead.\n\n```question\nid: settings-store\nkind: text\nquestion: Which store?\n```\n\nTail."),
+    msg("assistant", "2026-10-13T10:02:00Z", "Agent rested", "event"),
+    { role: "user", text: "Answers to earlier questions: …" },
+  ]
+  const pending = { ...settled("qst_a", "2026-10-13T10:02:00Z", "2026-10-13T10:08:00Z", true), spec }
+  const { placed, anchored } = settledQuestionPositions(messages, [pending])
+  assert.deepEqual([...placed.keys()], [1])
+  assert.equal(anchored.size, 0)
+  // …and a card that was never placed (an `ask` row) stays under its handoff, above the bubble.
+  const plain = settledQuestionPositions(
+    [msg("user", "2026-09-25T10:00:00Z"), msg("assistant", "2026-09-25T10:02:00Z"), { role: "user", text: "Answers…" }],
+    [settled("qst_a", "2026-09-25T10:01:30Z", "2026-09-25T10:05:00Z", true)],
+  )
+  assert.deepEqual([...plain.anchored.keys()], [1])
+})

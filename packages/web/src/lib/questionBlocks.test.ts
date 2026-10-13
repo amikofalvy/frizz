@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { splitQuestionBlocks, splitMessageQuestions, questionFenceIdsIn, hasQuestionBlock, parseQuestionBlock, composeBlockAnswer, optionId, optionNumber, recommendedIndex, splitOptionId } from "./questionBlocks.ts"
+import { splitQuestionBlocks, splitMessageQuestions, questionFenceIdsIn, followUpParentsIn, hasQuestionBlock, parseQuestionBlock, composeBlockAnswer, optionId, optionNumber, recommendedIndex, splitOptionId } from "./questionBlocks.ts"
 
 // ---- splitQuestionBlocks ----
 
@@ -816,4 +816,43 @@ test("hasQuestionBlock counts a ````question fence, so a message that asks with 
   const four = ["````question", "id: retry-backoff", "kind: text", "question: Which backoff?", "---", "```ts", "x()", "```", "````"].join("\n")
   assert.equal(hasQuestionBlock(four), true)
   assert.equal(hasQuestionBlock(`\`\`\`\`\`md\n${four}\n\`\`\`\`\``), false, "quoted, it asks nothing")
+})
+
+// A FOLLOW-UP WRITTEN IN A LATER MESSAGE than its parent (allowed while the parent is open, 2026-10-13):
+// the server attaches it to the parent's row and counts the parent as referenced at that rest, so for the
+// surface the follow-up's fence names its PARENT there — the slot the parent's card moves to.
+test("a follow-up whose parent is not in its message claims the parent; one written with its parent claims nothing", () => {
+  assert.deepEqual(followUpParentsIn(`Still open, and one more thing hangs on it:\n\n${FOLLOW_UP}`), ["settings-store"])
+  assert.deepEqual(questionFenceIdsIn(`Later:\n\n${FOLLOW_UP}`), ["settings-store"], "the parent's id, never the follow-up's own")
+  assert.equal(hasQuestionBlock(`Later:\n\n${FOLLOW_UP}`), true, "so the rest that writes it is not a bare rest")
+  // Negative controls: the parent asked or referenced in the same message is what places the card.
+  assert.deepEqual(followUpParentsIn(`${ASK}\n\n${FOLLOW_UP}`), [])
+  assert.deepEqual(followUpParentsIn(`${REF("settings-store")}\n\n${FOLLOW_UP}`), [])
+  assert.deepEqual(questionFenceIdsIn(`${REF("settings-store")}\n\n${FOLLOW_UP}`), ["settings-store"], "named once")
+  // A branch of a branch, both written later: only the outermost parent is missing from the message.
+  const grandchild = ["```question", "id: wal-mode", "kind: choice", "when: sqlite-path = Beside the sessions database", "question: WAL?", "options:", "  - Yes", "  - No", "```"].join("\n")
+  assert.deepEqual(followUpParentsIn(`${FOLLOW_UP}\n\n${grandchild}`), ["settings-store"])
+  // A sample quoted in an outer fence claims nothing.
+  assert.deepEqual(followUpParentsIn(`\`\`\`\`md\n${FOLLOW_UP}\n\`\`\`\``), [])
+})
+
+// A fence that TRIED the grammar and did not read (the server registers nothing and corrects the worker)
+// is the code block it is — at three backticks too, where the legacy reader used to make it a "Question"
+// card over the worker's YAML.
+test("an invalid question fence stays in the prose as its own run; a free-form one keeps the legacy card", () => {
+  const noKind = "```question\nid: no-kind\nquestion: Is this missing its kind?\noptions:\n  - yes\n  - no\n```"
+  const segs = splitMessageQuestions(`Lead.\n\n${noKind}\n\n${ASK}\n\nTail.`, true)
+  assert.deepEqual(segs.map((s) => s.kind), ["prose", "prose", "question", "prose"])
+  assert.equal(segs[1].kind === "prose" && segs[1].text.trimEnd(), noKind, "the whole fence, delimiters included, for markdown to draw as code")
+  assert.ok(segs[2].kind === "question" && segs[2].fence?.form === "ask", "a valid fence beside it is still a card")
+  // The same mistake with four backticks, an unknown key, and a bad id all agree.
+  for (const bad of [noKind.replace(/```/g, "````"), "```question\nid: bad-key\nkind: text\ncolour: red\nquestion: Q?\n```", "```question\nid: Not A Slug\n```"]) {
+    assert.deepEqual(splitMessageQuestions(bad, true).map((s) => s.kind), ["prose"], bad)
+  }
+  // Negative controls: free-form prose in a fence is the legacy read-only card, as before; and on a
+  // legacy thread nothing here applies at all.
+  const freeForm = "```question\nShould I ship tonight?\n\nA. Yes\nB. No\n```"
+  assert.deepEqual(splitMessageQuestions(freeForm, true), splitQuestionBlocks(freeForm))
+  assert.equal(splitMessageQuestions(freeForm, true)[0].kind, "question")
+  assert.deepEqual(splitMessageQuestions(noKind, false), splitQuestionBlocks(noKind))
 })

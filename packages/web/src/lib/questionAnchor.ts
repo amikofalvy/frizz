@@ -80,7 +80,20 @@ export function questionAnchorIndex(messages: readonly AnchorMessage[], askedAt:
     if (!Number.isFinite(at) || at <= asked) continue
     return i - 1
   }
-  return tail
+  // NO STAMPED TURN AFTER THE ASK — but the tail may still be the human's OWN SEND, not yet stamped. The
+  // surface appends an optimistic bubble with no instant (lib/transcript-sync mergeOptimistic) and the
+  // server's copy replaces it a few frames later. It is a turn, made just now, so it ends the rest it
+  // replies to exactly as its stamped copy will. Skipped with the unreadable instants above, it left the
+  // anchor ON the bubble: every card of that rest drew UNDER the human's newest message until the stamp
+  // landed, and a card a fence had placed fell out of its slot (placeQuestions scans from the anchor's
+  // rest, which was then the empty one after the bubble). Held open for 2.5s on a real stack, 2026-10-13:
+  // the answered card sat below the Answers bubble for the whole hold, then jumped back into the prose.
+  // Only a TRAILING run counts — an unstamped turn with stamped history after it is not this tab's send.
+  let end = tail
+  while (end >= 0 && isTurn(messages[end]) && !(messages[end].at && Number.isFinite(Date.parse(messages[end].at!)))) end--
+  // A transcript that is nothing but the bubble has no earlier rest: keep the tail, never the "above the
+  // loaded window" reading (-1), which would hoist the card to the top.
+  return end < 0 ? tail : end
 }
 
 /** The newest worker message that CLAIMS each question, keyed by the lowercased name it used: an

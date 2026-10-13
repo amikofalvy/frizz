@@ -59,6 +59,21 @@ test("a message with no instant cannot end a rest", () => {
   assert.equal(questionAnchorIndex(messages, at(1)), 2)
 })
 
+// THE HUMAN'S OWN SEND, BEFORE THE SERVER HAS STAMPED IT. An optimistic bubble is appended to the tail with
+// no instant; skipped like the unreadable instant above, it left the anchor ON the bubble — so for the
+// frames until the server's copy landed, every card of the rest it replied to drew UNDER the human's
+// newest message (and a fence-placed card left its slot: lib/questionShadow). Driven on a real stack
+// 2026-10-13 with the send held 2.5s: the card sat below the Answers bubble for the whole hold.
+test("the human's own unstamped send at the tail ends the rest it replies to", () => {
+  const sent: AnchorMessage[] = [msg("user", 0), msg("assistant", 1), msg("assistant", 2), { role: "user" }]
+  assert.equal(questionAnchorIndex(sent, at(2)), 2, "the handoff, not the bubble")
+  assert.equal(questionAnchorIndex([...sent, { role: "user" }], at(2)), 2, "two sends in a row are still one tail")
+  // Negative control: stamped, the same bubble has always ended the rest.
+  assert.equal(questionAnchorIndex([msg("user", 0), msg("assistant", 1), msg("assistant", 2), msg("user", 3)], at(2)), 2)
+  // A transcript that is nothing but the bubble has no rest to go back to.
+  assert.equal(questionAnchorIndex([{ role: "user" }], at(2)), 0)
+})
+
 // One `ask` call registers several questions at ONE instant, and they must stay one stack.
 test("questions from one call group together; questions from two rests do not", () => {
   const messages = [msg("assistant", 1), msg("user", 2), msg("assistant", 3)]

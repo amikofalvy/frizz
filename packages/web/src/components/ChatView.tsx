@@ -21,7 +21,7 @@ import { LinkedHtml } from "./LinkedHtml.tsx"
 import { CodeBody } from "./CodeBody.tsx"
 import { resolveFileLanguage } from "../lib/syntaxHighlight.ts"
 import { TodoBlock } from "./TodoBlock.tsx"
-import { splitMessageQuestions, parseQuestionBlock, type QuestionKind, type BlockAnswer, type MessageAnswering } from "../lib/questionBlocks.ts"
+import { followUpParentsIn, splitMessageQuestions, parseQuestionBlock, type QuestionKind, type BlockAnswer, type MessageAnswering } from "../lib/questionBlocks.ts"
 import { splitFenceBlocks, type FenceKind } from "../lib/fenceBlocks.ts"
 import { showsRegisteredDoneCard } from "../lib/registeredDone.ts"
 import { RestedCard, showsRestedCard } from "./RestedCard.tsx"
@@ -3711,6 +3711,10 @@ export const Message = memo(function Message({ m, answering, dense, paired, text
   const askBlocks: { raw: string; kind: QuestionKind; danger: boolean; bi: number }[] = []
   // The placed registered cards this message has already drawn (one per id, see the marker branch).
   const placedDrawn = new Set<string>()
+  // The parents this message's `when:` follow-ups claim from an earlier message — read over the WHOLE
+  // message, as the placement is (lib/questionShadow placeQuestions), and only once a follow-up asks.
+  let claimedParents: Set<string> | undefined
+  const followUpParents = () => (claimedParents ??= new Set(followUpParentsIn(m.text)))
   const renderText = (text: string, keyBase: string) => {
     // Split SIGNAL fences (```done / ```awaiting) out first — each renders as a card in place of the
     // raw block — then run the remaining prose runs through the question/image pipeline. Fences never
@@ -3795,9 +3799,13 @@ export const Message = memo(function Message({ m, answering, dense, paired, text
         // placement exactly like the legacy marker below, resolved by the worker's id instead of a minted one.
         if (seg.fence) {
           // A FOLLOW-UP lives inside its parent's card, which opens it when its option is picked; its own
-          // fence has nothing to draw.
-          if (seg.fence.form === "ask" && seg.fence.when) continue
-          const row = resolveQuestionName(seg.fence.id, fenceQuestions ?? [])
+          // fence has nothing to draw — unless its parent was asked in an EARLIER message. Then this fence
+          // is what names the parent here (lib/questionBlocks followUpParentsIn), so it is the slot the
+          // parent's card moves to, exactly like an `id:`-only reference. Never a card of its own: until
+          // the row carries the new branch, the parent's card simply draws here without it.
+          const followsUp = seg.fence.form === "ask" ? seg.fence.when : undefined
+          if (followsUp && !followUpParents().has(followsUp.parent.toLowerCase())) continue
+          const row = resolveQuestionName(followsUp ? followsUp.parent : seg.fence.id, fenceQuestions ?? [])
           if (row) {
             // Placed in THIS message (the newest one naming it from its claiming rest on): the live card,
             // once. Answered here: its settled card, once. Anywhere else, the card is drawn there.
@@ -3818,7 +3826,7 @@ export const Message = memo(function Message({ m, answering, dense, paired, text
           // registers a fence it refused. The human sees the question now, drawn READ-ONLY from the fence's
           // own spec; the board's row replaces it with the answerable card the moment it lands. A reference
           // to nothing has nothing to draw.
-          if (seg.fence.form === "ask" && !placedDrawn.has(`fence:${seg.fence.id}`)) {
+          if (seg.fence.form === "ask" && !followsUp && !placedDrawn.has(`fence:${seg.fence.id}`)) {
             placedDrawn.add(`fence:${seg.fence.id}`)
             push(<UnregisteredQuestionCard key={`${keyBase}-${fi}-q${si}`} spec={seg.fence.spec} wrap={dense} />)
           }

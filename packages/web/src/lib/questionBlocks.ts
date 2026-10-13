@@ -2,7 +2,7 @@
 // one off as an answerable card WITHIN the message's narrative flow (prose stays in place). Pure
 // string logic, no DOM — unit-testable.
 
-import { insideFence, questionFenceBlocks, type QuestionFenceRead } from "@frizz/shared"
+import { insideFence, QUESTION_FENCE_KEYS, questionFenceBlocks, type QuestionFenceRead } from "@frizz/shared"
 
 // The two answer MODES a ```question block can carry (the info-string picks one):
 //   question — single-select (radio feel) OR freetext; the default.
@@ -136,22 +136,35 @@ export function splitQuestionBlocks(text: string): MessageSegment[] {
 // ````question opener (a fence whose context carries a code block), and leaves the legacy info-string forms
 // (```question qst_…, ```question multi) to splitQuestionBlocks.
 //
-// AN INVALID READ IS LEFT EXACTLY WHERE IT WAS. A post-cutover thread's history holds free-form fences the
-// worker wrote between 2026-09-11 and this grammar, and a fence the server refused; none of them reads as
-// an ask, and each keeps the rendering it had (splitQuestionBlocks over the same bytes), so nothing already
-// on screen changes shape.
+// A FREE-FORM FENCE IS LEFT EXACTLY WHERE IT WAS. A post-cutover thread's history holds free-form fences the
+// worker wrote between 2026-09-11 and this grammar; none of them reads as an ask, and each keeps the
+// rendering it had (splitQuestionBlocks over the same bytes), so nothing already on screen changes shape.
+//
+// A FENCE THAT TRIED THE GRAMMAR AND FAILED IS THE CODE BLOCK IT IS. Its body opens on a key (`id:`,
+// `kind:`, …) and does not read: a missing `kind:`, an unknown key, a bad id. The server registers nothing
+// for it and corrects the worker. Left to splitQuestionBlocks it drew three ways for one mistake — three
+// backticks at the margin became the legacy card, headed "Question" over the worker's YAML as prose, while
+// the same fence with four backticks or an indent was a code block (the legacy reader knows one opener).
+// A card that cannot be answered and shows front matter is the worst of the three, so all of them are now
+// the code block: the worker's own bytes, plainly not a card, until its corrected fence lands.
 
 /** A message's segments under the grammar its thread speaks. `fenceGrammar` false (a legacy thread, or a
  *  surface that has no registered rows to resolve against) is splitQuestionBlocks unchanged. */
 export function splitMessageQuestions(text: string, fenceGrammar: boolean): MessageSegment[] {
   if (!fenceGrammar || !text.includes("```question")) return splitQuestionBlocks(text)
-  const blocks = questionFenceBlocks(text).filter((b) => b.read.form !== "invalid")
+  const blocks = questionFenceBlocks(text).filter((b) => b.read.form !== "invalid" || triesFenceGrammar(b.body))
   if (blocks.length === 0) return splitQuestionBlocks(text)
   const out: MessageSegment[] = []
   let at = 0
   for (const b of blocks) {
     out.push(...splitQuestionBlocks(text.slice(at, b.start)))
-    const read = b.read as Exclude<QuestionFenceRead, { form: "invalid" }>
+    at = b.end
+    if (b.read.form === "invalid") {
+      // Its own prose run, so the legacy reader never sees it and markdown draws the fence as code.
+      out.push({ kind: "prose", text: text.slice(b.start, b.end) })
+      continue
+    }
+    const read = b.read
     out.push({
       kind: "question",
       text: b.body,
@@ -159,20 +172,53 @@ export function splitMessageQuestions(text: string, fenceGrammar: boolean): Mess
       danger: read.form === "ask" && read.spec.danger === true,
       fence: read,
     })
-    at = b.end
   }
   out.push(...splitQuestionBlocks(text.slice(at)))
   return out
 }
 
+// The grammar's keys (shared QUESTION_FENCE_KEYS), as the first thing a fence's body says. A free-form
+// fence opens on its question, in prose; a fence that opens on `id:` or `kind:` was written for the reader.
+const FENCE_KEY_LINE = new RegExp(`^[ \\t]*(?:${QUESTION_FENCE_KEYS.join("|")}):(?:[ \\t]|$)`)
+
+/** Did this fence's body TRY the question-fence grammar — does its first non-blank line open on one of the
+ *  grammar's keys? Asked only of a fence that did not read (splitMessageQuestions). */
+function triesFenceGrammar(body: string): boolean {
+  const first = body.split(/\r?\n/).find((line) => line.trim() !== "")
+  return first !== undefined && FENCE_KEY_LINE.test(first)
+}
+
 /** The ids a message's question fences NAME, lowercased, in order: an ask (not a `when:` follow-up, which
- *  lives inside its parent's card and is named by the parent's fence) or a reference. */
+ *  lives inside its parent's card and is named by the parent's fence) or a reference — and then the parents
+ *  its follow-ups claim from an earlier message (followUpParentsIn). */
 export function questionFenceIdsIn(text: string): string[] {
   if (!text.includes("```question")) return []
   const out: string[] = []
   for (const b of questionFenceBlocks(text)) {
     const r = b.read
     if (r.form === "ref" || (r.form === "ask" && !r.when)) out.push(r.id.toLowerCase())
+  }
+  for (const parent of followUpParentsIn(text)) if (!out.includes(parent)) out.push(parent)
+  return out
+}
+
+/** The parents a message's `when:` follow-ups CLAIM, lowercased, in order: every `when:` parent that no
+ *  fence of this same message asks or references. A follow-up may be written in a LATER message than its
+ *  parent while the parent is still open (2026-10-13): the server attaches it under the parent's option and
+ *  counts the parent as referenced at that rest. For the surface that makes the follow-up's fence a
+ *  reference to its parent — the parent's card moves into this slot, exactly as an `id:`-only fence moves
+ *  it, and shows the new branch once the row carries it. A follow-up written WITH its parent (the parent's
+ *  own fence, or a follow-up of this message that is itself the parent) claims nothing: that fence places
+ *  the card, and this one lives inside it. */
+export function followUpParentsIn(text: string): string[] {
+  if (!text.includes("```question") || !text.includes("when:")) return []
+  const reads = questionFenceBlocks(text).map((b) => b.read)
+  const here = new Set(reads.flatMap((r) => (r.form === "invalid" ? [] : [r.id.toLowerCase()])))
+  const out: string[] = []
+  for (const r of reads) {
+    if (r.form !== "ask" || !r.when) continue
+    const parent = r.when.parent.toLowerCase()
+    if (!here.has(parent) && !out.includes(parent)) out.push(parent)
   }
   return out
 }

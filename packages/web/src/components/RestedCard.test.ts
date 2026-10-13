@@ -73,3 +73,21 @@ test("the two shapes render their own label", () => {
   assert.match(rested, /data-rested-card="bare"/)
   assert.match(rested, />Rested without a sign-off</)
 })
+
+// THE QUESTION FENCE (2026-10-13). A fence that tried the grammar and failed registers nothing and draws as
+// a code block, so the rest under it is a bare one — whatever its backticks. Before, three backticks at
+// the margin hid this card (the legacy reader counted the fence) and four showed it.
+test("on a thread that speaks the question fence, a fence that did not read is not a sign-off", () => {
+  const fenced: RestedCardThread = { ...bare, spawnedAt: "2026-10-13T20:30:00.000Z" }
+  const broken = (ticks: string) => `Which region?\n\n${ticks}question\nid: two-recs\nquestion: Which region?\noptions:\n  - a\n  - b\n${ticks}`
+  assert.equal(showsRestedCard(fenced, broken("```")), true)
+  assert.equal(showsRestedCard(fenced, broken("````")), true)
+  // Negative controls: a fence that reads is the rest's ending (its row may not have landed yet), a
+  // follow-up written alone still names its parent, and a free-form fence keeps the legacy reading.
+  assert.equal(showsRestedCard(fenced, "```question\nid: region\nkind: text\nquestion: Which region?\n```"), false)
+  assert.equal(showsRestedCard(fenced, "```question\nid: az\nkind: text\nwhen: region = us-east\nquestion: Which zone?\n```"), false)
+  assert.equal(showsRestedCard(fenced, "```question\nWhich region?\n\nA. us-east\nB. eu-west\n```"), false)
+  // A legacy thread's three-backtick fence is a question whatever its body opens on.
+  assert.equal(showsRestedCard({ ...bare, spawnedAt: "2026-09-01T12:00:00.000Z" }, broken("```")), false)
+  assert.equal(showsRestedCard(bare, broken("```")), false, "an unknown dispatch instant reads as legacy")
+})
