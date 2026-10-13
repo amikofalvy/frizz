@@ -744,6 +744,9 @@ export function trimAwaitingTitle(raw: string): string {
   return `${(space > AWAITING_TITLE_MAX / 2 ? cut.slice(0, space) : cut).replace(/[.,;:–—-]$/, "").trimEnd()}…`
 }
 
+/** The `---` line that closes a fence's frontmatter. One spelling for both fence kinds. */
+const FENCE_DELIMITER_RE = /^\s*---+\s*$/
+
 /** Split an ```awaiting fence body into its hints and its prose.
  *
  *  FRONTMATTER, THEN MARKDOWN: structural lines first, a `---` line ends them, everything after is
@@ -772,7 +775,7 @@ export function trimAwaitingTitle(raw: string): string {
  *  value on the key line itself is one step — or, written `[a, b]`, a flow list YAML is allowed to try. */
 export function splitAwaitingFrontmatter(raw: string): { body: string; hints: AwaitingHint[] } {
   const lines = raw.split("\n").map((l) => l.replace(/\r$/, ""))
-  const delimiter = lines.findIndex((l) => /^\s*---+\s*$/.test(l))
+  const delimiter = lines.findIndex((l) => FENCE_DELIMITER_RE.test(l))
   const frontmatter = delimiter === -1 ? lines : lines.slice(0, delimiter)
   const after = delimiter === -1 ? [] : lines.slice(delimiter + 1)
   const rest: string[] = []
@@ -956,6 +959,41 @@ export function awaitingFenceTitle(hints: readonly AwaitingHint[] | undefined): 
     if (value) title = value
   }
   return title
+}
+
+/** Split a ```done fence body (or a registered `frizzctl done` body, which is stored in the same
+ *  grammar) into its optional `title:` hint and its prose.
+ *
+ *  WHY A DONE FENCE HAS A TITLE AT ALL (maintainer 2026-10-13). Done cards now head with the worker's
+ *  own title over a small kind label ("✓ Done"), exactly as awaiting cards do — so "Done" alone, true of
+ *  every completion and specific to none, stops being the heading the human scans the queue by. The
+ *  hint is the same `{ kind: "title" }` an awaiting fence's `title:` produces, so `awaitingFenceTitle`
+ *  reads both and the card has one way to find its heading.
+ *
+ *  THE GRAMMAR IS DELIBERATELY NARROWER THAN THE AWAITING ONE, because a done body is PROSE FIRST. Every
+ *  done fence written before this date is a Markdown ledger with no frontmatter, and plenty of them use
+ *  `---` as a horizontal rule or open a bullet with a colon. So only one shape is read: the FIRST
+ *  non-blank line is a `title:` key line, its value runs on through any immediately following indented
+ *  lines, and a `---` after it (blank lines between are tolerated) is consumed as the delimiter. Anything
+ *  else is the body untouched — a `---` with no title above it stays a rule, and a `title:` further down
+ *  is just a sentence that happens to start that way. No other key is honoured, and nothing here goes
+ *  near YAML: the title is prose for the same reason the awaiting splitter lifts its own out (a ` #` or
+ *  a `: ` in it would cut it or fail the parse). An empty `title:` still leaves the body, so the human
+ *  never reads the bare key, and mints no hint. Never throws: it runs on whatever an LLM wrote. */
+export function splitDoneFrontmatter(raw: string): { body: string; hints: AwaitingHint[] } {
+  const lines = raw.split("\n").map((l) => l.replace(/\r$/, ""))
+  let i = 0
+  while (i < lines.length && lines[i].trim() === "") i++
+  const m = i < lines.length ? AWAITING_KEY_RE.exec(lines[i]) : null
+  if (!m || m[1].toLowerCase() !== "title") return { body: raw.trim(), hints: [] }
+  const titleLines = [m[2] ?? ""]
+  i++
+  while (i < lines.length && /^\s+\S/.test(lines[i])) titleLines.push(lines[i++])
+  let next = i
+  while (next < lines.length && lines[next].trim() === "") next++
+  if (next < lines.length && FENCE_DELIMITER_RE.test(lines[next])) i = next + 1
+  const title = trimAwaitingTitle(titleLines.join(" "))
+  return { body: lines.slice(i).join("\n").trim(), hints: title ? [{ kind: "title", value: title }] : [] }
 }
 
 // ONE ANSWER FOR THREE PLACES (maintainer 2026-10-05). A rest on running work lands in one of three

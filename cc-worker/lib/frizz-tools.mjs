@@ -653,6 +653,14 @@ const DONE = {
           "sentence that would read the same in both places belongs in exactly one of them. Nothing " +
           "here may point vaguely forward — no \"a follow-up could…\". Do it, ask about it, or drop it.",
       },
+      title: {
+        type: "string",
+        description:
+          "OPTIONAL. The card's heading: a short phrase in sentence case naming what LANDED (\"Resolver " +
+          "cache keyed on the normalized id\"), not the handoff. It wraps, so name the work fully; past " +
+          "120 characters it is trimmed on a word boundary. Without it the card is headed \"Done\", which " +
+          "is true of every completion and specific to none. It wins over a `title:` line the body opens with.",
+      },
     },
     required: ["body"],
   },
@@ -1691,12 +1699,40 @@ async function unask(args) {
   return `${head}\n\n${openQuestionList(result)}`
 }
 
+/** A body's own leading `title:` block — the key line and any indented lines under it, then a `---`
+ *  if one follows — cut off, so `--title` can replace it rather than stack a second heading above it.
+ *  The SAME rule as `splitDoneFrontmatter` in @frizz/shared, which this plain .mjs cannot import (it
+ *  ships loose beside the server with no build step): only a FIRST non-blank line counts, and a body
+ *  that does not open on one comes back untouched.
+ * @param {string} body @returns {string} */
+function withoutLeadingTitle(body) {
+  const lines = body.split("\n").map((l) => l.replace(/\r$/, ""))
+  let i = 0
+  while (i < lines.length && lines[i].trim() === "") i++
+  if (i >= lines.length || !/^title:/i.test(lines[i])) return body
+  i++
+  while (i < lines.length && /^\s+\S/.test(lines[i])) i++
+  let next = i
+  while (next < lines.length && lines[next].trim() === "") next++
+  if (next < lines.length && /^\s*---+\s*$/.test(lines[next])) i = next + 1
+  return lines.slice(i).join("\n").trim()
+}
+
 /** The `done` handler: declare the effort finished, or report exactly what refuses to let it.
+ *
+ *  A `--title` is sent INSIDE the body, in the ```done fence's own grammar (`title: …`, `---`, then the
+ *  ledger), rather than as a field of its own: the server stores one body and splits it with the same
+ *  function that splits a fence, so a registered done and a fenced one can never head their cards two
+ *  different ways (2026-10-13).
  * @param {Record<string, unknown>} args @returns {Promise<string>} */
 async function done(args) {
   const slug = threadSlug()
-  const body = typeof args.body === "string" ? args.body.trim() : ""
+  let body = typeof args.body === "string" ? args.body.trim() : ""
   if (!body) throw new Error("`body` is required — the write-up the human reads on the card")
+  // One line, because a heading is one: a title with a newline in it would end the `title:` line and
+  // spill the rest into the ledger.
+  const title = typeof args.title === "string" ? args.title.replace(/\s+/g, " ").trim() : ""
+  if (title) body = `title: ${title}\n---\n${withoutLeadingTitle(body)}`
   const result = (await callRpc("markOwnDone", { slug, body }))?.result
   if (result?.done) {
     return (
@@ -1967,6 +2003,7 @@ const CLI = {
       "- **Added a regression test**; `npm test` green.\n" +
       "EOF",
       "frizzctl done --body-file handoff.md",
+      "frizzctl done --title \"Resolver cache keyed on the normalized id\" --body-file handoff.md",
     ],
   },
   activity: {

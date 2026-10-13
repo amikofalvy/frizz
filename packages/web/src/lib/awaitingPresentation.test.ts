@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import { SetThreadSnoozeInput } from "@frizz/shared"
 import {
-  AWAITING_CHIP,
+  AWAITING_KIND,
   AWAITING_NO_PROSE,
   awaitingDefersToQuestions,
   awaitingProseBlock,

@@ -888,7 +888,7 @@ export function RuntimeStatusLadder({
     // everything because `done` refuses while anything above could still be true — an open question or an
     // armed watch blocks the verb — so a thread showing this is at rest with nothing left to wait on.
     case "registered-done":
-      return <FenceCard fenceKind="done" body={thread!.lastFence!.body} hints={[]} wrap={wrap} />
+      return <FenceCard fenceKind="done" body={thread!.lastFence!.body} hints={thread!.lastFence!.hints} wrap={wrap} />
     // NOTHING ELSE APPLIES, and the bottom of the thread still has to say so — see RestedCard.
     case "rested":
       return <RestedCard thread={thread!} />
@@ -4213,6 +4213,7 @@ export function FenceCard({ fenceKind, body, hints, wrap }: { fenceKind: FenceKi
   // the phone thread flagged exactly that, and the approved design draws the card without it).
   const isMobile = useIsMobile()
   if (fenceKind === "done") {
+    const doneTitle = awaitingFenceTitle(hints)
     // A white "Mark as done" button, deliberately redundant with the header's check — the same completion
     // mutation, styled as the primary (light-on-dark) verb. Only shown when the thread can actually take
     // the action, and never on a phone (see `isMobile` above).
@@ -4231,11 +4232,13 @@ export function FenceCard({ fenceKind, body, hints, wrap }: { fenceKind: FenceKi
       // NEUTRAL tone — the green splash stood out as the only saturated color in the UI (maintainer
       // 2026-07-10). The Check + "Done" carries the meaning; no color needed.
       //
-      // HEADED BY A KIND CHIP AND A RULE, as the awaiting cards are (2026-10-13, TranscriptCard's KindChip:
-      // "it's weird that the done blocks still don't have a visually separate header, the way that the
-      // awaiting blocks do"). A done fence has no `title:`, so the chip alone heads it. An empty body draws
-      // no rule — the band's own border is the only seam left to draw — and nothing at all draws no body.
-      <TranscriptCard icon={Check} chip="Done" label={null} ruled={!!html}>
+      // HEADED BY ITS KIND OVER ITS TITLE, then a rule, as every block type is (2026-10-13, TranscriptCard's
+      // KindLabel: "it's weird that the done blocks still don't have a visually separate header, the way
+      // that the awaiting blocks do"). The title is the worker's own `title:` — on the fence, or on
+      // `frizzctl done --title` — and with none the "Done" line alone heads the card: never the body's
+      // first sentence (maintainer, same day). An empty body draws no rule — the band's own border is the
+      // only seam left to draw — and nothing at all draws no body.
+      <TranscriptCard icon={Check} kind="Done" label={doneTitle ? <span className="[overflow-wrap:anywhere]">{doneTitle}</span> : null} ruled={!!html}>
         {html || markDone ? (
           <>
             {html && <LinkedHtml className={`md-body${wrap ? ` ${QUEUE_WRAP}` : ""}`} html={html} />}

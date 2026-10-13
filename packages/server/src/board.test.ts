@@ -2355,6 +2355,17 @@ test("a registered done presents as the ```done fence it replaces", () => {
   })
 })
 
+// `frizzctl done --title` stores the title INSIDE the body, in the fence's own grammar, so the row is
+// split by the fence's own splitter: the heading reaches the card as the hint a fenced done carries, and
+// its `title:` line never renders as the ledger's first line (2026-10-13).
+test("a registered done's stored title: line becomes the title hint, never body text", () => {
+  assert.deepEqual(registeredDoneFence({ body: "title: Resolver cache keyed on the normalized id\n---\n- **Fixed** it", doneAt: 1000 }, undefined), {
+    kind: "done", body: "- **Fixed** it", hints: [{ kind: "title", value: "Resolver cache keyed on the normalized id" }], registered: true,
+  })
+  // A row written before the flag existed, with a rule in its ledger, is untouched.
+  assert.deepEqual(registeredDoneFence({ body: "Shipped.\n\n---\n\n- **Fixed** it", doneAt: 1000 }, undefined)?.body, "Shipped.\n\n---\n\n- **Fixed** it")
+})
+
 test("no row, no fence", () => {
   assert.equal(registeredDoneFence(undefined, "2026-08-27T00:00:00.000Z"), undefined)
 })
