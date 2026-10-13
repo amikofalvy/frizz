@@ -281,9 +281,14 @@ test("the fence that ASKED a question places its row in that slot — drawn once
   assert.deepEqual([...placedIds], [FENCED_ROW.id])
 })
 
-test("a follow-up's fence alone places nothing — it lives in its parent's card", () => {
+// Until 2026-10-13 a follow-up had to be written with its parent, so a lone one placed nothing. It may now
+// follow in a later message, and then its fence is what names the parent there (the last test in this file).
+test("a follow-up written WITH its parent places nothing of its own — the parent's fence places the card, once", () => {
+  assert.deepEqual(placementNamesIn(ASKED[1].text), ["settings-store"])
+  assert.deepEqual([...placeQuestions(ASKED, [FENCED_ROW]).placed.values()].map((g) => g.length), [1])
+  // A lone follow-up names its parent, so the parent's card draws in that slot rather than nowhere.
   const messages = [ASKED[0], { ...ASKED[1], text: `Only the branch:\n\n${FOLLOW_FENCE}` }]
-  assert.equal(placeQuestions(messages, [FENCED_ROW]).placed.size, 0)
+  assert.deepEqual([...placeQuestions(messages, [FENCED_ROW]).placed.keys()], [1])
 })
 
 test("a fence QUOTED in an outer fence places nothing — the worker is showing the grammar", () => {
@@ -319,4 +324,24 @@ test("an unstamped send at the tail leaves a fenced card in its slot", () => {
   assert.deepEqual([...placeQuestions(optimistic, [FENCED_ROW]).placed.keys()], [1])
   // Negative control: the stamped copy of the same send always did.
   assert.deepEqual([...placeQuestions([...ASKED, { role: "user", at: at(8), text: "Do the docs first." }], [FENCED_ROW]).placed.keys()], [1])
+})
+
+// A follow-up written in a LATER message than its parent names the parent there (lib/questionBlocks
+// followUpParentsIn), so the parent's card moves into that message exactly as an `id:` reference moves it.
+test("a later rest's `when:` follow-up claims its parent's card into that message", () => {
+  const later = [
+    ...ASKED.slice(0, 1),
+    { role: "assistant", at: at(5), text: `The store is the one hard-to-reverse call:\n\n${ASK_FENCE}` },
+    { role: "user", at: at(8), text: "Do the docs first." },
+    { role: "assistant", at: at(12), text: `Docs are in. One more thing hangs on SQLite:\n\n${FOLLOW_FENCE}\n\nEither way.` },
+  ]
+  // Before the row carries the branch and after: the parent's handle is what the fence names.
+  const bare = { ...FENCED_ROW, spec: { ...FENCED_ROW.spec, options: [{ label: "SQLite" }, { label: "JSON file" }] } }
+  for (const row of [bare, FENCED_ROW]) {
+    assert.deepEqual([...placeQuestions(later, [row]).placed.keys()], [3])
+    assert.equal(questionsAtCurrentRest(later, [row]), true)
+  }
+  // Negative control: the same later message without the follow-up leaves the card where it was asked.
+  const silent = later.map((m, i) => (i === 3 ? { ...m, text: "Docs are in." } : m))
+  assert.deepEqual([...placeQuestions(silent, [FENCED_ROW]).placed.keys()], [1])
 })

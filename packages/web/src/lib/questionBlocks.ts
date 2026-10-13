@@ -166,13 +166,36 @@ export function splitMessageQuestions(text: string, fenceGrammar: boolean): Mess
 }
 
 /** The ids a message's question fences NAME, lowercased, in order: an ask (not a `when:` follow-up, which
- *  lives inside its parent's card and is named by the parent's fence) or a reference. */
+ *  lives inside its parent's card and is named by the parent's fence) or a reference — and then the parents
+ *  its follow-ups claim from an earlier message (followUpParentsIn). */
 export function questionFenceIdsIn(text: string): string[] {
   if (!text.includes("```question")) return []
   const out: string[] = []
   for (const b of questionFenceBlocks(text)) {
     const r = b.read
     if (r.form === "ref" || (r.form === "ask" && !r.when)) out.push(r.id.toLowerCase())
+  }
+  for (const parent of followUpParentsIn(text)) if (!out.includes(parent)) out.push(parent)
+  return out
+}
+
+/** The parents a message's `when:` follow-ups CLAIM, lowercased, in order: every `when:` parent that no
+ *  fence of this same message asks or references. A follow-up may be written in a LATER message than its
+ *  parent while the parent is still open (2026-10-13): the server attaches it under the parent's option and
+ *  counts the parent as referenced at that rest. For the surface that makes the follow-up's fence a
+ *  reference to its parent — the parent's card moves into this slot, exactly as an `id:`-only fence moves
+ *  it, and shows the new branch once the row carries it. A follow-up written WITH its parent (the parent's
+ *  own fence, or a follow-up of this message that is itself the parent) claims nothing: that fence places
+ *  the card, and this one lives inside it. */
+export function followUpParentsIn(text: string): string[] {
+  if (!text.includes("```question") || !text.includes("when:")) return []
+  const reads = questionFenceBlocks(text).map((b) => b.read)
+  const here = new Set(reads.flatMap((r) => (r.form === "invalid" ? [] : [r.id.toLowerCase()])))
+  const out: string[] = []
+  for (const r of reads) {
+    if (r.form !== "ask" || !r.when) continue
+    const parent = r.when.parent.toLowerCase()
+    if (!here.has(parent) && !out.includes(parent)) out.push(parent)
   }
   return out
 }

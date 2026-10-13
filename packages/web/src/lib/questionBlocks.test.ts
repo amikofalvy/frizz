@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { splitQuestionBlocks, splitMessageQuestions, questionFenceIdsIn, hasQuestionBlock, parseQuestionBlock, composeBlockAnswer, optionId, optionNumber, recommendedIndex, splitOptionId } from "./questionBlocks.ts"
+import { splitQuestionBlocks, splitMessageQuestions, questionFenceIdsIn, followUpParentsIn, hasQuestionBlock, parseQuestionBlock, composeBlockAnswer, optionId, optionNumber, recommendedIndex, splitOptionId } from "./questionBlocks.ts"
 
 // ---- splitQuestionBlocks ----
 
@@ -816,4 +816,22 @@ test("hasQuestionBlock counts a ````question fence, so a message that asks with 
   const four = ["````question", "id: retry-backoff", "kind: text", "question: Which backoff?", "---", "```ts", "x()", "```", "````"].join("\n")
   assert.equal(hasQuestionBlock(four), true)
   assert.equal(hasQuestionBlock(`\`\`\`\`\`md\n${four}\n\`\`\`\`\``), false, "quoted, it asks nothing")
+})
+
+// A FOLLOW-UP WRITTEN IN A LATER MESSAGE than its parent (allowed while the parent is open, 2026-10-13):
+// the server attaches it to the parent's row and counts the parent as referenced at that rest, so for the
+// surface the follow-up's fence names its PARENT there — the slot the parent's card moves to.
+test("a follow-up whose parent is not in its message claims the parent; one written with its parent claims nothing", () => {
+  assert.deepEqual(followUpParentsIn(`Still open, and one more thing hangs on it:\n\n${FOLLOW_UP}`), ["settings-store"])
+  assert.deepEqual(questionFenceIdsIn(`Later:\n\n${FOLLOW_UP}`), ["settings-store"], "the parent's id, never the follow-up's own")
+  assert.equal(hasQuestionBlock(`Later:\n\n${FOLLOW_UP}`), true, "so the rest that writes it is not a bare rest")
+  // Negative controls: the parent asked or referenced in the same message is what places the card.
+  assert.deepEqual(followUpParentsIn(`${ASK}\n\n${FOLLOW_UP}`), [])
+  assert.deepEqual(followUpParentsIn(`${REF("settings-store")}\n\n${FOLLOW_UP}`), [])
+  assert.deepEqual(questionFenceIdsIn(`${REF("settings-store")}\n\n${FOLLOW_UP}`), ["settings-store"], "named once")
+  // A branch of a branch, both written later: only the outermost parent is missing from the message.
+  const grandchild = ["```question", "id: wal-mode", "kind: choice", "when: sqlite-path = Beside the sessions database", "question: WAL?", "options:", "  - Yes", "  - No", "```"].join("\n")
+  assert.deepEqual(followUpParentsIn(`${FOLLOW_UP}\n\n${grandchild}`), ["settings-store"])
+  // A sample quoted in an outer fence claims nothing.
+  assert.deepEqual(followUpParentsIn(`\`\`\`\`md\n${FOLLOW_UP}\n\`\`\`\``), [])
 })
