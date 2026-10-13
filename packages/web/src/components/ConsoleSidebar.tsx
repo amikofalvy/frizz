@@ -68,13 +68,15 @@ export function ConsoleSidebar() {
   const order = useMemo(() => projects.map((project) => project.slug), [projects])
   const waiting = consoleCardOrder(consoleQueue(all, direction), group, order)
   const running = consoleRunning(all)
-  const { railRef, activeId, navigateToQueueCard } = useQueueScrollspy(snap.view, snap.drawers.length)
+  const { railRef, activeId, navigateToQueueCard } = useQueueScrollspy(snap.view, snap.drawers.length, waiting.map((t) => t.id))
 
   const row = (t: ThreadView, opts: { square: boolean; waiting: boolean }) => (
     <div key={t.id}>
       <ThreadRow
         t={t}
-        active={activeId === t.id}
+        // Waiting rows only: a running row has no queue card, and the marker a just-sent row arrives
+        // with is handed to the row that took its place (markerRow in lib/sidebarScrollspy).
+        active={opts.waiting && activeId === t.id}
         onQueueNavigate={navigateToQueueCard}
         // A pinned row wears its pin in the rest-time column instead (ThreadRow), as on a project's board.
         restedAge={opts.waiting && !isPinned(t)}
