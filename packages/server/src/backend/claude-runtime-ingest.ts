@@ -104,6 +104,15 @@ export interface ClaudeRuntimeLiveness {
   at: number
   /** Events ingested for this session since it was bound — a cheap "is anything arriving at all". */
   events: number
+  /**
+   * The chain uuid of the main-thread `assistant` event behind a `running` reading — the SAME uuid its
+   * transcript record carries. Undefined when the reading came from a `user` event (which may carry no
+   * id) or is not `running`. It is what lets the tailer tell a reading that is AHEAD of the disk (the
+   * only kind allowed to outrank a folded idle) from one whose record the fold has already read: at the
+   * END of a turn the final message's own event says `running`, and its record can reach the disk a few
+   * milliseconds before the `result` that settles it (see resolveRuntimeTurn's `caughtUp`).
+   */
+  messageId?: string
 }
 
 /** Runtime milestones published for tests and harnesses. NOT part of the production event model. */
@@ -352,6 +361,7 @@ export function createClaudeRuntimeIngest(deps: ClaudeRuntimeIngestDeps): Claude
         turn: signal ?? prior?.turn,
         at: now,
         events: (prior?.events ?? 0) + 1,
+        messageId: signal === undefined ? prior?.messageId : signal === "running" && item.event.kind === "assistant" ? item.event.messageId : undefined,
       })
       deps.receipts?.publish({ type: "claude.runtime.event", slug: item.slug, sessionId: item.sessionId, kind: item.event.kind })
       // Never let a malformed task frame stall the worker: the nudge below is what makes the board
@@ -446,6 +456,7 @@ export function resolveRuntimeTurn(
   backstopped: boolean,
   runtime: ClaudeRuntimeTurn | undefined,
   ageMs = 0,
+  caughtUp = false,
 ): "in-flight" | "idle" {
   if (!runtime) return folded
   // The SDK says a turn is underway and the transcript has not caught up (the user record for a
@@ -456,7 +467,18 @@ export function resolveRuntimeTurn(
   // merely early — and unbounded it pinned a rested thread's board reading at "Working…" forever.
   // Only THIS rule is bounded: a stale `settled` can only ever agree with a fold that already reads
   // idle, and a folded `tool_use` still wins over both regardless of age.
+  //
+  // …and only while it IS ahead. At the END of a turn the final message's own `assistant` event is what
+  // says `running`, and the `result` that settles it trails by ~20-30 ms — a race the record's disk
+  // write sometimes wins (measured 2026-10-13 on a live Haiku broker session: assistant event, then the
+  // end_turn record folded 30 ms later with the reading still `running`, then `result` 2 ms after
+  // that). The fold has then read the very record the reading came from, so the reading knows nothing
+  // the fold does not; holding `in-flight` there published a transcript that already carried the
+  // reply AND its rest divider under a board that still said `running`, so the chat drew Working under
+  // a finished reply for a frame. `caughtUp` says the fold's newest assistant record IS the one behind
+  // this reading (the tailer matches their chain uuids), and then folded evidence stands.
   if (runtime === "running" && folded === "idle") {
+    if (caughtUp) return "idle"
     return ageMs > RUNNING_OVERRIDE_MAX_AGE_MS ? "idle" : "in-flight"
   }
   // The SDK says the turn is over and the fold is only holding `in-flight` on the 5 s silence guess.

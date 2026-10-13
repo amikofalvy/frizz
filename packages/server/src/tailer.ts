@@ -976,6 +976,11 @@ export interface TailState extends FoldState {
   // derivation. See chaseRuntime for why they exist at all.
   runtimeEventsSeen?: number
   runtimeChase?: number
+  // The `uuid` of the newest main-thread assistant RECORD folded. Claude's SDK names each streamed
+  // assistant event by the same chain uuid its transcript record carries (`SDKAssistantMessage.uuid`,
+  // which `resumeSessionAt` accepts as a chain-entry id), so this is how the tailer knows the disk has
+  // caught up with the event behind a runtime `running` reading — see resolveRuntimeTurn's `caughtUp`.
+  lastAssistantUuid?: string
   // live background OPS (sub-agents AND background shells), keyed by dispatch/launch tool_use id
   // (insertion order = launch order); the `kind` field distinguishes them at the view boundary.
   subAgents: Map<string, SubAgentEntry>
@@ -1097,6 +1102,7 @@ export interface TailState extends FoldState {
 interface Record {
   type?: string
   timestamp?: string
+  uuid?: unknown // the record's chain id — on an assistant record, the uuid its SDK event also carries
   isMeta?: boolean // `/rename <title>` reminder record: CLI metadata, not a user/model turn
   isCompactSummary?: boolean // the carry-over summary claude writes as a user record after compacting
   subtype?: string // on `system` records: "compact_boundary" is the one the fold reads
@@ -2358,6 +2364,7 @@ export function applyRecord(state: TailState, rec: Record): void {
     // completion notification (a promptSource:system USER record), so the queue never reshuffles on
     // background-child motion. tool_result echoes are `type:user`, not assistant, so they don't bump it.
     if (typeof rec.timestamp === "string") state.lastAssistantAt = rec.timestamp
+    state.lastAssistantUuid = typeof rec.uuid === "string" ? rec.uuid : undefined
     state.lastStopReason = typeof rec.message?.stop_reason === "string" ? rec.message.stop_reason : undefined
     // Claude records the actual resolved model on every assistant message. It does NOT record the
     // launch effort, so that half continues to come from the persisted dispatch profile. Ignore the
@@ -2929,7 +2936,7 @@ export interface TailerDeps {
   //     provider has reported activity the transcript has not caught up with yet. See RUNTIME_CHASE_MAX.
   // Absent (codex rows, pre-broker claude rows, tests, bridge-less server) ⇒ the fold decides alone,
   // byte-identical to before.
-  runtimeLiveness?: (sessionId: string) => { turn?: "running" | "settled"; at: number; events: number } | undefined
+  runtimeLiveness?: (sessionId: string) => { turn?: "running" | "settled"; at: number; events: number; messageId?: string } | undefined
   // The provider's OWN view of a broker session's background tasks (backend/claude-runtime-ingest.ts):
   // what each child is doing right now, and which ones the SDK says are finished. Consulted ONLY
   // through applyRuntimeTasks, which may ENRICH a folded entry and RETIRE one the provider reports
@@ -3192,7 +3199,10 @@ export function createTailer(deps: TailerDeps): Tailer {
     // The reading's AGE, clamped at 0. An injected test clock can sit behind the wall clock the ingest
     // stamps with, and a negative age must read as FRESH — never as an ancient reading to discard.
     const ageMs = live ? Math.max(0, nowMs - live.at) : 0
-    return resolveRuntimeTurn(detailed.turn, detailed.backstopped, live?.turn, ageMs)
+    // Has the fold already read the very record behind a `running` reading? Then that reading is not
+    // ahead of the disk, which is the only thing that licenses it to outrank a folded `idle`.
+    const caughtUp = live?.messageId !== undefined && live.messageId === state.lastAssistantUuid
+    return resolveRuntimeTurn(detailed.turn, detailed.backstopped, live?.turn, ageMs, caughtUp)
   }
 
   // The provider's event stream RUNS AHEAD OF ITS OWN DISK WRITE. Measured against a real broker
