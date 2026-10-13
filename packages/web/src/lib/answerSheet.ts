@@ -72,7 +72,9 @@ export function answerSummary(spec: AskedQuestion, answer: BlockAnswer | undefin
   if (!answer || !nodeAnswered(spec, answer)) return null
   // The review row is on screen, so a secret shows only THAT it is filled, never what it is.
   if (spec.secret) return SECRET_MASK
-  const labels = (spec.options ?? []).map((o) => o.label)
+  // A label is inline markdown (the option row renders it); in this one-line summary its marks are dropped.
+  // What the human TYPED is theirs, and is shown as typed.
+  const labels = (spec.options ?? []).map((o) => plainInline(o.label))
   const text = answer.text.trim()
   if (spec.kind === "multi") {
     const picked = (answer.chosenSet ?? []).slice().sort((a, b) => a - b).flatMap((i) => (labels[i] === undefined ? [] : [labels[i]]))
@@ -80,6 +82,11 @@ export function answerSummary(spec: AskedQuestion, answer: BlockAnswer | undefin
   }
   if (answer.chosen !== null && labels[answer.chosen] !== undefined) return labels[answer.chosen]
   return text || null
+}
+
+/** Inline markdown as one plain line: emphasis and code marks dropped, a link reduced to its text. */
+export function plainInline(md: string): string {
+  return md.replace(/[`*_~]/g, "").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/\s+/g, " ").trim()
 }
 
 /** An option's description as the sheet's muted line, when it is ONE line. A multi-line description is
