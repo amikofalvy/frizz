@@ -204,20 +204,59 @@ export function transcriptBehindTurn(t: ThreadView | undefined, messages: readon
   return last?.kind === "event" && last.boundary === "rest"
 }
 
+// …and the same race the other way round at a turn's END, when the next turn is already waiting: a steer
+// that waited out a turn with no tool call is handed over the instant that turn ends, so the worker's
+// `result` and the next turn's opening record reach the server a few ms apart. The board's tick reads the
+// file before the opening record is on disk and reports the rest; the transcript push reads it ~20ms
+// later and already carries the delivered steer; the board says `running` again one tick after that. For
+// those 40-60ms the view dropped its Working row under a steer the worker had already been handed, then
+// drew it back (measured 2026-10-13 on scripted broker workers: 10 of 12 two-steer recordings). The
+// transcript is right: a message that LANDED after the turn's rest boundary has opened the next turn, so
+// while the board catches up the view keeps the turn it was showing. Queued ghosts are steeredSinceRest's,
+// and a failed, unconfirmed or held send has not been handed to anyone, so none of those counts.
+export function transcriptPastRest(t: ThreadView | undefined, messages: readonly (RestEvidence & Pick<TranscriptMessage, "queued" | "deliveryState">)[]): boolean {
+  if (!t || (t.runtime !== "turn-idle" && t.runtime !== "exited")) return false
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (m.kind === "event" && m.boundary === "rest") return false
+    // A reply after the message means the rest the board reports is that message's own turn ending.
+    if (m.role === "assistant" && m.kind !== "event") return false
+    if (m.role !== "user" || m.queued) continue
+    if (m.deliveryState === "failed" || m.deliveryState === "unconfirmed" || m.deliveryState === "held") continue
+    // A landed message: it opened a turn only if the turn before it had ended — a rest boundary above it.
+    for (let j = i - 1; j >= 0; j--) {
+      const above = messages[j]
+      if (above.kind === "event" && above.boundary === "rest") return true
+      if (above.role === "assistant" && above.kind !== "event") return false
+    }
+    return false
+  }
+  return false
+}
+
 /** The thread as the thread view should present it: the board's, unless the board and the transcript
  *  disagree about where the turn is while the view was showing the other side of that edge —
  *  · a rest the transcript has not reached, while the view showed the turn: the turn (transcriptBehindRest);
  *  · a turn the transcript has not reached, while the view showed the rest: the rest exactly as it was last
- *    presented (transcriptBehindTurn), so the resting card and the reply slot do not change either.
+ *    presented (transcriptBehindTurn), so the resting card and the reply slot do not change either;
+ *  · a rest the transcript has already moved past into the next turn, while the view showed the turn: the
+ *    turn (transcriptPastRest).
  *  Either for at most REST_CATCH_UP_MS, so a transcript that never catches up cannot pin the view. ONE hook
  *  for both ends, so there is one place that reconciles the two channels' order. Returned by identity
  *  whenever nothing is held. */
-export function useTurnHeldForTranscript(t: ThreadView | undefined, messages: readonly RestEvidence[]): ThreadView | undefined {
+export function useTurnHeldForTranscript(t: ThreadView | undefined, messages: readonly (RestEvidence & Pick<TranscriptMessage, "queued" | "deliveryState">)[]): ThreadView | undefined {
   const restAhead = transcriptBehindRest(t, messages)
   const turnAhead = !restAhead && transcriptBehindTurn(t, messages)
+  const nextTurnAhead = !restAhead && !turnAhead && transcriptPastRest(t, messages)
   // Each held episode has its own key, so its expiry never cancels a later one: the rest by the worker's
-  // last record, the turn by the rest boundary it would be drawn under.
-  const key = restAhead ? `rest:${t!.lastAssistantAt}` : turnAhead ? `turn:${messages[messages.length - 1]!.at ?? ""}` : undefined
+  // last record, the turn by the rest boundary it would be drawn under, the next turn by its opening message.
+  const key = restAhead
+    ? `rest:${t!.lastAssistantAt}`
+    : turnAhead
+      ? `turn:${messages[messages.length - 1]!.at ?? ""}`
+      : nextTurnAhead
+        ? `next:${messages[messages.length - 1]!.at ?? ""}`
+        : undefined
   // What the LAST COMMIT presented: read during render, written after commit, so the first render that
   // finds the transcript behind asks whether the frame on screen was on the other side of the edge.
   const shownRunning = useRef(false)
@@ -230,7 +269,7 @@ export function useTurnHeldForTranscript(t: ThreadView | undefined, messages: re
   }, [key])
   const live = key !== undefined && expired !== key
   let presented = t
-  if (live && restAhead && shownRunning.current) presented = steeredFields(t!, t!.lastUserAt)
+  if (live && (restAhead || nextTurnAhead) && shownRunning.current) presented = steeredFields(t!, t!.lastUserAt)
   else if (live && turnAhead && !shownRunning.current && shownRested.current?.id === t!.id) presented = shownRested.current
   const running = presented?.runtime === "running" || presented?.runtime === "spawning"
   useEffect(() => {

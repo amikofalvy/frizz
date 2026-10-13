@@ -1,7 +1,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import type { ThreadView } from "@frizz/shared"
-import { isOptimisticallySteering, optimisticallySteered, steeredSinceRest, STEER_OPTIMISM_MS, transcriptBehindRest, transcriptBehindTurn } from "./steering.ts"
+import { isOptimisticallySteering, optimisticallySteered, steeredSinceRest, STEER_OPTIMISM_MS, transcriptBehindRest, transcriptBehindTurn, transcriptPastRest } from "./steering.ts"
 import { isActivelyRunning, isSnoozed, orderActive, partitionActive, sectionOf, sessionIndicatorKind } from "../groups.ts"
 
 const at = (lastActivityAt?: string) => ({ id: "t", lastActivityAt } as unknown as ThreadView)
@@ -236,5 +236,31 @@ test("the Working clock starts at the send: this tab's stamp, else the server's 
     assert.equal(transcriptBehindTurn(live(), [human(T(5))]), false)
     assert.equal(transcriptBehindTurn(live(), []), false)
     assert.equal(transcriptBehindTurn(undefined, [restAt(T(8))]), false)
+  })
+
+  // ── …and the next turn the transcript has already opened, past a rest the board still reports ──
+  // A steer that waited out a turn is handed over the instant it ends; the transcript push carries it
+  // ~20ms after the board's rest, and the board says running one tick later.
+  test("a message landed after the rest boundary has opened the next turn", () => {
+    assert.equal(transcriptPastRest(rested(T(9)), [human(T(5)), said(T(9)), restAt(T(9)), human(T(10))]), true)
+    assert.equal(transcriptPastRest(rested(T(9), "exited"), [human(T(5)), said(T(9)), restAt(T(9)), wakeBubble]), true)
+  })
+
+  test("a ghost, or a send nobody was handed, has not opened anything", () => {
+    for (const m of [{ role: "user" as const, at: T(10), queued: true }, ...(["failed", "unconfirmed", "held"] as const).map((deliveryState) => ({ role: "user" as const, at: T(10), deliveryState }))]) {
+      assert.equal(transcriptPastRest(rested(T(9)), [human(T(5)), said(T(9)), restAt(T(9)), m]), false, JSON.stringify(m))
+    }
+  })
+
+  test("a rest with nothing after it, a turn the board already reports, or a message the rest came after is not past it", () => {
+    assert.equal(transcriptPastRest(rested(T(9)), [human(T(5)), said(T(9)), restAt(T(9))]), false)
+    assert.equal(transcriptPastRest(live(), [human(T(5)), said(T(9)), restAt(T(9)), human(T(10))]), false)
+    // The human message the turn answered, with the turn's own rest after it.
+    assert.equal(transcriptPastRest(rested(T(9)), [restAt(T(1)), human(T(5)), said(T(9)), restAt(T(9))]), false)
+    // A message with no rest above it at all (the first turn) belongs to a turn the board already ended.
+    assert.equal(transcriptPastRest(rested(T(9)), [human(T(5)), said(T(9))]), false)
+    // …nor one a reply already answered, where the projection drew no boundary for that rest.
+    assert.equal(transcriptPastRest(rested(T(9)), [restAt(T(1)), human(T(5)), said(T(9))]), false)
+    assert.equal(transcriptPastRest(undefined, []), false)
   })
 }
