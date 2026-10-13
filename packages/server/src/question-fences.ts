@@ -73,6 +73,16 @@ function parseSpec(spec: string): AskedQuestion | undefined {
   }
 }
 
+/** Is a fence the SAME question its row registered? Compared without follow-ups: a worker restating its
+ *  question in a later message writes the parent fence and rarely its branches again, and the branches
+ *  were fixed when the tree registered — a restatement can place the card, never change what it asks. */
+function sameQuestion(rowSpec: string, spec: AskedQuestion): boolean {
+  const stored = parseSpec(rowSpec)
+  if (!stored) return false
+  const root = (q: AskedQuestion) => JSON.stringify({ ...q, options: q.options?.map(({ followUps: _followUps, ...o }) => o) })
+  return root(stored) === root(spec)
+}
+
 const SETTLED_WORD: Record<ThreadQuestionRow["state"], string> = {
   open: "open",
   answered: "answered",
@@ -116,7 +126,7 @@ export function syncQuestionFences(
       const spent = questionHandles(ask.spec).map((h) => [h, index.get(h.toLowerCase())] as const).find(([, row]) => row)
       if (spent) {
         const [handle, row] = spent as readonly [string, ThreadQuestionRow]
-        const same = row.handle === ask.id && row.spec === JSON.stringify(ask.spec)
+        const same = row.handle === ask.id && sameQuestion(row.spec, ask.spec)
         // THE SAME FENCE AGAIN: the message that asked it, replayed by a refold, or the worker restating
         // its own open question — which places the card again, exactly as a reference does.
         if (same && (row.state === "open" || atMs <= row.asked_at)) out.refs.push({ at: sighting.at, rowId: row.id })

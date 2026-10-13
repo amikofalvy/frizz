@@ -237,3 +237,17 @@ test("the fold notes every assistant message carrying a fence — mid-turn too �
   applyEvent(c, { kind: "turn-end", finalText: choice("end"), at: at(1) } as never)
   assert.deepEqual(c.questionSightings?.map((x) => x.at), [at(0), at(1)])
 })
+
+test("restating a question without its follow-up places the card — it is still the same question", () => {
+  const h = storageHarness()
+  try {
+    h.storage.upsertSession(row("t"))
+    const parent = choice("settings-store")
+    const child = fence("id: sqlite-path\nkind: text\nwhen: settings-store = SQLite\nquestion: Where should it live?")
+    const asked = { at: at(0), text: `${parent}\n\n${child}` }
+    const out = sync(h.storage, [asked, { at: at(5), text: parent }])
+    assert.deepEqual(out.faults, [])
+    assert.equal(out.registered.length, 1)
+    assert.deepEqual(out.refs.map((r) => r.at), [at(5)], "the restatement is a reference to the registered tree")
+  } finally { h.close() }
+})
