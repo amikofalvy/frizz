@@ -41,7 +41,7 @@ write kills the server with SIGPIPE — minutes later, mid-verification, looking
 Redirect to a file and poll the file.
 
 Flags: `--port=N`, `--project=/abs/dir` (defaults to the frizz repo), `--also-project=/abs/dir`
-(repeatable — see §2), `--creds` (links the real agent logins in; NEVER with a live Claude worker, see
+(repeatable — see §2), `--creds` (links the real agent logins in, except Claude's on macOS, see
 § A real Claude worker), `--wakers`, `--reaper`,
 `--prime`, `--keep`, `--home=/abs`, `--seed`.
 
@@ -96,9 +96,9 @@ The traps, each of which costs a full boot cycle to rediscover:
   capture a worker's argv with a stub `claude`; to see the env a worker really gets, dispatch a real one and
   read it off the process table (`ps -Ao pid,command | grep FRIZZ_PROJECT_ID`). A real CLAUDE worker only
   ever runs on a real-HOME stack: see § A real Claude worker.
-- **A sandbox HOME has no credentials, and a live Claude worker must not be given them.** `--creds` makes
-  it sign in, and its next token save puts a keychain dialog on the maintainer's screen (§ A real Claude
-  worker).
+- **A sandbox HOME has no Claude login, even with `--creds` on macOS**, so a Claude dispatch there fails
+  `AUTH_REQUIRED:claude` on purpose. Given one, its next token save puts a keychain dialog on the
+  maintainer's screen (§ A real Claude worker).
 - **`startServer({port: 0})` does not give you an ephemeral port** — pick a real high port.
 - **A dispatched worker is a DETACHED daemon.** It survives the stack it was born in and keeps burning
   quota. `ps -Ao pid,command | grep <your temp HOME>` → `kill <pid>` each, then re-check none survive.
@@ -132,12 +132,14 @@ The client also sets the loopback `Origin` header, without which any write 403s.
 ### A real Claude worker
 
 **Never start a live Claude worker under a sandbox HOME** (AGENTS.md § Never put a macOS keychain dialog
-on the maintainer's screen). `--creds` symlinks the real `~/.claude*` in, so a sandboxed worker signs in
-from `~/.claude/.credentials.json`. But whenever its OAuth token is due, Claude Code saves the new one to
-the keychain first (`security add-generic-password`), macOS finds no keychain under the sandbox HOME, and
-the maintainer gets a modal *"Keychain Not Found — A keychain cannot be found to store "colin.""*. Whether a
-given run hits a refresh is luck, so "it was fine on the last run" proves nothing (2026-10-13: two Haiku
-dispatches from a scratch `rd.mjs`, eight failed `security` saves, two dialogs). In order of preference:
+on the maintainer's screen). `--creds` used to symlink the real `~/.claude*` in, so a sandboxed worker
+signed in from `~/.claude/.credentials.json`. But whenever its OAuth token is due, Claude Code saves the new
+one to the keychain first (`security add-generic-password`), macOS finds no keychain under the sandbox HOME,
+and the maintainer gets a modal *"Keychain Not Found — A keychain cannot be found to store "colin.""*.
+Whether a given run hits a refresh is luck (2026-10-13: two Haiku dispatches from a scratch `rd.mjs`, eight
+failed `security` saves, two dialogs). The maintainer kept sandboxes keychain-less, so on macOS `--creds`
+now leaves Claude's login out (`"claudeLogin": false` in the json line) and a Claude dispatch fails
+`AUTH_REQUIRED:claude`. Never link or copy `~/.claude` in by hand to get past that. In order of preference:
 
 1. **Simulate the worker** (§ Simulating a worker, below). Records appended to the JSONL drive the same
    tailer → board → push → render path a live worker does, on a timeline you control, which is what a UI,
@@ -145,7 +147,7 @@ dispatches from a scratch `rd.mjs`, eight failed `security` saves, two dialogs).
 2. **Keep the real HOME and isolate only the PROJECT** (`--home=$HOME --project=/tmp/<throwaway>`) when
    nothing but a live model can show the behavior. The keychain is found there, so nothing prompts.
 
-`--creds` remains for the non-Claude backends that need a login in the sandbox (opencode's
+`--creds` remains for the other backends that need a login in the sandbox (Codex, and opencode's
 `~/.local/share/opencode`, ARCHITECTURE.md § ACP backend); after dispatching one, run the AGENTS.md log query and
 confirm no `SecurityAgent` started. HOME's keychain is also why a bare temp HOME fails
 `AUTH_REQUIRED:claude` (the macOS login keychain lives at `$HOME/Library/Keychains`, so redirecting HOME
