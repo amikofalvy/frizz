@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import { SetThreadSnoozeInput } from "@frizz/shared"
 import {
+  commandWatchName,
   AWAITING_FALLBACK_TITLE,
   AWAITING_NO_PROSE,
   awaitingDefersToQuestions,
@@ -262,4 +263,18 @@ test("awaitingDefersToQuestions: a fence naming questions defers to their cards,
   assert.equal(awaitingDefersToQuestions(hintsOf("prs: [acme/app#1480]\nstatus: watching\nfor: 7d")), false, "no question named")
   assert.equal(awaitingDefersToQuestions(hintsOf("questions: [qst_466f9d6ee188]\nsteps:\n  - Run `npm login`")), false, "the steps card carries the Done verb")
   assert.equal(awaitingDefersToQuestions(undefined), false)
+})
+
+test("a command watch's row name cuts long absolute paths to their last segment, and nothing else", () => {
+  assert.equal(
+    commandWatchName("/Users/me/.cache/nub/node/26.11.1/bin/node /Users/me/repo/.frizz/threads/abc/others-idle.mjs"),
+    "node others-idle.mjs",
+  )
+  // Short paths read as written: `> null` would be a different command.
+  assert.equal(commandWatchName("curl -sf https://registry.npmjs.org/frizz/0.13.14 > /dev/null"), "curl -sf https://registry.npmjs.org/frizz/0.13.14 > /dev/null")
+  assert.equal(commandWatchName("test -f /tmp/done"), "test -f /tmp/done")
+  assert.equal(commandWatchName("npm view frizz@0.13.12 version"), "npm view frizz@0.13.12 version")
+  // Quoted and assigned paths are cut at the quote or the `=`, and runs of whitespace fold to one.
+  assert.equal(commandWatchName(`grep -q done '/var/log/app/run.log'`), `grep -q done 'run.log'`)
+  assert.equal(commandWatchName("FILE=/srv/app/state/ready  test -s \"$FILE\""), "FILE=ready test -s \"$FILE\"")
 })

@@ -26,12 +26,12 @@
 // and the parent genuinely resumes; measured 15/15 times on a live worker thread, with idle windows as
 // short as 0.13s. This card is what makes that alternation legible.)
 import { Fragment, useEffect, useState, type ReactNode } from "react"
-import { Bot, ChevronRight, CircleAlert, CircleCheck, CircleDashed, CircleDot, CircleSlash, CircleX, Clock, GitMerge, GitPullRequestClosed, Hourglass, ListTodo, TerminalSquare, X } from "lucide-react"
+import { Bot, ChevronRight, CircleAlert, CircleCheck, CircleDashed, CircleDot, CircleSlash, CircleX, Clock, GitMerge, GitPullRequestClosed, Hourglass, ListTodo, RefreshCw, TerminalSquare, X } from "lucide-react"
 import type { AwaitingHint, GithubIssueStatus, GithubWatchStatus, ThreadView, ThreadWatchView } from "@frizz/shared"
-import { awaitingFenceTitle, awaitingSteps, isDirectSubAgent } from "@frizz/shared"
+import { awaitingFenceTitle, awaitingSteps, commandRunClause, isDirectSubAgent } from "@frizz/shared"
 import { githubRefUrl } from "../lib/githubRef.ts"
 import { noteGithubRefs } from "../lib/githubHovercards.ts"
-import { AWAITING_FALLBACK_TITLE, AWAITING_NO_PROSE, awaitingDefersToQuestions, awaitingProseBlock, prWatchRefs, STEPS_CHIP } from "../lib/awaitingPresentation.ts"
+import { AWAITING_FALLBACK_TITLE, AWAITING_NO_PROSE, awaitingDefersToQuestions, awaitingProseBlock, commandWatchName, prWatchRefs, STEPS_CHIP } from "../lib/awaitingPresentation.ts"
 import { CHILD_DISMISS_NOUN, CHILD_DISMISS_TITLE, CHILD_DISMISS_VERB, CHILD_STALE_DOT_CLASS, CHILD_STALE_SHELL_TITLE, CHILD_STALE_TITLE, checksCounterLabel, issueCounterLabel } from "../lib/childOps.ts"
 import { compactElapsedSince, formatCompactElapsed } from "../lib/durationLabels.ts"
 import { useNowMs } from "../lib/liveClock.ts"
@@ -151,18 +151,25 @@ export function awaitingBackgroundLabel(
   return awaitingFenceTitle(hints) ?? (shellsAlone(thread) ? "Background shells running" : AWAITING_FALLBACK_TITLE)
 }
 
-/** Background shells and nothing else — the one shape with a title of its own. An armed timer
- *  disqualifies it the same way a PR watcher does: the card then holds a Timers group too, and a
- *  kind-naming title over a mixed table names only half the wait. */
+/** Background shells and nothing else — the one shape with a title of its own. An armed timer or
+ *  command watch disqualifies it the same way a PR watcher does: the card then holds that group too, and
+ *  a kind-naming title over a mixed table names only half the wait. */
 function shellsAlone(thread: Pick<ThreadView, "subAgents" | "bgShells" | "watches">): boolean {
   const shells = (thread.bgShells ?? []).filter((s) => s.state === "running").length
-  return shells > 0 && !awaitsResults(thread) && prWatcherCount(thread) === 0 && armedTimerWatches(thread).length === 0
+  return shells > 0 && !awaitsResults(thread) && prWatcherCount(thread) === 0 && armedTimerWatches(thread).length === 0 &&
+    armedCommandWatches(thread).length === 0
 }
 
 /** The thread's armed timers, as the board's watch rows state them (kind "timer" since 2026-08-24 —
  *  before that a timer park reached this card nowhere at all). */
 function armedTimerWatches(thread: Pick<ThreadView, "watches">): ThreadWatchView[] {
   return (thread.watches ?? []).filter((w) => w.kind === "timer" && w.state === "armed")
+}
+
+/** The thread's armed command watches, as the board's watch rows state them (kind "command" since
+ *  2026-10-13 — before that a park on one reached this card nowhere, see CommandWatchRow). */
+export function armedCommandWatches(thread: Pick<ThreadView, "watches">): ThreadWatchView[] {
+  return (thread.watches ?? []).filter((w) => w.kind === "command" && w.state === "armed")
 }
 
 /** A card drawn with no owning thread — a fence in a SUB-AGENT's own transcript, which is a real
@@ -512,7 +519,7 @@ export function WaitRow({ mark, name, status, onOpen, onPrewarm, href, ghRef, ti
    *  is right, because the whole row is the link. */
   ghRef?: string
   title?: string
-  testKind: "github" | "shell" | "agent" | "timer" | "file" | "link"
+  testKind: "github" | "shell" | "agent" | "timer" | "command" | "file" | "link"
   testId: string
 }) {
   const tree = indent !== undefined
@@ -814,6 +821,42 @@ export function TimerRow({ watch, now }: { watch: ThreadWatchView; now: number }
   )
 }
 
+// ---- THE ARMED COMMAND WATCHES --------------------------------------------------------------------
+// The fifth kind (2026-10-13): a check the SERVER re-runs on a cadence until it exits 0 (`frizzctl
+// watch-command`). Until it had a row, a thread parked on one alone carded as "Waiting for an external
+// update." over nothing — and the maintainer, reading the releaser's, had to ask what that even meant.
+//
+// The row's NAME is the command, because that is the honest answer to "what is this waiting on"; the
+// `cmw_…` id names nothing to a human and stays in data attributes. Its long paths are cut
+// (commandWatchName) and the full command opens the tooltip, followed by what the last check printed,
+// which is the one place the human can read WHY it has not passed. The status is the cadence, the
+// reading that does not go stale between board deltas. NON-INTERACTIVE, as a timer row is: a check's
+// output has no drawer to open.
+export function CommandWatchRow({ watch, now }: { watch: ThreadWatchView; now: number }) {
+  const spec = watch.command
+  const command = spec?.command ?? watch.target
+  const last = spec?.lastRun
+  const lastLine = spec && last
+    ? `${spec.runs} check${spec.runs === 1 ? "" : "s"} so far. The last, ${compactElapsedSince(last.at, now)} ago, ${commandRunClause(last)}.`
+    : null
+  return (
+    <WaitRow
+      testKind="command"
+      testId={watch.target}
+      mark={<RefreshCw size={12} className={`${ON_CAP} text-muted-60`} />}
+      name={commandWatchName(command)}
+      oneLine
+      title={[
+        command,
+        spec ? `Re-run every ${spec.every} until it exits 0.` : null,
+        lastLine,
+        last?.output.trim() || null,
+      ].filter(Boolean).join("\n\n")}
+      status={spec ? `every ${spec.every}` : "armed"}
+    />
+  )
+}
+
 // ---- THE LIVE SUB-AGENTS -------------------------------------------------------------------------
 // DIRECT children only. A descendant rides `subAgents` so other surfaces can nest the tree, but it was
 // dispatched by the child rather than by this thread's worker — and it has no retirement signal in this
@@ -910,18 +953,19 @@ function awaitingWaitItems(thread: Pick<ThreadView, "id" | "subAgents" | "bgShel
   const shells = [...declared, ...hintedShellWatches(thread, opts.hints ?? [], declared)]
   const agents = liveAgents(thread)
   const timers = armedTimerWatches(thread)
-  return { prs, issues, shells, agents, timers }
+  const commands = armedCommandWatches(thread)
+  return { prs, issues, shells, agents, timers, commands }
 }
 
 /** Would the wait table draw at least one row for this thread? A card with a heading and no rows says
  *  less than nothing, so a caller asks first. */
 export function hasAwaitingWaitRows(thread: Pick<ThreadView, "id" | "subAgents" | "bgShells" | "watches">, opts: AwaitingWaitOptions = {}): boolean {
   const items = awaitingWaitItems(thread, opts)
-  return items.prs.length + items.issues.length + items.shells.length + items.agents.length + items.timers.length > 0
+  return items.prs.length + items.issues.length + items.shells.length + items.agents.length + items.timers.length + items.commands.length > 0
 }
 
 function awaitingWaitGroups(thread: Pick<ThreadView, "id" | "subAgents" | "bgShells" | "watches">, now: number, opts: AwaitingWaitOptions = {}): Array<{ head: string; rows: ReactNode[] }> {
-  const { prs, issues, shells, agents, timers } = awaitingWaitItems(thread, opts)
+  const { prs, issues, shells, agents, timers, commands } = awaitingWaitItems(thread, opts)
   // GROUPED BY KIND (maintainer 2026-08-15: "Definitely group them by kind"), and the order is the one
   // the ops strip already settled, for the same reason: a sub-agent and a shell are running RIGHT NOW,
   // a watched PR is waiting on somebody else, and a timer is waiting on nothing but the clock. Read
@@ -933,6 +977,9 @@ function awaitingWaitGroups(thread: Pick<ThreadView, "id" | "subAgents" | "bgShe
     // Its own group, under GitHub's own noun — an issue beside a PR under "Pull requests" would be the
     // one row on the card whose heading lied about it.
     { head: "Issues", rows: issues.map((w) => <GithubWatchRow key={w.id} watch={w} />) },
+    // Waiting on the world, as a PR is, so it reads after them — and ahead of the timers, which wait on
+    // nothing but the clock.
+    { head: "Command watches", rows: commands.map((w) => <CommandWatchRow key={w.id} watch={w} now={now} />) },
     { head: "Timers", rows: timers.map((w) => <TimerRow key={w.id} watch={w} now={now} />) },
   ].filter((g) => g.rows.length > 0)
 }

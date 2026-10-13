@@ -2178,7 +2178,7 @@ export function parseOwnWatchExpiredWake(text: string): { kind: "shell" | "agent
 // So the board SYNTHESIZES one row per parseable `prs:` entry on the thread's standing fence. It is
 // derived state, not a registration: it appears when the worker parks, vanishes when it says anything
 // else, and carries no drop affordance, because there is no row to drop.
-export const ThreadWatchKind = z.enum(["shell", "github", "timer"])
+export const ThreadWatchKind = z.enum(["shell", "github", "timer", "command"])
 export type ThreadWatchKind = z.infer<typeof ThreadWatchKind>
 
 /** How a watched PR's checks stand right now, in the shape GitHub's own merge box states it: a rollup
@@ -2262,9 +2262,20 @@ export type GithubIssueStatus = z.infer<typeof GithubIssueStatus>
  *  A `shell` row is DERIVED FROM THE FENCE — a `shells:` entry checked against live telemetry — and has
  *  no registration behind it: it lives exactly as long as the fence that declares it, which is also
  *  exactly as long as the scheduler watches it. A `github` row mirrors a REGISTERED PR watcher and a
- *  `timer` row an ARMED timer (`thread_timer`), fence or no fence — a registration is live work that
- *  WILL wake the thread. Either way the coupling is the point: the strip lists precisely what will
- *  actually wake the thread, and the two cannot drift into claiming different things. */
+ *  `timer` row an ARMED timer (`thread_timer`) and a `command` row an ARMED command watch
+ *  (`command_watch`), fence or no fence — a registration is live work that WILL wake the thread. Either
+ *  way the coupling is the point: the strip lists precisely what will actually wake the thread, and the
+ *  two cannot drift into claiming different things. */
+/** One finished check, as stored on the row and read back. `exitCode` is null for every outcome but
+ *  `exit`: a run killed by its timeout, by a signal, or that never started has no exit status to report. */
+export const CommandWatchRun = z.object({
+  at: z.string(),
+  outcome: z.enum(["exit", "timeout", "signal", "error"]),
+  exitCode: z.number().int().nullable(),
+  output: z.string(),
+}).strict()
+export type CommandWatchRun = z.infer<typeof CommandWatchRun>
+
 export const ThreadWatchView = z.object({
   id: z.string(),
   kind: ThreadWatchKind,
@@ -2287,6 +2298,18 @@ export const ThreadWatchView = z.object({
    *  its status. Unlike `github` there is no polled half to be absent: a timer that exists is fully
    *  known, so a timer row always carries this. */
   timer: z.object({ fireAt: z.string(), prompt: z.string() }).strict().optional(),
+  /** `command` rows only: the armed command watch's registration and its last check — what the worker's
+   *  own read-back carries (CommandWatchView), minus the id and state the row already has. The command is
+   *  the row's NAME and the cadence its status. Until 2026-10-13 a command watch had no row at all, so a
+   *  thread parked on nothing else drew a card that said only "Waiting for an external update." */
+  command: z.object({
+    command: z.string(),
+    /** The cadence in the house duration grammar (`2m`, `1h 30m`). */
+    every: z.string(),
+    expiresAt: z.string(),
+    runs: z.number().int().nonnegative(),
+    lastRun: CommandWatchRun.optional(),
+  }).strict().optional(),
 }).strict()
 export type ThreadWatchView = z.infer<typeof ThreadWatchView>
 
@@ -2511,16 +2534,6 @@ export const COMMAND_WATCH_OUTPUT_MAX_BYTES = 4096
 /** One run's limit. Killed with its whole process group past this, and counted as a failed check. */
 export const COMMAND_WATCH_RUN_TIMEOUT_MS = 2 * 60_000
 
-/** One finished check, as stored on the row and read back. `exitCode` is null for every outcome but
- *  `exit`: a run killed by its timeout, by a signal, or that never started has no exit status to report. */
-export const CommandWatchRun = z.object({
-  at: z.string(),
-  outcome: z.enum(["exit", "timeout", "signal", "error"]),
-  exitCode: z.number().int().nullable(),
-  output: z.string(),
-}).strict()
-export type CommandWatchRun = z.infer<typeof CommandWatchRun>
-
 export const CommandWatchState = z.enum(["armed", "dropped", "passed", "expired", "cancelled"])
 export type CommandWatchState = z.infer<typeof CommandWatchState>
 
@@ -2602,8 +2615,9 @@ function codeBlock(text: string, info = ""): string {
   return `${fence}${info}\n${text.replace(/\n+$/, "")}\n${fence}`
 }
 
-/** How one check ended, as a clause: "exited 1", "timed out after 2m", "was killed by SIGKILL". */
-function commandRunClause(run: Pick<CommandWatchRun, "outcome" | "exitCode">): string {
+/** How one check ended, as a clause: "exited 1", "timed out after 2m", "was killed by SIGKILL". The
+ *  wake trailers say it, and so does a command watch's row on the board (AwaitingBackgroundCard). */
+export function commandRunClause(run: Pick<CommandWatchRun, "outcome" | "exitCode">): string {
   if (run.outcome === "exit") return `exited ${run.exitCode ?? "?"}`
   if (run.outcome === "timeout") return `timed out after ${formatElapsed(COMMAND_WATCH_RUN_TIMEOUT_MS)}`
   if (run.outcome === "signal") return "was killed by a signal"

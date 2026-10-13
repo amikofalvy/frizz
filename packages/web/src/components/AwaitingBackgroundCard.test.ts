@@ -41,6 +41,22 @@ const timerWatch = (inMinutes = 34, prompt = "Re-check: tip quiet, install green
   timer: { fireAt: new Date(Date.now() + inMinutes * 60_000).toISOString(), prompt },
 })
 
+// An ARMED COMMAND WATCH — what a `command_watch` registration becomes server-side (board.fenceWatchViews).
+const commandWatch = () => ({
+  id: "command:demo:cmw_12f995833a5b",
+  kind: "command" as const,
+  target: "cmw_12f995833a5b",
+  state: "armed" as const,
+  createdAt: "2026-07-28T09:00:00.000Z",
+  command: {
+    command: "/Users/me/.cache/nub/node/26.11.1/bin/node /Users/me/repo/.frizz/threads/abc/others-idle.mjs",
+    every: "2m",
+    expiresAt: "2026-07-28T21:00:00.000Z",
+    runs: 24,
+    lastRun: { at: new Date(Date.now() - 5 * 60_000).toISOString(), outcome: "exit" as const, exitCode: 1, output: "active: Layout shift when a send ends a rest\n" },
+  },
+})
+
 const render = (t: Parameters<typeof AwaitingBackgroundCard>[0]["thread"]) =>
   renderToStaticMarkup(createElement(AwaitingBackgroundCard, { thread: t }))
 const text = (t: Parameters<typeof AwaitingBackgroundCard>[0]["thread"]) =>
@@ -175,6 +191,30 @@ test("a card with no thread is still the card: its heading, no rows, no verb", (
   // …but a card with ROWS says nothing of the kind — the rows are what it has to say.
   const rowed = render({ ...thread([agent("running")], []) } as Parameters<typeof AwaitingBackgroundCard>[0]["thread"])
   assert.doesNotMatch(rowed, /Waiting for an external update/)
+})
+
+// The releaser's card on 2026-10-13: parked on a command watch and nothing else, with an empty fence
+// body. It had no row, so it said "Waiting for an external update." and nothing about what it waited on.
+test("a park on a command watch alone rows the command, its cadence and its last check", () => {
+  const t = {
+    ...thread([], []),
+    watches: [commandWatch()],
+    lastFence: { kind: "awaiting", body: "", hints: [{ kind: "command", value: "cmw_12f995833a5b" }, { kind: "status", value: "watching" }] },
+  } as Parameters<typeof AwaitingBackgroundCard>[0]["thread"]
+  const html = render(t)
+  assert.doesNotMatch(html, /Waiting for an external update/)
+  assert.match(html, /data-wait-row="cmw_12f995833a5b" data-wait-kind="command"/)
+  const shown = html.replace(/<[^>]+>/g, " ")
+  assert.match(shown, /Command watches/)
+  assert.match(shown, /node others-idle\.mjs/, "the command, its long paths cut")
+  assert.doesNotMatch(shown, /\.cache\/nub/, "…not the directories")
+  assert.match(shown, /every 2m/)
+  // The tooltip is where the full command and the reason it has not passed live.
+  const tip = /data-wait-kind="command"[\s\S]*?title="([^"]*)"/.exec(html)?.[1] ?? ""
+  assert.match(tip, /\/Users\/me\/\.cache\/nub\/node\/26\.11\.1\/bin\/node/)
+  assert.match(tip, /24 checks so far\. The last, [45]m ago, exited 1\./)
+  assert.match(tip, /active: Layout shift when a send ends a rest/)
+  assert.equal(hasAwaitingWaitRows(t), true)
 })
 
 // ---- ONE ROW PER THING, GROUPED BY KIND ----------------------------------------------------------
