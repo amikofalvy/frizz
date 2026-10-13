@@ -181,19 +181,34 @@ function lineOf(v: Value): string {
   return unquote([v.inline, ...v.block].join(" ").replace(/\s+/g, " ").trim()).replace(/\s+/g, " ").trim()
 }
 
-/** Does this markdown open a code block it never closes? An unclosed fence runs to the end of its text, so
- *  it is the one whose interior ends there (a closed one ends at its closing line, which has characters). */
-function leavesFenceOpen(markdown: string): boolean {
+/** The fence run (``` or ~~~~) of a code block this markdown opens and never closes, if it leaves one open.
+ *  An unclosed fence runs to the end of its text, so it is the one whose interior ends there (a closed one
+ *  ends at its closing line, which has characters of its own). */
+function openFenceIn(markdown: string): string | undefined {
   const last = fencedInteriors(markdown).at(-1)
-  return last !== undefined && last[1] === markdown.length
+  if (!last || last[1] !== markdown.length) return undefined
+  const opener = markdown.slice(0, last[0]).trimEnd().split("\n").at(-1) ?? ""
+  return /^ {0,3}(`{3,}|~{3,})/.exec(opener)?.[1]
 }
 
 // WHY AN OPEN CODE BLOCK IS REFUSED. It is the mark of a fence that closed early: the closing ``` of a code
 // block written inside a ```question fence is, to every markdown reader, the fence's own closer. The
 // question then registered with its context cut off mid-block, and everything the worker wrote after it —
 // the rest of the context, then the real closer, which now OPENS a block — rendered as code to the end of
-// the message. Nothing else about the fence is wrong, so it has to be named here or it is never named.
-const OPEN_FENCE_FIX = "a code block's closing ``` also closes a ```question fence, so a fence that holds one needs a longer fence of its own: open it with ````question and close it with ````"
+// the message, a later ```question fence included, which registered nothing and was told nothing. Nothing
+// else about the first fence is wrong, so this is named here or it is never named. (A real Haiku reply and
+// a two-question probe both did it on the first day, 2026-10-13.)
+//
+// A ~~~ block cannot close a backtick fence, so one left open is only what it looks like.
+function openFenceFault(where: string, run: string): string {
+  if (run[0] === "~") return `${where} ends inside a ${run} code block that is never closed — close it with ${run} on a line of its own`
+  const longer = "`".repeat(run.length + 1)
+  return (
+    `${where} ends inside an unclosed ${run} code block. If you did close it, that closing line closed this question fence instead — ` +
+    "a fence ends at the first bare run of backticks as long as its own — and everything after it in your message, a later question fence included, reads as code. " +
+    `Give the question fence more backticks than the block inside it: open it with ${longer}question and close it with ${longer}`
+  )
+}
 
 /** A value as MARKDOWN: a block keeps its lines; an inline value with continuations joins them. */
 function markdownOf(v: Value): string {
@@ -416,7 +431,8 @@ export function readQuestionFence(body: string): QuestionFenceRead {
   if (!question) faults.push("no `question:` — one line, the question itself; anything longer goes below the `---`")
   else if (question.length > QUESTION_MAX) faults.push(`\`question:\` is ${question.length} characters; keep it to one line and put the rest below the \`---\``)
   if (context.length > CONTEXT_MAX) faults.push(`the body below \`---\` is ${context.length} characters; the limit is ${CONTEXT_MAX}`)
-  if (leavesFenceOpen(context)) faults.push(`the body below \`---\` opens a code block it never closes — ${OPEN_FENCE_FIX}`)
+  const openInContext = openFenceIn(context)
+  if (openInContext) faults.push(openFenceFault("the body below `---`", openInContext))
 
   const headerValue = fm.keys.get("header")
   const header = headerValue ? lineOf(headerValue) : undefined
@@ -452,7 +468,8 @@ export function readQuestionFence(body: string): QuestionFenceRead {
     const parts = [description ? markdownOf(description) : "", detail ? markdownOf(detail) : ""].filter(Boolean)
     const text = parts.join("\n\n")
     if (text.length > DESCRIPTION_MAX) faults.push(`${where}the description and detail run ${text.length} characters; the limit is ${DESCRIPTION_MAX}`)
-    if (leavesFenceOpen(text)) faults.push(`${where}its detail opens a code block it never closes — ${OPEN_FENCE_FIX}`)
+    const openInOption = openFenceIn(text)
+    if (openInOption) faults.push(openFenceFault(`${where}its detail`, openInOption))
     const recommendedValue = o.get("recommended")
     const recommended = recommendedValue ? booleanOf(recommendedValue, "recommended", faults, where) : undefined
     options.push({ label, ...(text ? { description: text } : {}), ...(recommended ? { recommended: true } : {}) })

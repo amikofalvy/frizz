@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
+import { AskedQuestionSchema, askedQuestionFaults } from "./index.ts"
 import { assembleQuestionFences, questionFenceBlocks, questionFencesIn, questionHandles, readQuestionFence } from "./question-fence.ts"
 
 const fence = (body: string, ticks = "```") => `${ticks}question\n${body}\n${ticks}`
@@ -256,14 +257,67 @@ test("a code block the fence's own closing line cut short is refused, and the fi
   const early = "```question\nid: x\nkind: text\nquestion: Q?\n---\nRun this:\n```bash\nls\n```\nand tell me.\n```"
   const blocks = questionFenceBlocks(early)
   assert.equal(blocks[0].read.form, "invalid")
-  assert.match(blocks[0].read.form === "invalid" ? blocks[0].read.faults.join("\n") : "", /never closes.*````question/s)
+  assert.match(faultsIn(early), /^the body below `---` ends inside an unclosed ``` code block\..*open it with ````question and close it with ````$/s)
   assert.equal(blocks[0].read.form === "invalid" && blocks[0].read.id, "x")
   // The same mistake inside an option's detail, written at an indent a closing fence still counts at.
   const inDetail = "```question\nid: y\nkind: choice\nquestion: Q?\noptions:\n- label: A\n  detail: |\n   ```diff\n   -a\n   ```\n- B\n```"
-  assert.match(faultsIn(inDetail), /option 1: .*never closes/)
+  assert.match(faultsIn(inDetail), /option 1: its detail ends inside an unclosed ``` code block/)
+  // A four-backtick block inside a four-backtick fence is the same mistake one size up, and the fix is too.
+  assert.match(faultsIn("````question\nid: x\nkind: text\nquestion: Q?\n---\n````md\nsample\n````\n````"), /open it with `````question and close it with `````$/)
+  // A ~~~ block cannot close a backtick fence, so one left open is only an unclosed block — and one that
+  // is closed is fine under a three-backtick fence.
+  assert.match(faultsIn("```question\nid: x\nkind: text\nquestion: Q?\n---\n~~~sql\nSELECT 1\n```"), /ends inside a ~~~ code block that is never closed — close it with ~~~/)
+  assert.deepEqual(questionFencesIn("```question\nid: x\nkind: text\nquestion: Q?\n---\n~~~sql\nSELECT 1\n~~~\n```").faults, [])
   // Negative controls: the longer outer fence, and a detail indented past where a closer counts.
   assert.deepEqual(questionFencesIn("````question\nid: x\nkind: text\nquestion: Q?\n---\nRun this:\n```bash\nls\n```\nand tell me.\n````").faults, [])
   assert.deepEqual(questionFencesIn("```question\nid: y\nkind: choice\nquestion: Q?\noptions:\n  - label: A\n    detail: |\n      ```diff\n      -a\n      ```\n  - B\n```").faults, [])
+})
+
+test("a fence cut short by its own code block takes a later question in the message with it — and says so", () => {
+  // The models lane's probe (adv-models-runs/probes/three-tick-context-code.md), from a real reply shape.
+  // The first fence closes at the SQL block's closer; its real closer then OPENS a block that runs through
+  // the second fence, which is therefore quoted code: it registers nothing and no fault can name it. So the
+  // first fence's fault has to carry the news.
+  const message = [
+    "The migration is ready; approve it from the card.",
+    "",
+    "```question",
+    "id: orders-archived-at",
+    "kind: choice",
+    "question: Should this migration run against production?",
+    "options:",
+    "  - label: Run it",
+    "    recommended: true",
+    "  - label: Hold it",
+    "---",
+    "The exact statements:",
+    "",
+    "```sql",
+    "ALTER TABLE orders ADD COLUMN archived_at timestamptz;",
+    "```",
+    "",
+    "Both are safe to re-run after a failure.",
+    "```",
+    "",
+    "```question",
+    "id: orders-backfill",
+    "kind: choice",
+    "question: Should archived rows be backfilled in the same deploy?",
+    "options:",
+    "  - Backfill now",
+    "  - Leave it for a follow-up",
+    "```",
+  ].join("\n")
+  const out = questionFencesIn(message)
+  assert.deepEqual(out.asks, [], "the truncated question does not register")
+  assert.deepEqual(out.faults.map((f) => f.id), ["orders-archived-at"])
+  assert.match(out.faults[0].faults.join("\n"), /everything after it in your message, a later question fence included, reads as code/)
+  // Written as the fault says, both register, whole.
+  const fixed = message.replace("```question\nid: orders-archived-at", "````question\nid: orders-archived-at").replace("failure.\n```", "failure.\n````")
+  const whole = questionFencesIn(fixed)
+  assert.deepEqual(whole.faults, [])
+  assert.deepEqual(whole.asks.map((a) => a.id), ["orders-archived-at", "orders-backfill"])
+  assert.match(whole.asks[0].spec.context ?? "", /Both are safe to re-run after a failure\.$/)
 })
 
 test("an option's keys are read as keys wherever they sit — never folded into the label above them", () => {
@@ -301,4 +355,82 @@ test("front matter wrapped in a leading --- is refused for that, not for a missi
   assert.equal(r.form, "invalid")
   assert.match(r.form === "invalid" ? r.faults[0] : "", /opens with `---`/)
   assert.doesNotMatch(r.form === "invalid" ? r.faults.join("\n") : "", /no `id:`/)
+})
+
+// THE FENCE NEVER HANDS THE REGISTRAR A SPEC THE STORED SCHEMA REFUSES. The registrar inserts what the parser
+// produced, with no schema pass of its own, and every reader parses the row back through
+// AskedQuestionSchema — so a value the parser accepts past a schema cap would register and then fail to
+// read, rather than come back to the worker as a named fault.
+test("every cap the stored schema holds is refused by the fence first, by name, at exactly the same length", () => {
+  const head = "id: x\nkind: choice\nquestion: Q?\noptions:\n"
+  const caps: { name: string; max: number; body: (n: number) => string; fault: RegExp; over: (n: number) => object }[] = [
+    { name: "question", max: 4000, body: (n) => `id: x\nkind: text\nquestion: ${"q".repeat(n)}`, fault: /`question:` is 4001 characters/, over: (n) => ({ question: "q".repeat(n), kind: "question" }) },
+    { name: "context", max: 20000, body: (n) => `id: x\nkind: text\nquestion: Q?\n---\n${"c".repeat(n)}`, fault: /below `---` is 20001 characters/, over: (n) => ({ question: "Q?", kind: "question", context: "c".repeat(n) }) },
+    { name: "header", max: 24, body: (n) => `id: x\nkind: text\nquestion: Q?\nheader: ${"h".repeat(n)}`, fault: /is 25 characters; a header/, over: (n) => ({ question: "Q?", kind: "question", header: "h".repeat(n) }) },
+    { name: "label", max: 400, body: (n) => `${head}  - ${"l".repeat(n)}\n  - B`, fault: /option 1: the label is 401 characters/, over: (n) => ({ question: "Q?", kind: "question", options: [{ label: "l".repeat(n) }, { label: "B" }] }) },
+    { name: "description", max: 20000, body: (n) => `${head}  - label: A\n    description: ${"d".repeat(n)}\n  - B`, fault: /option 1: the description and detail run 20001/, over: (n) => ({ question: "Q?", kind: "question", options: [{ label: "A", description: "d".repeat(n) }, { label: "B" }] }) },
+    // A description and a detail share the one stored field, joined by a blank line (two characters).
+    { name: "description + detail", max: 20000, body: (n) => `${head}  - label: A\n    description: ${"d".repeat(10)}\n    detail: |\n      ${"e".repeat(n - 12)}\n  - B`, fault: /option 1: the description and detail run 20001/, over: (n) => ({ question: "Q?", kind: "question", options: [{ label: "A", description: "d".repeat(n) }, { label: "B" }] }) },
+    { name: "id", max: 64, body: (n) => `id: ${"i".repeat(n)}\nkind: text\nquestion: Q?`, fault: /an id is a slug/, over: (n) => ({ handle: "i".repeat(n), question: "Q?", kind: "question" }) },
+  ]
+  for (const cap of caps) {
+    const at = readQuestionFence(cap.body(cap.max))
+    assert.equal(at.form, "ask", `${cap.name} at ${cap.max}`)
+    assert.equal(at.form === "ask" && AskedQuestionSchema.safeParse(at.spec).success, true, `${cap.name} at ${cap.max} passes the schema`)
+    const over = readQuestionFence(cap.body(cap.max + 1))
+    assert.equal(over.form, "invalid", `${cap.name} at ${cap.max + 1}`)
+    assert.match(over.form === "invalid" ? over.faults.join("\n") : "", cap.fault, cap.name)
+    // The control: the schema really does refuse one past the cap, so "passes the schema" above can fail.
+    assert.equal(AskedQuestionSchema.safeParse(cap.over(cap.max + 1)).success, false, `the schema refuses ${cap.name} at ${cap.max + 1}`)
+  }
+})
+
+test("whatever the fence reads as an ask, the stored schema and the tree validator accept — over generated fences", () => {
+  let seed = 20261013
+  const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648
+  const pick = <T,>(from: readonly T[]): T => from[Math.floor(rnd() * from.length)]
+  // Prose built to sit ON the caps, from the characters that have each broken a reader somewhere: a
+  // two-unit emoji, the whitespace `trim` does and does not take, both quotes, and the YAML specials.
+  // (A short random run, repeated: the caps are 20,000 long and the edges are what is being tested.)
+  const fill = (n: number) => {
+    let run = ""
+    for (let k = 0; k < 24; k++) run += pick(["a", " ", "🚀", "é", "\u00a0", "\u200b", ":", "#", "`", "'", '"', "=", "\\", "\t"])
+    return run.repeat(Math.ceil(n / run.length) + 1).slice(0, n)
+  }
+  const value = (max: number) => {
+    const text = fill(pick([0, 1, max - 1, max, max + 1, max + 2]))
+    const shape = rnd()
+    return shape < 0.2 ? JSON.stringify(text) : shape < 0.3 ? `'${text.replace(/'/g, "''")}'` : shape < 0.4 ? `  ${text}  ` : text
+  }
+  let asks = 0
+  let refused = 0
+  for (let n = 0; n < 1500; n++) {
+    const kind = pick(["choice", "choice", "multi", "text", "secret"])
+    const lines = [`id: ${pick(["a", "b".repeat(64), "c.d_e-f", "Mixed-Case"])}`, `kind: ${kind}`, `question: ${value(4000)}`]
+    if (rnd() < 0.5) lines.push(`header: ${value(24)}`)
+    if (rnd() < 0.3) lines.push(`danger: ${pick(["true", "yes", "True", "false", "no"])}`)
+    if (kind === "choice" || kind === "multi") {
+      lines.push("options:")
+      for (let k = 0, count = 2 + Math.floor(rnd() * 3); k < count; k++) {
+        lines.push(`  - label: ${k}${value(400)}`)
+        if (rnd() < 0.5) lines.push(`    description: ${value(20000)}`)
+        if (rnd() < 0.3) lines.push("    detail: |", `      ${fill(pick([1, 19990, 20000, 20001]))}`)
+        if (rnd() < 0.2 && k === 0) lines.push("    recommended: true")
+      }
+    }
+    if (rnd() < 0.5) lines.push("---", fill(pick([0, 1, 19999, 20000, 20001])))
+    const out = questionFencesIn(fence(lines.join("\n"), "````"))
+    refused += out.faults.length
+    for (const ask of out.asks) {
+      asks++
+      const parsed = AskedQuestionSchema.safeParse(ask.spec)
+      assert.equal(parsed.success, true, `${JSON.stringify(parsed.error?.issues)} — ${lines.join("\n").slice(0, 300)}`)
+      assert.deepEqual(askedQuestionFaults(ask.spec), [])
+      // …and unchanged by it: the schema trims, so a spec it would alter is one the registrar stores differently
+      // from what every reader then sees.
+      assert.deepEqual(parsed.data, ask.spec)
+    }
+  }
+  // Both outcomes were exercised — a generator that only ever produced refusals would prove nothing.
+  assert.ok(asks > 200 && refused > 200, `asks ${asks}, refused ${refused}`)
 })
