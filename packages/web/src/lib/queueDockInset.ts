@@ -5,6 +5,9 @@
 //   scrolled out from beneath it rather than left hidden behind the box that covers it;
 // - the toaster (Toaster.tsx), which sat on top of the dock's send button and Goal.
 //
+// The /full thread page publishes its prompt box's footer the same way while it is one column
+// (StandaloneThreadPage): below the split, the window's bottom-right corner is that box's Send.
+//
 // Every queue card docks its own box; they are all the same shape, so the tallest one is the inset. A
 // textarea grows to its 220px cap while the operator types, which is why this observes rather than
 // reading the height once. No card, no dock (the phone never renders a queue card): the inset is 0.

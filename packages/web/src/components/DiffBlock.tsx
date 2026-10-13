@@ -40,8 +40,8 @@ export function PathLink({ path, className = "", children }: { path: string; cla
 // A gent-style rendered diff for a group of Edit/Write/MultiEdit calls that all touch ONE file
 // (consecutive same-file edits merge upstream in collapseTools): a bordered block with a header row
 // (clickable file path + summed +N/−N counts) and a syntax-highlighted, line-numbered body. Multiple
-// edits stack as sequential hunk groups under the one header, divided by a hairline. Wide diffs
-// scroll horizontally INSIDE the body (never the page). In compact mode the body is hidden — the
+// edits stack as sequential hunk groups under the one header, divided by a hairline. A long line
+// wraps under its own code (lib/diff/diff.css). In compact mode the body is hidden — the
 // header alone shows — and its explicit chevron control expands that one block.
 export function DiffBlock({ edits, meta }: { edits: TranscriptEdit[]; meta?: React.ReactNode }) {
   const { compactDiffs } = useSnapshot(prefs)

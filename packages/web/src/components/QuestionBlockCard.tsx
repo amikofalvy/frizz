@@ -15,7 +15,7 @@
 // surface (InteractionCards.tsx) is imported BY ChatView, so a question card defined inside ChatView
 // could only have been shared through a module cycle.
 import { Fragment, type ReactNode, useEffect, useId, useLayoutEffect, useMemo, useRef } from "react"
-import { AlertTriangle, Check } from "lucide-react"
+import { AlertTriangle, Check, CircleHelp, KeyRound, ListChecks } from "lucide-react"
 import { SECRET_ANSWER_MASK } from "@frizz/shared"
 import { useInlineMarkdownHtml, useMarkdownHtml } from "../lib/useMarkdown.ts"
 import { shouldSubmitStagedEnter } from "../lib/composerKeyboard.ts"
@@ -62,6 +62,7 @@ export function QuestionBlockCard({
   aside,
   label,
   settled,
+  pending,
 }: {
   /** Producer 1: the raw body of a ```question fence, parsed here. */
   raw?: string
@@ -86,6 +87,11 @@ export function QuestionBlockCard({
    *  `text` an answer that named none, and neither ⇒ the ask ended unanswered, which renders a muted
    *  "Not answered" note. */
   settled?: { chosenIdxs: number[]; text?: string }
+  /** A question that is about to become answerable — a ```question fence in the second before the server
+   *  registers its row (UnregisteredQuestionCard). Read-only, but drawn with the ROWS the answerable card
+   *  has: the free-text row, disabled. Without it the card grew by that row the moment it went live
+   *  (393 → 430.5px on a two-option choice, measured 2026-10-13), pushing everything under it down. */
+  pending?: boolean
 }) {
   const parsed = useMemo(
     () => question ?? parseQuestionBlock(raw ?? "", questionKind ?? "question", danger),
@@ -152,15 +158,15 @@ export function QuestionBlockCard({
       },
     })
   }, [answerable, parsed])
-  // NO corner glyph on an answerable question (dropped 2026-08-31). The registered-question × rides
-  // the same corner, and beside it a full-strength HelpCircle/ListChecks read as the actionable thing
-  // while the actual control read as chrome (maintainer: "the actionable thing is gray and light,
-  // whereas the not actionable thing is a very bold white color"). The title word already names the
-  // kind. The `danger` warning glyph stays: it is a real warning, not decoration, and a danger card
-  // never offers the × (see RegisteredQuestionCards), so the collision cannot arise there.
-  const KindIcon = isDanger ? AlertTriangle : undefined
-  // Sentence case, because the shared chrome renders this as a real TITLE now rather than as an
-  // uppercased eyebrow — a lowercase "question" beside the card's glyph reads as a typo.
+  // THE KIND LINE, as every block type wears it since 2026-10-13 (TranscriptCard's KindLabel): a 12px
+  // glyph and the kind's word, muted, over a rule — the ask itself stays the body. The glyph is back on
+  // every question. It was dropped on 2026-08-31 because a full-strength 16px HelpCircle in the corner
+  // beside the muted × read as the actionable thing (maintainer: "the actionable thing is gray and light,
+  // whereas the not actionable thing is a very bold white color"); on the kind line it is small, muted
+  // and at the far LEFT, so the × keeps the corner to itself. A danger card's warning glyph colours with
+  // its kind line, and a danger card never offers the × (see RegisteredQuestionCards).
+  const KindIcon = isDanger ? AlertTriangle : parsed.secret ? KeyRound : isMulti ? ListChecks : CircleHelp
+  // Sentence case: the kind line is a label, and a lowercase "question" beside its glyph reads as a typo.
   const kindLabel = label ?? (parsed.secret ? "Secret" : isMulti ? "Select multiple" : "Question")
   // `risk`, not `danger`: the neutral border with a red title. A destructive gate is a question nobody
   // has answered wrongly yet, not a thing that has broken, and it wore the same lit red border as a dead
@@ -168,7 +174,7 @@ export function QuestionBlockCard({
   // and stay narrow — force-merge, deletion, history rewrite, prod rollback — so these should almost
   // never appear; what changed is how loudly one of them shouts.
   return (
-    <TranscriptCard tone={isDanger ? "risk" : "neutral"} surface="question" icon={KindIcon} label={kindLabel} aside={aside}>
+    <TranscriptCard tone={isDanger ? "risk" : "neutral"} surface="question" icon={KindIcon} kind={kindLabel} label={null} aside={aside}>
       {/* FULL-strength, against the card's stepped-down description colour: this card's body is not a
           description of the title, it IS the ask, and the question must never read dimmer than the
           word "Question" above it. The colour rides a WRAPPER because `.card-md .md-body` inherits
@@ -187,7 +193,7 @@ export function QuestionBlockCard({
           <LinkedHtml className={`md-body${wrap ? ` ${QUEUE_WRAP}` : ""}`} html={detailHtml} />
         </div>
       )}
-      {(parsed.options.length > 0 || interactive) && (
+      {(parsed.options.length > 0 || interactive || pending) && (
         // Options stack in a SINGLE full-width column (maintainer 2026-07-10: a 2-col grid read as
         // ragged, uneven columns with dead whitespace once option text got long). One chip per row;
         // the free-text row keeps col-span-full so the "something else…" answer gets the whole line.
@@ -382,6 +388,46 @@ export function QuestionBlockCard({
             )}
             </div>
           )}
+          {/* THE SAME ROW BEFORE IT CAN BE TYPED IN (`pending`): the identical box — the same textarea, sized
+              by the same effect — disabled. With options it wears the plain numeral the read-only option
+              rows wear, and that is why its placeholder is drawn as TEXT over the box rather than by the
+              textarea: Chrome gives a textarea that cannot be edited (disabled, read-only or inert, all
+              three measured 2026-10-13) no first-line baseline, so a numeral baseline-aligned beside it
+              dropped 12px to the box's bottom edge and stretched the row 4.5px. The overlay repeats the
+              box's border and padding, so its line sits exactly where the textarea's own would, and the
+              numeral rides that line's baseline as it does in every option row. */}
+          {!interactive && pending && (
+            <div data-question-pending-text className="relative col-span-full">
+              {parsed.secret ? (
+                <>
+                  <input type="password" disabled tabIndex={-1} aria-hidden placeholder="Paste the value…" className="block w-full rounded-md border border-border bg-transparent py-1.5 pl-3 pr-3 text-[12px] leading-snug text-fg/90 outline-none placeholder:text-muted-80" />
+                  <SecretCaption className="mt-2 text-[11px] leading-snug text-muted" />
+                </>
+              ) : (
+                <>
+                  <textarea
+                    ref={taRef}
+                    data-1p-ignore
+                    rows={1}
+                    disabled
+                    tabIndex={-1}
+                    aria-hidden
+                    placeholder={parsed.options.length > 0 ? undefined : "Type your answer…"}
+                    className="block w-full min-w-0 resize-none overflow-hidden rounded-md border border-border bg-transparent px-3 py-1.5 text-[12px] leading-snug outline-none placeholder:text-muted-80"
+                  />
+                  {parsed.options.length > 0 && (
+                    <div aria-hidden className="pointer-events-none absolute inset-0 flex items-baseline border border-transparent py-1.5 pr-3 text-[12px] leading-snug text-muted-80">
+                      {/* 12 + the 1px border = the 13px every option row's numeral starts at; 8px on to the text. */}
+                      <span className="ml-3 mr-2 flex">
+                        <OptionKey n={parsed.options.length + 1} live={false} />
+                      </span>
+                      <span className="min-w-0 truncate">{isMulti ? "Add a note…" : "Something else…"}</span>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
         </div>
       )}
       {/* The SETTLED answer, when it named no option (free text, or a label the parse could not match):
@@ -499,8 +545,8 @@ function Chip({
       data-question-option
       title={recTitle}
       // The div-level click exists for the body's ELEVATED, non-link content — a code block sits above
-      // the stretched button so it can h-scroll (styles.css), which takes its pixels out of the
-      // button's hit area, and a click on the code you are reading must still pick the option. The
+      // the stretched button so its text can be selected (styles.css), which takes its pixels out of
+      // the button's hit area, and a click on the code you are reading must still pick the option. The
       // guards keep it from double-firing or over-reaching: a click the BUTTON caught bubbles here
       // with the button as target (closest matches, skip — a second call would un-toggle a multi), a
       // link keeps its own click, a picture opens the lightbox (a gallery tile is a button), a

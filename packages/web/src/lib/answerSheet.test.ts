@@ -3,7 +3,7 @@ import assert from "node:assert/strict"
 import type { RegisteredQuestionView } from "@frizz/shared"
 import type { BlockAnswer } from "./questionBlocks.ts"
 import { ROOT_PATH, childPath } from "./registeredQuestion.ts"
-import { SECRET_MASK, answerSteps, answerSummary, firstOpenStep, oneLineDescription, stepAfter, stepAfterPick, stepKey } from "./answerSheet.ts"
+import { SECRET_MASK, answerSteps, answerSummary, firstOpenStep, oneLineDescription, plainInline, stepAfter, stepAfterPick, stepKey } from "./answerSheet.ts"
 
 const blank: BlockAnswer = { chosen: null, chosenSet: [], text: "" }
 const pick = (i: number): BlockAnswer => ({ chosen: i, chosenSet: [], text: "" })
@@ -87,4 +87,16 @@ test("a SECRET's review row says it is filled and never what it is", () => {
   const spec = { question: "The npm one-time code.", kind: "question" as const, secret: true }
   assert.equal(answerSummary(spec, { ...blank, text: "493817" }), SECRET_MASK)
   assert.equal(answerSummary(spec, blank), null, "an empty secret is still Skipped")
+})
+
+// A label is inline markdown — the grammar's own example writes one with a code span — and the sheet's
+// option rows render it. The review's one-line summary cannot, so it drops the marks; what the human
+// typed is theirs and is never touched.
+test("the review summary drops a label's markdown marks and keeps the human's own text as typed", () => {
+  const spec = { question: "Which store?", kind: "question" as const, options: [{ label: "`SQLite`" }, { label: "**Keep** the [JSON file](docs/store.md)" }] }
+  assert.equal(answerSummary(spec, { chosen: 0, chosenSet: [], text: "" }), "SQLite")
+  assert.equal(answerSummary(spec, { chosen: 1, chosenSet: [], text: "" }), "Keep the JSON file")
+  assert.equal(answerSummary({ ...spec, kind: "multi" as const }, { chosen: null, chosenSet: [1, 0], text: "use `WAL` mode" }), "SQLite, Keep the JSON file — use `WAL` mode")
+  assert.equal(answerSummary(spec, { chosen: null, chosenSet: [], text: "a `third` way" }), "a `third` way")
+  assert.equal(plainInline("  _either_   ~~way~~ "), "either way")
 })

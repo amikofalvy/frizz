@@ -37,7 +37,13 @@ export type NormalizedEvent =
   | { kind: "turn-start"; at?: string } // a turn began (→ in-flight)
   | { kind: "turn-end"; at?: string; finalText?: string; successful?: boolean } // a turn finished (→ idle); finalText carries the fence
   | { kind: "provider-error"; at?: string; error: ProviderError }
-  | { kind: "assistant-text"; at?: string; text: string; final: boolean } // streamed assistant text (final=the answer, not commentary)
+  // `streamed` marks the text as ONE FLUSHED PIECE of a longer message rather than a whole one: the ACP
+  // bridge writes an agent message's text out every second, so one message is several of these sharing a
+  // messageId (absent when the agent names none — then every piece up to the next tool call is one
+  // message, as the bridge's own `messageText` reads it). The fold joins the pieces before it reads a
+  // ```question fence off them (FoldState.assistantMessage): a piece can end halfway through a fence, or
+  // begin inside the code block that QUOTES one.
+  | { kind: "assistant-text"; at?: string; text: string; final: boolean; streamed?: { messageId?: string } } // streamed assistant text (final=the answer, not commentary)
   | { kind: "user-message"; at?: string; text?: string; synthetic: boolean } // human turn (synthetic=peer/notification/tool-result echo — never bumps lastUserAt)
   | { kind: "tool-call"; at?: string; id: string; name: string; input: unknown }
   // `image` is a `data:image/…;base64,…` URL when the result CARRIED a picture (an MCP
@@ -105,6 +111,10 @@ export interface NormalizedTail {
   liveTool?: LiveTool
   aiTitle?: string
   lastUserAt?: string
+  // When the human last TYPED a message to the thread — see FoldState.restFromAt. Absent reads as `lastUserAt`.
+  restFromAt?: string
+  // When Frizz last delivered a ```question fence correction — see FoldState.questionCorrectedAt.
+  questionCorrectedAt?: string
   lastUserText?: string // latest genuine human message (used to confirm wake-token delivery)
   // The FIRST genuine human turn. Read by the board to NAME an external session whose harness has not
   // named it — see foreignThreadView. Optional everywhere: a transcript with no human turn has none.
@@ -181,6 +191,24 @@ export interface FoldState {
   // guarded separately by storage's title_auto CAS).
   autoTitleSource?: "fallback" | "frizz" | "native"
   lastUserAt?: string // ISO8601 of the newest GENUINE (non-synthetic) human turn — the listing sort key
+  // WHEN THE HUMAN LAST TYPED A MESSAGE TO THIS THREAD (shared isHumanTypedMessage) — the boundary an
+  // open question stands across (question-fences.ts standingQuestions). Unlike `lastUserAt` it does NOT
+  // move for anything Frizz delivers: a wake of any kind, a correction, a Goal prompt, an answer's
+  // delivery, another thread's steer. Those all land as user records, and reading them as "the human
+  // replied past the question" took a question out of the queue the moment a shell woke its worker
+  // (2026-10-13). `lastUserAt` itself keeps moving on every one of them: it is the row-order key, and
+  // how every "the agent spoke last" guard knows a delivery is unanswered.
+  // A message typed while the worker is mid-turn moves it at the instant it was QUEUED, which is when
+  // the human wrote it (applyRecord, noteQueuedMessage). Absent (a tail cached before 2026-10-13) reads
+  // as `lastUserAt`.
+  restFromAt?: string
+  // The human messages QUEUED and not yet seen delivered, oldest first — so the record that delivers one
+  // does not move `restFromAt` a second time, to an instant later than the human wrote it. Bounded.
+  queuedHumanTexts?: string[]
+  // When Frizz last DELIVERED a ```question fence correction (QUESTION_FENCE_CORRECTION_LEAD, alone or
+  // inside a merged delivery). Every fault in a message older than this has been told to the worker, so
+  // SOURCE 14 reports only the ones after it.
+  questionCorrectedAt?: string
   lastUserText?: string // exact text of that genuine human turn when the backend records it
   // The FIRST genuine human turn, kept forever — set once and never overwritten. It is what names an
   // EXTERNAL session (one of the human's own terminals) when its harness has not named it: both
@@ -196,6 +224,13 @@ export interface FoldState {
   // these whatever has happened since (server question-fences.ts). Absent on a state folded before
   // 2026-10-13, which the fold-schema digest invalidates anyway.
   questionSightings?: QuestionSighting[]
+  // The assistant message a NORMALIZED backend is in the middle of, for the sightings above: the instant
+  // it began, and — when it arrives in streamed pieces (ACP) — its id and the text so far. Two readers:
+  // a piece's fences are read off the whole message, never the piece, and a turn's closing bracket
+  // echoing this message's text notes it at THIS instant, so the echo is the same sighting and not a
+  // second one a beat later. Ended by a tool call, a user message or the next turn. Claude's fold never
+  // sets it: its records are whole content blocks.
+  assistantMessage?: { at?: string; id?: string; pieces?: string }
   // The final message answers a stop hook with AWAITING (scheduler.ts SOURCE 5). Folded and
   // cleared on exactly the same lifecycle as the question flag above: set per assistant text, wiped by
   // any user record — so the next bump the operator sends re-opens the loop by itself.

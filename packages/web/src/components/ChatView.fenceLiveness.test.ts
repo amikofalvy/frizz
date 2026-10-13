@@ -194,8 +194,13 @@ test("the awaiting fence renders the resting card itself, not a second card besi
   assert.match(code, /return <AwaitingBackgroundCard thread=\{fenceThread\} fence=\{\{ body, hints \}\} \/>/, "the resting card itself, stating this fence")
   // Nothing about the awaiting card may be built HERE — a heading, a glyph, a prose call, a chip. Every
   // one of those was a place the two cards could disagree, and one of them is how each difference got in.
+  // The DONE card is FenceCard's own and reads its own fence's `title:` (2026-10-13), so the heading rule
+  // is checked past the done branch, on the code that reaches the awaiting card.
+  const awaitingBranch = code.slice(code.indexOf('if (fenceKind === "done")'))
+  const pastDone = awaitingBranch.slice(awaitingBranch.indexOf("\n  }\n") + 1)
+  assert.ok(pastDone.includes("return <AwaitingBackgroundCard"), "the slice reaches the awaiting card")
   assert.doesNotMatch(code, /Hourglass|Radar|TerminalSquare/, "the glyph is the card's, and it follows the card's title")
-  assert.doesNotMatch(code, /awaitingFenceTitle|AWAITING_FALLBACK_TITLE|parkTitle/, "the heading is the card's")
+  assert.doesNotMatch(pastDone, /awaitingFenceTitle|AWAITING_FALLBACK_TITLE|parkTitle/, "the heading is the card's")
   assert.doesNotMatch(code, /awaitingPresentationLine|awaitingProseBlock|prWatchRefs|WatchedRef/, "the prose and the PR chips are the card's")
   assert.doesNotMatch(code, /AwaitingWaitTable|AwaitingParkButton/, "…and so is the wait table and any verb under it")
   assert.doesNotMatch(code, /awaitingItemLabels|awaitingForLabel|itemLabels|forLabel/, "no label line of ids and a duration")
@@ -213,9 +218,9 @@ test("the resting card owns the heading, the glyph, the prose and the chips", ()
   // The fence it STATES is a parameter, defaulting to the thread's own — that default is the at-rest
   // case, and the parameter is what lets one card also state a fence the board has already dropped.
   assert.match(code, /const stated = fence \?\? \(thread\?\.lastFence\?\.kind === "awaiting" \? thread\.lastFence : undefined\)/)
-  assert.match(code, /chip=\{awaitingBackgroundChip\(work, hints\)\}/, "the chip reads the stated fence's hints")
+  assert.match(code, /kind=\{awaitingBackgroundKind\(work, hints\)\}/, "the kind reads the stated fence's hints")
   assert.match(code, /const title = awaitingFenceTitle\(hints\)/, "…and so does the title under it")
-  assert.match(code, /icon=\{steps\.length > 0 \? ListTodo : shellsAlone\(work\) \? TerminalSquare : Hourglass\}/, "three chips, three glyphs, and no fourth — steps are the one wait on the reader")
+  assert.match(code, /icon=\{steps\.length > 0 \? ListTodo : shellsAlone\(work\) \? TerminalSquare : Hourglass\}/, "three kinds, three glyphs, and no fourth — steps are the one wait on the reader")
   assert.match(code, /const prose = awaitingProseBlock\(stated\?\.body\)/)
   assert.match(code, /const unrowed = unrowedWatchRefs\(work, hints\)/, "a PR the table already rows gets no chip — one PR, one place")
   // THE VERBS ARE THE ONLY THINGS THE RUNTIME MAY CHANGE, and each is withheld rather than re-styled: a

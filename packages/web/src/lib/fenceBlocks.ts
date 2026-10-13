@@ -8,7 +8,7 @@
 // actions live in a stable footer), `awaiting` = a compact parked human/timer handoff. Distinct
 // from ```question blocks (their own machinery in questionBlocks.ts) — those never match here.
 
-import { insideFence, splitAwaitingFrontmatter, type AwaitingHint } from "@frizz/shared"
+import { insideFence, splitAwaitingFrontmatter, splitDoneFrontmatter, type AwaitingHint } from "@frizz/shared"
 
 export type FenceKind = "done" | "awaiting"
 
@@ -23,8 +23,9 @@ export type FenceSegment =
 // can't match the (done|awaiting) alternation, so question blocks are left entirely to questionBlocks.ts.
 const FENCE_BLOCK = /^```(done|awaiting)[ \t]*\r?\n([\s\S]*?)\r?\n```[ \t]*$/gm
 
-// Split the body of a fence into its prose (hint lines removed) and its parsed hints. `done` fences
-// carry no hints — the whole body is prose.
+// Split the body of a fence into its prose (hint lines removed) and its parsed hints. A `done` fence
+// carries one hint at most — an optional leading `title:`, the card's heading (2026-10-13) — and the
+// rest of it is prose.
 //
 // ONE PARSER, IN @frizz/shared, AND THIS IS WHY. This file used to carry its own copy of the grammar with
 // a comment on it saying "THIS LIST MUST MATCH THE TAILER'S … keep them in step". The 2026-08-24 YAML
@@ -42,7 +43,7 @@ const FENCE_BLOCK = /^```(done|awaiting)[ \t]*\r?\n([\s\S]*?)\r?\n```[ \t]*$/gm
 // the parse in the browser — and a LAZY parse is not it: the degraded return before the module lands
 // prints the raw frontmatter at the human, which is the exact bug the paragraph above exists to end.
 export function parseFenceBody(raw: string, kind: FenceKind): { body: string; hints: AwaitingHint[] } {
-  if (kind === "done") return { body: raw.trim(), hints: [] }
+  if (kind === "done") return splitDoneFrontmatter(raw)
   return splitAwaitingFrontmatter(raw)
 }
 

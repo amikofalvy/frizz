@@ -744,6 +744,9 @@ export function trimAwaitingTitle(raw: string): string {
   return `${(space > AWAITING_TITLE_MAX / 2 ? cut.slice(0, space) : cut).replace(/[.,;:–—-]$/, "").trimEnd()}…`
 }
 
+/** The `---` line that closes a fence's frontmatter. One spelling for both fence kinds. */
+const FENCE_DELIMITER_RE = /^\s*---+\s*$/
+
 /** Split an ```awaiting fence body into its hints and its prose.
  *
  *  FRONTMATTER, THEN MARKDOWN: structural lines first, a `---` line ends them, everything after is
@@ -772,7 +775,7 @@ export function trimAwaitingTitle(raw: string): string {
  *  value on the key line itself is one step — or, written `[a, b]`, a flow list YAML is allowed to try. */
 export function splitAwaitingFrontmatter(raw: string): { body: string; hints: AwaitingHint[] } {
   const lines = raw.split("\n").map((l) => l.replace(/\r$/, ""))
-  const delimiter = lines.findIndex((l) => /^\s*---+\s*$/.test(l))
+  const delimiter = lines.findIndex((l) => FENCE_DELIMITER_RE.test(l))
   const frontmatter = delimiter === -1 ? lines : lines.slice(0, delimiter)
   const after = delimiter === -1 ? [] : lines.slice(delimiter + 1)
   const rest: string[] = []
@@ -956,6 +959,41 @@ export function awaitingFenceTitle(hints: readonly AwaitingHint[] | undefined): 
     if (value) title = value
   }
   return title
+}
+
+/** Split a ```done fence body (or a registered `frizzctl done` body, which is stored in the same
+ *  grammar) into its optional `title:` hint and its prose.
+ *
+ *  WHY A DONE FENCE HAS A TITLE AT ALL (maintainer 2026-10-13). Done cards now head with the worker's
+ *  own title over a small kind label ("✓ Done"), exactly as awaiting cards do — so "Done" alone, true of
+ *  every completion and specific to none, stops being the heading the human scans the queue by. The
+ *  hint is the same `{ kind: "title" }` an awaiting fence's `title:` produces, so `awaitingFenceTitle`
+ *  reads both and the card has one way to find its heading.
+ *
+ *  THE GRAMMAR IS DELIBERATELY NARROWER THAN THE AWAITING ONE, because a done body is PROSE FIRST. Every
+ *  done fence written before this date is a Markdown ledger with no frontmatter, and plenty of them use
+ *  `---` as a horizontal rule or open a bullet with a colon. So only one shape is read: the FIRST
+ *  non-blank line is a `title:` key line, its value runs on through any immediately following indented
+ *  lines, and a `---` after it (blank lines between are tolerated) is consumed as the delimiter. Anything
+ *  else is the body untouched — a `---` with no title above it stays a rule, and a `title:` further down
+ *  is just a sentence that happens to start that way. No other key is honoured, and nothing here goes
+ *  near YAML: the title is prose for the same reason the awaiting splitter lifts its own out (a ` #` or
+ *  a `: ` in it would cut it or fail the parse). An empty `title:` still leaves the body, so the human
+ *  never reads the bare key, and mints no hint. Never throws: it runs on whatever an LLM wrote. */
+export function splitDoneFrontmatter(raw: string): { body: string; hints: AwaitingHint[] } {
+  const lines = raw.split("\n").map((l) => l.replace(/\r$/, ""))
+  let i = 0
+  while (i < lines.length && lines[i].trim() === "") i++
+  const m = i < lines.length ? AWAITING_KEY_RE.exec(lines[i]) : null
+  if (!m || m[1].toLowerCase() !== "title") return { body: raw.trim(), hints: [] }
+  const titleLines = [m[2] ?? ""]
+  i++
+  while (i < lines.length && /^\s+\S/.test(lines[i])) titleLines.push(lines[i++])
+  let next = i
+  while (next < lines.length && lines[next].trim() === "") next++
+  if (next < lines.length && FENCE_DELIMITER_RE.test(lines[next])) i = next + 1
+  const title = trimAwaitingTitle(titleLines.join(" "))
+  return { body: lines.slice(i).join("\n").trim(), hints: title ? [{ kind: "title", value: title }] : [] }
 }
 
 // ONE ANSWER FOR THREE PLACES (maintainer 2026-10-05). A rest on running work lands in one of three
@@ -2910,8 +2948,36 @@ export const RegisteredQuestionView = z.object({
   /** A `secret` question only: the path its value will be served at. Known at registration, so the
    *  worker can prepare the command that reads it before the human has answered. */
   secretPath: z.string().optional(),
+  /** ON THE BOARD ONLY: does this question STAND at the thread's current rest — asked at it, or
+   *  referenced by it (server question-fences.ts standingQuestions)? `false` is a question that has
+   *  FADED: still open and answerable where it was asked, but not what this rest is waiting on, so it
+   *  neither queues the thread nor marks its row. Absent — the worker's own read-back, a snapshot from
+   *  before 2026-10-13 — reads as standing (hasStandingQuestion). */
+  standing: z.boolean().optional(),
 }).strict()
 export type RegisteredQuestionView = z.infer<typeof RegisteredQuestionView>
+
+/** A ```question fence the server REFUSED to register, as the board reports it (server question-fences.ts
+ *  QuestionFenceFault). `at` is the instant of the transcript RECORD that carried the fence — for a message
+ *  written as several records, any instant from the message's own up to the next message's — and `id` is
+ *  the fence's own id, absent only when the fence was too broken to have one. `faults` is what the worker
+ *  is told, in the server's words. */
+export const QuestionFenceFaultView = z.object({
+  at: z.string(),
+  id: z.string().optional(),
+  faults: z.array(z.string()),
+}).strict()
+export type QuestionFenceFaultView = z.infer<typeof QuestionFenceFaultView>
+
+/** A fence-asked question that closed without an answer, as the board lists it (ThreadView.closedQuestions). */
+export const ClosedQuestionView = z.object({
+  id: z.string(),
+  /** The worker's own id for it — what its fence in the transcript carries. */
+  handle: z.string(),
+  state: z.enum(["dismissed", "withdrawn"]),
+  askedAt: z.string(),
+}).strict()
+export type ClosedQuestionView = z.infer<typeof ClosedQuestionView>
 
 /** What a SECRET answer is stored and delivered as, in place of the value: where to read it, and the
  *  terms it is served on. It is the WORKER's text: the `secret` tool already handed it the recipe, so
@@ -2957,6 +3023,14 @@ export type UnaskInput = z.infer<typeof UnaskInput>
 
 export const UnaskResult = z.object({
   withdrawn: z.boolean(),
+  /** The question the id resolved to, by the name the WORKER knows it by (its fence's `id:`, or the
+   *  `qst_…` an `ask` minted) — absent when the id names nothing on this thread. It is the ROOT's: a
+   *  follow-up rides inside its parent's row and cannot be withdrawn alone, so `unask sqlite-path`
+   *  withdraws nothing and answers `settings-store` here — the id that takes the pair back. */
+  id: z.string().optional(),
+  /** What that question was when the call arrived. `open` beside `withdrawn: true` is the ordinary
+   *  withdrawal; anything else is why nothing was withdrawn — and `answered` means a wake is on its way. */
+  state: z.enum(["open", "answered", "withdrawn", "dismissed"]).optional(),
   open: z.array(RegisteredQuestionView),
 }).strict()
 export type UnaskResult = z.infer<typeof UnaskResult>
@@ -3087,10 +3161,12 @@ export function answerPicksText(chosen: readonly string[], text: string | undefi
  *  the × already said it and the row can arrive several rests after the click. */
 export const DISMISSED_ANSWER = "(dismissed — decide it yourself; do not re-ask)"
 
-/** A question the human waved away, as the answer message needs it: the TEXT, never the id. The worker
- *  never saw an id — frizz minted it — so a list of ids names nothing it can act on. */
+/** A question the human waved away, as the answer message needs it: the TEXT, never the minted id. The
+ *  worker never saw that id — frizz minted it — so a list of them names nothing it can act on. Its OWN
+ *  id for the question (`handle`, the fence's `id:`) is another matter, and rides along when there is one. */
 export interface QuestionDismissal {
   question: string
+  handle?: string
 }
 
 /** The answer as it reaches the worker — one message, composed here so the RPC, the delivery and any
@@ -3122,7 +3198,7 @@ export function questionAnswerMessage(answers: readonly QuestionAnswer[], dismis
   // which has no next steer for them to ride (scheduler.evalQuestionAnswers). Wording it as "answers"
   // would tell that worker the human replied, when the whole point is that nobody is going to. Frizz is
   // speaking here rather than the human, so the chat draws it as a hairline — see questionsCancelledWake.
-  if (answers.length === 0) return questionsCancelledWakeMessage(dismissed.length)
+  if (answers.length === 0) return questionsCancelledWakeMessage(dismissed.length, dismissed)
   const rows: string[] = []
   const push = (a: QuestionAnswer, followUp: boolean): void => {
     const said = answerPicksText(a.chosen, a.text)
@@ -3162,11 +3238,18 @@ export function splitAnswersNote(text: string): { answers: string; note: string 
  *  hairline instead of a card (FrizzWake's rule: frizz's own news is a line, someone else's prose keeps
  *  the card). It says nobody is coming — the thread went autonomous while questions were still open, so
  *  they were cancelled wholesale and there is no next steer for them to ride. */
-export function questionsCancelledWakeMessage(count: number): string {
-  return (
+export function questionsCancelledWakeMessage(count: number, cancelled: readonly QuestionDismissal[] = []): string {
+  const lead =
     `${count} question${count === 1 ? "" : "s"} you registered ${count === 1 ? "was" : "were"} CANCELLED without an answer. ` +
     `Decide ${count === 1 ? "it" : "them"} yourself and carry on — say which way you went in your write-up. Do not re-ask.`
-  )
+  // WHICH ONES, below the lead. A count alone named nothing: a `danger: true` question and a secret both
+  // survive the cancellation (router cancelQuestionsForAutonomy), so a worker told "2 were cancelled"
+  // with three open could not tell which one it is still owed. Each is named by the worker's own id
+  // when it has one and by its text always. The chat reads only the lead (parseQuestionsCancelledWake
+  // anchors on it and draws a count), so these lines are the worker's alone.
+  if (cancelled.length === 0) return lead
+  const names = cancelled.map((q) => `- ${q.handle ? `\`${q.handle}\` — ` : ""}“${q.question.replace(/\s+/g, " ").trim()}”`)
+  return `${lead}\n\n${names.join("\n")}`
 }
 
 const QUESTIONS_CANCELLED_WAKE = /^(\d+) questions? you registered (?:was|were) CANCELLED without an answer\./
@@ -3397,6 +3480,20 @@ export const ThreadView = z.object({
   // outlive the message that carried it. These rows can, and they carry the question itself rather than
   // merely asserting one exists — the card renders from this instead of re-parsing prose.
   questions: z.array(RegisteredQuestionView).default([]),
+  /** The ```question fences of this thread that could NOT register, from its latest sync — every one in
+   *  the server's ring of fenced messages, not only the current rest's. Present only when there is one.
+   *  A refused fence has no row, and so does a fence the registrar has not reached yet; this is what
+   *  tells them apart, so the transcript draws the first as the code block it is and only the second as
+   *  the question it is about to become (web lib/questionFaults). Its other job is the reused id: a fence
+   *  refused for naming a spent id must not move that id's card, which a name match alone would do. */
+  questionFaults: z.array(QuestionFenceFaultView).optional(),
+  /** The questions this thread asked with a ```question fence that CLOSED WITHOUT AN ANSWER — dismissed
+   *  (the human's ×, or Frizz cancelling a question an autonomous thread wrote) or withdrawn by the
+   *  worker. Present only when there is one. Their fences are still in the transcript, and without this a
+   *  fence with no open and no answered row reads as a question about to become answerable; with it the
+   *  fence draws its question closed, saying which way (web ClosedQuestionCard). Compact on purpose — the
+   *  fence itself carries the question — because the board ships every thread on every keyframe. */
+  closedQuestions: z.array(ClosedQuestionView).optional(),
   /** The answer the human has already SENT that the worker has not received yet, as the exact message
    *  the delivery will carry (board.answersInFlight → questionAnswerMessage). The chat parses it with
    *  the same reader it uses on the delivered turn, so the in-flight card and the landed one are the
@@ -3835,6 +3932,20 @@ export function activeBandThread(t: ThreadView): boolean {
   return sectionOf(t) === "active" && inActiveBand(t)
 }
 
+/**
+ * Does an open registered question STAND at this thread's current rest? The server queues a thread on
+ * exactly these (board.ts → standingQuestions), so every reader that turns "has a question" into a mark
+ * or a count asks this instead of `questions.length`. Until 2026-10-13 they read the length, which was
+ * the same thing while every open question refused the park and held the queue. Once an older question
+ * could fade, the two parted: a thread parked on `status: watching`, or handed off with a ```done
+ * fence, still wore the [?] and counted under "N need you" for a question its worker had moved past —
+ * with no card for it at that rest (the 2026-08-31 report again: "marked as a question status, but
+ * there is no question").
+ */
+export function hasStandingQuestion(t: { readonly questions?: readonly { readonly standing?: boolean }[] }): boolean {
+  return (t.questions ?? []).some((q) => q.standing !== false)
+}
+
 // Moved here from web/src/groups.ts (which re-exports it) on 2026-09-30 so the SERVER can count a
 // project's asks for the phone's projects list with the rule the board's "N need you" uses.
 // A thread "needs action" when it is genuinely waiting on the human — and ONLY once the agent has
@@ -3880,7 +3991,9 @@ export function needsAction(t: ThreadView): boolean {
   // channel — the server queues it once at rest (deriveNeedsYou's openQuestions), and this predicate
   // must agree so the mobile asks-first ordering and the attention sort count it. Same rest-gate as the
   // fence net above: the worker keeps working after registering, and the card lands at its rest.
-  if ((t.questions?.length ?? 0) > 0 && t.runtime !== "running" && t.runtime !== "spawning") return true
+  // STANDING ones only (hasStandingQuestion): a question the worker has rested past since is still
+  // open, but it is not what queues the thread, so it is not what makes the row an ask.
+  if (hasStandingQuestion(t) && t.runtime !== "running" && t.runtime !== "spawning") return true
   // CRASH / STALL net (replaces the old `unread`-gated clause — `unread` no longer drives anything).
   // A thread whose status still claims WORK IN FLIGHT (active or planning) but whose backing agent
   // PROCESS is gone — `exited` (session row present, worker process dead) or `none` (registry lost the row)
@@ -5227,6 +5340,50 @@ export function parseThreadMessage(text: string): { slug: string; title: string;
   const body = rest.slice(open[0].length, close).trim()
   if (!slug || !body) return undefined
   return { slug, title: attributes.get("from-title") || slug, body }
+}
+
+// ---- DID THE HUMAN TYPE THIS? ---------------------------------------------------------------------
+// The one question behind "has the human replied past this question?" (server question-fences.ts
+// standingQuestions): an open question stands from when it was asked or last referenced until the HUMAN
+// TYPES A MESSAGE to the thread, and nothing Frizz delivers is that. Until 2026-10-13 every user record
+// counted, so a question asked beside a `status: working` park left the human's queue the moment a shell
+// finished and woke the worker — before the human had seen it.
+//
+// A user record reaches a worker's transcript from five senders, and only the first is the human:
+//
+//   • the human's own message — a follow-up typed into Frizz, or the prompt that dispatched the thread.
+//     It carries nothing of Frizz's but, after a long silence, the clock note the router appends
+//     (humanGapNote), which is why this is defined by what the others carry rather than by a mark of its own;
+//   • every wake the scheduler delivers — a correction, the sign-off reminder, a Goal or heartbeat
+//     prompt, a timer, a PR, issue or command watch, a shell's completion, a limit resume, and the ANSWER
+//     to a question: each ends in its delivery token (wakeDeliveryToken, appended on the one path they
+//     all take), so isWakeDelivery names them all;
+//   • another thread's `frizzctl steer` (parseThreadMessage) and another Claude session's message
+//     (parseCrossSessionMessage), which ride the follow-up path with no token;
+//   • a background child's report to its parent (parseAgentMessage);
+//   • harness plumbing (isInjectedNoise) and the runtime's interrupt receipt (isInterruptMarker).
+//
+// Retry (the rail, the thread header, the queue card) and the limit card's "Continue now" are the
+// messages the human SENDS without typing: buttons that post one fixed sentence. It says nothing about
+// any question, so it does not count either.
+/** What Retry and "Continue now" send (web lib/retrySession.ts and ChatView's LimitPauseCard post this constant). */
+export const RETRY_FOLLOW_UP = "Continue exactly where you left off."
+
+/** Is this ONE message — a single delivery, as it was queued or sent — the human's own typed words? */
+export function isHumanTypedMessage(text: string): boolean {
+  if (!text.trim()) return false
+  if (isInjectedNoise(text) || isInterruptMarker(text) || isWakeDelivery(text)) return false
+  if (parseThreadMessage(text) || parseCrossSessionMessage(text) || parseAgentMessage(text)) return false
+  return stripHumanGapNote(text).trim() !== RETRY_FOLLOW_UP
+}
+
+/** The human-typed messages a user RECORD carries. The runtime merges whatever was queued while the
+ *  worker was mid-turn into one record (splitWakeDeliveries), so a wake and the human's message can
+ *  share one — and the human's message is still a message. One blind spot, which the fold covers from the
+ *  queue's own records: a human message queued AHEAD of a wake is not separable from it here, because the
+ *  only boundary a record carries is the token that ENDS a delivery (server tailer.ts noteQueuedMessage). */
+export function humanTypedMessagesIn(text: string): string[] {
+  return splitWakeDeliveries(text).filter(isHumanTypedMessage)
 }
 
 // ---- THE PR-WATCHER WAKE STEER (scheduler ↔ chat card) -------------------------------------------

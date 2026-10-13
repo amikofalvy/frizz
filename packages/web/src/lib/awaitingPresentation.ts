@@ -17,17 +17,17 @@ export function awaitingDefersToQuestions(hints: readonly AwaitingHint[] | undef
   return awaitingQuestions(hints).length > 0 && awaitingSteps(hints).length === 0
 }
 
-/** The awaiting card's KIND CHIP (TranscriptCard's KindChip) — on every awaiting card that is not a
- *  shell-only rest or a steps card. It was the card's TITLE until 2026-10-13, and a LAST RESORT one: true
- *  of every park on the board and specific to none, so a fence that wrote its own `title:` replaced it.
- *  As the chip it names the kind once, small, and the worker's `title:` goes under it instead of over it
- *  (awaitingBackgroundChip). */
-export const AWAITING_CHIP = "Awaiting"
+/** The awaiting card's KIND (TranscriptCard's KindLabel, the small line over the title) — on every awaiting
+ *  card that is not a shell-only rest or a steps card. It was the card's TITLE until 2026-10-13, and a LAST
+ *  RESORT one: true of every park on the board and specific to none, so a fence that wrote its own `title:`
+ *  replaced it. As the kind it names itself once, small, and the worker's `title:` goes under it instead of
+ *  in its place (awaitingBackgroundKind). */
+export const AWAITING_KIND = "Awaiting"
 
-/** The chip over a rest on background shells and nothing else — the maintainer's own name for that shape
+/** The kind over a rest on background shells and nothing else — the maintainer's own name for that shape
  *  (2026-08-04: 'the card that says "awaiting background work" should be renamed to "background shells
- *  running"'). That rest is not awaiting anything, so it never wears AWAITING_CHIP. */
-export const SHELLS_CHIP = "Background shells running"
+ *  running"'). That rest is not awaiting anything, so it never wears AWAITING_KIND. */
+export const SHELLS_KIND = "Background shells running"
 
 /** What the card says when the fence carries NO prose — an empty body, or one that was nothing but
  *  machinery lines, which never reach the reader. Only reachable on a card that also has no rows (a
@@ -35,17 +35,17 @@ export const SHELLS_CHIP = "Background shells running"
  *  less than a sentence does. */
 export const AWAITING_NO_PROSE = "Waiting for an external update."
 
-/** The KIND CHIP over a card handing the human `steps:` — the one fence shape whose wait is on the
- *  READER (TranscriptCard's KindChip). The worker's `title:` goes under it; with none, the chip alone
- *  heads the card. It was the first card to wear a chip (2026-10-05); every signal card does since
- *  2026-10-13.
+/** The KIND over a card handing the human `steps:` — the one fence shape whose wait is on the READER
+ *  (TranscriptCard's KindLabel). The worker's `title:` goes under it; with none, the kind alone heads the
+ *  card. It was the first card to name its kind apart from its title (a chip, 2026-10-05); every block
+ *  type does since 2026-10-13, as a small line.
  *
  *  "Awaiting human", not "To do" (maintainer 2026-10-10: "lets call this 'Awaiting human'"). "To do"
  *  named a list, and a worker filled it like one — commands it could have run itself beside the one
  *  approval it could not. This names the WAIT: the thread is stopped on a person, which is true only of
  *  an act nobody else can perform. The worker contract tells the worker the card's heading in the same
  *  words. */
-export const STEPS_CHIP = "Awaiting human"
+export const STEPS_KIND = "Awaiting human"
 
 /** The steps card's one control, a checkbox, in the maintainer's own words (2026-10-12: "a big checkbox
  *  that says 'I have completed this.'"). Ticking it stages the answer below; a send carries it. */

@@ -69,10 +69,22 @@ test("awaiting keys are case-insensitive, and a retired key is just prose", () =
   assert.match(singular.body, /waiting on your merge: the revert/, "…and its colon cannot break the parse")
 })
 
-test("a done fence never carries hints — hint-looking lines stay in the body", () => {
+test("a done fence parks nothing — hint-looking lines stay in the body", () => {
   const { hints, body } = parseFenceBody("all set\npr: owner/repo#7", "done")
   assert.deepEqual(hints, [])
   assert.equal(body, "all set\npr: owner/repo#7")
+})
+
+// The one hint a done fence carries (2026-10-13): a leading `title:`, the card's heading. Through the
+// same shared splitter the tailer uses, so the card never prints the raw `title:` line the server lifted.
+test("a done fence's leading title: is its heading hint, and the ledger is the body", () => {
+  const text = "Landed.\n\n```done\ntitle: Resolver cache keyed on the normalized id\n---\n- **Fixed** the lookup.\n```"
+  assert.deepEqual(splitFenceBlocks(text), [
+    { kind: "prose", text: "Landed.\n\n" },
+    { kind: "fence", fenceKind: "done", body: "- **Fixed** the lookup.", hints: [{ kind: "title", value: "Resolver cache keyed on the normalized id" }] },
+  ])
+  // …and a done fence with a rule and no title is left exactly as written.
+  assert.deepEqual(parseFenceBody("Shipped.\n\n---\n\n- Fixed.", "done"), { body: "Shipped.\n\n---\n\n- Fixed.", hints: [] })
 })
 
 test("an awaiting fence with no hints → empty hints, whole body prose", () => {

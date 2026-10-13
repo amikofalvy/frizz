@@ -1,3 +1,4 @@
+import { RETRY_FOLLOW_UP } from "@frizz/shared"
 import type { QueryClient } from "@tanstack/react-query"
 import { showToast } from "../store.ts"
 import { sendEagerFollowUp } from "./eagerComposerSubmission.ts"
@@ -20,7 +21,11 @@ import { sendEagerFollowUp } from "./eagerComposerSubmission.ts"
 // in the CODE as well as in the prose. The session guard it used to resolve by hand comes with it —
 // sendEagerFollowUp binds the id at send time from the live board, which is strictly better than the
 // render-time read this did.
-export const STALLED_RETRY_MESSAGE = "Continue exactly where you left off."
+//
+// The sentence is the SERVER's constant, not a literal here: a click on Retry is the one follow-up the
+// human sends without typing anything, and the tailer has to recognise it by its bytes so it does not
+// count as the human replying past an open question (shared isHumanTypedMessage).
+export const STALLED_RETRY_MESSAGE = RETRY_FOLLOW_UP
 
 export function retrySession(queryClient: QueryClient, slug: string): Promise<void> {
   return new Promise<void>((resolve) => {

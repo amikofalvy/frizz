@@ -191,15 +191,17 @@ export function fenceStandsFor<Q extends Pick<RegisteredQuestionView, "id" | "sp
 // card of its own, it opens inside its parent's. Handles are unique in a thread for good (the server
 // refuses a reuse), so a name resolves to one row however many are open or settled.
 
-/** Every name this row answers to, lowercased. */
-export function questionNames(q: { id: string; spec?: AskedQuestion }): string[] {
+/** Every name this row answers to, lowercased. (`handle` alone, for a row known only by it — a question
+ *  that closed without an answer, which the board lists without its tree.) */
+export function questionNames(q: { id: string; spec?: AskedQuestion; handle?: string }): string[] {
   const names = [q.id.toLowerCase()]
   if (q.spec) for (const h of questionHandles(q.spec)) names.push(h.toLowerCase())
+  else if (q.handle) names.push(q.handle.toLowerCase())
   return names
 }
 
 /** The row a fence's id names — by minted id or by any handle in its tree — or undefined. */
-export function resolveQuestionName<Q extends { id: string; spec?: AskedQuestion }>(name: string, rows: readonly Q[]): Q | undefined {
+export function resolveQuestionName<Q extends { id: string; spec?: AskedQuestion; handle?: string }>(name: string, rows: readonly Q[]): Q | undefined {
   const n = name.toLowerCase()
   return rows.find((q) => questionNames(q).includes(n))
 }
@@ -207,10 +209,11 @@ export function resolveQuestionName<Q extends { id: string; spec?: AskedQuestion
 /** Every name a message PLACES, lowercased, in order: its legacy empty markers' `qst_…` ids, and the ids
  *  of its question fences that ask or reference (lib/questionBlocks questionFenceIdsIn). On a legacy
  *  thread the second list is empty in practice — those workers never learned the grammar, and no row of
- *  theirs carries a handle for it to match. */
-export function placementNamesIn(text: string): string[] {
+ *  theirs carries a handle for it to match. A fence the server REFUSED (`refused`, the message's
+ *  `refusedFences`) places nothing: reusing an id does not move that id's card. */
+export function placementNamesIn(text: string, refused?: ReadonlySet<string>): string[] {
   if (!text.includes("```question")) return []
-  return [...markerIdsIn(text), ...questionFenceIdsIn(text)]
+  return [...markerIdsIn(text), ...questionFenceIdsIn(text, refused)]
 }
 
 export interface QuestionPlacement<Q> {
@@ -246,7 +249,7 @@ export function placeQuestions<Q extends Pick<RegisteredQuestionView, "id"> & { 
     let ids = markersAt.get(i)
     if (ids === undefined) {
       const m = messages[i]
-      ids = m.role === "assistant" && m.text ? placementNamesIn(m.text) : []
+      ids = m.role === "assistant" && m.text ? placementNamesIn(m.text, m.refusedFences) : []
       markersAt.set(i, ids)
     }
     return ids
@@ -267,22 +270,6 @@ export function placeQuestions<Q extends Pick<RegisteredQuestionView, "id"> & { 
     }
   }
   return { placed, placedIds }
-}
-
-/** Does any of these open questions render at the CURRENT rest — asked there, claimed there by a fence's
- *  `questions:`, or placed there by a marker? Only then is a question that rest's ending. One asked at an
- *  earlier rest that nothing here names stays where it was asked (questionAnchor), so a bare rest beside
- *  it is still a bare rest and says so (RestedCard). */
-export function questionsAtCurrentRest<Q extends Pick<RegisteredQuestionView, "id"> & { askedAt: string; spec?: AskedQuestion }>(
-  messages: readonly AnchorMessage[],
-  questions: readonly Q[],
-): boolean {
-  if (questions.length === 0) return false
-  const tail = messages.length - 1
-  for (const anchor of questionsByAnchor(messages, questions).keys()) if (anchor >= tail) return true
-  const start = restStart(messages, tail)
-  for (const at of placeQuestions(messages, questions).placed.keys()) if (at >= start) return true
-  return false
 }
 
 /** The placement as a surface that draws messages from `start` onward can honour it: a card placed by a

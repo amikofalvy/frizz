@@ -2269,7 +2269,12 @@ test("…UNLESS a wake is coming for the dismissals — the autonomy cancellatio
   // in flight fills — the question card gone, the residual "Rested without a sign-off" card in its
   // place (maintainer 2026-09-02). Same bytes as that wake, same spend: the worker receiving it.
   const dismissed = askedRow({ state: "dismissed", answer: null })
-  assert.equal(answersInFlight([dismissed], undefined, true), questionsCancelledWakeMessage(1))
+  assert.equal(answersInFlight([dismissed], undefined, true), questionsCancelledWakeMessage(1, [{ question: "SQLite or a JSON file?" }]))
+  // …and those bytes name the question by the worker's own id when its fence gave it one (2026-10-13).
+  assert.equal(
+    answersInFlight([{ ...dismissed, handle: "settings-store" }], undefined, true),
+    questionsCancelledWakeMessage(1, [{ question: "SQLite or a JSON file?", handle: "settings-store" }]),
+  )
   assert.equal(answersInFlight([dismissed], new Date(2000).toISOString(), true), undefined, "the wake landed")
   // The flag widens ONLY the dismissal-alone case; answers keep their message with or without it.
   assert.equal(answersInFlight([askedRow()], undefined, true), answersInFlight([askedRow()], undefined))
@@ -2353,6 +2358,17 @@ test("a registered done presents as the ```done fence it replaces", () => {
   assert.deepEqual(registeredDoneFence({ body: "- **Fixed** it", doneAt: 1000 }, undefined), {
     kind: "done", body: "- **Fixed** it", hints: [], registered: true,
   })
+})
+
+// `frizzctl done --title` stores the title INSIDE the body, in the fence's own grammar, so the row is
+// split by the fence's own splitter: the heading reaches the card as the hint a fenced done carries, and
+// its `title:` line never renders as the ledger's first line (2026-10-13).
+test("a registered done's stored title: line becomes the title hint, never body text", () => {
+  assert.deepEqual(registeredDoneFence({ body: "title: Resolver cache keyed on the normalized id\n---\n- **Fixed** it", doneAt: 1000 }, undefined), {
+    kind: "done", body: "- **Fixed** it", hints: [{ kind: "title", value: "Resolver cache keyed on the normalized id" }], registered: true,
+  })
+  // A row written before the flag existed, with a rule in its ledger, is untouched.
+  assert.deepEqual(registeredDoneFence({ body: "Shipped.\n\n---\n\n- **Fixed** it", doneAt: 1000 }, undefined)?.body, "Shipped.\n\n---\n\n- **Fixed** it")
 })
 
 test("no row, no fence", () => {
@@ -2470,6 +2486,42 @@ test("a Claude thread on an older edition of its family carries its running labe
   assert.equal(switched.model, "sonnet")
   assert.equal(switched.runningModelLabel, undefined)
   assert.equal(switched.modelUpgrade, undefined)
+
+  storage.close()
+  rmSync(dir, { recursive: true, force: true })
+})
+
+// ── A REFUSED question fence reaches the thread view ─────────────────────────────────────────────────
+//
+// The registrar's faults ride the board as `questionFaults` so the web can draw a refused fence as the
+// code block it is (shared ThreadView.questionFaults). Absent — not an empty array — when nothing was
+// refused, which is every thread but a handful: the field costs a snapshot nothing.
+test("the thread view carries the question fences its latest sync refused, and no field when there are none", () => {
+  const dir = mkdtempSync(join(tmpdir(), "frizz-board-qfaults-"))
+  const project: Project = { dir, id: "project-qf", name: "fixture", label: "fixture", stateDir: dir, cwdSlug: "fixture" }
+  const storage = createStorage(join(dir, "ui.db"), "p")
+  storage.upsertSession(row({ slug: "refused", session_id: "sess-refused", thread_name: "frizz-refused" }))
+  storage.upsertSession(row({ slug: "clean", session_id: "sess-clean", thread_name: "frizz-clean" }))
+  const tailer = {
+    get: () => tele({ turn: "idle" }),
+    foreignIds: () => [], subAgent: () => undefined, forget: () => {},
+    start: () => {}, stop: () => {}, tick: () => {},
+  } satisfies Tailer
+  const faults = [
+    { at: "2026-10-20T10:05:00.000Z", id: "store", faults: ["`id: store` is already used by a different question on this thread"] },
+    { at: "2026-10-20T10:05:00.000Z", faults: ["no `id:`"] },
+  ]
+  const board = createBoard(project, storage, new Bus(), tailer, "qf", { questionFaults: (slug) => (slug === "refused" ? faults : []) })
+  const threads = board.refresh().threads
+  const refused = threads.find((t) => t.id === "refused")!
+  assert.deepEqual(refused.questionFaults, faults, "each fault whole: the message's instant, the fence's id when it had one, the server's words")
+  assert.notEqual(refused.questionFaults, faults, "a copy — the snapshot never aliases the registrar's list")
+  const clean = threads.find((t) => t.id === "clean")!
+  assert.equal("questionFaults" in clean, false)
+
+  // Without the reader wired at all (a test board, a bridge-less server) the field is simply absent.
+  const bare = createBoard(project, storage, new Bus(), tailer, "qf-bare")
+  assert.equal("questionFaults" in bare.refresh().threads.find((t) => t.id === "refused")!, false)
 
   storage.close()
   rmSync(dir, { recursive: true, force: true })

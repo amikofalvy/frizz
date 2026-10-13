@@ -101,8 +101,18 @@ const fences: { slug: string; label: string; kind: "done" | "awaiting"; body: st
     body: "- Fixed the cache collision in `src/resolver.ts` — the lookup now keys on the normalized id.\n- Added a regression test; `npm test` green.",
     hints: [],
   },
-  // A BARE ```done — no body, so the card is its chip and its Mark-as-done band. The chip head rules a body
-  // off; with none, the band's own border is the only seam, and a rule above it would draw two around nothing.
+  // A TITLED ```done — the worker's `title:` (on the fence, or `frizzctl done --title`) heads the card under
+  // its "Done" kind line. The fence parser lifts it into a title hint, as it does an awaiting fence's.
+  {
+    slug: "g-done-titled",
+    label: "```done · title",
+    kind: "done",
+    body: "- Fixed the cache collision in `src/resolver.ts` — the lookup now keys on the normalized id.\n- Added a regression test; `npm test` green.",
+    hints: [{ kind: "title", value: "Resolver cache keys on the normalized id" }],
+  },
+  // A BARE ```done — no body, so the card is its kind line and its Mark-as-done band. The kind head rules a
+  // body off; with none, the band's own border is the only seam, and a rule above it would draw two around
+  // nothing.
   { slug: "g-done-empty", label: "```done · empty body", kind: "done", body: "", hints: [] },
   // FRONTMATTER + MARKDOWN — the shape a worker writes since 2026-08-17. The prose is arbitrary and
   // renders as BLOCKS, so a handoff with a list stays a list instead of being flattened into one run.

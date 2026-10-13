@@ -77,8 +77,8 @@ function Fixture() {
       <button type="button" data-chip-hit className="absolute inset-0" aria-label="Pick this option" />
       <div className="md-body" data-case="chip" dangerouslySetInnerHTML={{ __html: mdToHtml(install) }} />
     </div>
-    {/* The Queue's narrow column wraps code instead of scrolling it (TranscriptCard QUEUE_WRAP). */}
-    <div className="md-body mt-6 w-[300px] text-[14px] [overflow-wrap:anywhere] [&_pre]:whitespace-pre-wrap [&_pre]:break-all"
+    {/* The Queue's narrow column (TranscriptCard QUEUE_WRAP). Code wraps on every surface; here it has 300px to do it in. */}
+    <div className="md-body mt-6 w-[300px] text-[14px] [overflow-wrap:anywhere]"
       data-case="narrow" dangerouslySetInnerHTML={{ __html: mdToHtml(CASES[1][1]) }} />
   </main>
   )

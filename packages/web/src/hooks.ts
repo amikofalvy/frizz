@@ -15,7 +15,10 @@ import { reconcileLatestPage, type PaginatedTranscriptData } from "./lib/transcr
 // it too early (before the server's own copy lands), so overwrites now route through mergeOptimistic.
 // `restReply`: a queued send the thread view draws in the message flow rather than the queued tail
 // (presentation only, never in the cache — see lib/restReply).
-export type ChatMessage = TranscriptMessage & { queued?: boolean; deliveryId?: string; restReply?: boolean }
+// `refusedFences`: the ids of this message's ```question fences the server refused to register, hung on
+// the message by the surface that draws it (lib/questionFaults withRefusedFences) — presentation only,
+// never in the cache.
+export type ChatMessage = TranscriptMessage & { queued?: boolean; deliveryId?: string; restReply?: boolean; refusedFences?: ReadonlySet<string> }
 export type TranscriptData = Partial<Omit<PaginatedTranscriptData, "messages">> & { messages: ChatMessage[] }
 
 // `mergeToolRuns` stays deleted: mutating transcript truth before the ordered-parts walk hoisted tools
