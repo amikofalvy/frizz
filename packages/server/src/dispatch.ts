@@ -968,6 +968,9 @@ export function createDispatcher(deps: DispatchDeps): Dispatcher {
   const readBoardSource = deps.readBoard ?? readBoard
   const frizzDir = join(deps.project.dir, ".frizz")
   const adoptionRuntime: AdoptionRecoveryRuntime = deps.adoptionRuntime ?? productionAdoptionRuntime
+  // Slugs a dispatch has resolved but not yet written a row for (see dispatch()). One dispatcher per
+  // project, and slugs are unique per project, so a per-dispatcher set is exactly the right scope.
+  const inFlightSlugs = new Set<string>()
 
   // Build the detached-spawn command through the backend seam for the chosen `kind` (falling back to
   // the local Claude builder when no resolver is injected — identical argv). Returns argv + prewrites.
@@ -1027,224 +1030,235 @@ export function createDispatcher(deps: DispatchDeps): Dispatcher {
       // takes over the display name seconds after the session starts; only the slug is heuristic.)
       const title = input.title?.trim() || fallbackTitle(input.prompt)
       const base = input.slug ?? slugify(title)
-      const slug = resolveSlug(frizzDir, base, (s) => deps.storage.getSession(s) !== undefined)
-      // Codex TUI does not reliably emit either a native title or Frizz's requested hidden marker.
-      // Keep the already bounded, deterministic dispatch title as the durable automatic fallback.
-      // Unlike the full composed prompt, fallbackTitle is capped and topic-oriented; a later valid
-      // provider/Frizz signal may still replace it through the title_auto CAS.
-      const registryTitle = title
-      const sessionId = randomUUID()
-      const permissionMode = workerDispatchPermission(kind, settings)
-      // Resolve the profile ONCE for this session. It feeds both the CLI argv and the persisted row,
-      // so the thread UI describes what this dispatch actually launched with rather than whatever the
-      // mutable global defaults happen to be when the drawer is opened later.
-      const model = input.model ?? settings.model
-      const effort = input.effort ?? settings.effort
+      // RESERVE the slug the moment it resolves. The row that makes a slug "taken" is only written
+      // AFTER the backend spawn returns, and that await takes seconds — so two dispatches whose prompts
+      // open with the same words both found the base slug free inside it, and the second row REPLACED
+      // the first: both workers ran, one thread showed, and the first worker's detached daemon burned
+      // quota with no row pointing at it (2026-10-13). The in-flight set closes that window; the
+      // `finally` releases it on every exit, by which point either the row holds the slug or nothing does.
+      const slug = resolveSlug(frizzDir, base, (s) => inFlightSlugs.has(s) || deps.storage.getSession(s) !== undefined)
+      inFlightSlugs.add(slug)
+      try {
+        // Codex TUI does not reliably emit either a native title or Frizz's requested hidden marker.
+        // Keep the already bounded, deterministic dispatch title as the durable automatic fallback.
+        // Unlike the full composed prompt, fallbackTitle is capped and topic-oriented; a later valid
+        // provider/Frizz signal may still replace it through the title_auto CAS.
+        const registryTitle = title
+        const sessionId = randomUUID()
+        const permissionMode = workerDispatchPermission(kind, settings)
+        // Resolve the profile ONCE for this session. It feeds both the CLI argv and the persisted row,
+        // so the thread UI describes what this dispatch actually launched with rather than whatever the
+        // mutable global defaults happen to be when the drawer is opened later.
+        const model = input.model ?? settings.model
+        const effort = input.effort ?? settings.effort
 
-      // Session-first: provision the thread's scratch DIRECTORY (empty; the worker fills it or does
-      // not) — NO .frizz/<slug>.md file. It keys on the frizz-minted sessionId, which stays the row's
-      // session_id for BOTH backends (codex's discovered rollout id is pinned separately on
-      // agent_session_id).
-      const scratchRel = writeScratchDir(deps.project.dir, sessionId)
+        // Session-first: provision the thread's scratch DIRECTORY (empty; the worker fills it or does
+        // not) — NO .frizz/<slug>.md file. It keys on the frizz-minted sessionId, which stays the row's
+        // session_id for BOTH backends (codex's discovered rollout id is pinned separately on
+        // agent_session_id).
+        const scratchRel = writeScratchDir(deps.project.dir, sessionId)
 
-      const prompt = composePrompt(sessionId, input.prompt, kind)
+        const prompt = composePrompt(sessionId, input.prompt, kind)
 
-      // Codex app-server transport: a PERSISTED JSON-RPC session + the prompt as its first turn. No
-      // terminal and no rollout discovery — the bridge returns the codex session id, which the tailer
-      // locates on disk exactly like a discovered rollout (identical filename suffix). This is the SOLE
-      // codex transport: the interactive TUI path was retired, so a codex dispatch that can't reach the
-      // bridge fails loudly rather than degrading. The worker contract + scratchpad orientation ride
-      // baseInstructions, and the frizz title protocol rides developerInstructions.
-      if (kind === "codex") {
-        const bridge = deps.codexAppServer
-        if (!bridge) {
-          cleanupDispatchFiles(scratchRel, { argv: [], env: {}, prewrite: [] }, sessionId)
-          throw new Error("Codex app-server is unavailable; cannot start this thread. Check that `codex` is installed and its app-server protocol matches the pinned revision (re-pin if you upgraded codex).")
+        // Codex app-server transport: a PERSISTED JSON-RPC session + the prompt as its first turn. No
+        // terminal and no rollout discovery — the bridge returns the codex session id, which the tailer
+        // locates on disk exactly like a discovered rollout (identical filename suffix). This is the SOLE
+        // codex transport: the interactive TUI path was retired, so a codex dispatch that can't reach the
+        // bridge fails loudly rather than degrading. The worker contract + scratchpad orientation ride
+        // baseInstructions, and the frizz title protocol rides developerInstructions.
+        if (kind === "codex") {
+          const bridge = deps.codexAppServer
+          if (!bridge) {
+            cleanupDispatchFiles(scratchRel, { argv: [], env: {}, prewrite: [] }, sessionId)
+            throw new Error("Codex app-server is unavailable; cannot start this thread. Check that `codex` is installed and its app-server protocol matches the pinned revision (re-pin if you upgraded codex).")
+          }
+          try {
+            const spawned = await bridge.spawnDispatch({
+              threadSlug: slug,
+              sessionId,
+              cwd: deps.project.dir,
+              prompt,
+              model,
+              effort,
+              sandbox: codexSandbox(permissionMode) as "read-only" | "workspace-write" | "danger-full-access",
+              baseInstructions: codexWorkerBaseInstructions(sessionId, deps.project.dir),
+              developerInstructions: CODEX_FIRST_OUTPUT_TITLE_DEVELOPER_INSTRUCTIONS,
+              // No `config` here: the hooks and the reasoning summary are the bridge's to send
+              // (codexWorkerThreadConfig), with this start and with every resume after it.
+            })
+            deps.storage.upsertSession({
+              slug,
+              session_id: sessionId,
+              thread_name: threadIdentityName(slug),
+              spawned_at: new Date().toISOString(),
+              last_read_at: null,
+              unread: 0,
+              exited: 0,
+              archived: 0,
+              rested_at: null,
+              title_auto: input.title?.trim() ? 0 : 1,
+              title_locked: 0, // a caller's hard-coded title is not a human's — the worker may rename it
+              title: registryTitle,
+              state: "open",
+              meta: null,
+              seen_at: null,
+              transcript_id: null,
+              model: model ?? null,
+              effort: effort ?? null,
+              permission_mode: permissionMode,
+            })
+            // NO GOAL ON A BRAND-NEW THREAD (2026-08-16). Every thread used to be born with the stop-hook Goal
+            // armed, because a worker that rested without signing off had nothing to bring it back. The built-in
+            // handoff bump does that now — it fires on exactly the rests that need it, carries the three terminal
+            // states and lists the thread's live work with the ids a fence needs — so arming a Goal as well is the
+            // same nudge twice, and the maintainer called it redundant. Arming one is the GOAL PANEL's job now,
+            // and that panel prefills the default text without switching any trigger on.
+            deps.storage.setBackend(slug, "codex")
+            // The codex SESSION id (not the thread id) matches the rollout filename the tailer scans for.
+            deps.storage.setAgentSession(slug, spawned.binding.codexSessionId)
+            deps.storage.setCodexRuntime(slug, "app-server")
+            // The contract this thread was just started with teaches `frizzctl`, and every resume hands it
+            // the current one, which does too — so it is never handed the MCP tools (workerTaughtMcp).
+            deps.storage.setWorkerSurface(slug, "cli")
+            void deps.board.rebuild().catch(() => {})
+            return { slug, sessionId }
+          } catch (err) {
+            // No second transport — the app-server is the sole codex one. If it can't be reached (or the
+            // installed codex drifted from the pinned protocol), fail LOUDLY with an actionable hint rather
+            // than silently degrading to the retired TUI path. Clean up the scratchpad + any partial bridge
+            // binding so a failed dispatch leaves no trace.
+            try { bridge.releaseSession(slug, sessionId, "session-deleted") } catch { /* best-effort */ }
+            cleanupDispatchFiles(scratchRel, { argv: [], env: {}, prewrite: [] }, sessionId)
+            throw new Error(`Codex app-server could not start this thread: ${(err as Error).message}. Check that \`codex\` is installed and its app-server protocol matches the pinned revision (re-pin if you upgraded codex).`)
+          }
         }
-        try {
-          const spawned = await bridge.spawnDispatch({
-            threadSlug: slug,
-            sessionId,
-            cwd: deps.project.dir,
-            prompt,
-            model,
-            effort,
-            sandbox: codexSandbox(permissionMode) as "read-only" | "workspace-write" | "danger-full-access",
-            baseInstructions: codexWorkerBaseInstructions(sessionId, deps.project.dir),
-            developerInstructions: CODEX_FIRST_OUTPUT_TITLE_DEVELOPER_INSTRUCTIONS,
-            // No `config` here: the hooks and the reasoning summary are the bridge's to send
-            // (codexWorkerThreadConfig), with this start and with every resume after it.
-          })
-          deps.storage.upsertSession({
-            slug,
-            session_id: sessionId,
-            thread_name: threadIdentityName(slug),
-            spawned_at: new Date().toISOString(),
-            last_read_at: null,
-            unread: 0,
-            exited: 0,
-            archived: 0,
-            rested_at: null,
-            title_auto: input.title?.trim() ? 0 : 1,
-            title_locked: 0, // a caller's hard-coded title is not a human's — the worker may rename it
-            title: registryTitle,
-            state: "open",
-            meta: null,
-            seen_at: null,
-            transcript_id: null,
-            model: model ?? null,
-            effort: effort ?? null,
-            permission_mode: permissionMode,
-          })
-          // NO GOAL ON A BRAND-NEW THREAD (2026-08-16). Every thread used to be born with the stop-hook Goal
-          // armed, because a worker that rested without signing off had nothing to bring it back. The built-in
-          // handoff bump does that now — it fires on exactly the rests that need it, carries the three terminal
-          // states and lists the thread's live work with the ids a fence needs — so arming a Goal as well is the
-          // same nudge twice, and the maintainer called it redundant. Arming one is the GOAL PANEL's job now,
-          // and that panel prefills the default text without switching any trigger on.
-          deps.storage.setBackend(slug, "codex")
-          // The codex SESSION id (not the thread id) matches the rollout filename the tailer scans for.
-          deps.storage.setAgentSession(slug, spawned.binding.codexSessionId)
-          deps.storage.setCodexRuntime(slug, "app-server")
-          // The contract this thread was just started with teaches `frizzctl`, and every resume hands it
-          // the current one, which does too — so it is never handed the MCP tools (workerTaughtMcp).
-          deps.storage.setWorkerSurface(slug, "cli")
-          void deps.board.rebuild().catch(() => {})
-          return { slug, sessionId }
-        } catch (err) {
-          // No second transport — the app-server is the sole codex one. If it can't be reached (or the
-          // installed codex drifted from the pinned protocol), fail LOUDLY with an actionable hint rather
-          // than silently degrading to the retired TUI path. Clean up the scratchpad + any partial bridge
-          // binding so a failed dispatch leaves no trace.
-          try { bridge.releaseSession(slug, sessionId, "session-deleted") } catch { /* best-effort */ }
-          cleanupDispatchFiles(scratchRel, { argv: [], env: {}, prewrite: [] }, sessionId)
-          throw new Error(`Codex app-server could not start this thread: ${(err as Error).message}. Check that \`codex\` is installed and its app-server protocol matches the pinned revision (re-pin if you upgraded codex).`)
+
+        // The generic ACP transport (plans/acp-backend.md). The agent is named by the model slug
+        // (`acp:<agent>` — model drives backend everywhere else too), the worker contract rides the FIRST
+        // prompt because ACP has no system-prompt channel, and the frizz MCP server mounts through
+        // session/new. The bridge writes the transcript the tailer folds; the row pins the ACP session id
+        // in `agent_session_id` (like codex) and the agent id in `acp_agent`.
+        if (kind === "acp") {
+          const bridge = deps.acpBridge
+          const agentId = acpAgentIdFromModel(model)
+          if (!bridge || !agentId) {
+            cleanupDispatchFiles(scratchRel, { argv: [], env: {}, prewrite: [] }, sessionId)
+            throw new Error(!bridge ? "The ACP bridge is unavailable; cannot start this thread." : `An ACP dispatch needs an agent: pick one in the composer (model \`acp:<agent>\`), got ${JSON.stringify(model ?? null)}.`)
+          }
+          const firstPrompt = [acpWorkerContract(sessionId, deps.project.dir), prompt].filter(Boolean).join("\n\n")
+          try {
+            const spawned = await bridge.spawnDispatch({ threadSlug: slug, sessionId, cwd: deps.project.dir, agentId, modelId: acpModelIdFromModel(model), prompt: firstPrompt, userText: input.prompt })
+            deps.storage.upsertSession({
+              slug,
+              session_id: sessionId,
+              thread_name: threadIdentityName(slug),
+              spawned_at: new Date().toISOString(),
+              last_read_at: null,
+              unread: 0,
+              exited: 0,
+              archived: 0,
+              rested_at: null,
+              title_auto: input.title?.trim() ? 0 : 1,
+              title_locked: 0,
+              title: registryTitle,
+              state: "open",
+              meta: null,
+              seen_at: null,
+              transcript_id: null,
+              model: model ?? null,
+              effort: null,
+              permission_mode: permissionMode,
+            })
+            deps.storage.setBackend(slug, "acp")
+            deps.storage.setAgentSession(slug, spawned.acpSessionId)
+            deps.storage.setAcpAgent(slug, agentId)
+            deps.storage.setWorkerSurface(slug, "cli")
+            void deps.board.rebuild().catch(() => {})
+            return { slug, sessionId }
+          } catch (err) {
+            try { bridge.releaseSession(slug, sessionId, "session-deleted") } catch { /* best-effort */ }
+            cleanupDispatchFiles(scratchRel, { argv: [], env: {}, prewrite: [] }, sessionId)
+            throw new Error(`The ACP agent could not start this thread: ${(err as Error).message}`)
+          }
         }
+
+        // Claude session-broker transport, the SOLE claude transport — exactly the shape the codex branch
+        // above already has. A DETACHED daemon owns the Claude Agent SDK session over a local socket, so
+        // the session OUTLIVES frizz: a restart reconnects to the LIVE session instead of cold
+        // resume-from-disk, and permissions stay structured and TYPED (no terminal, no PTY, no TUI
+        // scraping — none of which frizz has had since the cutover). FRIZZ_CLAUDE_BROKER_BRIDGE="0" is a
+        // kill switch, not a fallback: with the bridge absent (that switch, or a test context) there is no
+        // other path left, so the dispatch fails loudly rather than degrading. The worker contract +
+        // scratchpad orientation ride the appended system prompt, and persistSession makes the daemon
+        // write the tailer-readable transcript JSONL — the same format and the same reader every claude
+        // thread has always used — so the board/tailer treat this row as headless via isHeadlessRow.
+        if (kind === "claude") {
+          const bridge = deps.claudeBroker
+          if (!bridge) {
+            cleanupDispatchFiles(scratchRel, { argv: [], env: {}, prewrite: [] }, sessionId)
+            throw new Error("Claude session broker is unavailable; cannot start this thread.")
+          }
+          const appendSystemPrompt = claudeWorkerSystemPrompt(sessionId, deps.project.dir)
+          try {
+            await bridge.spawnDispatch({
+              threadSlug: slug,
+              sessionId,
+              cwd: deps.project.dir,
+              prompt,
+              permissionMode,
+              appendSystemPrompt,
+              model,
+              effort,
+            })
+            deps.storage.upsertSession({
+              slug,
+              session_id: sessionId,
+              thread_name: threadIdentityName(slug),
+              spawned_at: new Date().toISOString(),
+              last_read_at: null,
+              unread: 0,
+              exited: 0,
+              archived: 0,
+              rested_at: null,
+              title_auto: input.title?.trim() ? 0 : 1,
+              title_locked: 0, // a caller's hard-coded title is not a human's — the worker may rename it
+              title: registryTitle,
+              state: "open",
+              meta: null,
+              seen_at: null,
+              transcript_id: null,
+              model: model ?? null,
+              effort: effort ?? null,
+              permission_mode: permissionMode,
+            })
+            // NO GOAL ON A BRAND-NEW THREAD (2026-08-16). Every thread used to be born with the stop-hook Goal
+            // armed, because a worker that rested without signing off had nothing to bring it back. The built-in
+            // handoff bump does that now — it fires on exactly the rests that need it, carries the three terminal
+            // states and lists the thread's live work with the ids a fence needs — so arming a Goal as well is the
+            // same nudge twice, and the maintainer called it redundant. Arming one is the GOAL PANEL's job now,
+            // and that panel prefills the default text without switching any trigger on.
+            deps.storage.setBackend(slug, "claude")
+            deps.storage.setClaudeRuntime(slug, "broker")
+            deps.storage.setWorkerSurface(slug, "cli")
+            void deps.board.rebuild().catch(() => {})
+            return { slug, sessionId }
+          } catch (err) {
+            // No second transport to fall back to once the broker has this dispatch: fail LOUDLY and leave
+            // no trace. Release any partial daemon binding and roll back the scratchpad.
+            try { bridge.releaseSession(slug, sessionId, "session-deleted") } catch { /* best-effort */ }
+            cleanupDispatchFiles(scratchRel, { argv: [], env: {}, prewrite: [] }, sessionId)
+            throw new Error(`Claude session broker could not start this thread: ${(err as Error).message}.`)
+          }
+        }
+
+        // Both backends have exactly one transport now (codex → app-server, claude → broker) and each
+        // branch above either returns or throws. A `kind` outside that pair is a programming error, not
+        // a runtime state a dispatch should silently degrade on.
+        cleanupDispatchFiles(scratchRel, { argv: [], env: {}, prewrite: [] }, sessionId)
+        throw new Error(`unsupported backend for dispatch: ${String(kind)}`)
+      } finally {
+        inFlightSlugs.delete(slug)
       }
-
-      // The generic ACP transport (plans/acp-backend.md). The agent is named by the model slug
-      // (`acp:<agent>` — model drives backend everywhere else too), the worker contract rides the FIRST
-      // prompt because ACP has no system-prompt channel, and the frizz MCP server mounts through
-      // session/new. The bridge writes the transcript the tailer folds; the row pins the ACP session id
-      // in `agent_session_id` (like codex) and the agent id in `acp_agent`.
-      if (kind === "acp") {
-        const bridge = deps.acpBridge
-        const agentId = acpAgentIdFromModel(model)
-        if (!bridge || !agentId) {
-          cleanupDispatchFiles(scratchRel, { argv: [], env: {}, prewrite: [] }, sessionId)
-          throw new Error(!bridge ? "The ACP bridge is unavailable; cannot start this thread." : `An ACP dispatch needs an agent: pick one in the composer (model \`acp:<agent>\`), got ${JSON.stringify(model ?? null)}.`)
-        }
-        const firstPrompt = [acpWorkerContract(sessionId, deps.project.dir), prompt].filter(Boolean).join("\n\n")
-        try {
-          const spawned = await bridge.spawnDispatch({ threadSlug: slug, sessionId, cwd: deps.project.dir, agentId, modelId: acpModelIdFromModel(model), prompt: firstPrompt, userText: input.prompt })
-          deps.storage.upsertSession({
-            slug,
-            session_id: sessionId,
-            thread_name: threadIdentityName(slug),
-            spawned_at: new Date().toISOString(),
-            last_read_at: null,
-            unread: 0,
-            exited: 0,
-            archived: 0,
-            rested_at: null,
-            title_auto: input.title?.trim() ? 0 : 1,
-            title_locked: 0,
-            title: registryTitle,
-            state: "open",
-            meta: null,
-            seen_at: null,
-            transcript_id: null,
-            model: model ?? null,
-            effort: null,
-            permission_mode: permissionMode,
-          })
-          deps.storage.setBackend(slug, "acp")
-          deps.storage.setAgentSession(slug, spawned.acpSessionId)
-          deps.storage.setAcpAgent(slug, agentId)
-          deps.storage.setWorkerSurface(slug, "cli")
-          void deps.board.rebuild().catch(() => {})
-          return { slug, sessionId }
-        } catch (err) {
-          try { bridge.releaseSession(slug, sessionId, "session-deleted") } catch { /* best-effort */ }
-          cleanupDispatchFiles(scratchRel, { argv: [], env: {}, prewrite: [] }, sessionId)
-          throw new Error(`The ACP agent could not start this thread: ${(err as Error).message}`)
-        }
-      }
-
-      // Claude session-broker transport, the SOLE claude transport — exactly the shape the codex branch
-      // above already has. A DETACHED daemon owns the Claude Agent SDK session over a local socket, so
-      // the session OUTLIVES frizz: a restart reconnects to the LIVE session instead of cold
-      // resume-from-disk, and permissions stay structured and TYPED (no terminal, no PTY, no TUI
-      // scraping — none of which frizz has had since the cutover). FRIZZ_CLAUDE_BROKER_BRIDGE="0" is a
-      // kill switch, not a fallback: with the bridge absent (that switch, or a test context) there is no
-      // other path left, so the dispatch fails loudly rather than degrading. The worker contract +
-      // scratchpad orientation ride the appended system prompt, and persistSession makes the daemon
-      // write the tailer-readable transcript JSONL — the same format and the same reader every claude
-      // thread has always used — so the board/tailer treat this row as headless via isHeadlessRow.
-      if (kind === "claude") {
-        const bridge = deps.claudeBroker
-        if (!bridge) {
-          cleanupDispatchFiles(scratchRel, { argv: [], env: {}, prewrite: [] }, sessionId)
-          throw new Error("Claude session broker is unavailable; cannot start this thread.")
-        }
-        const appendSystemPrompt = claudeWorkerSystemPrompt(sessionId, deps.project.dir)
-        try {
-          await bridge.spawnDispatch({
-            threadSlug: slug,
-            sessionId,
-            cwd: deps.project.dir,
-            prompt,
-            permissionMode,
-            appendSystemPrompt,
-            model,
-            effort,
-          })
-          deps.storage.upsertSession({
-            slug,
-            session_id: sessionId,
-            thread_name: threadIdentityName(slug),
-            spawned_at: new Date().toISOString(),
-            last_read_at: null,
-            unread: 0,
-            exited: 0,
-            archived: 0,
-            rested_at: null,
-            title_auto: input.title?.trim() ? 0 : 1,
-            title_locked: 0, // a caller's hard-coded title is not a human's — the worker may rename it
-            title: registryTitle,
-            state: "open",
-            meta: null,
-            seen_at: null,
-            transcript_id: null,
-            model: model ?? null,
-            effort: effort ?? null,
-            permission_mode: permissionMode,
-          })
-          // NO GOAL ON A BRAND-NEW THREAD (2026-08-16). Every thread used to be born with the stop-hook Goal
-          // armed, because a worker that rested without signing off had nothing to bring it back. The built-in
-          // handoff bump does that now — it fires on exactly the rests that need it, carries the three terminal
-          // states and lists the thread's live work with the ids a fence needs — so arming a Goal as well is the
-          // same nudge twice, and the maintainer called it redundant. Arming one is the GOAL PANEL's job now,
-          // and that panel prefills the default text without switching any trigger on.
-          deps.storage.setBackend(slug, "claude")
-          deps.storage.setClaudeRuntime(slug, "broker")
-          deps.storage.setWorkerSurface(slug, "cli")
-          void deps.board.rebuild().catch(() => {})
-          return { slug, sessionId }
-        } catch (err) {
-          // No second transport to fall back to once the broker has this dispatch: fail LOUDLY and leave
-          // no trace. Release any partial daemon binding and roll back the scratchpad.
-          try { bridge.releaseSession(slug, sessionId, "session-deleted") } catch { /* best-effort */ }
-          cleanupDispatchFiles(scratchRel, { argv: [], env: {}, prewrite: [] }, sessionId)
-          throw new Error(`Claude session broker could not start this thread: ${(err as Error).message}.`)
-        }
-      }
-
-      // Both backends have exactly one transport now (codex → app-server, claude → broker) and each
-      // branch above either returns or throws. A `kind` outside that pair is a programming error, not
-      // a runtime state a dispatch should silently degrade on.
-      cleanupDispatchFiles(scratchRel, { argv: [], env: {}, prewrite: [] }, sessionId)
-      throw new Error(`unsupported backend for dispatch: ${String(kind)}`)
     },
 
     // ---- PROMOTION: the human steered one of their own terminals, so it becomes a frizz thread ----

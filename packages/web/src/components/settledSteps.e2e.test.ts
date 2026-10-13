@@ -86,9 +86,30 @@ test("a steps card stays in the transcript after its rest, with no box", {
     // THE DRAWER'S PROMPT BOX sends the ticked box, as the queue card's does.
     await recordSends()
     await tick()
+    // Every commit from the Send on: the steps cards on screen, whether one still has its box, and whether
+    // the reply's ghost bubble is drawn.
+    await page.evaluate((sel) => {
+      const w = window as unknown as { __commits: { cards: number; box: boolean; ghost: boolean }[] }
+      w.__commits = []
+      new MutationObserver(() => w.__commits.push({
+        cards: document.querySelectorAll(`${sel} [data-awaiting-steps]`).length,
+        box: !!document.querySelector("[data-steps-complete]"),
+        ghost: [...document.querySelectorAll(".bg-user-bubble.opacity-50")].some((el) => el.textContent?.includes("Done")),
+      })).observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true })
+    }, CARD)
     await page.click("[data-send-split] [data-send]")
     await page.waitForFunction(() => (window as unknown as { __sent: string[] }).__sent.length > 0, { timeout: 10_000 })
     assert.deepEqual(await sent(), ["Done"], "one reply, the word")
+
+    // SENT, and the board still says the thread rests on these steps — this fixture's never says otherwise.
+    // The send ends the rest in the render that draws its ghost (lib/steering.ts steeredSinceRest), so the live
+    // card at the tail becomes the record in its message right there: the steps stay on screen through every
+    // commit, and once the ghost is drawn, nobody is waiting on their box.
+    await page.waitForFunction(() => document.querySelector(".bg-user-bubble.opacity-50"), { timeout: 10_000 })
+    const commits = await page.evaluate(() => (window as unknown as { __commits: { cards: number; box: boolean; ghost: boolean }[] }).__commits)
+    assert.ok(commits.some((c) => c.ghost), "the reply's ghost bubble is drawn")
+    assert.deepEqual(commits.filter((c) => c.cards !== 1), [], "the steps are on screen, once, in every commit")
+    assert.deepEqual(commits.filter((c) => c.ghost && c.box), [], "no commit draws the ghost beside the live box")
 
     // ON A PHONE the bar under the drawer sends no answers (they have their own sheet), so the card draws
     // its own Send — dark until the box is ticked, and then the same ordinary reply.
