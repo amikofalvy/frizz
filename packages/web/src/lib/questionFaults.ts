@@ -44,11 +44,13 @@ export interface FaultMessage {
   refusedFences?: ReadonlySet<string>
 }
 
-/** A row a fence's id can resolve to — open or answered — with the instant of the message that asked it. */
+/** A row a fence's id can resolve to — open, answered, or closed without an answer (known by its one
+ *  handle) — with the instant of the message that asked it. */
 export interface FaultRow {
   id: string
   askedAt: string
   spec?: AskedQuestion
+  handle?: string
 }
 
 /** The index of the message whose span holds `atMs`: the last message proper stamped at or before it, or

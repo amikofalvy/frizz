@@ -19,7 +19,7 @@ import { CARD_BODY, TranscriptCard } from "./TranscriptCard.tsx"
 
 export type RestedCardThread = Pick<
   ThreadView,
-  "kind" | "foreign" | "runtime" | "needsYou" | "crashed" | "lastFence" | "questions" | "answersInFlight" | "pendingQuestion" | "pendingAsk" | "pendingInteraction" | "awaitingBackground" | "limitPause" | "providerFault" | "providerError" | "lastAssistantAt"
+  "kind" | "foreign" | "runtime" | "needsYou" | "crashed" | "lastFence" | "questions" | "answersInFlight" | "pendingQuestion" | "pendingAsk" | "pendingInteraction" | "awaitingBackground" | "limitPause" | "providerFault" | "providerError" | "lastAssistantAt" | "closedQuestions"
 > & {
   /** Which ```question grammar the thread speaks (shared questionFencesLive) — see the last check below. */
   spawnedAt?: ThreadView["spawnedAt"]
@@ -73,7 +73,15 @@ export function showsRestedCard(thread: RestedCardThread | undefined, lastAssist
   // reusing a spent id, or following a question already answered, asked the human nothing. A fence with
   // no row and no fault yet still counts: the registrar is a second behind, and this card must not flash
   // under a question that is about to become answerable.
-  if (!questionFencesLive(thread.spawnedAt)) return !splitMessageQuestions(lastAssistantText, true, refusedFences).some((seg) => seg.kind === "question")
+  //
+  // NOR ONE WHOSE QUESTION CLOSED WITHOUT AN ANSWER (the board's `closedQuestions`): dismissed by the
+  // human, cancelled because the thread runs autonomously, or withdrawn by the worker. Nobody is being
+  // asked, and the fence draws its question closed (ClosedQuestionCard).
+  if (!questionFencesLive(thread.spawnedAt)) {
+    const closed = thread.closedQuestions ?? []
+    const notAsking = closed.length === 0 ? refusedFences : new Set([...(refusedFences ?? []), ...closed.map((q) => q.handle.toLowerCase())])
+    return !splitMessageQuestions(lastAssistantText, true, notAsking).some((seg) => seg.kind === "question")
+  }
   if (hasQuestionBlock(lastAssistantText)) return false
   return true
 }

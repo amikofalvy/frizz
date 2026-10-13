@@ -22,12 +22,13 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { X } from "lucide-react"
-import type { AskedQuestion, QuestionAnswer, RegisteredQuestionView, SettledQuestionView, ThreadView } from "@frizz/shared"
+import type { AskedQuestion, ClosedQuestionView, QuestionAnswer, RegisteredQuestionView, SettledQuestionView, ThreadView } from "@frizz/shared"
 import { rpc } from "../api/rpc.ts"
 import { draftKey, draftStore, useDraftValues, useProjectDir } from "../lib/drafts.ts"
 import { clearSteered, markSteered } from "../lib/steering.ts"
 import { SendScopeContext, usePromptBoxSends } from "../lib/sendScope.tsx"
 import type { BlockAnswer } from "../lib/questionBlocks.ts"
+import { arrivedQuestions, type ArrivalMessage } from "../lib/questionArrival.ts"
 import { questionFaultsKey, withRefusedFences, type FaultMessage } from "../lib/questionFaults.ts"
 import type { PairedAnswer } from "../lib/answersMessage.ts"
 import { ROOT_PATH, liveQuestionNodes, nodeAnswered, registeredAnswer, settledQuestionNodes, toParsedQuestion } from "../lib/registeredQuestion.ts"
@@ -379,19 +380,51 @@ export function SettledQuestionStack({ questions, wrap, className = "" }: { ques
 
 // ---- THE QUESTION FENCE: what a fence's `id:` resolves against ----
 
-/** A registered row as a ```question fence's id resolves it: its minted id, and its tree for the handles. */
-export type FenceQuestionRow = Pick<RegisteredQuestionView, "id" | "spec">
+/** A registered row as a ```question fence's id resolves it: its minted id, and its tree for the handles
+ *  — or, for a question that CLOSED without an answer, its one handle and which way it closed (the board's
+ *  compact `closedQuestions`; the fence itself carries what was asked). */
+export type FenceQuestionRow =
+  | (Pick<RegisteredQuestionView, "id" | "spec"> & { closed?: undefined })
+  | { id: string; spec?: undefined; handle: string; closed: ClosedQuestionView["state"] }
 
-/** Every row the thread knows — open and answered — when it speaks THE QUESTION FENCE (dispatched after
- *  QUESTION_FENCE_RETIRED_AT, so `fencesLive` is false), else undefined: the legacy free-form fence is
- *  that thread's grammar, and Message keeps reading it. One memoized array per surface, handed to every
- *  Message, so a message's memo boundary only moves when a row is added or settled. */
+/** Every row the thread knows — open, answered, and closed without an answer — when it speaks THE QUESTION
+ *  FENCE (dispatched after QUESTION_FENCE_RETIRED_AT, so `fencesLive` is false), else undefined: the legacy
+ *  free-form fence is that thread's grammar, and Message keeps reading it. One memoized array per surface,
+ *  handed to every Message, so a message's memo boundary only moves when a row is added or settled. */
 export function useFenceQuestions(
   fencesLive: boolean,
   open: readonly RegisteredQuestionView[],
   settled: readonly SettledQuestion[],
+  thread?: Pick<ThreadView, "closedQuestions">,
 ): readonly FenceQuestionRow[] | undefined {
-  return useMemo(() => (fencesLive ? undefined : [...open, ...settled]), [fencesLive, open, settled])
+  const pushed = thread?.closedQuestions
+  // Keyed on content: the board re-sends the same closed rows on every push of this thread.
+  const closedKey = pushed?.length ? pushed.map((q) => `${q.id}:${q.state}`).join(" ") : ""
+  const closed = useMemo(
+    () => (pushed ?? []).map((q): FenceQuestionRow => ({ id: q.id, handle: q.handle, closed: q.state })),
+    [closedKey], // eslint-disable-line react-hooks/exhaustive-deps
+  )
+  return useMemo(() => (fencesLive ? undefined : [...open, ...settled, ...closed]), [fencesLive, open, settled, closed])
+}
+
+/** The open questions a surface draws NOW: the board's, minus a fence-asked row whose message the loaded
+ *  transcript has not caught up with yet (lib/questionArrival — the board is a round trip ahead of the
+ *  transcript, and a row drawn in that beat started at the tail and hopped into its message). Re-asks
+ *  itself when the bounded wait runs out, so a row is never held for good. */
+export function useArrivedQuestions(open: readonly RegisteredQuestionView[], messages: readonly ArrivalMessage[]): readonly RegisteredQuestionView[] {
+  const firstSeen = useRef(new Map<string, number>())
+  const [, recheck] = useState(0)
+  const { shown, wakeAt } = arrivedQuestions(open, messages, firstSeen.current, Date.now())
+  useEffect(() => {
+    if (wakeAt === undefined) return
+    const timer = setTimeout(() => recheck((n) => n + 1), Math.max(0, wakeAt - Date.now()))
+    return () => clearTimeout(timer)
+  }, [wakeAt])
+  // One array per held set: `shown` is rebuilt on every render while something waits. (The key names what
+  // is HELD, never what is shown: with one open question, "all held" and "none held" both show the same
+  // ids-joined string, and the stale empty list then outlived the wait.)
+  const held = shown === open ? "" : open.filter((q) => !shown.includes(q)).map((q) => q.id).join(" ")
+  return useMemo(() => shown, [open, held]) // eslint-disable-line react-hooks/exhaustive-deps
 }
 
 /** The surface's messages with each REFUSED question fence marked on the message that wrote it
@@ -400,7 +433,7 @@ export function useFenceQuestions(
  *  rather than their identity, so a board push carrying the same refusals re-renders no message. */
 export function useRefusedFences<M extends FaultMessage>(
   messages: readonly M[],
-  thread: Pick<ThreadView, "questionFaults"> | undefined,
+  thread: Pick<ThreadView, "questionFaults" | "closedQuestions"> | undefined,
   open: readonly RegisteredQuestionView[],
   settled: readonly SettledQuestion[],
 ): M[] {
@@ -408,7 +441,10 @@ export function useRefusedFences<M extends FaultMessage>(
   const key = questionFaultsKey(pushed)
   // `key` IS the list's content, so the copy from the first push that carried it stands in for the rest.
   const faults = useMemo(() => pushed, [key]) // eslint-disable-line react-hooks/exhaustive-deps
-  const rows = useMemo(() => [...open, ...settled], [open, settled])
+  // Every row this tab knows was ASKED somewhere, for the rule that the message which registered a name is
+  // never marked for it. Only read when there are faults, so the closed rows are taken as pushed.
+  const closed = thread?.closedQuestions
+  const rows = useMemo(() => (faults?.length ? [...open, ...settled, ...(closed ?? [])] : []), [faults, open, settled, closed])
   return useMemo(() => (faults?.length ? withRefusedFences(messages, faults, rows) : messages) as M[], [messages, faults, rows])
 }
 
@@ -421,10 +457,27 @@ export function UnregisteredQuestionCard({ spec, wrap }: { spec: AskedQuestion; 
   const question = useMemo(() => toParsedQuestion(spec).question, [spec])
   return (
     <article data-question-fence={spec.handle} data-question-unregistered className="flex min-w-0 flex-col gap-2">
-      <QuestionBlockCard question={question} wrap={wrap} />
+      {/* `pending`: the rows the answerable card will have, so the swap moves nothing below it. */}
+      <QuestionBlockCard question={question} wrap={wrap} pending />
     </article>
   )
 }
+
+/** A fence-asked question that CLOSED WITHOUT AN ANSWER, in its fence's slot: dismissed (the human's ×, or
+ *  Frizz cancelling a question an autonomous thread wrote the moment it wrote it) or withdrawn by the
+ *  worker. Drawn from the fence's own spec — the board lists only that the row closed, and which way —
+ *  greyed like an answered card and headed with what happened, so it cannot be read as a question still
+ *  waiting: until 2026-10-13 it drew as the read-only card a question wears for the second before it
+ *  becomes answerable, and stayed that way for good. Root only, like that card. */
+export function ClosedQuestionCard({ spec, state, wrap }: { spec: AskedQuestion; state: ClosedQuestionView["state"]; wrap?: boolean }) {
+  const question = useMemo(() => toParsedQuestion(spec).question, [spec])
+  return (
+    <article data-question-fence={spec.handle} data-question-closed={state} aria-label={state === "dismissed" ? "Dismissed question" : "Withdrawn question"} className="flex min-w-0 flex-col gap-2 opacity-60">
+      <QuestionBlockCard question={question} label={state === "dismissed" ? "Question dismissed" : "Question withdrawn"} settled={NOT_ANSWERED} wrap={wrap} />
+    </article>
+  )
+}
+const NOT_ANSWERED = { chosenIdxs: [] }
 
 /** Mount ONCE per surface that draws registered cards in more than one place. Must sit INSIDE the
  *  surface's QueueDismissContext, which the send reads. */

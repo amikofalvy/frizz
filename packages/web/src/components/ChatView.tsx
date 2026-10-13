@@ -84,7 +84,7 @@ import { ChildOpRow } from "./ChildOpRow.tsx"
 import { ThreadLinks } from "./ThreadLinks.tsx"
 import { TRANSCRIPT_META_LABEL_CLASS, transcriptMetaChevronClass } from "../lib/transcriptMetaLabels.ts"
 import { InteractionStack } from "./InteractionCards.tsx"
-import { RegisteredAnsweringProvider, RegisteredQuestionCard, RegisteredQuestionStack, SettledQuestionCard, SettledQuestionStack, UnregisteredQuestionCard, openQuestionsOf, useFenceQuestions, useRefusedFences, useSettledQuestions, type FenceQuestionRow, type SettledQuestion } from "./RegisteredQuestionCards.tsx"
+import { ClosedQuestionCard, RegisteredAnsweringProvider, RegisteredQuestionCard, RegisteredQuestionStack, SettledQuestionCard, SettledQuestionStack, UnregisteredQuestionCard, openQuestionsOf, useArrivedQuestions, useFenceQuestions, useRefusedFences, useSettledQuestions, type FenceQuestionRow, type SettledQuestion } from "./RegisteredQuestionCards.tsx"
 // The shared card chrome and THE question card both live in their own modules now, so every
 // surface can render them without importing the thread view. QuestionBlockCard in particular is
 // shared with the native-AskUserQuestion path, which reaches it through InteractionCards.tsx —
@@ -251,12 +251,12 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
   // lib/settledQuestions). The open cards skip any id the settled list holds, so a question just sent
   // never draws as both.
   const settledQuestions = useSettledQuestions(boardThread)
-  const openQuestions = useMemo(() => openQuestionsOf(boardThread, settledQuestions), [boardThread, settledQuestions])
+  const boardQuestions = useMemo(() => openQuestionsOf(boardThread, settledQuestions), [boardThread, settledQuestions])
   // ON A PHONE the registered cards are read-only and answering is a sheet (PhoneQuestionCards,
   // RegisteredAnswerSheet), opened from the bottom bar's "Answer". Null off the phone page.
   const phoneQuestions = useMemo<PhoneQuestions | null>(
-    () => (phone ? { numberOf: (id) => openQuestions.findIndex((q) => q.id === id) + 1 } : null),
-    [phone, openQuestions],
+    () => (phone ? { numberOf: (id) => boardQuestions.findIndex((q) => q.id === id) + 1 } : null),
+    [phone, boardQuestions],
   )
   const [answerSheetOpen, setAnswerSheetOpen] = useState(false)
 
@@ -270,6 +270,9 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
   // Raw server order — each message renders its `parts` in block order (fidelity). Memoized so
   // useLiveAnswering's `liveMsg` identity check compares objects from THIS same list.
   const loadedMessages = useMemo(() => q.data?.messages ?? [], [q.data])
+  // The open questions this surface DRAWS: a fence-asked row waits for the message that asked it, which
+  // the transcript brings a round trip after the board brings the row (lib/questionArrival).
+  const openQuestions = useArrivedQuestions(boardQuestions, loadedMessages)
   // …with every question fence the server REFUSED marked on its message (lib/questionFaults), so each
   // reader of a message's fences below — the placement, the claims, Message itself — sees it as the code
   // block it is. The same array when nothing was refused.
@@ -381,7 +384,7 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
   // answerable thing (shared QUESTION_FENCE_RETIRED_AT). A legacy thread keeps the whole fence path.
   const fencesLive = questionFencesLive(thread?.spawnedAt)
   // …and speaks THE QUESTION FENCE instead: every row it knows, which a fence's `id:` resolves against.
-  const fenceQuestions = useFenceQuestions(fencesLive, openQuestions, settledQuestions)
+  const fenceQuestions = useFenceQuestions(fencesLive, openQuestions, settledQuestions, thread)
   // (The SSE-mode lastActivityAt refetch effect that lived here moved into transcript-live.ts: the
   // manager applies the same activity-edge pull to EVERY observed transcript that the push channel
   // doesn't cover, so no surface has to wire its own.)
@@ -3812,6 +3815,15 @@ export const Message = memo(function Message({ m, answering, dense, paired, text
           const followsUp = seg.fence.form === "ask" ? seg.fence.when : undefined
           if (followsUp && !followUpParents().has(followsUp.parent.toLowerCase())) continue
           const row = resolveQuestionName(followsUp ? followsUp.parent : seg.fence.id, fenceQuestions ?? [])
+          if (row?.closed) {
+            // CLOSED WITHOUT AN ANSWER — dismissed or withdrawn. The fence that asked it draws the question
+            // closed, saying which (ClosedQuestionCard); a follow-up or a reference to it draws nothing.
+            if (seg.fence.form === "ask" && !followsUp && !placedDrawn.has(row.id)) {
+              placedDrawn.add(row.id)
+              push(<ClosedQuestionCard key={`${keyBase}-${fi}-q${si}`} spec={seg.fence.spec} state={row.closed} wrap={dense} />)
+            }
+            continue
+          }
           if (row) {
             // Placed in THIS message (the newest one naming it from its claiming rest on): the live card,
             // once. Answered here: its settled card, once. Anywhere else, the card is drawn there.

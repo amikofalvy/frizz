@@ -105,3 +105,18 @@ test("on a thread that speaks the question fence, a rest whose only fence the se
   const both = `${reused}\n\n\`\`\`question\nid: fresh\nkind: text\nquestion: Ship it?\n\`\`\``
   assert.equal(showsRestedCard(speaks, both, new Set(["store"])), false)
 })
+
+// A fence whose question CLOSED without an answer asks nobody either: the human dismissed it, Frizz
+// cancelled it because the thread runs autonomously, or the worker withdrew it.
+test("a rest whose only fence names a question that closed without an answer is a bare rest", () => {
+  const speaks: RestedCardThread = { ...bare, spawnedAt: "2026-10-14T00:00:00.000Z" }
+  const text = "I hit a fork.\n\n```question\nid: retry-policy\nkind: choice\nquestion: Retry or quarantine?\noptions:\n  - label: Retry\n  - label: Quarantine\n```"
+  assert.equal(showsRestedCard(speaks, text), false, "no row yet: about to be asked")
+  const closed = (state: "dismissed" | "withdrawn") => [{ id: "qst_1", handle: "retry-policy", state, askedAt: "2026-10-14T10:00:00.000Z" }]
+  assert.equal(showsRestedCard({ ...speaks, closedQuestions: closed("dismissed") }, text), true)
+  assert.equal(showsRestedCard({ ...speaks, closedQuestions: closed("withdrawn") }, text), true)
+  assert.equal(showsRestedCard({ ...speaks, closedQuestions: [{ ...closed("dismissed")[0], handle: "other" }] }, text), false, "some other question closed, not this one")
+  // …and it composes with a refusal in the same message.
+  const both = `${text}\n\n\`\`\`question\nid: ghost\n\`\`\``
+  assert.equal(showsRestedCard({ ...speaks, closedQuestions: closed("dismissed") }, both, new Set(["ghost"])), true)
+})

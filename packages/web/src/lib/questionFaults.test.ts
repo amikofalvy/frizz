@@ -132,3 +132,11 @@ test("marking is stable: the same message object for the same refusals, and one 
   assert.equal(questionFaultsKey(undefined), "")
   assert.equal(questionFaultsKey([]), "")
 })
+
+test("a question that closed without an answer is still the row its message registered", () => {
+  // A Goal thread's question: cancelled the moment it was written, so the board lists it by handle only.
+  // A later message reusing that id is refused; the message that asked it is not marked, loaded or not.
+  const closed = { id: "qst_store000001", askedAt: at(5), handle: "store" }
+  assert.deepEqual([...refusedFencesByMessage(REUSED, [fault(12, "store")], [closed]).keys()], [4])
+  assert.equal(refusedFencesByMessage(REUSED.slice(0, 3), [fault(12, "store")], [closed]).size, 0)
+})

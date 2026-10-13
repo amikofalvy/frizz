@@ -49,7 +49,7 @@ import { consoleCardOrder, useConsoleGroup } from "../lib/consoleBoard.ts"
 import { useConsoleProjectList } from "../lib/consoleProjects.ts"
 import { ProjectScope } from "../lib/projectScope.tsx"
 import { keyProject } from "../lib/threadKey.ts"
-import { RegisteredAnsweringProvider, RegisteredQuestionStack, SettledQuestionStack, openQuestionsOf, useFenceQuestions, useRefusedFences, useSettledQuestions } from "./RegisteredQuestionCards.tsx"
+import { RegisteredAnsweringProvider, RegisteredQuestionStack, SettledQuestionStack, openQuestionsOf, useArrivedQuestions, useFenceQuestions, useRefusedFences, useSettledQuestions } from "./RegisteredQuestionCards.tsx"
 import { DividerHint, WAKE_DIVIDER_WIDE_ONLY, WakeDivider } from "./WakeDivider.tsx"
 import {
   captureTranscriptViewportAnchor,
@@ -831,7 +831,7 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
   // ANSWERED registered questions keep drawing, greyed, where their open card stood — the thread view's
   // rule (lib/settledQuestions). The open cards skip any id the settled list holds (openQuestionsOf).
   const settledQuestions = useSettledQuestions(thread)
-  const openQuestions = useMemo(() => openQuestionsOf(thread, settledQuestions), [thread, settledQuestions])
+  const boardQuestions = useMemo(() => openQuestionsOf(thread, settledQuestions), [thread, settledQuestions])
   // Tracks only vtReturnTarget (valtio re-renders on accessed keys alone), so the memo'd card
   // re-renders just when a /full exit primes or clears it — see the root div's viewTransitionName.
   const vtSnap = useSnapshot(store)
@@ -971,6 +971,9 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
   // every global index below still addresses server truth.
   const liveTranscriptShells = useMemo(() => transcriptBackgroundShells(rawMessages), [rawMessages])
   const shownMessages = useMemo(() => withoutLiveTranscriptBackgroundTools(rawMessages), [rawMessages])
+  // The open questions this card DRAWS: a fence-asked row waits for the message that asked it, as on the
+  // thread page (lib/questionArrival).
+  const openQuestions = useArrivedQuestions(boardQuestions, rawMessages)
   // …with every question fence the server REFUSED marked on its message, as on the thread page
   // (lib/questionFaults): a code block, which places and claims nothing. Index-preserving too.
   const messages = useRefusedFences(shownMessages, thread, openQuestions, settledQuestions)
@@ -1210,7 +1213,7 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
   // answerable thing (shared QUESTION_FENCE_RETIRED_AT). A legacy thread keeps the whole fence path.
   const fencesLive = questionFencesLive(thread.spawnedAt)
   // …and speaks THE QUESTION FENCE instead: every row it knows, which a fence's `id:` resolves against.
-  const fenceQuestions = useFenceQuestions(fencesLive, openQuestions, settledQuestions)
+  const fenceQuestions = useFenceQuestions(fencesLive, openQuestions, settledQuestions, thread)
   // The registered questions standing at each message — its rest and every later one — so a fence
   // restating or naming one folds into its card (lib/questionShadow), here exactly as on the thread page.
   const shadowedByMessage = useMemo(() => registeredStandingAt(messages, openQuestions), [messages, openQuestions])

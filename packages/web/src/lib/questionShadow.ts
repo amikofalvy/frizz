@@ -191,15 +191,17 @@ export function fenceStandsFor<Q extends Pick<RegisteredQuestionView, "id" | "sp
 // card of its own, it opens inside its parent's. Handles are unique in a thread for good (the server
 // refuses a reuse), so a name resolves to one row however many are open or settled.
 
-/** Every name this row answers to, lowercased. */
-export function questionNames(q: { id: string; spec?: AskedQuestion }): string[] {
+/** Every name this row answers to, lowercased. (`handle` alone, for a row known only by it — a question
+ *  that closed without an answer, which the board lists without its tree.) */
+export function questionNames(q: { id: string; spec?: AskedQuestion; handle?: string }): string[] {
   const names = [q.id.toLowerCase()]
   if (q.spec) for (const h of questionHandles(q.spec)) names.push(h.toLowerCase())
+  else if (q.handle) names.push(q.handle.toLowerCase())
   return names
 }
 
 /** The row a fence's id names — by minted id or by any handle in its tree — or undefined. */
-export function resolveQuestionName<Q extends { id: string; spec?: AskedQuestion }>(name: string, rows: readonly Q[]): Q | undefined {
+export function resolveQuestionName<Q extends { id: string; spec?: AskedQuestion; handle?: string }>(name: string, rows: readonly Q[]): Q | undefined {
   const n = name.toLowerCase()
   return rows.find((q) => questionNames(q).includes(n))
 }
