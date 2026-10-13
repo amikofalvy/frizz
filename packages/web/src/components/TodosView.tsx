@@ -49,7 +49,7 @@ import { consoleCardOrder, useConsoleGroup } from "../lib/consoleBoard.ts"
 import { useConsoleProjectList } from "../lib/consoleProjects.ts"
 import { ProjectScope } from "../lib/projectScope.tsx"
 import { keyProject } from "../lib/threadKey.ts"
-import { RegisteredAnsweringProvider, RegisteredQuestionStack, SettledQuestionStack, openQuestionsOf, useFenceQuestions, useSettledQuestions } from "./RegisteredQuestionCards.tsx"
+import { RegisteredAnsweringProvider, RegisteredQuestionStack, SettledQuestionStack, openQuestionsOf, useFenceQuestions, useRefusedFences, useSettledQuestions } from "./RegisteredQuestionCards.tsx"
 import { DividerHint, WAKE_DIVIDER_WIDE_ONLY, WakeDivider } from "./WakeDivider.tsx"
 import {
   captureTranscriptViewportAnchor,
@@ -970,7 +970,10 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
   // the ops line counts are read off the RAW transcript, before they are taken out. Index-preserving, so
   // every global index below still addresses server truth.
   const liveTranscriptShells = useMemo(() => transcriptBackgroundShells(rawMessages), [rawMessages])
-  const messages = useMemo(() => withoutLiveTranscriptBackgroundTools(rawMessages), [rawMessages])
+  const shownMessages = useMemo(() => withoutLiveTranscriptBackgroundTools(rawMessages), [rawMessages])
+  // …with every question fence the server REFUSED marked on its message, as on the thread page
+  // (lib/questionFaults): a code block, which places and claims nothing. Index-preserving too.
+  const messages = useRefusedFences(shownMessages, thread, openQuestions, settledQuestions)
   // A RUNNING thread can hold a card (one with an open question keeps working), and it reads as the
   // drawer reads it: the Working… line with its live tool run at the tail, that run out of history, and
   // no awaiting fence in the window, since a spinning thread is not resting on anything.
@@ -1422,7 +1425,7 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
     thread,
     showWorking: running,
     registeredDone: showsRegisteredDoneCard(thread, lastAgentText),
-    restedCard: showsRestedCard(thread, lastAgentText),
+    restedCard: showsRestedCard(thread, lastAgentText, lastAgentIdx >= 0 ? messages[lastAgentIdx]?.refusedFences : undefined),
     errorVisible: providerErrorVisible(visible, thread.providerError),
   }
   const queueRung = runtimeStatusRung(queueStatus)
@@ -1705,7 +1708,7 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
                 // takes the collapse branch like an open ask — the ordinary path would render its tool
                 // band and defer this run's divider below the very work it summarizes (the 2026-08-13
                 // inversion). See lib/queueCollapse.carriesDoneRegistration.
-                const liftedWake = inSpan && !isFirst && !isLast && !hasQuestionBlock(m.text) && !carriesDoneRegistration(m) && survivesQueueCollapse(m, globalIdx, supersededAsks)
+                const liftedWake = inSpan && !isFirst && !isLast && !hasQuestionBlock(m.text, m.refusedFences) && !carriesDoneRegistration(m) && survivesQueueCollapse(m, globalIdx, supersededAsks)
                 // THIS RUN'S WAKER — the background task or sub-agent whose completion re-invoked the
                 // agent while it was at rest. It takes the ordinary path too, and it must be handled
                 // BEFORE the summary bar below: the bar is emitted at the first row after the opening

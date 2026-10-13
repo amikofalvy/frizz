@@ -91,3 +91,17 @@ test("on a thread that speaks the question fence, a fence that did not read is n
   assert.equal(showsRestedCard({ ...bare, spawnedAt: "2026-09-01T12:00:00.000Z" }, broken("```")), false)
   assert.equal(showsRestedCard(bare, broken("```")), false, "an unknown dispatch instant reads as legacy")
 })
+
+// A fence the server REFUSED asked the human nothing, exactly like one that did not read — but it reads
+// fine, so only the board can say (ThreadView.questionFaults, hung on the message by lib/questionFaults).
+test("on a thread that speaks the question fence, a rest whose only fence the server refused is a bare rest", () => {
+  const speaks: RestedCardThread = { ...bare, spawnedAt: "2026-10-14T00:00:00.000Z" }
+  const reused = "A different question:\n\n```question\nid: store\nkind: choice\nquestion: Which region?\noptions:\n  - label: us-east\n  - label: eu-west\n```"
+  assert.equal(showsRestedCard(speaks, reused), false, "no fault yet: the registrar is a second behind, and the question is about to be answerable")
+  assert.equal(showsRestedCard(speaks, reused, new Set()), false)
+  assert.equal(showsRestedCard(speaks, reused, new Set(["store"])), true, "refused: nobody was asked, and the card says Frizz is nudging the worker")
+  assert.equal(showsRestedCard(speaks, reused, new Set(["other"])), false, "a refusal of some other fence is not this one's")
+  // Beside a fence that held, the rest still ends on a question.
+  const both = `${reused}\n\n\`\`\`question\nid: fresh\nkind: text\nquestion: Ship it?\n\`\`\``
+  assert.equal(showsRestedCard(speaks, both, new Set(["store"])), false)
+})

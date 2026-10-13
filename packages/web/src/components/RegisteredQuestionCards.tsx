@@ -28,6 +28,7 @@ import { draftKey, draftStore, useDraftValues, useProjectDir } from "../lib/draf
 import { clearSteered, markSteered } from "../lib/steering.ts"
 import { SendScopeContext, usePromptBoxSends } from "../lib/sendScope.tsx"
 import type { BlockAnswer } from "../lib/questionBlocks.ts"
+import { questionFaultsKey, withRefusedFences, type FaultMessage } from "../lib/questionFaults.ts"
 import type { PairedAnswer } from "../lib/answersMessage.ts"
 import { ROOT_PATH, liveQuestionNodes, nodeAnswered, registeredAnswer, settledQuestionNodes, toParsedQuestion } from "../lib/registeredQuestion.ts"
 import { decodeQuestionPick, encodeQuestionPick, questionSpecAt } from "../lib/registeredPicks.ts"
@@ -391,6 +392,24 @@ export function useFenceQuestions(
   settled: readonly SettledQuestion[],
 ): readonly FenceQuestionRow[] | undefined {
   return useMemo(() => (fencesLive ? undefined : [...open, ...settled]), [fencesLive, open, settled])
+}
+
+/** The surface's messages with each REFUSED question fence marked on the message that wrote it
+ *  (lib/questionFaults): the board's `questionFaults`, matched by id and by the message whose span holds
+ *  the fault's instant. The same array comes back when nothing was refused. Keyed on the faults' content
+ *  rather than their identity, so a board push carrying the same refusals re-renders no message. */
+export function useRefusedFences<M extends FaultMessage>(
+  messages: readonly M[],
+  thread: Pick<ThreadView, "questionFaults"> | undefined,
+  open: readonly RegisteredQuestionView[],
+  settled: readonly SettledQuestion[],
+): M[] {
+  const pushed = thread?.questionFaults
+  const key = questionFaultsKey(pushed)
+  // `key` IS the list's content, so the copy from the first push that carried it stands in for the rest.
+  const faults = useMemo(() => pushed, [key]) // eslint-disable-line react-hooks/exhaustive-deps
+  const rows = useMemo(() => [...open, ...settled], [open, settled])
+  return useMemo(() => (faults?.length ? withRefusedFences(messages, faults, rows) : messages) as M[], [messages, faults, rows])
 }
 
 /** A ```question fence's ask before its row exists: the same card, READ-ONLY, from the fence's own spec.

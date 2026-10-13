@@ -207,10 +207,11 @@ export function resolveQuestionName<Q extends { id: string; spec?: AskedQuestion
 /** Every name a message PLACES, lowercased, in order: its legacy empty markers' `qst_…` ids, and the ids
  *  of its question fences that ask or reference (lib/questionBlocks questionFenceIdsIn). On a legacy
  *  thread the second list is empty in practice — those workers never learned the grammar, and no row of
- *  theirs carries a handle for it to match. */
-export function placementNamesIn(text: string): string[] {
+ *  theirs carries a handle for it to match. A fence the server REFUSED (`refused`, the message's
+ *  `refusedFences`) places nothing: reusing an id does not move that id's card. */
+export function placementNamesIn(text: string, refused?: ReadonlySet<string>): string[] {
   if (!text.includes("```question")) return []
-  return [...markerIdsIn(text), ...questionFenceIdsIn(text)]
+  return [...markerIdsIn(text), ...questionFenceIdsIn(text, refused)]
 }
 
 export interface QuestionPlacement<Q> {
@@ -246,7 +247,7 @@ export function placeQuestions<Q extends Pick<RegisteredQuestionView, "id"> & { 
     let ids = markersAt.get(i)
     if (ids === undefined) {
       const m = messages[i]
-      ids = m.role === "assistant" && m.text ? placementNamesIn(m.text) : []
+      ids = m.role === "assistant" && m.text ? placementNamesIn(m.text, m.refusedFences) : []
       markersAt.set(i, ids)
     }
     return ids

@@ -33,7 +33,7 @@ export type RestedCardThread = Pick<
  *  `lastAssistantText` is the transcript's own copy of "no ```done, no ```question" in the final message:
  *  the board's `pendingQuestion` and `lastFence` say the same, but the message is what the reader is
  *  looking at, and a card claiming no sign-off directly under a fenced one would be the two disagreeing. */
-export function showsRestedCard(thread: RestedCardThread | undefined, lastAssistantText: string | undefined): boolean {
+export function showsRestedCard(thread: RestedCardThread | undefined, lastAssistantText: string | undefined, refusedFences?: ReadonlySet<string>): boolean {
   if (!thread || thread.kind !== "session" || thread.foreign) return false
   if (thread.runtime !== "turn-idle" && thread.runtime !== "exited") return false
   if (thread.needsYou !== true) return false
@@ -68,7 +68,12 @@ export function showsRestedCard(thread: RestedCardThread | undefined, lastAssist
   // a bare one, and this card is what says Frizz is nudging the worker. The legacy reader below still
   // counted it whenever it had three backticks at the margin — the same broken fence showed this card with
   // four backticks and hid it with three. A legacy thread keeps the reader its fences were written for.
-  if (!questionFencesLive(thread.spawnedAt)) return !splitMessageQuestions(lastAssistantText, true).some((seg) => seg.kind === "question")
+  //
+  // NOR IS ONE THE SERVER REFUSED (`refusedFences`, the final message's own — lib/questionFaults): a fence
+  // reusing a spent id, or following a question already answered, asked the human nothing. A fence with
+  // no row and no fault yet still counts: the registrar is a second behind, and this card must not flash
+  // under a question that is about to become answerable.
+  if (!questionFencesLive(thread.spawnedAt)) return !splitMessageQuestions(lastAssistantText, true, refusedFences).some((seg) => seg.kind === "question")
   if (hasQuestionBlock(lastAssistantText)) return false
   return true
 }

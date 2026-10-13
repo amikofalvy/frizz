@@ -150,7 +150,7 @@ export function splitQuestionBlocks(text: string): MessageSegment[] {
 
 /** A message's segments under the grammar its thread speaks. `fenceGrammar` false (a legacy thread, or a
  *  surface that has no registered rows to resolve against) is splitQuestionBlocks unchanged. */
-export function splitMessageQuestions(text: string, fenceGrammar: boolean): MessageSegment[] {
+export function splitMessageQuestions(text: string, fenceGrammar: boolean, refused?: ReadonlySet<string>): MessageSegment[] {
   if (!fenceGrammar || !text.includes("```question")) return splitQuestionBlocks(text)
   const blocks = questionFenceBlocks(text).filter((b) => b.read.form !== "invalid" || triesFenceGrammar(b.body))
   if (blocks.length === 0) return splitQuestionBlocks(text)
@@ -159,7 +159,7 @@ export function splitMessageQuestions(text: string, fenceGrammar: boolean): Mess
   for (const b of blocks) {
     out.push(...splitQuestionBlocks(text.slice(at, b.start)))
     at = b.end
-    if (b.read.form === "invalid") {
+    if (b.read.form === "invalid" || isRefused(b.read, refused)) {
       // Its own prose run, so the legacy reader never sees it and markdown draws the fence as code.
       out.push({ kind: "prose", text: text.slice(b.start, b.end) })
       continue
@@ -177,6 +177,18 @@ export function splitMessageQuestions(text: string, fenceGrammar: boolean): Mess
   return out
 }
 
+// A FENCE THE SERVER REFUSED IS THE SAME CODE BLOCK. It read, so it has an id, and the server would not
+// register it under that id: the id is spent on a different question, its parent is settled, it references
+// nothing (lib/questionFaults, which works out the refused ids of each message from the board's
+// `questionFaults` and hands them in here as `refused`). It is not a question the human is being asked, so
+// it draws no card — neither a card of its own nor, the worse reading, the card of the row its id happens
+// to name — and every reader below that asks "which questions does this message name" leaves it out.
+
+/** Is this readable fence one the server refused (by its lowercased id)? */
+function isRefused(read: Exclude<QuestionFenceRead, { form: "invalid" }>, refused: ReadonlySet<string> | undefined): boolean {
+  return refused !== undefined && refused.size > 0 && refused.has(read.id.toLowerCase())
+}
+
 // The grammar's keys (shared QUESTION_FENCE_KEYS), as the first thing a fence's body says. A free-form
 // fence opens on its question, in prose; a fence that opens on `id:` or `kind:` was written for the reader.
 const FENCE_KEY_LINE = new RegExp(`^[ \\t]*(?:${QUESTION_FENCE_KEYS.join("|")}):(?:[ \\t]|$)`)
@@ -191,14 +203,15 @@ function triesFenceGrammar(body: string): boolean {
 /** The ids a message's question fences NAME, lowercased, in order: an ask (not a `when:` follow-up, which
  *  lives inside its parent's card and is named by the parent's fence) or a reference — and then the parents
  *  its follow-ups claim from an earlier message (followUpParentsIn). */
-export function questionFenceIdsIn(text: string): string[] {
+export function questionFenceIdsIn(text: string, refused?: ReadonlySet<string>): string[] {
   if (!text.includes("```question")) return []
   const out: string[] = []
   for (const b of questionFenceBlocks(text)) {
     const r = b.read
+    if (r.form === "invalid" || isRefused(r, refused)) continue
     if (r.form === "ref" || (r.form === "ask" && !r.when)) out.push(r.id.toLowerCase())
   }
-  for (const parent of followUpParentsIn(text)) if (!out.includes(parent)) out.push(parent)
+  for (const parent of followUpParentsIn(text, refused)) if (!out.includes(parent)) out.push(parent)
   return out
 }
 
@@ -210,13 +223,15 @@ export function questionFenceIdsIn(text: string): string[] {
  *  it, and shows the new branch once the row carries it. A follow-up written WITH its parent (the parent's
  *  own fence, or a follow-up of this message that is itself the parent) claims nothing: that fence places
  *  the card, and this one lives inside it. */
-export function followUpParentsIn(text: string): string[] {
+export function followUpParentsIn(text: string, refused?: ReadonlySet<string>): string[] {
   if (!text.includes("```question") || !text.includes("when:")) return []
   const reads = questionFenceBlocks(text).map((b) => b.read)
   const here = new Set(reads.flatMap((r) => (r.form === "invalid" ? [] : [r.id.toLowerCase()])))
   const out: string[] = []
   for (const r of reads) {
-    if (r.form !== "ask" || !r.when) continue
+    // A follow-up the server REFUSED (its parent was already answered, say) attached to nothing, so it
+    // claims nothing: the parent's card stays where it was, and this fence is the code block it is.
+    if (r.form !== "ask" || !r.when || isRefused(r, refused)) continue
     const parent = r.when.parent.toLowerCase()
     if (!here.has(parent) && !out.includes(parent)) out.push(parent)
   }
@@ -308,8 +323,12 @@ function takeOrphanRun(prose: string, lastId: string | null): { run: string; res
 // A QUESTION FENCE counts too (splitMessageQuestions), including a ````question whose context carries a code
 // block, which the legacy splitter never sees. That also covers the second or two before the server
 // registers the fence's row: the message already asks, so it is not a bare rest (RestedCard).
-export function hasQuestionBlock(text: string): boolean {
+//
+// `refused` (lib/questionFaults) is only ever set on a thread that speaks the question fence, so with it the
+// message is read under that grammar: a fence the server refused is a code block, not an ask.
+export function hasQuestionBlock(text: string, refused?: ReadonlySet<string>): boolean {
   if (!text.includes("```question")) return false
+  if (refused !== undefined && refused.size > 0) return splitMessageQuestions(text, true, refused).some((s) => s.kind === "question")
   return splitQuestionBlocks(text).some((s) => s.kind === "question") || questionFenceIdsIn(text).length > 0
 }
 

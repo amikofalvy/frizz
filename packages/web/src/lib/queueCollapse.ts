@@ -20,6 +20,8 @@ import { hasQuestionBlock, splitQuestionBlocks } from "./questionBlocks.ts"
 // survivesQueueCollapse — so that distinction, and the parse it needed, are gone.
 export interface CollapseMsgLike {
   text: string
+  /** The ids of its question fences the server refused (lib/questionFaults): code blocks, not asks. */
+  refusedFences?: ReadonlySet<string>
   displayText?: string
   wake?: boolean
   boundary?: "wake" | "compaction" | "rest"
@@ -139,7 +141,7 @@ export function supersededAskIndices(messages: readonly CollapseMsgLike[]): Set<
 // The counting walk and the render loop BOTH go through this, so the divider can never promise the
 // expansion a message it is already showing.
 export function survivesQueueCollapse(m: CollapseMsgLike, index: number, superseded: ReadonlySet<number>): boolean {
-  if (hasQuestionBlock(m.text)) return !superseded.has(index)
+  if (hasQuestionBlock(m.text, m.refusedFences)) return !superseded.has(index)
   if (carriesDoneRegistration(m)) return true
   // A PROVIDER FAILURE is lifecycle, not chatter: it is why the run stopped, and often why the card is in
   // the queue at all. Folded, it vanished with the calls before it, and the card read as an ordinary rest

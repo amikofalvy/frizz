@@ -84,7 +84,7 @@ import { ChildOpRow } from "./ChildOpRow.tsx"
 import { ThreadLinks } from "./ThreadLinks.tsx"
 import { TRANSCRIPT_META_LABEL_CLASS, transcriptMetaChevronClass } from "../lib/transcriptMetaLabels.ts"
 import { InteractionStack } from "./InteractionCards.tsx"
-import { RegisteredAnsweringProvider, RegisteredQuestionCard, RegisteredQuestionStack, SettledQuestionCard, SettledQuestionStack, UnregisteredQuestionCard, openQuestionsOf, useFenceQuestions, useSettledQuestions, type FenceQuestionRow, type SettledQuestion } from "./RegisteredQuestionCards.tsx"
+import { RegisteredAnsweringProvider, RegisteredQuestionCard, RegisteredQuestionStack, SettledQuestionCard, SettledQuestionStack, UnregisteredQuestionCard, openQuestionsOf, useFenceQuestions, useRefusedFences, useSettledQuestions, type FenceQuestionRow, type SettledQuestion } from "./RegisteredQuestionCards.tsx"
 // The shared card chrome and THE question card both live in their own modules now, so every
 // surface can render them without importing the thread view. QuestionBlockCard in particular is
 // shared with the native-AskUserQuestion path, which reaches it through InteractionCards.tsx —
@@ -269,7 +269,11 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
   const [earlierError, setEarlierError] = useState<string | null>(null)
   // Raw server order — each message renders its `parts` in block order (fidelity). Memoized so
   // useLiveAnswering's `liveMsg` identity check compares objects from THIS same list.
-  const messages = useMemo(() => q.data?.messages ?? [], [q.data])
+  const loadedMessages = useMemo(() => q.data?.messages ?? [], [q.data])
+  // …with every question fence the server REFUSED marked on its message (lib/questionFaults), so each
+  // reader of a message's fences below — the placement, the claims, Message itself — sees it as the code
+  // block it is. The same array when nothing was refused.
+  const messages = useRefusedFences(loadedMessages, boardThread, openQuestions, settledQuestions)
   const liveTranscriptShells = useMemo(() => transcriptBackgroundShells(messages), [messages])
   const steerStamp = useSteeredAt()[slug]
   // The send that ends a rest draws where it will land, stamped with the instant this tab sent it — see
@@ -349,7 +353,7 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
   const registeredDone = showsRegisteredDoneCard(thread, lastAgentIdx >= 0 ? presentationMessages[lastAgentIdx]?.text : undefined)
   // The RESIDUAL rung: a rest that carries no other card at all (RestedCard). Same final-message key.
   // Whether an open question is this rest's ending is the server's answer, read there off the board.
-  const restedCard = showsRestedCard(thread, lastAgentIdx >= 0 ? presentationMessages[lastAgentIdx]?.text : undefined)
+  const restedCard = showsRestedCard(thread, lastAgentIdx >= 0 ? presentationMessages[lastAgentIdx]?.text : undefined, lastAgentIdx >= 0 ? presentationMessages[lastAgentIdx]?.refusedFences : undefined)
   // Everything the runtime-status ladder needs that it cannot work out itself — see runtimeStatusRung.
   const runtimeStatus: RuntimeStatusState = { thread, showWorking, registeredDone, restedCard, errorVisible: providerErrorVisible(presentationMessages, thread?.providerError) }
   // Question-block interactivity in the thread view: EVERY ask stays answerable, wherever it sits —
@@ -994,7 +998,7 @@ function VirtualizedThreadTranscript({
   // that also wrote the fence gets one card, from the message, not two.
   const registeredDone = showsRegisteredDoneCard(thread, lastAgentIdx >= 0 ? messages[lastAgentIdx]?.text : undefined)
   // The RESIDUAL rung: a rest that carries no other card at all (RestedCard). Same final-message key.
-  const restedCard = showsRestedCard(thread, lastAgentIdx >= 0 ? messages[lastAgentIdx]?.text : undefined)
+  const restedCard = showsRestedCard(thread, lastAgentIdx >= 0 ? messages[lastAgentIdx]?.text : undefined, lastAgentIdx >= 0 ? messages[lastAgentIdx]?.refusedFences : undefined)
   // Everything the runtime-status ladder needs that it cannot work out itself — see runtimeStatusRung.
   // The row EXISTS when some rung wins, and its own gap is that same answer: the eager path derives both
   // from the identical call, so the two cannot disagree about which card this thread gets.
@@ -3714,7 +3718,7 @@ export const Message = memo(function Message({ m, answering, dense, paired, text
   // The parents this message's `when:` follow-ups claim from an earlier message — read over the WHOLE
   // message, as the placement is (lib/questionShadow placeQuestions), and only once a follow-up asks.
   let claimedParents: Set<string> | undefined
-  const followUpParents = () => (claimedParents ??= new Set(followUpParentsIn(m.text)))
+  const followUpParents = () => (claimedParents ??= new Set(followUpParentsIn(m.text, m.refusedFences)))
   const renderText = (text: string, keyBase: string) => {
     // Split SIGNAL fences (```done / ```awaiting) out first — each renders as a card in place of the
     // raw block — then run the remaining prose runs through the question/image pipeline. Fences never
@@ -3777,7 +3781,9 @@ export const Message = memo(function Message({ m, answering, dense, paired, text
         )
         continue
       }
-      for (const [si, seg] of splitMessageQuestions(fseg.text, fenceQuestions !== undefined).entries()) {
+      // A fence the server REFUSED comes back as prose here (`m.refusedFences`, lib/questionFaults): the
+      // code block it is, never a card and never a claim on the card of the row its id happens to name.
+      for (const [si, seg] of splitMessageQuestions(fseg.text, fenceQuestions !== undefined, m.refusedFences).entries()) {
         if (seg.kind === "prose") {
           for (const [j, p] of splitProseAttachments(seg.text).entries()) {
             const partKey = `${keyBase}-${fi}-p${si}-${j}`

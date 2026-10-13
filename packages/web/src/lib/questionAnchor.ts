@@ -46,6 +46,9 @@ export interface AnchorMessage {
   at?: string
   /** The message's markdown, read only for an ```awaiting fence's `questions:` claim. */
   text?: string
+  /** The ids of this message's question fences the server REFUSED (lib/questionFaults): they name no
+   *  question, so they neither claim a card nor place one. */
+  refusedFences?: ReadonlySet<string>
 }
 
 /** A real human turn — a typed reply or one of frizz's own deliveries, which land as user records and
@@ -112,7 +115,7 @@ export function questionClaims(messages: readonly AnchorMessage[]): Map<string, 
         for (const id of awaitingQuestions(seg.hints)) claims.set(id.toLowerCase(), i)
       }
     }
-    for (const id of questionFenceIdsIn(m.text)) claims.set(id, i)
+    for (const id of questionFenceIdsIn(m.text, m.refusedFences)) claims.set(id, i)
   })
   return claims
 }
