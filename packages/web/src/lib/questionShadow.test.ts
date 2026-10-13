@@ -325,10 +325,9 @@ test("a later rest's `when:` follow-up claims its parent's card into that messag
   ]
   // Before the row carries the branch and after: the parent's handle is what the fence names.
   const bare = { ...FENCED_ROW, spec: { ...FENCED_ROW.spec, options: [{ label: "SQLite" }, { label: "JSON file" }] } }
-  for (const row of [bare, FENCED_ROW]) {
-    assert.deepEqual([...placeQuestions(later, [row]).placed.keys()], [3])
-    assert.equal(questionsAtCurrentRest(later, [row]), true)
-  }
+  // (Whether the question still STANDS at that rest is the server's answer now — the row's `standing`,
+  // pinned in server question-rest.test.ts — so placement is all there is to check here.)
+  for (const row of [bare, FENCED_ROW]) assert.deepEqual([...placeQuestions(later, [row]).placed.keys()], [3])
   // Negative control: the same later message without the follow-up leaves the card where it was asked.
   const silent = later.map((m, i) => (i === 3 ? { ...m, text: "Docs are in." } : m))
   assert.deepEqual([...placeQuestions(silent, [FENCED_ROW]).placed.keys()], [1])
