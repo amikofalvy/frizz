@@ -49,6 +49,7 @@ import { useFailedDeliveryActions } from "../lib/failedDelivery.ts"
 import { useDeliverQueuedNow, useDeliverQueuedNowSupported } from "../lib/deliverQueuedNow.ts"
 import { SessionMessageLine } from "./SessionMessageLine.tsx"
 import { lastAskIndex, messagePresentationText } from "../lib/messagePresentation.ts"
+import { steeredSinceRest, useSteeredAt } from "../lib/steering.ts"
 import { snoozePresetInstant, formatSnoozeWake } from "../lib/snooze.ts"
 import { noteGithubRefs } from "../lib/githubHovercards.ts"
 import { ICON_LABEL_NUDGE } from "../lib/iconAlign.ts"
@@ -244,12 +245,12 @@ export function ThreadView({ slug, onStatusApplied, onClose, virtualized = false
 
 function ChatView({ slug, virtualized, phone = false, railBeside = false }: { slug: string; virtualized: boolean; phone?: boolean; railBeside?: boolean }) {
   const board = useBoard()
-  const thread = threadBySlug(board, slug)
+  const boardThread = threadBySlug(board, slug)
   // ANSWERED registered questions stay in the transcript, greyed, where their open card stood (see
   // lib/settledQuestions). The open cards skip any id the settled list holds, so a question just sent
   // never draws as both.
-  const settledQuestions = useSettledQuestions(thread)
-  const openQuestions = useMemo(() => openQuestionsOf(thread, settledQuestions), [thread, settledQuestions])
+  const settledQuestions = useSettledQuestions(boardThread)
+  const openQuestions = useMemo(() => openQuestionsOf(boardThread, settledQuestions), [boardThread, settledQuestions])
   // ON A PHONE the registered cards are read-only and answering is a sheet (PhoneQuestionCards,
   // RegisteredAnswerSheet), opened from the bottom bar's "Answer". Null off the phone page.
   const phoneQuestions = useMemo<PhoneQuestions | null>(
@@ -257,11 +258,10 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
     [phone, openQuestions],
   )
   const [answerSheetOpen, setAnswerSheetOpen] = useState(false)
-  const running = thread?.runtime === "running" || thread?.runtime === "spawning"
 
   // Freshness is centrally managed (transcript-live.ts keeps every observed transcript live); `poll`
   // only gates the SSE-fallback interval for a running thread.
-  const q = useTranscript(slug, { poll: running })
+  const q = useTranscript(slug, { poll: boardThread?.runtime === "running" || boardThread?.runtime === "spawning" })
   const queryClient = useQueryClient()
   const loadingEarlierRef = useRef(false)
   const [loadingEarlier, setLoadingEarlier] = useState(false)
@@ -274,6 +274,18 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
   // Cut over presentationMessages, not messages: the coalesced entries below carry a messageIndex into
   // THIS list, and comparing the two index spaces is how a live fence gets marked settled.
   const lastAgentIdx = useMemo(() => lastAssistantIndex(presentationMessages), [presentationMessages])
+  // A SEND ENDS THE REST IN THE RENDER THAT DRAWS ITS GHOST BUBBLE — not seconds later, when the board
+  // reports the turn (lib/steering.ts steeredSinceRest). Everything below reads this thread, so the
+  // resting card, the awaiting fence and the sign-off rung all give way to Working… in that same render.
+  const steerStamp = useSteeredAt()[slug]
+  const thread = useMemo(
+    () => steeredSinceRest(boardThread, presentationMessages, lastAgentIdx, steerStamp),
+    [boardThread, presentationMessages, lastAgentIdx, steerStamp],
+  )
+  const running = thread?.runtime === "running" || thread?.runtime === "spawning"
+  // …and the Working line's clock starts at that send. Until the turn lands, the newest landed message
+  // is the rest's own, which would caption the fresh run with the hours since the agent last spoke.
+  const steerSince = thread !== boardThread ? thread?.lastUserAt : undefined
   // NO AWAITING CARD WHILE THE THREAD RUNS. An awaiting card states a REST — "the worker stopped here, on
   // these waits" — and a spinning thread is not at rest on anything, so every fence in the window is
   // stale: the cut sits past the last message. At rest the cut is the last assistant message, and the
@@ -294,7 +306,7 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
   const liveToolActivity = running ? liveToolActivityTail(coalescedActivityMessages) : undefined
   const liveActivityLabel = liveToolActivity ? toolActivityLabel(liveToolActivity, board?.projectDir) : undefined
   // What the runtime slot's clock counts from — this stretch of work, not the turn. See liveRuntimeStartedAt.
-  const liveRuntimeStart = running ? liveRuntimeStartedAt(coalescedActivityMessages) : undefined
+  const liveRuntimeStart = running ? laterInstant(liveRuntimeStartedAt(coalescedActivityMessages), steerSince) : undefined
   // A live tool run belongs in the existing bottom runtime slot, never in transcript history. Once
   // it settles, the whole coalesced run returns as one `Ran N tool calls` disclosure.
   //
@@ -466,6 +478,7 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
           fencesLive={fencesLive}
           thread={thread}
           running={running}
+          steerSince={steerSince}
           transportFallback={q.transportFallback}
           isFetching={q.isFetching}
           refresh={() => void q.refetch()}
@@ -883,6 +896,7 @@ function VirtualizedThreadTranscript({
   fencesLive,
   thread,
   running,
+  steerSince,
   transportFallback,
   isFetching,
   refresh,
@@ -912,6 +926,8 @@ function VirtualizedThreadTranscript({
   fencesLive: boolean
   thread: ThreadViewData | undefined
   running: boolean
+  // The send that ended the rest, while the board has yet to report its turn — the parent's copy says why.
+  steerSince?: string
   transportFallback: TranscriptTransportFallback
   isFetching: boolean
   refresh: () => void
@@ -932,7 +948,7 @@ function VirtualizedThreadTranscript({
   const liveToolRun = running ? liveToolActivityRun(coalescedActivityMessages) : undefined
   const liveToolActivity = running ? liveToolActivityTail(coalescedActivityMessages) : undefined
   const liveActivityLabel = liveToolActivity ? toolActivityLabel(liveToolActivity, projectDir) : undefined
-  const liveRuntimeStart = running ? liveRuntimeStartedAt(coalescedActivityMessages) : undefined
+  const liveRuntimeStart = running ? laterInstant(liveRuntimeStartedAt(coalescedActivityMessages), steerSince) : undefined
   const lastAgentIdx = useMemo(() => lastAssistantIndex(messages), [messages])
   // No awaiting card while the thread runs — see the drawer's copy above.
   const awaitingCut = running ? messages.length : lastAgentIdx
@@ -1922,6 +1938,14 @@ export function messageRendersNothing(m: ChatMessage, staleAwaiting?: boolean, r
 export function lastAssistantIndex(messages: readonly ChatMessage[]): number {
   for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === "assistant" && messages[i].kind !== "event") return i
   return -1
+}
+
+// The later of two ISO instants, either of which may be missing or unparseable.
+function laterInstant(a: string | undefined, b: string | undefined): string | undefined {
+  const ta = Date.parse(a ?? "")
+  const tb = Date.parse(b ?? "")
+  if (!Number.isFinite(tb)) return a
+  return Number.isFinite(ta) && ta >= tb ? a : b
 }
 // Whether a message renders is therefore POSITIONAL, and the row builders take a plain
 // `(message) => boolean`. So the position is baked in here, over the very entries the builder is about to

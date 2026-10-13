@@ -1,7 +1,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import type { ThreadView } from "@frizz/shared"
-import { isOptimisticallySteering, optimisticallySteered, STEER_OPTIMISM_MS } from "./steering.ts"
+import { isOptimisticallySteering, optimisticallySteered, steeredSinceRest, STEER_OPTIMISM_MS } from "./steering.ts"
 import { isActivelyRunning, isSnoozed, orderActive, partitionActive, sectionOf, sessionIndicatorKind } from "../groups.ts"
 
 const at = (lastActivityAt?: string) => ({ id: "t", lastActivityAt } as unknown as ThreadView)
@@ -116,4 +116,61 @@ test("…and outlives the local hint, which is the whole reason it exists", () =
   // Control: the same row without the flag is back to its at-rest reading once the hint expires.
   const bare = queued({ needsYou: false, pendingQuestion: false })
   assert.equal(optimisticallySteered(bare, SENT, SENT + STEER_OPTIMISM_MS + 1), bare)
+})
+
+// ── the thread view's reading ─────────────────────────────────────────────────────────────────────
+// The thread view draws the ghost bubble AND the rest's card, so it ends the rest on the bubble rather
+// than on the stamp: the card goes in the render that draws the bubble, never before it and never
+// seconds after it (2026-10-13).
+
+const rest = { role: "assistant", text: "```awaiting\nprs: [a/b#1]\nstatus: watching\nfor: 1d\n```" } as const
+const ghost = { role: "user", queued: true } as const
+const landed = { role: "user", at: new Date(SENT + 300).toISOString() } as const
+const atRest = (over: Partial<ThreadView> = {}) => queued({ needsYou: false, pendingQuestion: false, lastActivityAt: new Date(SENT - 5_000).toISOString(), ...over })
+
+test("the ghost bubble ends the rest on its own — no stamp, no server flag", () => {
+  const t = steeredSinceRest(atRest(), [rest, ghost], 0, undefined, SENT + 200)!
+  assert.equal(t.runtime, "running")
+  assert.equal(isActivelyRunning(t), true)
+})
+
+test("the stamp alone does not: the rest holds until the transcript draws the human's turn", () => {
+  const t = atRest()
+  assert.equal(steeredSinceRest(t, [rest], 0, SENT, SENT + 200), t)
+})
+
+test("a landed turn keeps the rest ended while the steer behind it is live, and only then", () => {
+  assert.equal(steeredSinceRest(atRest(), [rest, landed], 0, SENT, SENT + 400)!.runtime, "running")
+  assert.equal(steeredSinceRest(atRest({ deliveryInFlight: true }), [rest, landed], 0, undefined, SENT + 60_000)!.runtime, "running")
+  // A stalled thread whose last word is the human's, with nothing on its way, is still at rest.
+  const stalled = atRest()
+  assert.equal(steeredSinceRest(stalled, [rest, landed], 0, undefined, SENT + 400), stalled)
+  assert.equal(steeredSinceRest(stalled, [rest, landed], 0, SENT, SENT + STEER_OPTIMISM_MS + 1), stalled)
+})
+
+test("only the human's own send counts, and only one still on its way", () => {
+  const t = atRest()
+  for (const m of [
+    { role: "user", queued: true, deliveryState: "failed" },
+    { role: "user", queued: true, deliveryState: "unconfirmed" },
+    { role: "user", queued: true, deliveryState: "held" },
+    { role: "user", queued: true, wake: true },
+    { role: "user", queued: true, sessionPeer: { slug: "x" } },
+    { role: "user", queued: true, peerFrom: "child" },
+  ] as const) assert.equal(steeredSinceRest(t, [rest, m as never], 0, undefined, SENT + 200), t, JSON.stringify(m))
+  // A send BEFORE the rest is history, not a new turn.
+  assert.equal(steeredSinceRest(t, [ghost, rest], 1, undefined, SENT + 200), t)
+})
+
+test("only a rest ends this way: a thread mid-turn keeps its own reading", () => {
+  const prompt = atRest({ runtime: "perm-prompt", actionableInteraction: true })
+  assert.equal(steeredSinceRest(prompt, [rest, ghost], 0, SENT, SENT + 200), prompt)
+  assert.equal(steeredSinceRest(undefined, [rest, ghost], 0, SENT, SENT + 200), undefined)
+  assert.equal(steeredSinceRest(atRest({ runtime: "exited" }), [rest, ghost], 0, undefined, SENT + 200)!.runtime, "running")
+})
+
+test("the Working clock starts at the send: this tab's stamp, else the server's projected bubble", () => {
+  assert.equal(steeredSinceRest(atRest(), [rest, ghost], 0, SENT, SENT + 200)!.lastUserAt, new Date(SENT).toISOString())
+  const projected = { role: "user", queued: true, deliveryState: "pending", at: new Date(SENT + 50).toISOString() } as const
+  assert.equal(steeredSinceRest(atRest(), [rest, projected], 0, undefined, SENT + 200)!.lastUserAt, projected.at)
 })

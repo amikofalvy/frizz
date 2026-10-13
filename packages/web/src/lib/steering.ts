@@ -1,6 +1,6 @@
 import { useMemo } from "react"
 import { proxy, useSnapshot } from "valtio"
-import type { ThreadView } from "@frizz/shared"
+import type { ThreadView, TranscriptMessage } from "@frizz/shared"
 
 // OPTIMISTIC STEER STATE — "your message is in, this thread is working again", rendered the instant
 // the operator commits rather than when the server can prove it.
@@ -77,6 +77,10 @@ export function useSteeredAt(): Record<string, number> {
 export function optimisticallySteered(t: ThreadView, at: number | undefined, nowMs = Date.now()): ThreadView {
   const local = at !== undefined && isOptimisticallySteering(t, at, nowMs)
   if (!local && t.deliveryInFlight !== true) return t
+  return steeredFields(t, local ? new Date(at!).toISOString() : t.lastUserAt)
+}
+
+function steeredFields(t: ThreadView, lastUserAt: string | undefined): ThreadView {
   return {
     ...t,
     runtime: "running",
@@ -91,10 +95,58 @@ export function optimisticallySteered(t: ThreadView, at: number | undefined, now
     // The steer IS a user interaction, and the running band orders by user recency (groups.ts
     // orderByInteraction). Without this the row would enter the band at its STALE position and then
     // jump again when the server reported this same instant a beat later.
-    lastUserAt: local ? new Date(at!).toISOString() : t.lastUserAt,
+    lastUserAt,
     // lastActivityAt is deliberately untouched: it is the evidence isOptimisticallySteering watches
     // for to hand the row back to server truth, so writing it here would make the hint self-sealing.
   }
+}
+
+// What steeredSinceRest reads off a transcript message.
+export type SteerEvidence = Pick<TranscriptMessage, "role" | "queued" | "deliveryState" | "at" | "wake" | "peerFrom" | "agentInstruction" | "sessionPeer">
+
+// THE THREAD VIEW'S READING OF THE SAME STEER, keyed to the transcript it draws rather than to the stamp.
+//
+// The thread view read the raw board until 2026-10-13, so a send drew its ghost bubble at once while the
+// rest's awaiting or sign-off card stayed beside it for the seconds the tailer took to see the turn start
+// (maintainer: "That should happen in the same render"). The rail's overlay above is not the answer
+// there: the stamp says nothing about what the transcript shows, so keyed on it the card could go before
+// the bubble came. So the rest ends on the HUMAN'S TURN: a send of theirs sits after the rest's last
+// assistant message (`restIndex`) and is still on its way —
+//   · it is drawn as a ghost (a queued bubble — the optimistic copy, or the server's projection of it):
+//     the same cache write that draws the bubble ends the rest, so the two land in one render; or
+//   · it has landed and the steer behind it is still live (the stamp, or the server's deliveryInFlight),
+//     which covers the beat between the echo and the board's "running".
+// Only a REST ends this way. A thread the board has mid-turn is returned untouched, so a permission
+// prompt or an open interaction card is never overlaid with a Working line. A failed or unconfirmed send
+// is not on its way, and a held one is the server's to release at the rest, so none of those counts.
+// Returned by identity when nothing applies, so memos keyed on the thread hold.
+export function steeredSinceRest(
+  t: ThreadView | undefined,
+  messages: readonly SteerEvidence[],
+  restIndex: number,
+  at: number | undefined,
+  nowMs = Date.now(),
+): ThreadView | undefined {
+  if (!t || (t.runtime !== "turn-idle" && t.runtime !== "exited")) return t
+  let human = false
+  let ghost = false
+  let ghostAt: string | undefined
+  for (let i = restIndex + 1; i < messages.length; i++) {
+    const m = messages[i]
+    if (m.role !== "user" || m.wake || m.peerFrom || m.agentInstruction || m.sessionPeer) continue
+    if (m.deliveryState === "failed" || m.deliveryState === "unconfirmed" || m.deliveryState === "held") continue
+    human = true
+    if (m.queued) {
+      ghost = true
+      ghostAt = m.at ?? ghostAt
+    }
+  }
+  if (!human) return t
+  const local = at !== undefined && isOptimisticallySteering(t, at, nowMs)
+  if (!ghost && !local && t.deliveryInFlight !== true) return t
+  // The instant this stretch of work began, for the Working line's clock: the send itself when this tab
+  // made it, else the server's projected bubble. The board's own lastUserAt names the PREVIOUS turn here.
+  return steeredFields(t, local ? new Date(at!).toISOString() : ghostAt ?? t.lastUserAt)
 }
 
 // Apply the overlay across a board's threads. A thread with no live steer is returned BY IDENTITY, so
