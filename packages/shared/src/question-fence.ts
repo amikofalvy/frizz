@@ -42,7 +42,7 @@
 import { parse as parseYaml } from "yaml"
 import { fencedInteriors } from "./code-fences.ts"
 import type { AskedOption, AskedQuestion } from "./index.ts"
-import { askedQuestionFaults } from "./index.ts"
+import { ASK_MAX_DEPTH, askedQuestionFaults } from "./index.ts"
 
 /** The four answer shapes a question fence declares, each explicit (maintainer 2026-10-13: "we need to have
  *  some pretty explicit options in terms of specifying multiple-choice answers versus other kinds"). */
@@ -571,6 +571,11 @@ export function assembleQuestionFences(reads: readonly QuestionFenceRead[]): Ass
   // Neither was ever a root or a failure, so before this check both vanished without a word: no row, no
   // card (the web draws a follow-up inside its parent's), and no correction. Walked up the `when:` chain
   // rather than down the attached tree, because a loop's tree is circular.
+  //
+  // The same walk measures each root's tree, so its DEPTH is refused here, by counting, before the shared
+  // validator is asked: that one recurses, and on a chain some 3,000 fences long it ran out of stack —
+  // thrown from the tailer's change hook, where nothing catches it.
+  const depth = new Map<string, number>()
   for (const [id, a] of asks) {
     if (!a.when || failed.has(id)) continue
     const walked = new Set([id])
@@ -579,15 +584,19 @@ export function assembleQuestionFences(reads: readonly QuestionFenceRead[]): Ass
       walked.add(at)
       at = asks.get(at)!.when!.parent
     }
+    if (!walked.has(at) && !failed.has(at)) depth.set(at, Math.max(depth.get(at) ?? 1, walked.size + 1))
     if (failed.has(at)) out.faults.push({ id, faults: [`\`when: ${a.when.parent} = ${a.when.option}\` hangs this question off \`${at}\`, which could not register — it goes with it, so write both again`] })
     else if (at === id && walked.size === 1) out.faults.push({ id, faults: [`\`when: ${a.when.parent} = ${a.when.option}\` makes this question a follow-up of itself — \`when:\` names the EARLIER question whose option opens this one`] })
-    else if (walked.has(at)) out.faults.push({ id, faults: [`\`when: ${a.when.parent} = ${a.when.option}\` is part of a loop of follow-ups (${[...walked].map((w) => `\`${w}\``).join(" → ")} → \`${at}\`) — one of them has to be a question with no \`when:\``] })
+    else if (walked.has(at)) out.faults.push({ id, faults: [`\`when: ${a.when.parent} = ${a.when.option}\` is part of a loop of follow-ups (${[...walked].slice(0, 6).map((w) => `\`${w}\``).join(" → ")} → ${walked.size > 6 ? "… → " : ""}\`${at}\`) — one of them has to be a question with no \`when:\``] })
   }
   // A failed follow-up takes its own subtree with it, but never its parent: the parent stands on its own.
   for (const [id, a] of asks) {
     if (a.when || failed.has(id)) continue
     const spec = specs.get(id)!
-    const treeFaults = askedQuestionFaults(spec)
+    const deep = depth.get(id) ?? 1
+    const treeFaults = deep > ASK_MAX_DEPTH
+      ? [`the follow-up tree is ${deep} levels deep; the limit is ${ASK_MAX_DEPTH} — past that you are asking the human to fill in a form`]
+      : askedQuestionFaults(spec)
     if (treeFaults.length > 0) out.faults.push({ id, faults: treeFaults })
     else out.asks.push({ id, spec })
   }

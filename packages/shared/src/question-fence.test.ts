@@ -434,3 +434,15 @@ test("whatever the fence reads as an ask, the stored schema and the tree validat
   // Both outcomes were exercised — a generator that only ever produced refusals would prove nothing.
   assert.ok(asks > 200 && refused > 200, `asks ${asks}, refused ${refused}`)
 })
+
+test("a follow-up chain of any length is refused for its depth — the reader never runs out of stack on it", () => {
+  // The registrar calls this from the tailer's change hook with nothing around it to catch a throw; the tree
+  // validator recurses, and a chain some 3,000 fences long (about 250KB of message) overflowed it.
+  const chain = (n: number) => Array.from({ length: n }, (_, i) => fence(`id: q${i}\nkind: choice\n${i ? `when: q${i - 1} = a\n` : ""}question: Q?\noptions:\n  - a\n  - b`)).join("\n")
+  const out = questionFencesIn(chain(4000))
+  assert.deepEqual(out.asks, [])
+  assert.deepEqual(out.faults, [{ id: "q0", faults: ["the follow-up tree is 4000 levels deep; the limit is 3 — past that you are asking the human to fill in a form"] }])
+  // The edge, on both sides: three levels register, four are refused with the validator's own words.
+  assert.deepEqual(questionFencesIn(chain(3)).faults, [])
+  assert.deepEqual(questionFencesIn(chain(4)).faults.map((f) => f.faults[0]), ["the follow-up tree is 4 levels deep; the limit is 3 — past that you are asking the human to fill in a form"])
+})
