@@ -1715,12 +1715,22 @@ function sessionThreadView(
   // sessionIndicatorKind, shared needsAction): told only "open", they marked a parked or finished thread
   // [?] for a question the queue no longer held it on. An older open question stays answerable where it
   // was asked, and on the card, but says nothing about where this rest sits (2026-10-13).
-  const standingIds = new Set(standingQuestions(questionRows, rawTele).map((q) => q.id))
+  const standingIds = new Set(standingQuestions(questionRows, rawTele, questionFaults).map((q) => q.id))
   const questions: ThreadView["questions"] = []
   for (const q of questionRows) {
     if (q.state !== "open") continue
     const spec = safeQuestionSpec(q.spec)
     if (spec) questions.push({ id: q.id, spec, askedAt: new Date(q.asked_at).toISOString(), standing: standingIds.has(q.id) })
+  }
+  // The FENCE-ASKED questions that closed WITHOUT an answer: dismissed (by the human's ×, or by Frizz the
+  // moment an autonomous thread wrote one) or withdrawn by the worker. Their fences are still in the
+  // transcript, and a fence with no open and no answered row is otherwise drawn as a question about to
+  // become answerable — so a Goal thread's cancelled question sat on the page looking asked (seen on a
+  // stack, 2026-10-13). Only rows with a handle: a question the `ask` RPC registered has no fence to draw.
+  const closedQuestions: NonNullable<ThreadView["closedQuestions"]> = []
+  for (const q of questionRows) {
+    if ((q.state !== "dismissed" && q.state !== "withdrawn") || !q.handle) continue
+    closedQuestions.push({ id: q.id, handle: q.handle, state: q.state, askedAt: new Date(q.asked_at).toISOString() })
   }
   // The dismissal-only case counts as in flight EXACTLY when a cancellation wake is coming — an armed
   // rest Goal with text, the same gate the scheduler's evalQuestionAnswers wakes on. Anything looser
@@ -1872,6 +1882,7 @@ function sessionThreadView(
     pendingAsk: tele?.pendingAsk ? { questions: tele.pendingAsk.questions } : undefined,
     pendingQuestion: tele?.pendingQuestion ?? false,
     questions,
+    ...(closedQuestions.length > 0 ? { closedQuestions } : {}),
     // Absent unless something was refused.
     ...(questionFaults && questionFaults.length > 0
       ? { questionFaults: questionFaults.map((f) => ({ at: f.at, ...(f.id ? { id: f.id } : {}), faults: [...f.faults] })) }

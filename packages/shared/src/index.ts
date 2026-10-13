@@ -2969,6 +2969,16 @@ export const QuestionFenceFaultView = z.object({
 }).strict()
 export type QuestionFenceFaultView = z.infer<typeof QuestionFenceFaultView>
 
+/** A fence-asked question that closed without an answer, as the board lists it (ThreadView.closedQuestions). */
+export const ClosedQuestionView = z.object({
+  id: z.string(),
+  /** The worker's own id for it — what its fence in the transcript carries. */
+  handle: z.string(),
+  state: z.enum(["dismissed", "withdrawn"]),
+  askedAt: z.string(),
+}).strict()
+export type ClosedQuestionView = z.infer<typeof ClosedQuestionView>
+
 /** What a SECRET answer is stored and delivered as, in place of the value: where to read it, and the
  *  terms it is served on. It is the WORKER's text: the `secret` tool already handed it the recipe, so
  *  this stays short. Every card the human reads draws `SECRET_ANSWER_MASK` in its place. */
@@ -3477,6 +3487,13 @@ export const ThreadView = z.object({
    *  the question it is about to become (web lib/questionFaults). Its other job is the reused id: a fence
    *  refused for naming a spent id must not move that id's card, which a name match alone would do. */
   questionFaults: z.array(QuestionFenceFaultView).optional(),
+  /** The questions this thread asked with a ```question fence that CLOSED WITHOUT AN ANSWER — dismissed
+   *  (the human's ×, or Frizz cancelling a question an autonomous thread wrote) or withdrawn by the
+   *  worker. Present only when there is one. Their fences are still in the transcript, and without this a
+   *  fence with no open and no answered row reads as a question about to become answerable; with it the
+   *  fence draws its question closed, saying which way (web ClosedQuestionCard). Compact on purpose — the
+   *  fence itself carries the question — because the board ships every thread on every keyframe. */
+  closedQuestions: z.array(ClosedQuestionView).optional(),
   /** The answer the human has already SENT that the worker has not received yet, as the exact message
    *  the delivery will carry (board.answersInFlight → questionAnswerMessage). The chat parses it with
    *  the same reader it uses on the delivered turn, so the in-flight card and the landed one are the

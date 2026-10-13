@@ -519,10 +519,18 @@ function settledParentFault(parent: string, state: ThreadQuestionRow["state"]): 
  * had not seen the question yet. A machine event is not a reply.
  *
  * `lastUserAt` is the fallback for a tail folded before `restFromAt` existed.
+ *
+ * A FENCE THE SYNC REFUSED IS NOT A REFERENCE (`faults`, the thread's entry in the QuestionFaultBook). A
+ * fence that reuses an open question's id for a DIFFERENT question names that row by id and nothing else:
+ * read as a reference, it made the old question stand again at a rest the human had already typed past —
+ * the thread queued on a question its newest message never mentions, and the rest that had actually asked
+ * nothing (its one fence was refused) read as signed off (seen on a stack, 2026-10-13). A fence is
+ * matched to its fault by the sighting's instant and its id, which is exactly how the sync wrote it.
  */
 export function standingQuestions(
   rows: readonly ThreadQuestionRow[],
   tele: { lastUserAt?: string; restFromAt?: string; questionSightings?: readonly QuestionSighting[]; lastFence?: FenceView } | undefined,
+  faults?: readonly QuestionFenceFault[],
 ): ThreadQuestionRow[] {
   const open = rows.filter((q) => q.state === "open")
   if (open.length === 0) return []
@@ -530,10 +538,12 @@ export function standingQuestions(
   const restFrom = from ? Date.parse(from) : Number.NEGATIVE_INFINITY
   const named = new Set<string>()
   const index = handleIndex(rows)
+  const refused = new Set((faults ?? []).flatMap((f) => (f.id ? [`${f.at}\n${f.id.toLowerCase()}`] : [])))
   for (const sighting of tele?.questionSightings ?? []) {
     if (!(Date.parse(sighting.at) > restFrom)) continue
     for (const b of questionFenceBlocks(sighting.text)) {
       if (b.read.form === "invalid") continue
+      if (refused.has(`${sighting.at}\n${b.read.id.toLowerCase()}`)) continue
       const row = index.get(b.read.id)
       if (row) named.add(row.id)
     }

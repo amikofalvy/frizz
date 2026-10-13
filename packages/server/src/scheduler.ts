@@ -2045,7 +2045,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       // is being corrected would be two contradictory messages about one rest.
       const needsInput = needsInputRequired(row.spawned_at)
       const questionRows = deps.storage.listThreadQuestions(row.slug)
-      const standing = standingQuestions(questionRows, tele)
+      const standing = standingQuestions(questionRows, tele, deps.questionFaults?.of(row.slug))
       if (outbox.get(wakeDeliveryId(row.slug, row.session_id, parkFenceId(QUESTION_FENCE_CAUSE, spokeAt)))) continue
       if (
         tele.lastFence ||
