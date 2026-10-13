@@ -11,8 +11,9 @@ import "./styles.css"
 // production mounts it (ThreadView, virtualized), over a transcript whose ```awaiting fence handed the
 // human steps — and then, per `?at=`, where the thread has got to since:
 //
-//   ?at=rest     the thread is still resting on the steps — the tail's resting card states them, with Done
-//   ?at=running  the human pressed Done and the worker is mid-turn (the default)
+//   ?at=rest     the thread is still resting on the steps — the tail's resting card states them, with the box
+//                the prompt box under it sends (or, `&drawer=1` at a phone width, the card's own Send)
+//   ?at=running  the human sent the ticked box and the worker is mid-turn (the default)
 //   ?at=moved    the worker finished and rested again on a later fence of its own
 //
 // The transcript also carries an EARLIER settled fence with no steps — a plain shell wait — which must
@@ -116,7 +117,9 @@ createRoot(document.getElementById("root")!).render(
     <TooltipProvider>
       <div className="relative h-screen bg-bg text-fg text-sm">
         <div className="mx-auto flex h-screen w-[760px] max-w-full flex-col border-x border-border">
-          <ThreadView slug={SLUG} virtualized />
+          {/* `?drawer=1` hands it a close, which is what makes it a DRAWER — the one mount that takes the
+              phone's chrome below the breakpoint, and with it the phone bar, which sends no answers. */}
+          <ThreadView slug={SLUG} virtualized onClose={PARAMS.has("drawer") ? () => {} : undefined} />
         </div>
       </div>
     </TooltipProvider>

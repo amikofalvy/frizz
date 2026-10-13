@@ -4,39 +4,35 @@
 // registering it. Is there a way to do this just inside of the awaiting card?"), so this is a stratum
 // of AwaitingBackgroundCard, not a card of its own.
 //
-// ONE VERB, AND IT SENDS AN ORDINARY REPLY. "Done" sends the human's own message — the word itself —
-// through the same eager follow-up the composer uses, so it lands as their bubble, wakes the worker
-// exactly as anything they type would, and rolls back the same way if the send fails. There is no
-// second verb and no note box: anything else the human has to say — a step that failed, what account
-// they signed in with — goes through the prompt box under the card like any other steer (maintainer
-// 2026-10-03: "The user can just send a new steer message in the prompt box if they want."). Nothing
-// is stored and nothing settles: the fence lives as long as the message carrying it, and the reply is
-// what ends it.
-import { useState } from "react"
+// ONE BOX, AND IT IS ANSWERED LIKE A QUESTION (2026-10-12, maintainer: "The awaiting human block should
+// switch over to be a big checkbox that says 'I have completed this.' Once you've checked it you should
+// have the ability to submit it as an answer just as you can with any other question"). Ticking the box
+// STAGES the answer, as picking an option does; the surface's one send — the prompt box's Send, or Enter
+// in it — carries it with whatever is typed there (lib/stepsAnswer, ThreadComposerBox). What reaches the
+// worker is still an ordinary reply, the word `Done`, with the human's note under it. Until then the
+// card's Done button sent the word on the click, and a note had to follow as a second message.
+//
+// A surface with no prompt box to send it (a phone thread page, a collapsed queue card) draws the card's
+// own Send under the box instead — the same fallback the question cards' "Send answers" keeps.
+import { useId, useState } from "react"
 import { Check } from "lucide-react"
-import { STEPS_DONE } from "../lib/awaitingPresentation.ts"
+import { STEPS_COMPLETE, STEPS_DONE } from "../lib/awaitingPresentation.ts"
 import { useEagerFollowUp } from "../lib/eagerComposerSubmission.ts"
-import { useTickedSteps } from "../lib/stepsTicked.ts"
+import { usePromptBoxSends } from "../lib/sendScope.tsx"
+import { useStepsChecked } from "../lib/stepsAnswer.ts"
 import { useMarkdownHtml } from "../lib/useMarkdown.ts"
 import { LinkedHtml } from "./LinkedHtml.tsx"
 import { CARD_PRIMARY_ACTION, CardActions, QUEUE_WRAP } from "./TranscriptCard.tsx"
 
-/** The steps as a TO-DO STEPPER — what the human reads, and ticks off, before pressing Done.
+/** The steps as a STEPPER — a numbered marker per step down a rail, which is what the human reads before
+ *  ticking the box under them.
  *
  *  A STEPPER, NOT A MARKDOWN LIST (2026-10-12, maintainer: "if this is supposed to be rendering like a
  *  classic to-do stepper, it's not doing that"). Until then the steps were an `<ol>` with decimal
- *  markers, which reads as one more paragraph of the handoff rather than a sequence of acts: nothing
- *  separated one step from the next, and a five-step card gave the reader no way to keep their place.
- *  Now each step is a numbered marker on a rail the reader can tick, the marker turning into a check and
- *  the step dimming. The colours follow TodoBlock's ruling for the transcript's own checklist: exactly one
- *  marker takes the accent — the first step not yet ticked, the one to do next — and done is monochrome.
- *
- *  `live` is whether the thread is resting on THESE steps (AwaitingBackgroundCard `stepsLive`). Only then
- *  are the markers controls and is there a step to do next; a card drawn after the reply is a record of
- *  what was asked, and shows the ticks it was left with, inert. */
-export function StepsList({ steps, live }: { steps: readonly string[]; live: boolean }) {
-  const [ticked, toggle] = useTickedSteps(steps)
-  const next = live ? steps.findIndex((_, i) => !ticked.has(i)) : -1
+ *  markers, which reads as one more paragraph of the handoff rather than a sequence of acts. The markers
+ *  were checkboxes of their own for the same afternoon; the one box under the list replaced them, since a
+ *  column of small boxes over a big one asked the reader to tick the same work twice. */
+export function StepsList({ steps }: { steps: readonly string[] }) {
   return (
     // One markdown block PER STEP, rather than the steps joined into one markdown string: a step carries
     // its own code span or link, and joined steps would each need re-indenting to stay inside their item.
@@ -49,43 +45,20 @@ export function StepsList({ steps, live }: { steps: readonly string[]; live: boo
     // a tighter 8px of its own — the two blocks are one handoff rendered in two pieces.
     <div data-awaiting-steps className={`md-body ${QUEUE_WRAP} mt-[var(--md-step)] first:mt-0`}>
       <ol className="frizz-steps">
-        {steps.map((step, i) => (
-          <Step key={i} n={i + 1} md={step} done={ticked.has(i)} next={i === next} onToggle={live ? () => toggle(i) : undefined} />
-        ))}
+        {steps.map((step, i) => <Step key={i} n={i + 1} md={step} />)}
       </ol>
     </div>
   )
 }
 
-function Step({ n, md, done, next, onToggle }: { n: number; md: string; done: boolean; next: boolean; onToggle?: () => void }) {
+function Step({ n, md }: { n: number; md: string }) {
   const html = useMarkdownHtml(md)
-  // The check is the task family's own (`.md-task-checked`): lucide `Check` at strokeWidth 3, its viewBox
-  // shifted −0.5 in y because the path's ink centres half a unit above the box's.
-  const glyph = done ? <Check aria-hidden="true" size="0.62em" strokeWidth={3} viewBox="0 -0.5 24 24" /> : <span className="frizz-step-num" aria-hidden="true">{n}</span>
-  const state = done ? "done" : next ? "next" : "todo"
   return (
-    <li className="frizz-step" data-step-state={state}>
+    <li className="frizz-step">
       <span className="frizz-step-gutter">
         <span className="frizz-step-line">
-          {/* The RING is a span and the control sits inside it, never the other way round: Chrome puts a
-              `<button>`'s baseline at its CONTENT box, a border-width above the bottom edge the cap-band
-              rule assumes, and a button ring rode exactly 1.00px low (measured 2026-10-12). */}
           <span data-step-mark className="frizz-step-mark">
-            {onToggle ? (
-              <button
-                type="button"
-                role="checkbox"
-                aria-checked={done}
-                aria-label={`Step ${n}`}
-                className="frizz-step-face"
-                onClick={onToggle}
-                onMouseDown={(e) => e.preventDefault()}
-              >
-                {glyph}
-              </button>
-            ) : (
-              <span className="frizz-step-face">{glyph}</span>
-            )}
+            <span className="frizz-step-face"><span className="frizz-step-num" aria-hidden="true">{n}</span></span>
           </span>
         </span>
         <span className="frizz-step-rail" aria-hidden="true" />
@@ -95,41 +68,89 @@ function Step({ n, md, done, next, onToggle }: { n: number; md: string; done: bo
   )
 }
 
-/** The card's one verb — drawn only while the thread is resting on THESE steps, which is the caller's
- *  test (AwaitingBackgroundCard `stepsLive`). */
-export function StepsDone({ slug, onReplied, onReplyFailed }: {
+/** The box, and — where no prompt box sends it — its own Send. Drawn only while the thread is resting on
+ *  THESE steps, which is the caller's test (AwaitingBackgroundCard `stepsLive`). */
+export function StepsComplete({ slug, steps, onReplied, onReplyFailed }: {
   slug: string
-  /** The queue's optimistic card exit, as for its Snooze; absent off the queue. */
+  steps: readonly string[]
+  /** The queue's optimistic card exit, as for its Snooze; absent off the queue. The prompt box's own
+   *  send dissolves the card itself, so these serve the fallback Send alone. */
   onReplied?: () => void
   onReplyFailed?: () => void
 }) {
+  const [checked, setChecked] = useStepsChecked(slug, steps)
+  const promptBoxSends = usePromptBoxSends()
   const followUp = useEagerFollowUp(slug)
+  const labelId = useId()
   // Latched on the click and released only by a rollback: between the send and the worker's turn
-  // starting the card is still on screen, and a second click would send "Done" twice.
+  // starting the card is still on screen, and a second click would send twice.
   const [sent, setSent] = useState(false)
-  const reply = () => {
+  const sendAlone = () => {
+    if (!checked || sent) return
     setSent(true)
     const started = followUp.submit(STEPS_DONE, {
-      onOptimistic: () => onReplied?.(),
+      onOptimistic: () => {
+        setChecked(false)
+        onReplied?.()
+      },
       onRollback: () => {
         setSent(false)
+        setChecked(true)
         onReplyFailed?.()
       },
     })
     if (!started) setSent(false)
   }
   return (
-    <CardActions data-awaiting-steps-reply>
-      <button
-        type="button"
-        data-steps-done
-        disabled={sent}
-        onClick={reply}
-        onMouseDown={(e) => e.preventDefault()}
-        className={`${CARD_PRIMARY_ACTION} disabled:opacity-60`}
+    <>
+      {/* AN OPTION ROW, in the question cards' own chrome (QuestionBlockCard's Chip): a bordered row that
+          takes the selection fill once ticked, with the whole row as the target — "big" is the hit area
+          as much as the square. The control is a stretched, empty button over the row, named by the label,
+          exactly as a chip's is. `mt-3` sets it off from the steps as a control rather than a sixth step. */}
+      <div
+        data-steps-complete
+        data-checked={checked}
+        className={`relative mt-3 flex items-center rounded-md border px-3 py-2.5 text-[13px] leading-5 transition-colors ${
+          checked ? "border-selection-border bg-selection text-fg" : "border-border text-fg/90 hover:border-border-strong hover:bg-elevated"
+        }`}
       >
-        {STEPS_DONE}
-      </button>
-    </CardActions>
+        <button
+          type="button"
+          role="checkbox"
+          aria-checked={checked}
+          aria-labelledby={labelId}
+          onClick={() => setChecked(!checked)}
+          onMouseDown={(e) => e.preventDefault()}
+          className="absolute inset-0 rounded-md outline-none focus-visible:ring-1 focus-visible:ring-focus-ink-60"
+        />
+        <span
+          aria-hidden
+          className={`pointer-events-none relative size-[18px] shrink-0 rounded-[4px] border transition-colors ${
+            checked ? "border-accent bg-accent-fill text-on-accent" : "border-control-strong bg-panel"
+          }`}
+        >
+          {checked && (
+            <span className="absolute inset-0 flex items-center justify-center">
+              <Check size={13} strokeWidth={3} />
+            </span>
+          )}
+        </span>
+        <span id={labelId} className="pointer-events-none ml-2 font-medium">{STEPS_COMPLETE}</span>
+      </div>
+      {!promptBoxSends && (
+        <CardActions data-awaiting-steps-reply>
+          <button
+            type="button"
+            data-steps-send
+            disabled={!checked || sent}
+            onClick={sendAlone}
+            onMouseDown={(e) => e.preventDefault()}
+            className={`${CARD_PRIMARY_ACTION} disabled:opacity-40`}
+          >
+            Send
+          </button>
+        </CardActions>
+      )}
+    </>
   )
 }
