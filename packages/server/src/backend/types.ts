@@ -37,7 +37,13 @@ export type NormalizedEvent =
   | { kind: "turn-start"; at?: string } // a turn began (→ in-flight)
   | { kind: "turn-end"; at?: string; finalText?: string; successful?: boolean } // a turn finished (→ idle); finalText carries the fence
   | { kind: "provider-error"; at?: string; error: ProviderError }
-  | { kind: "assistant-text"; at?: string; text: string; final: boolean } // streamed assistant text (final=the answer, not commentary)
+  // `streamed` marks the text as ONE FLUSHED PIECE of a longer message rather than a whole one: the ACP
+  // bridge writes an agent message's text out every second, so one message is several of these sharing a
+  // messageId (absent when the agent names none — then every piece up to the next tool call is one
+  // message, as the bridge's own `messageText` reads it). The fold joins the pieces before it reads a
+  // ```question fence off them (FoldState.assistantMessage): a piece can end halfway through a fence, or
+  // begin inside the code block that QUOTES one.
+  | { kind: "assistant-text"; at?: string; text: string; final: boolean; streamed?: { messageId?: string } } // streamed assistant text (final=the answer, not commentary)
   | { kind: "user-message"; at?: string; text?: string; synthetic: boolean } // human turn (synthetic=peer/notification/tool-result echo — never bumps lastUserAt)
   | { kind: "tool-call"; at?: string; id: string; name: string; input: unknown }
   // `image` is a `data:image/…;base64,…` URL when the result CARRIED a picture (an MCP
@@ -196,6 +202,13 @@ export interface FoldState {
   // these whatever has happened since (server question-fences.ts). Absent on a state folded before
   // 2026-10-13, which the fold-schema digest invalidates anyway.
   questionSightings?: QuestionSighting[]
+  // The assistant message a NORMALIZED backend is in the middle of, for the sightings above: the instant
+  // it began, and — when it arrives in streamed pieces (ACP) — its id and the text so far. Two readers:
+  // a piece's fences are read off the whole message, never the piece, and a turn's closing bracket
+  // echoing this message's text notes it at THIS instant, so the echo is the same sighting and not a
+  // second one a beat later. Ended by a tool call, a user message or the next turn. Claude's fold never
+  // sets it: its records are whole content blocks.
+  assistantMessage?: { at?: string; id?: string; pieces?: string }
   // The final message answers a stop hook with AWAITING (scheduler.ts SOURCE 5). Folded and
   // cleared on exactly the same lifecycle as the question flag above: set per assistant text, wiped by
   // any user record — so the next bump the operator sends re-opens the loop by itself.

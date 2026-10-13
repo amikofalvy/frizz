@@ -120,7 +120,13 @@ export function createAcpBackend(opts: AcpBackendOptions): AgentBackend {
         if (rec.model) { state.model = rec.model; state.profileAt = rec.at; state.profileRevision = (state.profileRevision ?? 0) + 1 }
         return
       }
-      for (const ev of parseAcpLine(line)) applyEvent(state, ev)
+      // The bridge flushes a message's text as it streams (acp-bridge.ts flushText), so an
+      // `assistant-text` record here is a PIECE; say so, with the message it belongs to, and the fold
+      // reads its question fences off the joined message instead of the piece (NormalizedEvent).
+      const messageId = (rec as { messageId?: unknown }).messageId
+      for (const ev of parseAcpLine(line)) {
+        applyEvent(state, ev.kind === "assistant-text" ? { ...ev, streamed: typeof messageId === "string" ? { messageId } : {} } : ev)
+      }
     },
   }
 }

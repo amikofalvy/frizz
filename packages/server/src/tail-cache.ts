@@ -79,7 +79,15 @@ export interface TailStateCache {
 // list because the signal-fence parser (`splitAwaitingFrontmatter`, `lastFence`'s hints) has lived
 // there since 2026-08-24 — a parser fix on 2026-09-10 would otherwise have left every cached
 // `lastFence` carrying the old derivation until its transcript happened to grow.
-const FOLD_SOURCES = ["transcript.ts", "tailer.ts", "backend/claude.ts", "backend/codex.ts", "../../shared/src/index.ts"]
+//
+// The question-fence parser and the code-fence scanner under it are listed since 2026-10-13: they decide
+// which messages a cached `questionSightings` holds (tailer noteQuestionFences), and they are their own
+// files, which `index.ts` only re-exports — a parser fix there changed no byte this digest read. The ACP
+// fold is listed for the same reason the other two backends are.
+const FOLD_SOURCES = [
+  "transcript.ts", "tailer.ts", "backend/claude.ts", "backend/codex.ts", "backend/acp-transcript.ts",
+  "../../shared/src/index.ts", "../../shared/src/question-fence.ts", "../../shared/src/code-fences.ts",
+]
 
 let foldSchemaMemo: string | null = null
 

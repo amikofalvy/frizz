@@ -2601,6 +2601,9 @@ export function applyEvent(state: FoldState, ev: NormalizedEvent): void {
   // is the exception: it is telemetry that always RIDES a real event which moves the clock itself, so
   // letting it move the clock would only add a way for pure bookkeeping to mask a stall.
   if ("at" in ev && typeof ev.at === "string" && ev.kind !== "context-usage") state.lastActivityAt = ev.at
+  // A tool call, a user turn or a new turn ends the assistant message in progress (see the field): the
+  // next text is another message, and a closing bracket after it does not echo this one.
+  if (ev.kind === "tool-call" || ev.kind === "tool-result" || ev.kind === "user-message" || ev.kind === "turn-start") state.assistantMessage = undefined
   switch (ev.kind) {
     case "provider-error":
       state.sawRecords = true
@@ -2633,8 +2636,15 @@ export function applyEvent(state: FoldState, ev: NormalizedEvent): void {
       }
       if (ev.finalText !== undefined) {
         applyFinalText(state, ev.finalText)
-        noteQuestionFences(state, ev.at ?? state.lastAssistantAt, ev.finalText)
+        // THE BRACKET ECHOES THE TURN'S LAST MESSAGE, a beat after the text event that carried it (codex
+        // stamps task_complete itself; the ACP bridge writes its turn-end after the final flush). Noted at
+        // the MESSAGE's instant it is the sighting already on record; noted at its own it was a second
+        // one — the same fence "restated" later, which the registrar refuses once the human has answered
+        // in between ("already asked and answered") and corrects the worker for. A bracket whose text no
+        // event carried still has only its own instant.
+        noteQuestionFences(state, state.assistantMessage?.at ?? ev.at ?? state.lastAssistantAt, ev.finalText)
       }
+      state.assistantMessage = undefined
       break
     case "assistant-text":
       // Streamed assistant text. The FINAL answer sets preview + question/excusal fence; a non-final
@@ -2651,7 +2661,21 @@ export function applyEvent(state: FoldState, ev: NormalizedEvent): void {
         setAssistantPreview(state, ev.text)
       }
       // A commentary block may ask too — registering is not a sign-off, so it needs no final message.
-      noteQuestionFences(state, ev.at, ev.text)
+      //
+      // A STREAMED PIECE IS READ AS PART OF ITS MESSAGE, never alone (NormalizedEvent's `streamed`). Read
+      // alone, a piece that began just inside a ````md block quoting the grammar registered the quoted
+      // sample as a real question, and a mid-turn fence the flush timer cut in two registered nothing at
+      // all — with no correction either, since neither half is a fence. The joined text is re-read on
+      // every piece; a fence it already noted is the same sighting (same instant, same text), so only a
+      // fence the new piece completed is added.
+      {
+        const prev = state.assistantMessage
+        const continues = ev.streamed !== undefined && prev?.pieces !== undefined && prev.id === ev.streamed.messageId
+        state.assistantMessage = ev.streamed
+          ? { at: continues ? prev.at ?? ev.at : ev.at, id: ev.streamed.messageId, pieces: `${continues ? prev.pieces : ""}${ev.text}` }
+          : { at: ev.at }
+        noteQuestionFences(state, state.assistantMessage.at, state.assistantMessage.pieces ?? ev.text)
+      }
       break
     case "user-message":
       // A human/peer/notification turn re-opens the turn (the model is about to respond → in-flight)
