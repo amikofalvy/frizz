@@ -185,27 +185,58 @@ export function transcriptBehindRest(t: ThreadView | undefined, messages: readon
   return true
 }
 
-/** The thread as the thread view should present it: the board's, unless it reports a rest the transcript
- *  has not reached while the view was showing the turn — then the turn, for at most REST_CATCH_UP_MS.
- *  Returned by identity whenever nothing is held. */
+// THE TURN THE TRANSCRIPT HAS NOT REACHED YET — the same race at the turn's OPENING, when the turn was
+// started from outside this tab: another tab's or device's send, `frizzctl steer`, a scheduler wake, a
+// background shell finishing. The board delta saying `running` again goes out ahead of the transcript push
+// carrying the message that opened the turn, by 40-60ms (measured 2026-10-13 on scripted broker workers,
+// 12 of 12 runs), and for those frames the view drew its Working row straight under the rest card, with a
+// clock counting from the PREVIOUS turn's opening ("Thinking… 58s"), before the opening message and its
+// rest divider landed above it and pushed it down 97px.
+//
+// "Not reached": the board reports a turn and the transcript still ENDS on the last turn's rest boundary —
+// nothing at all after it. Whatever opened the turn lands after that boundary when it lands, a human's
+// bubble, a wake's bubble or divider, a peer's message, so its arrival is what releases the hold, whatever
+// kind it is. A send from THIS tab never matches: its ghost bubble already sits after the rest in the same
+// render that sent it (lib/restReply.ts, steeredSinceRest), so the transcript does not end on the rest.
+export function transcriptBehindTurn(t: ThreadView | undefined, messages: readonly RestEvidence[]): boolean {
+  if (!t || (t.runtime !== "running" && t.runtime !== "spawning")) return false
+  const last = messages[messages.length - 1]
+  return last?.kind === "event" && last.boundary === "rest"
+}
+
+/** The thread as the thread view should present it: the board's, unless the board and the transcript
+ *  disagree about where the turn is while the view was showing the other side of that edge —
+ *  · a rest the transcript has not reached, while the view showed the turn: the turn (transcriptBehindRest);
+ *  · a turn the transcript has not reached, while the view showed the rest: the rest exactly as it was last
+ *    presented (transcriptBehindTurn), so the resting card and the reply slot do not change either.
+ *  Either for at most REST_CATCH_UP_MS, so a transcript that never catches up cannot pin the view. ONE hook
+ *  for both ends, so there is one place that reconciles the two channels' order. Returned by identity
+ *  whenever nothing is held. */
 export function useTurnHeldForTranscript(t: ThreadView | undefined, messages: readonly RestEvidence[]): ThreadView | undefined {
-  const behind = transcriptBehindRest(t, messages)
-  const key = behind ? t!.lastAssistantAt : undefined
+  const restAhead = transcriptBehindRest(t, messages)
+  const turnAhead = !restAhead && transcriptBehindTurn(t, messages)
+  // Each held episode has its own key, so its expiry never cancels a later one: the rest by the worker's
+  // last record, the turn by the rest boundary it would be drawn under.
+  const key = restAhead ? `rest:${t!.lastAssistantAt}` : turnAhead ? `turn:${messages[messages.length - 1]!.at ?? ""}` : undefined
   // What the LAST COMMIT presented: read during render, written after commit, so the first render that
-  // finds the transcript behind asks whether the frame on screen was the running one.
+  // finds the transcript behind asks whether the frame on screen was on the other side of the edge.
   const shownRunning = useRef(false)
+  const shownRested = useRef<ThreadView | undefined>(undefined)
   const [expired, setExpired] = useState<string | undefined>(undefined)
   useEffect(() => {
     if (key === undefined) return
     const timer = setTimeout(() => setExpired(key), REST_CATCH_UP_MS)
     return () => clearTimeout(timer)
   }, [key])
-  const held = key !== undefined && expired !== key && shownRunning.current
-  const presented = held ? steeredFields(t!, t!.lastUserAt) : t
+  const live = key !== undefined && expired !== key
+  let presented = t
+  if (live && restAhead && shownRunning.current) presented = steeredFields(t!, t!.lastUserAt)
+  else if (live && turnAhead && !shownRunning.current && shownRested.current?.id === t!.id) presented = shownRested.current
   const running = presented?.runtime === "running" || presented?.runtime === "spawning"
   useEffect(() => {
     shownRunning.current = running
-  }, [running])
+    shownRested.current = running ? undefined : presented
+  }, [running, presented])
   return presented
 }
 

@@ -1,7 +1,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import type { ThreadView } from "@frizz/shared"
-import { isOptimisticallySteering, optimisticallySteered, steeredSinceRest, STEER_OPTIMISM_MS, transcriptBehindRest } from "./steering.ts"
+import { isOptimisticallySteering, optimisticallySteered, steeredSinceRest, STEER_OPTIMISM_MS, transcriptBehindRest, transcriptBehindTurn } from "./steering.ts"
 import { isActivelyRunning, isSnoozed, orderActive, partitionActive, sectionOf, sessionIndicatorKind } from "../groups.ts"
 
 const at = (lastActivityAt?: string) => ({ id: "t", lastActivityAt } as unknown as ThreadView)
@@ -204,5 +204,37 @@ test("the Working clock starts at the send: this tab's stamp, else the server's 
     assert.equal(transcriptBehindRest(rested(T(9), "running"), [human(T(5))]), false)
     assert.equal(transcriptBehindRest({ id: "t", runtime: "turn-idle" } as unknown as ThreadView, [human(T(5))]), false)
     assert.equal(transcriptBehindRest(undefined, []), false)
+  })
+
+  // ── …and the turn the transcript has not reached, at the turn's opening ──
+  // A turn started from outside this tab: the board's `running` leads the push carrying the message that
+  // opened it by 40-60ms; until that message lands the transcript still ends on the last rest.
+  const live = (runtime: ThreadView["runtime"] = "running") => ({ id: "t", runtime } as unknown as ThreadView)
+  const wakeBubble = { role: "user" as const, at: T(10), wake: true }
+  const wakeDivider = { role: "assistant" as const, kind: "event" as const, boundary: "wake" as const, at: T(10) }
+
+  test("a turn whose opening message the transcript does not carry yet is ahead of it", () => {
+    assert.equal(transcriptBehindTurn(live(), [human(T(5)), said(T(8)), restAt(T(8))]), true)
+    assert.equal(transcriptBehindTurn(live("spawning"), [human(T(5)), said(T(8)), restAt(T(8))]), true)
+  })
+
+  test("whatever opened the turn releases it — a human's bubble, a wake's bubble or its divider", () => {
+    for (const opener of [human(T(10)), wakeBubble, wakeDivider]) {
+      assert.equal(transcriptBehindTurn(live(), [human(T(5)), said(T(8)), restAt(T(8)), opener]), false, JSON.stringify(opener))
+    }
+    // The first record of the turn itself, should the opener never project (a dropped relay).
+    assert.equal(transcriptBehindTurn(live(), [human(T(5)), said(T(8)), restAt(T(8)), said(T(11))]), false)
+  })
+
+  test("a send from this tab is never held: its ghost already sits after the rest", () => {
+    const ghost = { role: "user" as const, at: T(10), queued: true }
+    assert.equal(transcriptBehindTurn(live(), [human(T(5)), said(T(8)), restAt(T(8)), ghost]), false)
+  })
+
+  test("a rest, or a turn with nothing behind it, is never held as a turn", () => {
+    assert.equal(transcriptBehindTurn(rested(T(9)), [human(T(5)), said(T(8)), restAt(T(8))]), false)
+    assert.equal(transcriptBehindTurn(live(), [human(T(5))]), false)
+    assert.equal(transcriptBehindTurn(live(), []), false)
+    assert.equal(transcriptBehindTurn(undefined, [restAt(T(8))]), false)
   })
 }
