@@ -17,7 +17,7 @@ import { doneOpenQuestionsRefusal as cliDoneOpenQuestionsRefusal } from "../../.
 import { Bus } from "./bus.ts"
 import { createBoard } from "./board.ts"
 import type { Project } from "./project.ts"
-import { createQuestionFaultBook } from "./question-fences.ts"
+import { createQuestionFaultBook, QUESTION_FENCE_UNDER_DONE_HINT } from "./question-fences.ts"
 import { createScheduler } from "./scheduler.ts"
 import { createStorage, type SessionRow } from "./storage.ts"
 import { applyRecord, newTailState, type SessionTelemetry, type Tailer } from "./tailer.ts"
@@ -338,6 +338,103 @@ test("the correction is not held behind the quiet window of the wake before it",
   } finally { w.close() }
 })
 
+// The same holds for the two counted corrections the exemption list had missed: a ```question fence that
+// could not register (measured held for 5m 15s) and a park with no `status:`. The control is a wake the
+// window is FOR: a timer, which is news that can wait for the turn being rationed.
+test("no fence correction waits behind the quiet window, and a wake that is not one still does", async () => {
+  const shapes: [string, string, string][] = [
+    ["a question fence that could not register", `One call.\n\n${broken("scope")}`, `park:question-fence:${at(2)}`],
+    ["a park with no status", fence("awaiting", "shells: [bzvt]\nfor: 1h"), `park:needs-input:${at(2)}`],
+  ]
+  for (const [name, message, fenceId] of shapes) {
+    const w = world({}, { quietWindowMs: 5 * 60_000 })
+    try {
+      w.extra.bgShells = [{ label: "the suite", startedAt: at(0), state: "running", id: "toolu_x", taskId: "bzvt" }] as never
+      w.user(0, "publish the packages")
+      w.say(1, "Reading the publish script.")
+      await w.tick(1.25)
+      assert.equal(w.sent.length, 1, `${name}: the sign-off reminder is the wake that opens the window`)
+      w.user(1.5, w.sent[0])
+      w.say(2, message)
+      await w.tick(2.25)
+      assert.deepEqual(w.deliveries().slice(1), [fenceId], name)
+      assert.equal(w.sent.length, 2, `${name}: sent on the next tick, 1m after the last wake`)
+    } finally { w.close() }
+  }
+  const held = world({}, { quietWindowMs: 5 * 60_000 })
+  try {
+    held.user(0, "publish the packages")
+    held.say(1, "Reading the publish script.")
+    await held.tick(1.25)
+    held.user(1.5, held.sent[0])
+    held.say(2, `Published.\n\n${done}`)
+    held.storage.armThreadTimer({ id: "tmr_aaaa", slug: "t", prompt: "check the registry", fireAtMs: Date.parse(at(2.1)), createdAtMs: Date.parse(at(2)) })
+    await held.tick(2.25)
+    assert.deepEqual(held.deliveries().slice(1), ["timer:tmr_aaaa"], "the timer is due and queued")
+    assert.equal(held.sent.length, 1, "and held: the thread was handed a wake 1m ago")
+    await held.tick(4)
+    assert.equal(held.sent.length, 1, "still held at 2m 45s")
+    await held.tick(6.5)
+    assert.equal(held.sent.length, 2, "sent once five minutes have passed")
+  } finally { held.close() }
+})
+
+// SOURCE 14 had the same hole, from the same reset: one NEW valid question beside the same broken fence at
+// every rest, and the count was back at zero before each correction was counted.
+test("a new valid question beside the same broken fence at every rest does not reset the cap on that correction", async () => {
+  const w = world()
+  try {
+    w.user(0, "publish the packages")
+    for (let minute = 1; minute <= 8; minute++) {
+      w.say(minute, `Calls.\n\n${choice(`ok-${minute}`, `Call ${minute}?`)}\n\n${broken("scope")}`)
+      await w.tick(minute + 0.25)
+      w.user(minute + 0.5, w.sent[w.sent.length - 1] ?? "steer")
+    }
+    assert.equal(w.deliveries().length, 3, `three since the human last typed — got ${w.deliveries().length} over eight rests`)
+    assert.ok(w.deliveries().every((id) => id.startsWith("park:question-fence:")))
+    assert.equal(w.storage.listThreadQuestions("t").filter((q) => q.state === "open").length, 8, "every valid question still registered")
+    assert.deepEqual(w.deliveries().filter((id) => id.startsWith("signoff:")), [], "and the silenced rests are not nudged instead")
+    // The human typing is what hands it back.
+    w.user(20, "what is going on with the scope question?")
+    w.say(21, `Still one call.\n\n${broken("scope")}`)
+    await w.tick(22)
+    assert.equal(w.deliveries().length, 4)
+  } finally { w.close() }
+})
+
+// One budget per cause: the two are different mistakes, and a thread that has used up its corrections for
+// one has been told nothing about the other.
+test("three done-fence corrections do not use up the question fence's budget, nor the other way round", async () => {
+  const doneFirst = world()
+  try {
+    doneFirst.user(0, "move the settings into a real store")
+    for (let minute = 1; minute <= 4; minute++) {
+      doneFirst.say(minute, `One more call.\n\n${choice(`call-${minute}`, `Call ${minute}?`)}\n\n${done}`)
+      await doneFirst.tick(minute + 0.25)
+      doneFirst.user(minute + 0.5, doneFirst.sent[doneFirst.sent.length - 1] ?? "steer")
+    }
+    assert.equal(doneFirst.deliveries().length, 3, "the done fence's three are spent")
+    // A new question registers beside the broken one, so the shared count is at zero: only the
+    // per-cause budget decides.
+    doneFirst.say(5, `Two more.\n\n${choice("call-5", "Call 5?")}\n\n${broken("scope")}`)
+    await doneFirst.tick(5.25)
+    assert.deepEqual(doneFirst.deliveries().slice(3), [`park:question-fence:${at(5)}`])
+  } finally { doneFirst.close() }
+  const fenceFirst = world()
+  try {
+    fenceFirst.user(0, "publish the packages")
+    for (let minute = 1; minute <= 4; minute++) {
+      fenceFirst.say(minute, `Calls.\n\n${choice(`ok-${minute}`, `Call ${minute}?`)}\n\n${broken("scope")}`)
+      await fenceFirst.tick(minute + 0.25)
+      fenceFirst.user(minute + 0.5, fenceFirst.sent[fenceFirst.sent.length - 1] ?? "steer")
+    }
+    assert.equal(fenceFirst.deliveries().length, 3, "the question fence's three are spent")
+    fenceFirst.say(5, `All in.\n\n${choice("ok-5", "Call 5?")}\n\n${done}`)
+    await fenceFirst.tick(5.25)
+    assert.deepEqual(fenceFirst.deliveries().slice(3), [DONE_OVER(5)])
+  } finally { fenceFirst.close() }
+})
+
 // ── One rest, one message ───────────────────────────────────────────────────────────────────────────
 
 test("a done fence over an open question beside a question fence that could not register is ONE correction", async () => {
@@ -352,20 +449,47 @@ test("a done fence over an open question beside a question fence that could not 
     assert.ok(w.sent[0].startsWith(QUESTION_FENCE_CORRECTION_LEAD))
     assert.match(w.sent[0], /`scope` — `kind: choice` needs two or more options/)
     assert.match(w.sent[0], /\n\nSeparately, your ```done fence closed a rest while a question of this thread is still open/)
+    assert.ok(!w.sent[0].includes(QUESTION_FENCE_UNDER_DONE_HINT), "the second paragraph already says it; the one-sentence hint is for the rest with nothing open")
     assert.match(w.sent[0], /\n {2}store {2}SQLite or a JSON file\?\n/)
     assert.equal(w.bumps(), 1, "one message, one bump")
   } finally { w.close() }
 })
 
-test("a done fence beside a broken question fence, with nothing open, is the question correction alone", async () => {
+// Nothing is open yet, so the done fence is not wrong — and it is about to be: the worker's fix is the same
+// message with the fence repaired, and a done fence under a question that now registers is SOURCE 15's
+// case at the very next rest. One sentence in SOURCE 14's message saves that second correction.
+test("a broken question fence under a closing done fence, with nothing open: the correction says the done cannot stay", async () => {
   const w = world()
   try {
     w.user(0, "publish the packages")
     w.say(1, `One call, then done.\n\n${broken("scope")}\n\n${done}`)
     await w.tick(2)
     assert.deepEqual(w.deliveries(), [`park:question-fence:${at(1)}`])
-    assert.doesNotMatch(w.sent[0], /done fence/, "no question is open, so the done fence has nothing to answer for")
+    assert.equal(w.sent[0].split("\n\n⏱")[0], `${QUESTION_FENCE_CORRECTION("scope")}\n\n${QUESTION_FENCE_UNDER_DONE_HINT}`)
+    assert.equal(
+      QUESTION_FENCE_UNDER_DONE_HINT,
+      "This rest also closed on a ```done fence, and a done fence cannot stand beside a question once it registers: the message that carries the fixed fence carries no ```done fence, and the sign-off as done comes once the question is answered.",
+    )
+    assert.doesNotMatch(w.sent[0], /Separately, your ```done fence/, "no question is open, so there is no second paragraph")
+    // The worker does what it was told: the fixed fence, no done. One correction was the whole cost.
+    w.user(2.5, w.sent[0])
+    w.say(3, `One call.\n\n${choice("scope", "Which npm scope?")}`)
+    await w.tick(4)
+    await w.tick(5)
+    assert.deepEqual(w.deliveries(), [`park:question-fence:${at(1)}`])
+    assert.deepEqual(w.view().questions.map((q) => [q.spec.handle, q.standing]), [["scope", true]])
   } finally { w.close() }
+  // What the sentence is there to prevent: the same fix with the done fence kept is a second correction.
+  const kept = world()
+  try {
+    kept.user(0, "publish the packages")
+    kept.say(1, `One call, then done.\n\n${broken("scope")}\n\n${done}`)
+    await kept.tick(2)
+    kept.user(2.5, kept.sent[0])
+    kept.say(3, `One call, then done.\n\n${choice("scope", "Which npm scope?")}\n\n${done}`)
+    await kept.tick(4)
+    assert.deepEqual(kept.deliveries(), [`park:question-fence:${at(1)}`, DONE_OVER(3)])
+  } finally { kept.close() }
 })
 
 test("an answer on its way takes the rest: the done fence is judged at the worker's next sign-off", async () => {
@@ -390,6 +514,36 @@ test("an answer on its way takes the rest: the done fence is judged at the worke
     assert.deepEqual(w.deliveries().filter((id) => id.startsWith("park:")), [DONE_OVER(6)])
     assert.match(w.sent[1], /1 question the human has not answered:\n {2}scope {2}Which npm scope\?\n/)
   } finally { w.close() }
+})
+
+/** SOURCE 14's correction for one `kind: choice` fence with no options, as it has read since it shipped. */
+const QUESTION_FENCE_CORRECTION = (id: string) => [
+  "⚠️ Your ```question fence could not register, so the human has NOT been asked:",
+  "",
+  `- \`${id}\` — \`kind: choice\` needs two or more options under \`options:\``,
+  "",
+  "Fix the fence and write it again in your next message; a fence that registers needs nothing else.",
+  "The shape: `id:` (a slug of your own), `kind:` (`choice`, `multi`, `text` or `secret`), a one-line",
+  "`question:`, and for `choice`/`multi` two or more `options:` — each `- label: …`, with optional",
+  "`description:`, `recommended: true` and an indented `detail: |` block. Anything else the human needs",
+  "goes below a `---` line as markdown. A fence with `id:` alone references a question you already asked.",
+].join("\n")
+
+test("a question fence correction on a rest that did not close on a done fence reads as it always has", async () => {
+  for (const [name, message] of [
+    ["the fence alone", `One call.\n\n${broken("scope")}`],
+    ["beside a park", `One call.\n\n${broken("scope")}\n\n${fence("awaiting", "status: working\nshells: [bzvt]\nfor: 1h")}`],
+    ["a done fence that does not close the message", `One call.\n\n${done}\n\n${broken("scope")}`],
+  ] as const) {
+    const w = world()
+    try {
+      w.extra.bgShells = [{ label: "the suite", startedAt: at(0), state: "running", id: "toolu_x", taskId: "bzvt" }] as never
+      w.user(0, "publish the packages")
+      w.say(1, message)
+      await w.tick(2)
+      assert.equal(w.sent[0].split("\n\n⏱")[0], QUESTION_FENCE_CORRECTION("scope"), name)
+    } finally { w.close() }
+  }
 })
 
 // ── An autonomous (Goal) thread ─────────────────────────────────────────────────────────────────────

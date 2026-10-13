@@ -2208,7 +2208,8 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   // landed before the worker went idle: its question never reached the human and nothing said so.
   // A fault the worker already fixed later — the same id registered or referenced after it — is not
   // news. Counted against PARK_BUMP_MAX with the other fence corrections; a fence that registers gives
-  // the allowance back (syncQuestionFences).
+  // the allowance back (syncQuestionFences) — which is why this correction is ALSO bounded by the human's
+  // last typed message (correctionAllowedSinceHuman).
   /** Each thread whose CURRENT rest wrote a ```question fence that could not register, keyed to that
    *  rest's instant — rebuilt by evalQuestionFences on every tick, corrected or not (the cap may have
    *  silenced it). SOURCE 12 reads it so an honoured park beside such a fence does not hand back the
@@ -2249,7 +2250,12 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       // Only a fault written at THIS rest withholds the allowance: that is the worker repeating the
       // mistake. An older one still waiting to be told (the cap silenced it) must not also pin the count.
       if (faults.some((f) => Date.parse(f.at) > instant(tele.lastUserAt))) questionFaultRests.set(row.slug, spokeAt)
-      if (parkCapSpent(row, spokeAt)) continue
+      // …AND THREE SINCE THE HUMAN LAST TYPED (2026-10-13), beside the shared cap, because the shared cap
+      // can be handed back by the very rest being corrected: a fence that registers resets the count
+      // (syncQuestionFences), so a worker that wrote one NEW valid question beside the same broken fence
+      // at every rest was at zero again before each correction was counted. Measured: 8 identical rests,
+      // 8 corrections, `park_bumps` never above 1. See correctionAllowedSinceHuman.
+      if (parkCapSpent(row, spokeAt) || !correctionAllowedSinceHuman(row.slug, QUESTION_FENCE_CAUSE, tele)) continue
       const fenceId = parkFenceId(QUESTION_FENCE_CAUSE, spokeAt)
       const deliveryId = wakeDeliveryId(row.slug, row.session_id, fenceId)
       if (outbox.get(deliveryId)) continue
@@ -2257,10 +2263,15 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       // paragraph, when the same rest has both wrong: a fence that could not register, and a done fence
       // signing off over another question that did. One rest, one message, one bump — SOURCE 15 stands
       // down for a rest this correction took, and this is why it can.
-      const underDone = doneCorrectionAllowed(row.slug, tele) ? questionsUnderDoneFence(row, tele, rows) : []
+      const underDone = correctionAllowedSinceHuman(row.slug, DONE_OVER_QUESTION_CAUSE, tele) ? questionsUnderDoneFence(row, tele, rows) : []
+      // WITH NOTHING ELSE OPEN, THE DONE FENCE IS NOT YET WRONG — and it is about to be. The worker's fix
+      // for this message is the same message with the fence repaired, done fence and all, which SOURCE 15
+      // then corrects at the next rest. So the correction says so now, in one sentence, for exactly the
+      // rest that closed on a done fence; every other rest gets the text unchanged.
+      const closedOnDone = underDone.length === 0 && tele.lastFence?.kind === "done"
       const correction = underDone.length > 0
         ? `${questionFenceCorrection(faults)}\n\nSeparately, your \`\`\`done fence ${doneOverOpenQuestionsBody(underDone)}`
-        : questionFenceCorrection(faults)
+        : questionFenceCorrection(faults, { closedOnDone })
       const item = outbox.enqueue({
         id: deliveryId,
         slug: row.slug,
@@ -2271,7 +2282,8 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         reason: `${faults.length} question fence(s) could not register`,
       }, nowMs).delivery
       deps.storage.countParkBump(row.slug, spokeAt)
-      if (underDone.length > 0) noteDoneCorrection(row.slug, tele)
+      noteCorrectionSinceHuman(row.slug, QUESTION_FENCE_CAUSE, tele)
+      if (underDone.length > 0) noteCorrectionSinceHuman(row.slug, DONE_OVER_QUESTION_CAUSE, tele)
       log(`waker: queued ${row.slug} — ${item.reason}`)
       checkpoint("after-enqueue", item)
     }
@@ -2318,21 +2330,45 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   // one as its second paragraph, and this pass stands down for the rest it took. An ANSWER on its way
   // takes the rest too — its wake ends the rest by itself, and the worker's next sign-off is judged then.
   //
-  // CAPPED TWICE. It counts against PARK_BUMP_MAX with every other fence correction. But the count comes
-  // back whenever a ```question fence registers (syncQuestionFences), and a worker can answer this
-  // correction with a NEW question and another done fence: reset, correct, reset, correct, without end,
-  // the closed loop the cap exists to stop. So this cause also stops at PARK_BUMP_MAX corrections since
-  // the human last typed to the thread (`restFromAt`, the one boundary nothing Frizz delivers can move).
+  // CAPPED TWICE. It counts against PARK_BUMP_MAX with every other fence correction, and it is bounded
+  // by the human's last typed message (correctionAllowedSinceHuman, below): a worker can answer this
+  // correction with a NEW question and another done fence, and the new question registering hands the
+  // shared count back.
+
+  // ---- THE SECOND BOUND ON SOURCES 14 AND 15: THREE PER CAUSE SINCE THE HUMAN LAST TYPED ---------------
+  //
+  // PARK_BUMP_MAX exists to break a closed loop — correct, wake, the same mistake under a new instant,
+  // correct — and it rests on the count coming back only for something Frizz cannot cause by correcting.
+  // A ```question fence registering is one of the things that gives it back, and both of these
+  // corrections can be answered with exactly that: a new valid question beside the same broken fence
+  // (SOURCE 14: 8 rests, 8 corrections, the count never above 1), or a new question beside another done
+  // fence (SOURCE 15, the same arithmetic). So each also stops at PARK_BUMP_MAX corrections since the
+  // human last typed to the thread — `restFromAt`, the one boundary nothing Frizz delivers can move. The
+  // human typing hands it back: they have seen the thread.
+  //
+  // ONE BUDGET PER CAUSE, not one for both. They are different mistakes with different fixes, and a
+  // thread that has used up its three corrections for done fences has been told nothing about question
+  // grammar: sharing the budget would leave its next broken fence unreported, a question that never
+  // reached the human with nobody told. Kept apart, the worst a thread can draw between two human
+  // messages is three of each.
+  //
+  // WHAT IT COSTS: a worker that writes four broken fences between two human messages, and fixes each
+  // one when told, is not told about the fourth. Refunding on a fix would close that and reopen the loop
+  // (fix one, break another), so it is not refunded; the fourth draws as the code block it is, in a rest
+  // the human's queue already holds.
+  //
   // In memory: a restart hands back three, which is still a bound.
-  const doneCorrections = new Map<string, { since: string; count: number }>()
-  function doneCorrectionAllowed(slug: string, tele: Pick<SessionTelemetry, "restFromAt">): boolean {
-    const sent = doneCorrections.get(slug)
-    return !(sent && sent.since === (tele.restFromAt ?? "") && sent.count >= PARK_BUMP_MAX)
+  const correctionsSinceHuman = new Map<string, { since: string; counts: Map<string, number> }>()
+  function correctionAllowedSinceHuman(slug: string, cause: string, tele: Pick<SessionTelemetry, "restFromAt">): boolean {
+    const sent = correctionsSinceHuman.get(slug)
+    return !(sent && sent.since === (tele.restFromAt ?? "") && (sent.counts.get(cause) ?? 0) >= PARK_BUMP_MAX)
   }
-  function noteDoneCorrection(slug: string, tele: Pick<SessionTelemetry, "restFromAt">): void {
+  function noteCorrectionSinceHuman(slug: string, cause: string, tele: Pick<SessionTelemetry, "restFromAt">): void {
     const since = tele.restFromAt ?? ""
-    const sent = doneCorrections.get(slug)
-    doneCorrections.set(slug, { since, count: sent?.since === since ? sent.count + 1 : 1 })
+    const known = correctionsSinceHuman.get(slug)
+    const sent = known && known.since === since ? known : { since, counts: new Map<string, number>() }
+    sent.counts.set(cause, (sent.counts.get(cause) ?? 0) + 1)
+    correctionsSinceHuman.set(slug, sent)
   }
 
   /** The open questions a ```done fence closed this rest over, by the worker's own ids — empty unless the
@@ -2367,7 +2403,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       // SOURCE 14 took this rest, and its message carried this one (see there). Whatever became of that
       // delivery, the rest has had its correction.
       if (outbox.get(wakeDeliveryId(row.slug, row.session_id, parkFenceId(QUESTION_FENCE_CAUSE, spokeAt)))) continue
-      if (parkCapSpent(row, spokeAt) || !doneCorrectionAllowed(row.slug, tele)) continue
+      if (parkCapSpent(row, spokeAt) || !correctionAllowedSinceHuman(row.slug, DONE_OVER_QUESTION_CAUSE, tele)) continue
       const fenceId = parkFenceId(DONE_OVER_QUESTION_CAUSE, spokeAt)
       const deliveryId = wakeDeliveryId(row.slug, row.session_id, fenceId)
       if (outbox.get(deliveryId)) continue
@@ -2381,7 +2417,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         reason: `done fence over ${blocking.length} open question(s)`,
       }, nowMs).delivery
       deps.storage.countParkBump(row.slug, spokeAt)
-      noteDoneCorrection(row.slug, tele)
+      noteCorrectionSinceHuman(row.slug, DONE_OVER_QUESTION_CAUSE, tele)
       log(`waker: queued ${row.slug} — ${item.reason}`)
       checkpoint("after-enqueue", item)
     }

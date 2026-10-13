@@ -44,10 +44,20 @@ export const WAKE_QUIET_WINDOW_MS = 5 * 60_000
  *  A ```done FENCE OVER AN OPEN QUESTION (`park:done-open-question:`, 2026-10-13) is the same case with a
  *  shorter fuse: its usual rest comes a minute or two after the wake that let the worker finish, so the
  *  window would hold the correction for most of five minutes while the human looks at a done card with a
- *  live "Mark as done" over a question nobody answered. Archiving there is what the correction is for. */
+ *  live "Mark as done" over a question nobody answered. Archiving there is what the correction is for.
+ *
+ *  THE LIST NAMES EVERY COUNTED CORRECTION BY ITS CAUSE, and two were missing until 2026-10-13 because
+ *  each was added to the scheduler after this list was written. `park:question-fence:` (a ```question
+ *  fence that could not register) was held for up to five minutes, measured: minted 45s after the
+ *  thread's last wake, sent at 5m 15s — while the worker believed it had asked and the human's queue
+ *  showed a rest with a code block in it. `park:needs-input:` (a park with no `status:` Frizz can read)
+ *  is a park Frizz refused, which is this comment's own second example, and is counted against
+ *  PARK_BUMP_MAX like the rest. `park:question:` left the list the same day: it was the cause of the
+ *  open-question refusal, which the ```question fence retired, and nothing has minted it since. */
 export const WAKE_QUIET_EXEMPT_HINT_PREFIXES = [
   "answers:", "limit:", "interrupt-ended:",
-  "signoff:", "park:question:", "park:retired:", "park:nameless:", "park:dead:", "park:done-open-question:",
+  "signoff:", "park:retired:", "park:nameless:", "park:dead:", "park:needs-input:",
+  "park:question-fence:", "park:done-open-question:",
 ] as const
 
 export function isQuietWindowExempt(hintKey: string): boolean {
