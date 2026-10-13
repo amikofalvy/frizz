@@ -309,13 +309,17 @@ test("two paths registering the same fence at once — the registrar's sweep and
 
 const followUpTree = `${choice("settings-store")}\n\n${fence("id: sqlite-path\nkind: text\nwhen: settings-store = SQLite\nquestion: Where should the file live?")}`
 
-test("unask by a follow-up's id says which question it actually withdrew — the root it rides in", async () => {
+test("unask by a follow-up's id withdraws nothing, and names the root that would take it", async () => {
   const h = routerHarness({ current: [{ at: at(0), text: followUpTree }] })
   try {
     h.storage.upsertSession(row("t"))
     const out = await h.router.unask.handler({ input: { slug: "t", id: "sqlite-path" } })
-    assert.equal(out.withdrawn, true)
-    assert.equal(out.id, "settings-store", "the worker asked for `sqlite-path` and must be told `settings-store` went")
+    assert.equal(out.withdrawn, false, "the parent is a question the worker did not name")
+    assert.equal(out.id, "settings-store", "…and it is told which id withdraws the pair")
+    assert.equal(out.state, "open")
+    assert.deepEqual(h.storage.listThreadQuestions("t", { openOnly: true }).map((q) => q.handle), ["settings-store"])
+    // By its own id the root goes, follow-up and all.
+    assert.equal((await h.router.unask.handler({ input: { slug: "t", id: "Settings-Store" } })).withdrawn, true)
     // Naming the root itself, or a legacy qst_ row, reports that same name back.
     const legacy = h.storage.askThreadQuestion({ id: "qst_aaaaaaaaaaaa", slug: "t", spec: JSON.stringify({ question: "Q?", kind: "question" }), askedAtMs: 1 })
     assert.equal((await h.router.unask.handler({ input: { slug: "t", id: legacy.id } })).id, legacy.id)

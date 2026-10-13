@@ -3003,8 +3003,8 @@ export const UnaskResult = z.object({
   withdrawn: z.boolean(),
   /** The question the id resolved to, by the name the WORKER knows it by (its fence's `id:`, or the
    *  `qst_…` an `ask` minted) — absent when the id names nothing on this thread. It is the ROOT's: a
-   *  follow-up rides inside its parent's row and is withdrawn with it, so `unask sqlite-path` answers
-   *  `settings-store` here, and the worker must be told the question it did not name is the one that went. */
+   *  follow-up rides inside its parent's row and cannot be withdrawn alone, so `unask sqlite-path`
+   *  withdraws nothing and answers `settings-store` here — the id that takes the pair back. */
   id: z.string().optional(),
   /** What that question was when the call arrived. `open` beside `withdrawn: true` is the ordinary
    *  withdrawal; anything else is why nothing was withdrawn — and `answered` means a wake is on its way. */

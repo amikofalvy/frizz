@@ -400,7 +400,7 @@ test("unask reports the question that actually went, and why nothing did when no
   // The server resolves a follow-up's id to the root it rides in (router `unask`); each reading below is
   // what the worker is told for one answer of that call.
   const answers: Record<string, unknown> = {
-    "sqlite-path": { withdrawn: true, id: "settings-store", state: "open", open: [] },
+    "sqlite-path": { withdrawn: false, id: "settings-store", state: "open", open: [] },
     "settings-store": { withdrawn: true, id: "settings-store", state: "open", open: [] },
     "npm-scope": { withdrawn: false, id: "npm-scope", state: "answered", open: [] },
     "retry-backoff": { withdrawn: false, id: "retry-backoff", state: "dismissed", open: [] },
@@ -410,8 +410,8 @@ test("unask reports the question that actually went, and why nothing did when no
   try {
     const out = async (id: string) => (await run(["unask", id], { env: worker(fake) })).stdout
     const viaFollowUp = await out("sqlite-path")
-    assert.match(viaFollowUp, /^sqlite-path is a follow-up of settings-store/)
-    assert.match(viaFollowUp, /question settings-store was withdrawn, follow-ups and all/)
+    assert.match(viaFollowUp, /^Nothing was withdrawn: sqlite-path is a follow-up of settings-store/)
+    assert.match(viaFollowUp, /run `frizzctl unask settings-store`/)
     assert.match(await out("settings-store"), /^Question settings-store withdrawn\./)
     assert.match(await out("npm-scope"), /^Question npm-scope was already answered, so nothing was withdrawn — the answer reaches you as its own message\./)
     assert.match(await out("retry-backoff"), /^Question retry-backoff was already dismissed by the human/)

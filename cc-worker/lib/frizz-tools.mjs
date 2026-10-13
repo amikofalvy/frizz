@@ -1694,9 +1694,9 @@ async function unask(args) {
   // already answered it, or it is another thread's — and a worker that believes it withdrew a question
   // the human is still looking at will get an answer it has stopped expecting.
   //
-  // AND IT NAMES WHAT ACTUALLY WENT. A follow-up rides inside its parent's row, so `unask sqlite-path`
-  // withdraws the `settings-store` it follows — the server answers with that id, and reporting the id
-  // the worker TYPED told it a question it never named was still on the human's board.
+  // A FOLLOW-UP IS NOT WITHDRAWN ON ITS OWN. It rides inside its parent's row, so the server answers
+  // `unask sqlite-path` with the `settings-store` it follows and withdraws nothing: taking the parent
+  // back for an id the worker did not type cost it a question it may still have wanted answered.
   const root = typeof result?.id === "string" && result.id ? result.id : id
   const viaFollowUp = root.toLowerCase() !== id.toLowerCase()
   const settled = {
@@ -1705,11 +1705,11 @@ async function unask(args) {
     withdrawn: `Question ${root} was already withdrawn.`,
   }
   const head = result?.withdrawn
-    ? viaFollowUp
-      ? `${id} is a follow-up of ${root}, and a follow-up is withdrawn with the question it follows — so ` +
-        `question ${root} was withdrawn, follow-ups and all. Its card is gone and the human will not be asked. ` +
-        `If you still need ${root} answered, ask it again under a new id.`
-      : `Question ${root} withdrawn. Its card is gone and the human will not be asked.`
+    ? `Question ${root} withdrawn. Its card is gone and the human will not be asked.`
+    : viaFollowUp && result?.state === "open"
+    ? `Nothing was withdrawn: ${id} is a follow-up of ${root}, and a follow-up cannot be withdrawn on its own. ` +
+      `The human is only asked it after picking the option it hangs on. To take the whole question back, ` +
+      `follow-ups and all, run \`frizzctl unask ${root}\`.`
     : settled[result?.state] ??
       `No OPEN question ${id} on this thread — it was already answered or dismissed, or the id is not one of yours.`
   return `${head}\n\n${openQuestionList(result)}`

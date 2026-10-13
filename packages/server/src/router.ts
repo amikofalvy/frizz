@@ -3643,12 +3643,17 @@ export function createRouter(ctx: AppContext) {
         // Slug-scoped in storage, so one thread can never withdraw another's question. Named by the
         // worker's own fence id since 2026-10-13, or by a legacy `qst_…`.
         const target = findOwnQuestion(input.slug, input.id)
-        const withdrawn = target ? ctx.storage.withdrawThreadQuestion(input.slug, target.id, Date.now()) : false
+        // A FOLLOW-UP'S ID WITHDRAWS NOTHING. It rides inside its parent's row, so the only thing this
+        // call could take back is the whole parent — a question the worker did not name and may still
+        // want answered. It did exactly that until 2026-10-13, and the first fix only said so afterwards;
+        // refusing costs the worker one more command and loses nobody's question.
+        const want = input.id.trim().toLowerCase()
+        const named = target !== undefined && (target.id.toLowerCase() === want || target.handle?.toLowerCase() === want)
+        const withdrawn = target && named ? ctx.storage.withdrawThreadQuestion(input.slug, target.id, Date.now()) : false
         if (withdrawn) ctx.board.refresh()
-        // NAMED BACK, by the worker's own id for the row. `sqlite-path` resolves to the `settings-store`
-        // it is a follow-up of, and until this said so the command reported "Question sqlite-path
-        // withdrawn" over a parent question the worker never named and may still have wanted answered.
-        // The state is the row's as the call found it — why nothing was withdrawn, when nothing was.
+        // NAMED BACK, by the worker's own id for the row: `sqlite-path` resolves to the `settings-store`
+        // it is a follow-up of, which is the id the worker has to pass to withdraw the pair. The state is
+        // the row's as the call found it — why nothing was withdrawn, when nothing was.
         return {
           withdrawn,
           ...(target ? { id: target.handle ?? target.id, state: target.state } : {}),

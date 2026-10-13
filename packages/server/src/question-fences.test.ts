@@ -216,12 +216,16 @@ test("done refuses on a question fenced in the same message, naming it by the wo
   } finally { h.close() }
 })
 
-test("unask takes the worker's own id — a follow-up's resolves to its root — and a legacy qst_ id still works", async () => {
+test("unask takes the worker's own id — never a follow-up's, which names its root instead — and a legacy qst_ id still works", async () => {
   const sightings = { current: [{ at: at(0), text: `${choice("settings-store")}\n\n${fence("id: sqlite-path\nkind: text\nwhen: settings-store = SQLite\nquestion: Where?")}` }] }
   const h = routerHarness(sightings)
   try {
     h.storage.upsertSession(row("t"))
-    const out = await h.router.unask.handler({ input: { slug: "t", id: "sqlite-path" } })
+    const viaFollowUp = await h.router.unask.handler({ input: { slug: "t", id: "sqlite-path" } })
+    assert.equal(viaFollowUp.withdrawn, false)
+    assert.equal(viaFollowUp.id, "settings-store")
+    assert.equal(h.storage.listThreadQuestions("t")[0].state, "open")
+    const out = await h.router.unask.handler({ input: { slug: "t", id: "settings-store" } })
     assert.equal(out.withdrawn, true)
     assert.equal(h.storage.listThreadQuestions("t")[0].state, "withdrawn")
     const legacy = h.storage.askThreadQuestion({ id: "qst_aaaaaaaaaaaa", slug: "t", spec: JSON.stringify({ question: "Q?", kind: "question" }), askedAtMs: 1 })
