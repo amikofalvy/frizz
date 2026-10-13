@@ -2298,8 +2298,11 @@ function MinimalToolActivity({ tools, at }: { tools: CollapsedTool[]; at?: strin
         aria-label={`${expanded ? "Collapse" : "Expand"} ${total} tool ${total === 1 ? "call" : "calls"}: ${label}`}
         // Shares TRANSCRIPT_META_LABEL_CLASS rather than restating its type scale — this row and
         // the reasoning label alternate in one column, and the two drifted apart while the size was
-        // copied here by hand.
-        className={`group flex w-full min-w-0 items-baseline gap-1.5 rounded py-0.5 text-left outline-none transition-colors hover:text-fg focus-visible:ring-1 focus-visible:ring-focus-ink-60 ${TRANSCRIPT_META_LABEL_CLASS}`}
+        // copied here by hand. Its `py-0.5` (the focus ring's room) is cancelled in layout by
+        // `-my-0.5`, so the row is the same 20px line as the reasoning label and as the live Working row
+        // it replaces when a run settles — with the padding counted, the settle grew the tail 3px and
+        // moved this label 2px below where the shimmer had it (measured on real workers, 2026-10-13).
+        className={`group flex w-full min-w-0 items-baseline gap-1.5 rounded -my-0.5 py-0.5 text-left outline-none transition-colors hover:text-fg focus-visible:ring-1 focus-visible:ring-focus-ink-60 ${TRANSCRIPT_META_LABEL_CLASS}`}
       >
         <span
           data-tool-activity-label
@@ -4164,25 +4167,35 @@ export function FenceCard({ fenceKind, body, hints, wrap }: { fenceKind: FenceKi
   // the phone thread flagged exactly that, and the approved design draws the card without it).
   const isMobile = useIsMobile()
   if (fenceKind === "done") {
+    // A white "Mark as done" button, deliberately redundant with the header's check — the same completion
+    // mutation, styled as the primary (light-on-dark) verb. Only shown when the thread can actually take
+    // the action, and never on a phone (see `isMobile` above).
+    const markDone = doneThread && !isMobile ? (
+      <CardActions>
+        <StateButton
+          thread={doneThread}
+          className={`${CARD_ACTION_RADIUS} text-[11px] ${CARD_PRIMARY_BUTTON}`}
+          iconClassName={ICON_LABEL_NUDGE}
+          onArchived={queueDismiss?.dismiss}
+          onDismissCancel={queueDismiss?.cancel}
+        />
+      </CardActions>
+    ) : null
     return (
       // NEUTRAL tone — the green splash stood out as the only saturated color in the UI (maintainer
-      // 2026-07-10). The Check + "Done" label carries the meaning; no color needed.
-      <TranscriptCard icon={Check} label="Done">
-        {html && <LinkedHtml className={`md-body${wrap ? ` ${QUEUE_WRAP}` : ""}`} html={html} />}
-        {/* A white "Mark as done" button, deliberately redundant with the header's check — the
-            same completion mutation, styled as the primary (light-on-dark) verb. Only shown when the
-            thread can actually take the action, and never on a phone (see `isMobile` above). */}
-        {doneThread && !isMobile && (
-          <CardActions>
-            <StateButton
-              thread={doneThread}
-              className={`${CARD_ACTION_RADIUS} text-[11px] ${CARD_PRIMARY_BUTTON}`}
-              iconClassName={ICON_LABEL_NUDGE}
-              onArchived={queueDismiss?.dismiss}
-              onDismissCancel={queueDismiss?.cancel}
-            />
-          </CardActions>
-        )}
+      // 2026-07-10). The Check + "Done" carries the meaning; no color needed.
+      //
+      // HEADED BY A KIND CHIP AND A RULE, as the awaiting cards are (2026-10-13, TranscriptCard's KindChip:
+      // "it's weird that the done blocks still don't have a visually separate header, the way that the
+      // awaiting blocks do"). A done fence has no `title:`, so the chip alone heads it. An empty body draws
+      // no rule — the band's own border is the only seam left to draw — and nothing at all draws no body.
+      <TranscriptCard icon={Check} chip="Done" label={null} ruled={!!html}>
+        {html || markDone ? (
+          <>
+            {html && <LinkedHtml className={`md-body${wrap ? ` ${QUEUE_WRAP}` : ""}`} html={html} />}
+            {markDone}
+          </>
+        ) : null}
       </TranscriptCard>
     )
   }
@@ -4950,6 +4963,12 @@ export function WorkingIndicator({ since, startedAt, activityLabel, run }: { sin
   // `gap-1.5` INSIDE the label group stays what it was: the chevron is the label's handle, travels with
   // it, and reads as one cluster at ~6.4px of ink. See transcriptMetaChevronClass for why that number
   // is an ink distance and not the CSS one.
+  //
+  // ONE 20px LINE, the same box as the `Ran N tool calls` digest this row settles into (see
+  // MinimalToolActivity). `leading-none` on the clock is what holds it there: at the inherited 20px
+  // line height the 12px clock's baseline hung 1px below the label's line box, so this row was 21px,
+  // and every settle shifted the tail — and everything above a reader pinned to the bottom — by the
+  // difference (measured on real workers, 2026-10-13).
   const rowClass = `group flex min-w-0 items-baseline justify-between gap-3 rounded text-left outline-none focus-visible:ring-1 focus-visible:ring-focus-ink-60 ${TRANSCRIPT_META_LABEL_CLASS}`
   // ONE LINE, always — the row is a live status reading, and a status reading that changes height
   // as a path gets longer makes the whole tail jump. The label TRUNCATES (maintainer 2026-07-31:
@@ -4980,7 +4999,7 @@ export function WorkingIndicator({ since, startedAt, activityLabel, run }: { sin
           />
         )}
       </span>
-      <span className="shrink-0 whitespace-nowrap tabular-nums text-[12px] text-muted-60">{durationLabel}</span>
+      <span className="shrink-0 whitespace-nowrap tabular-nums text-[12px] leading-none text-muted-60">{durationLabel}</span>
     </>
   )
   return (

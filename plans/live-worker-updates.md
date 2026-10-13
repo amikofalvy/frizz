@@ -68,7 +68,7 @@ With the wire in, an update becomes *repoint the link, then ask live threads to 
 
 ## Verification, before this goes anywhere near the maintainer's board
 
-Use `frizz-stack` with `--creds` (isolated, real credentials, real dispatch):
+Use `frizz-stack` on the real HOME with a throwaway project (`--home=$HOME --project=/tmp/<throwaway>`, real dispatch). Never `--creds`: a live Claude worker under a sandbox HOME puts a keychain dialog on the maintainer's screen (AGENTS.md § Never put a macOS keychain dialog on the maintainer's screen).
 
 1. dispatch a real worker; confirm it HAS `mcp__frizz__*` and that a tool call succeeds;
 2. edit the staged plugin to a NEW version identity and repoint the link;

@@ -22,6 +22,9 @@ test("minimal tool activity is settled history with no live shimmer or spinner i
   assert.match(block, /data-tool-activity-state="settled"/, "every historical disclosure is settled presentation")
   assert.doesNotMatch(block, /shimmer-text/, "the historical disclosure must never own the live shimmer")
   assert.match(block, /className=\{`group flex w-full[^`]*gap-1/, "the disclosure keeps the full row click target and a compact label gap")
+  // The focus ring's padding is cancelled in layout, so the digest is the same 20px line as the live
+  // Working row it replaces when a run settles — with it counted, the settle moved the transcript 3px.
+  assert.match(block, /className=\{`[^`]*-my-0\.5 py-0\.5/, "the disclosure's focus-ring padding must not take layout height")
   // It consumes the shared scale rather than restating one: this row alternates with "Thought for Ns"
   // in a single column, and the two drifted apart while the size was copied here by hand.
   assert.match(block, /\$\{TRANSCRIPT_META_LABEL_CLASS\}/, "the disclosure must consume the shared metadata-label class")

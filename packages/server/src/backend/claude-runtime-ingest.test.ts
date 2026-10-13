@@ -47,6 +47,39 @@ test("resolveRuntimeTurn: a STALE `running` stops outranking a folded idle", () 
   assert.equal(resolveRuntimeTurn("in-flight", true, "settled", 10 * 60_000), "idle")
 })
 
+// The END of a turn (2026-10-13): the final message's own `assistant` event says `running`, and the
+// `result` that settles it trails by ~20-30 ms — a race the record's disk write sometimes wins. When the
+// fold has read the very record behind the reading, the reading is not ahead of the disk any more, and
+// the folded idle stands; holding in-flight there drew Working under a reply that had already rested.
+test("resolveRuntimeTurn: a `running` the fold has CAUGHT UP with no longer outranks its idle", () => {
+  assert.equal(resolveRuntimeTurn("idle", false, "running", 5, true), "idle", "the record behind the reading is folded")
+  assert.equal(resolveRuntimeTurn("idle", false, "running", 5, false), "in-flight", "still ahead of the disk")
+  // Caught up never moves a fold that is in-flight on its own evidence.
+  assert.equal(resolveRuntimeTurn("in-flight", false, "running", 5, true), "in-flight")
+  assert.equal(resolveRuntimeTurn("in-flight", false, "settled", 5, true), "in-flight")
+})
+
+test("ingest: a `running` reading carries the uuid of the MAIN-thread assistant event behind it", async () => {
+  const ingest = createClaudeRuntimeIngest({ nudge: () => {} })
+  try {
+    const sid = "s-1"
+    ingest.onEvent("t", sid, { kind: "assistant", sessionId: sid, messageId: "a-1", text: ["hi"], toolUses: [], supersedes: [] })
+    await ingest.drain()
+    assert.equal(ingest.liveness(sid)?.messageId, "a-1")
+    // A turn-neutral event keeps it; a child's event (no turn meaning) keeps it too.
+    ingest.onEvent("t", sid, { kind: "other", type: "system", sessionId: sid } as never)
+    ingest.onEvent("t", sid, { kind: "assistant", sessionId: sid, messageId: "child", parentToolUseId: "tu", text: ["x"], toolUses: [], supersedes: [] })
+    await ingest.drain()
+    assert.equal(ingest.liveness(sid)?.messageId, "a-1")
+    // A `user` event's reading is ahead of the disk with nothing to match it against: no id.
+    ingest.onEvent("t", sid, { kind: "user", sessionId: sid, messageId: "u", text: ["go"], toolResultIds: [], synthetic: false })
+    await ingest.drain()
+    assert.equal(ingest.liveness(sid)?.messageId, undefined)
+  } finally {
+    ingest.close()
+  }
+})
+
 test("resolveRuntimeTurn: a negative age (an injected clock behind the wall clock) reads as FRESH", () => {
   // The tailer clamps at 0 before calling; assert the contract from this side too, because a reading
   // treated as ancient by clock skew would silently disable the override the fold depends on.

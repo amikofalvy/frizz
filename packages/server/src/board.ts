@@ -8,7 +8,7 @@ import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import watcher from "@parcel/watcher"
 import type { BoardSnapshot, ClaudeModel, ThreadView, RuntimeState, ThreadRecurringPrompt, ProviderError } from "@frizz/shared"
-import { AskedQuestionSchema, BoardDiffer, PermissionMode, SnoozeUntil, ThreadSlug, awaitingNeedsInput, awaitingStatus, awaitingSteps, isDirectSubAgent, needsInputRequired, questionAnswerMessage, questionsCancelledWakeMessage, type AskedQuestion, type PermissionMode as PermissionModeValue, type QuestionAnswer, type QuestionDismissal } from "@frizz/shared"
+import { AskedQuestionSchema, BoardDiffer, PermissionMode, SnoozeUntil, ThreadSlug, awaitingNeedsInput, formatElapsed, awaitingStatus, awaitingSteps, isDirectSubAgent, needsInputRequired, questionAnswerMessage, questionsCancelledWakeMessage, type AskedQuestion, type PermissionMode as PermissionModeValue, type QuestionAnswer, type QuestionDismissal } from "@frizz/shared"
 import type { Bus } from "./bus.ts"
 import type { Project } from "./project.ts"
 import { isHeadlessRow, isBrokerClaudeRow, sessionTitleLocked, type ThreadQuestionRow } from "./storage.ts"
@@ -820,6 +820,11 @@ export function fenceWatchViews(
   /** The ISSUE readings, from their own book — the twin of `github` for the rows whose subject is an
    *  issue. Defaulted empty so every caller and test that predates issues reads unchanged. */
   issueBook: GithubIssueStatusBook = {},
+  /** This thread's ARMED COMMAND WATCHES (`frizzctl watch-command`). Rows for the timers' reason: the
+   *  server re-runs each until it passes and then wakes the thread, so it is live work fence or no fence.
+   *  A park on one alone had no row until 2026-10-13, and its card fell through to "Waiting for an
+   *  external update." — true of every park and specific to none. */
+  armedCommands: readonly CommandWatchRow[] = [],
 ): ThreadView["watches"] {
   const seen = new Set<string>()
   const out: ThreadView["watches"] = []
@@ -835,6 +840,28 @@ export function fenceWatchViews(
       // Always present, unlike the github half above: a timer that exists is fully known — there is no
       // poller to wait for. The prompt is the row's NAME client-side (a `tmr_…` id names nothing).
       timer: { fireAt: t.fireAt, prompt: t.prompt },
+    })
+  }
+  for (const w of armedCommands) {
+    if (w.state !== "armed" || seen.has(`command:${w.id}`)) continue
+    seen.add(`command:${w.id}`)
+    out.push({
+      id: `command:${slug}:${w.id}`,
+      kind: "command" as const,
+      target: w.id,
+      state: "armed" as const,
+      createdAt: new Date(w.created_at).toISOString(),
+      // The same projection as the worker's read-back (router commandWatchView), so the row and
+      // `frizzctl watch-command` name one cadence and one last check.
+      command: {
+        command: w.command,
+        every: formatElapsed(w.every_ms),
+        expiresAt: new Date(w.expires_at).toISOString(),
+        runs: w.runs,
+        ...(w.last_run_at !== null && w.last_outcome
+          ? { lastRun: { at: new Date(w.last_run_at).toISOString(), outcome: w.last_outcome, exitCode: w.last_exit, output: w.last_output ?? "" } }
+          : {}),
+      },
     })
   }
   for (const w of registered) {
@@ -1824,7 +1851,7 @@ function sessionThreadView(
     // become the github rows, `watch:` lines the shell rows — so this strip lists exactly what will
     // actually wake the thread, and the two cannot drift into claiming different things. There is no
     // registry behind either any more (`thread_watch`, retired 2026-08-14).
-    watches: fenceWatchViews(row.slug, tele, tele?.lastAssistantAt, github, armedPrWatches, armedTimers, armedWatches, issueBook),
+    watches: fenceWatchViews(row.slug, tele, tele?.lastAssistantAt, github, armedPrWatches, armedTimers, armedWatches, issueBook, armedCommandWatches),
     pendingAsk: tele?.pendingAsk ? { questions: tele.pendingAsk.questions } : undefined,
     pendingQuestion: tele?.pendingQuestion ?? false,
     questions,

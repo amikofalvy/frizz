@@ -8,7 +8,7 @@ import { ANSWER_IN_FLIGHT_EXCUSAL_MS, DELIVERY_IN_FLIGHT_SPIN_MS, answerAwaiting
 import { Bus } from "./bus.ts"
 import { createStorage, type ThreadQuestionRow } from "./storage.ts"
 import type { Project } from "./project.ts"
-import type { SessionRow } from "./storage.ts"
+import type { CommandWatchRow, SessionRow } from "./storage.ts"
 import type { SessionTelemetry, Tailer } from "./tailer.ts"
 
 // The QUEUE DEFINITION is deriveNeedsYou — the single server-side source of truth for "this thread
@@ -1972,6 +1972,41 @@ test("an armed timer gets a row carrying its prompt and fire instant, fence or n
 
 test("a timers: line with nothing armed behind it yields no row", () => {
   assert.deepEqual(fenceWatchViews("t", parked({ kind: "timer", value: "tmr_dead" }), FENCE_AT, {}, [], []), [])
+})
+
+// ---- command watch rows (2026-10-13) ----
+// The fifth kind, on the timers' rule: an ARMED `command_watch` row gets a row, fence or no fence. A
+// park on one alone had none, so its card said only "Waiting for an external update." The row carries
+// the command, its cadence in the house grammar and the last check — what the worker's own read-back
+// carries — because the `cmw_…` id names nothing to a human.
+const ARMED_COMMAND: CommandWatchRow = {
+  id: "cmw_12f995833a5b", thread_slug: "t", command: "node others-idle.mjs", every_ms: 120_000, state: "armed",
+  created_at: Date.parse(FENCE_AT), expires_at: Date.parse("2026-08-13T05:00:00.000Z"), settled_at: null,
+  runs: 24, last_run_at: Date.parse("2026-08-12T23:00:00.000Z"), last_outcome: "exit", last_exit: 1, last_output: "active: Layout shift\n",
+}
+
+test("an armed command watch gets a row carrying its command, cadence and last check, fence or no fence", () => {
+  const parkedOnIt = parked({ kind: "command", value: "cmw_12f995833a5b" })
+  assert.deepEqual(fenceWatchViews("t", parkedOnIt, FENCE_AT, {}, [], [], [], {}, [ARMED_COMMAND]), [{
+    id: "command:t:cmw_12f995833a5b",
+    kind: "command",
+    target: "cmw_12f995833a5b",
+    state: "armed",
+    createdAt: new Date(Date.parse(FENCE_AT)).toISOString(),
+    command: {
+      command: "node others-idle.mjs",
+      every: "2m",
+      expiresAt: "2026-08-13T05:00:00.000Z",
+      runs: 24,
+      lastRun: { at: "2026-08-12T23:00:00.000Z", outcome: "exit", exitCode: 1, output: "active: Layout shift\n" },
+    },
+  }])
+  assert.deepEqual(fenceWatchViews("t", tele(), FENCE_AT, {}, [], [], [], {}, [ARMED_COMMAND]).map((w) => w.target), ["cmw_12f995833a5b"])
+  // A watch that has not finished its first check carries no last run rather than an invented one, and
+  // a settled one is no wait at all.
+  const unchecked = { ...ARMED_COMMAND, runs: 0, last_run_at: null, last_outcome: null, last_exit: null, last_output: null }
+  assert.equal(fenceWatchViews("t", parkedOnIt, FENCE_AT, {}, [], [], [], {}, [unchecked])[0]?.command?.lastRun, undefined)
+  assert.deepEqual(fenceWatchViews("t", parkedOnIt, FENCE_AT, {}, [], [], [], {}, [{ ...ARMED_COMMAND, state: "passed" }]), [])
 })
 
 // ---- a `shells:` entry rows, an `agents:` entry does NOT (2026-08-26) ----

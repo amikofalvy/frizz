@@ -39,6 +39,10 @@ const alsoProjects = args.filter((a) => a.startsWith("--also-project=")).map((a)
 // A DISPATCH needs real credentials, and a fresh sandbox HOME has none — the broker is the sole claude
 // transport, so a worker under a credential-less HOME simply never starts. `--creds` symlinks the real
 // `~/.claude*` into the sandbox; everything frizz itself writes still lands in the throwaway `~/.frizz`.
+// It is NOT for a live CLAUDE worker on macOS: when its token is due, Claude Code saves the new one to
+// the keychain, this HOME has none, and macOS puts a "Keychain Not Found" modal on the maintainer's
+// screen (AGENTS.md § Never put a macOS keychain dialog on the maintainer's screen). Simulate the
+// worker, or run with --home=$HOME and a throwaway --project.
 const creds = flag("creds")
 // --home=/abs reuses a sandbox a previous `--keep` run left behind, which is the only way to verify
 // anything that happens at BOOT against state that already exists — a schema migration, a registry

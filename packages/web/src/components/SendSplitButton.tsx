@@ -63,7 +63,7 @@ export function SendSplitButton({
 }) {
   const tone = armed ? "bg-fg text-bg" : "bg-panel-2 text-muted"
   // A hovered half tints toward the page rather than fading: the fill under it is the pill's own, so a
-  // fade would show the same colour through and nothing would change.
+  // fade would show the same colour through and nothing would change. The divider wears the same tint.
   const hover = armed ? "hover:bg-bg/10" : ""
   return (
     // THE PILL PAINTS THE FILL, ONCE, and its halves paint only their hover tint. With each piece painting
@@ -100,10 +100,14 @@ export function SendSplitButton({
         {/* The word never changes, so nothing beside the button moves when the way of sending does. */}
         {busy ? <Loader2 size={14} strokeWidth={2.5} className="animate-spin" /> : <span data-send-label>Send</span>}
       </button>
-      {/* The hairline is its own 1px column on the pill's fill, so the two halves read as one surface
-          with a short rule on it rather than as two buttons with a gap between them. */}
-      <span aria-hidden className="flex items-center" style={{ width: SEND_SPLIT_SEAM_WIDTH }}>
-        <span className={`h-3.5 w-px ${armed ? "bg-bg/25" : "bg-fg/15"}`} />
+      {/* THE DIVIDER IS THE HOVER COLOUR: a full-height 1px column wearing the same tint as a lit half
+          (`bg-bg/10`, the `hover` above), so whichever half lights up, on hover or mouse-down, swallows it
+          and the line is gone. The maintainer picked this from eleven mockups (2026-10-13, after "the
+          divider line needs to disappear whenever there's a mouse down. I feel like it should be the same
+          color as the hover color"). It runs the full height because a short one stuck out of the lit
+          half as a notch. A dim button has no hover tint to melt into, so it keeps its short rule. */}
+      <span aria-hidden className={`flex items-center ${armed ? "bg-bg/10" : ""}`} style={{ width: SEND_SPLIT_SEAM_WIDTH }}>
+        {!armed && <span className="h-3.5 w-px bg-fg/15" />}
       </span>
       <RadixMenu.Root modal={false}>
         <RadixMenu.Trigger asChild>

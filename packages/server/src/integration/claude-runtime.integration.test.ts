@@ -196,6 +196,54 @@ test("integration: a delivered follow-up shows in-flight before its user record 
   }
 })
 
+test("integration: a final record that beats its own `result` to disk rests the board with it", async () => {
+  // The turn-END race (measured 2026-10-13 on a live Haiku broker session): the final message's
+  // `assistant` event arrives, its end_turn record is folded ~30 ms later, and the `result` lands a
+  // couple of ms after THAT. In the gap the transcript already carries the reply and its rest divider;
+  // a board still saying `running` drew the chat's Working row under the finished reply for a frame.
+  // The reading's own record is on disk, so the reading knows nothing the fold does not.
+  const h = createIntegrationHarness()
+  try {
+    const OUT = childTranscript(h)
+    const s = h.dispatch("theta")
+    h.telemetry("theta")
+    s.play(
+      record(userRecord("go", T0)),
+      event({ ...assistantEvent("all done", s.sessionId), messageId: "a-final" }),
+      record({ ...assistantRecord("all done", "end_turn", T1), uuid: "a-final" }),
+    )
+    await h.settle()
+    assert.equal(h.telemetry("theta")?.turn, "idle", "no `result` yet, but the fold holds the record the reading came from")
+    assert.equal(h.boardThread("theta")?.runtime, "turn-idle")
+  } finally {
+    h.close()
+  }
+})
+
+test("integration: a `running` whose record is NOT on disk yet still outranks the folded idle", async () => {
+  // The control. The previous turn's final record is folded; a NEW assistant event arrives (a wake that
+  // re-invoked the agent) whose record has not landed. That reading IS ahead of the disk.
+  const h = createIntegrationHarness()
+  try {
+    const OUT = childTranscript(h)
+    const s = h.dispatch("lambda")
+    h.telemetry("lambda")
+    s.play(
+      record(userRecord("go", T0)),
+      event({ ...assistantEvent("first", s.sessionId), messageId: "a-1" }),
+      record({ ...assistantRecord("first", "end_turn", T1), uuid: "a-1" }),
+      event(resultEvent(s.sessionId)),
+    )
+    await h.settle()
+    assert.equal(h.telemetry("lambda")?.turn, "idle")
+    s.play(event({ ...assistantEvent("woken", s.sessionId), messageId: "a-2" }))
+    await h.settle()
+    assert.equal(h.telemetry("lambda")?.turn, "in-flight", "the new message's record is not folded yet")
+  } finally {
+    h.close()
+  }
+})
+
 test("integration: the runtime turn reading is scoped to broker rows and dies with the session", async () => {
   const h = createIntegrationHarness()
   try {
