@@ -38,11 +38,12 @@ const claudeBin = opt("claude-bin", undefined)
 const alsoProjects = args.filter((a) => a.startsWith("--also-project=")).map((a) => a.slice("--also-project=".length))
 // A DISPATCH needs real credentials, and a fresh sandbox HOME has none — the broker is the sole claude
 // transport, so a worker under a credential-less HOME simply never starts. `--creds` symlinks the real
-// `~/.claude*` into the sandbox; everything frizz itself writes still lands in the throwaway `~/.frizz`.
-// It is NOT for a live CLAUDE worker on macOS: when its token is due, Claude Code saves the new one to
-// the keychain, this HOME has none, and macOS puts a "Keychain Not Found" modal on the maintainer's
-// screen (AGENTS.md § Never put a macOS keychain dialog on the maintainer's screen). Simulate the
-// worker, or run with --home=$HOME and a throwaway --project.
+// agent logins into the sandbox; everything frizz itself writes still lands in the throwaway `~/.frizz`.
+// On macOS it leaves CLAUDE's login out: when its token is due, Claude Code saves the new one to the
+// keychain, this HOME has none, and macOS puts a "Keychain Not Found" modal on the maintainer's screen
+// (AGENTS.md § Never put a macOS keychain dialog on the maintainer's screen; maintainer 2026-10-13: keep
+// sandboxes keychain-less, with no real Claude workers in them). A Claude dispatch here fails
+// `AUTH_REQUIRED:claude` instead. Simulate the worker, or run with --home=$HOME and a throwaway --project.
 const creds = flag("creds")
 // --home=/abs reuses a sandbox a previous `--keep` run left behind, which is the only way to verify
 // anything that happens at BOOT against state that already exists — a schema migration, a registry
@@ -62,10 +63,12 @@ process.env.HOME = home
 if (!process.env.FRIZZ_RUNTIMES && !process.env.FRIZZ_RUNTIMES_DIR) {
   process.env.FRIZZ_RUNTIMES_DIR = join(frizzPaths({ home: realHome }).cache, "runtimes")
 }
+// See `--creds` above: on macOS a sandbox HOME never gets Claude's login.
+const claudeLogin = creds && !(process.platform === "darwin" && home !== realHome)
 if (creds) {
   // The agent CLIs read their own credentials out of HOME. `.frizz/builds` rides along so a stack that
   // promotes an artifact starts warm instead of rebuilding from cold.
-  for (const name of [".claude", ".claude.json", ".codex", ".config"]) {
+  for (const name of [...(claudeLogin ? [".claude", ".claude.json"] : []), ".codex", ".config"]) {
     try { symlinkSync(join(realHome, name), join(home, name)) } catch {}
   }
   // ACP agents keep their credentials under XDG data dirs (opencode: ~/.local/share/opencode/auth.json),
@@ -156,7 +159,12 @@ try {
     tenants,
     wakers: flag("wakers"),
     creds,
+    claudeLogin,
   }))
+  // After the json line, never before it: agents read that line first.
+  if (creds && !claudeLogin) {
+    console.error("[adhoc-stack] --creds on macOS leaves Claude's login out of this sandbox: a live Claude worker here would put a keychain dialog on the maintainer's screen. Simulate the worker, or use --home=$HOME.")
+  }
 } catch (error) {
   console.error("[adhoc-stack] boot failed:", error)
   cleanup()
