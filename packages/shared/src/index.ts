@@ -2948,6 +2948,12 @@ export const RegisteredQuestionView = z.object({
   /** A `secret` question only: the path its value will be served at. Known at registration, so the
    *  worker can prepare the command that reads it before the human has answered. */
   secretPath: z.string().optional(),
+  /** ON THE BOARD ONLY: does this question STAND at the thread's current rest — asked at it, or
+   *  referenced by it (server question-fences.ts standingQuestions)? `false` is a question that has
+   *  FADED: still open and answerable where it was asked, but not what this rest is waiting on, so it
+   *  neither queues the thread nor marks its row. Absent — the worker's own read-back, a snapshot from
+   *  before 2026-10-13 — reads as standing (hasStandingQuestion). */
+  standing: z.boolean().optional(),
 }).strict()
 export type RegisteredQuestionView = z.infer<typeof RegisteredQuestionView>
 
@@ -3890,6 +3896,20 @@ export function activeBandThread(t: ThreadView): boolean {
   return sectionOf(t) === "active" && inActiveBand(t)
 }
 
+/**
+ * Does an open registered question STAND at this thread's current rest? The server queues a thread on
+ * exactly these (board.ts → standingQuestions), so every reader that turns "has a question" into a mark
+ * or a count asks this instead of `questions.length`. Until 2026-10-13 they read the length, which was
+ * the same thing while every open question refused the park and held the queue. Once an older question
+ * could fade, the two parted: a thread parked on `status: watching`, or handed off with a ```done
+ * fence, still wore the [?] and counted under "N need you" for a question its worker had moved past —
+ * with no card for it at that rest (the 2026-08-31 report again: "marked as a question status, but
+ * there is no question").
+ */
+export function hasStandingQuestion(t: { readonly questions?: readonly { readonly standing?: boolean }[] }): boolean {
+  return (t.questions ?? []).some((q) => q.standing !== false)
+}
+
 // Moved here from web/src/groups.ts (which re-exports it) on 2026-09-30 so the SERVER can count a
 // project's asks for the phone's projects list with the rule the board's "N need you" uses.
 // A thread "needs action" when it is genuinely waiting on the human — and ONLY once the agent has
@@ -3935,7 +3955,9 @@ export function needsAction(t: ThreadView): boolean {
   // channel — the server queues it once at rest (deriveNeedsYou's openQuestions), and this predicate
   // must agree so the mobile asks-first ordering and the attention sort count it. Same rest-gate as the
   // fence net above: the worker keeps working after registering, and the card lands at its rest.
-  if ((t.questions?.length ?? 0) > 0 && t.runtime !== "running" && t.runtime !== "spawning") return true
+  // STANDING ones only (hasStandingQuestion): a question the worker has rested past since is still
+  // open, but it is not what queues the thread, so it is not what makes the row an ask.
+  if (hasStandingQuestion(t) && t.runtime !== "running" && t.runtime !== "spawning") return true
   // CRASH / STALL net (replaces the old `unread`-gated clause — `unread` no longer drives anything).
   // A thread whose status still claims WORK IN FLIGHT (active or planning) but whose backing agent
   // PROCESS is gone — `exited` (session row present, worker process dead) or `none` (registry lost the row)
@@ -5282,6 +5304,50 @@ export function parseThreadMessage(text: string): { slug: string; title: string;
   const body = rest.slice(open[0].length, close).trim()
   if (!slug || !body) return undefined
   return { slug, title: attributes.get("from-title") || slug, body }
+}
+
+// ---- DID THE HUMAN TYPE THIS? ---------------------------------------------------------------------
+// The one question behind "has the human replied past this question?" (server question-fences.ts
+// standingQuestions): an open question stands from when it was asked or last referenced until the HUMAN
+// TYPES A MESSAGE to the thread, and nothing Frizz delivers is that. Until 2026-10-13 every user record
+// counted, so a question asked beside a `status: working` park left the human's queue the moment a shell
+// finished and woke the worker — before the human had seen it.
+//
+// A user record reaches a worker's transcript from five senders, and only the first is the human:
+//
+//   • the human's own message — a follow-up typed into Frizz, or the prompt that dispatched the thread.
+//     It carries nothing of Frizz's but, after a long silence, the clock note the router appends
+//     (humanGapNote), which is why this is defined by what the others carry rather than by a mark of its own;
+//   • every wake the scheduler delivers — a correction, the sign-off reminder, a Goal or heartbeat
+//     prompt, a timer, a PR, issue or command watch, a shell's completion, a limit resume, and the ANSWER
+//     to a question: each ends in its delivery token (wakeDeliveryToken, appended on the one path they
+//     all take), so isWakeDelivery names them all;
+//   • another thread's `frizzctl steer` (parseThreadMessage) and another Claude session's message
+//     (parseCrossSessionMessage), which ride the follow-up path with no token;
+//   • a background child's report to its parent (parseAgentMessage);
+//   • harness plumbing (isInjectedNoise) and the runtime's interrupt receipt (isInterruptMarker).
+//
+// Retry (the rail, the thread header, the queue card) and the limit card's "Continue now" are the
+// messages the human SENDS without typing: buttons that post one fixed sentence. It says nothing about
+// any question, so it does not count either.
+/** What Retry and "Continue now" send (web lib/retrySession.ts and ChatView's LimitPauseCard post this constant). */
+export const RETRY_FOLLOW_UP = "Continue exactly where you left off."
+
+/** Is this ONE message — a single delivery, as it was queued or sent — the human's own typed words? */
+export function isHumanTypedMessage(text: string): boolean {
+  if (!text.trim()) return false
+  if (isInjectedNoise(text) || isInterruptMarker(text) || isWakeDelivery(text)) return false
+  if (parseThreadMessage(text) || parseCrossSessionMessage(text) || parseAgentMessage(text)) return false
+  return stripHumanGapNote(text).trim() !== RETRY_FOLLOW_UP
+}
+
+/** The human-typed messages a user RECORD carries. The runtime merges whatever was queued while the
+ *  worker was mid-turn into one record (splitWakeDeliveries), so a wake and the human's message can
+ *  share one — and the human's message is still a message. One blind spot, which the fold covers from the
+ *  queue's own records: a human message queued AHEAD of a wake is not separable from it here, because the
+ *  only boundary a record carries is the token that ENDS a delivery (server tailer.ts noteQueuedMessage). */
+export function humanTypedMessagesIn(text: string): string[] {
+  return splitWakeDeliveries(text).filter(isHumanTypedMessage)
 }
 
 // ---- THE PR-WATCHER WAKE STEER (scheduler ↔ chat card) -------------------------------------------

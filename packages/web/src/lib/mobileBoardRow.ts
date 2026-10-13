@@ -144,7 +144,9 @@ export function rowSecondLine(
     return handoffLine(t.lastAssistantLine, true) ?? handoffLine(t.lastAssistant)
   }
   if (kind === "needs-input") {
-    const registered = questionsLine((t.questions ?? []).map((q) => q.spec.question))
+    // The questions standing at this rest — the ones the row's mark is about. An older open one the
+    // worker has rested past keeps its card where it was asked and is not this row's line.
+    const registered = questionsLine((t.questions ?? []).filter((q) => q.standing !== false).map((q) => q.spec.question))
     if (registered) return { text: registered }
     const native = questionsLine((t.pendingAsk?.questions ?? []).map((q) => q.question))
     if (native) return { text: native }

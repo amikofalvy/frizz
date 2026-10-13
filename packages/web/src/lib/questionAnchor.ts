@@ -29,6 +29,12 @@
 // rest never reads as a bare stop with an ask hidden above it, and this file only has to honour what the
 // worker said: a card stays where it was asked until a later rest claims it, and a claim moves it to the
 // end of that rest — under the fence that named it.
+//
+// WHETHER A QUESTION IS STILL THE THREAD'S ASK IS NOT DECIDED HERE. The server decides it — an open
+// question stands from when it was asked or last referenced until the human next TYPES to the thread
+// (server question-fences.ts standingQuestions) — and sends the answer on each row as `standing`. This
+// file only answers "which message does the card sit under", and the one thing it reads `standing` for is
+// a surface that cannot draw that message: see `from` on questionsByAnchor.
 
 import { type AskedQuestion, awaitingQuestions, questionHandles } from "@frizz/shared"
 import { splitFenceBlocks } from "./fenceBlocks.ts"
@@ -116,11 +122,21 @@ function claimOf(claims: ReadonlyMap<string, number>, q: { id?: string; spec?: A
  *  gathers them into one group at its own rest the same way.
  *
  *  `claims: false` reads the ASKING rest alone, ignoring any later fence — the reading lib/questionShadow's
- *  fold needs, because a fence restating a question must fold from the rest that asked it onward. */
-export function questionsByAnchor<Q extends { askedAt: string; id?: string; spec?: AskedQuestion }>(
+ *  fold needs, because a fence restating a question must fold from the rest that asked it onward.
+ *
+ *  `from` is the first message index the surface DRAWS (the queue card's window start; 0 for the drawer,
+ *  whose only undrawn messages are the ones not loaded yet). A question anchored above it has no message
+ *  to sit under, so the surface hoists its group to the top of what it shows — right for a question that
+ *  still STANDS, which must stay reachable from the card, and wrong for one the human has typed past
+ *  (`standing: false` from the server): that one headed the queue card above a newer handoff as though it
+ *  were the current ask, on a row the rail no longer marked as one (reported 2026-10-13). With `from` set,
+ *  a question that no longer stands is left out when its anchor is above the window, and is drawn only in
+ *  place — where its message is on screen. A row with no `standing` (a snapshot from before the flag)
+ *  reads as standing, as it does everywhere else (shared hasStandingQuestion). */
+export function questionsByAnchor<Q extends { askedAt: string; id?: string; spec?: AskedQuestion; standing?: boolean }>(
   messages: readonly AnchorMessage[],
   questions: readonly Q[],
-  opts: { claims?: boolean } = {},
+  opts: { claims?: boolean; from?: number } = {},
 ): Map<number, Q[]> {
   const byAnchor = new Map<number, Q[]>()
   const claims = opts.claims === false || questions.length === 0 ? undefined : questionClaims(messages)
@@ -128,6 +144,7 @@ export function questionsByAnchor<Q extends { askedAt: string; id?: string; spec
     let anchor = questionAnchorIndex(messages, q.askedAt)
     const claimedAt = claims ? claimOf(claims, q) : undefined
     if (claimedAt !== undefined && claimedAt > anchor) anchor = restEnd(messages, claimedAt)
+    if (opts.from !== undefined && q.standing === false && anchor < opts.from) continue
     const group = byAnchor.get(anchor)
     if (group) group.push(q)
     else byAnchor.set(anchor, [q])

@@ -1,7 +1,7 @@
 import { useContext, useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react"
 import { useSnapshot } from "valtio"
 import type { AccountBackend, ThreadSkill, ThreadView } from "@frizz/shared"
-import { awaitingSteps, questionAnswerMessage, withAnswersNote } from "@frizz/shared"
+import { awaitingSteps, hasStandingQuestion, questionAnswerMessage, withAnswersNote } from "@frizz/shared"
 import { rpc } from "../api/rpc.ts"
 import { restoreContextItems, showToast, store, takeContextItems } from "../store.ts"
 import { buildMessageWithContext, hasToken } from "../lib/composerContext.ts"
@@ -123,11 +123,13 @@ export function ThreadComposerBox({
   // agent…" and the drawer "Follow up…" until 2026-10-09, and only the card said when the box was the
   // way AROUND an open question. An external session keeps its own sentence: it says what sending does,
   // which is to take the session over (see ThreadActionBar). An open question is a registered one or a
-  // fence the worker's last message still asks. With an answer staged the box is a note on it, and
-  // with the menu shut this line is also what says how the button will send (sendPlaceholder).
+  // fence the worker's last message still asks — a registered one only while it STANDS (the server's
+  // word, shared hasStandingQuestion): one the human has already typed past is no longer what this box
+  // goes around, and the queue card no longer draws it. With an answer staged the box is a note on it,
+  // and with the menu shut this line is also what says how the button will send (sendPlaceholder).
   const placeholder = thread?.foreign
     ? "Send a message to take over this session…"
-    : sendPlaceholder({ staged, openQuestions: Boolean(thread?.pendingQuestion) || (thread?.questions?.length ?? 0) > 0, running, mode })
+    : sendPlaceholder({ staged, openQuestions: Boolean(thread?.pendingQuestion) || (thread ? hasStandingQuestion(thread) : false), running, mode })
   const projectDir = useProjectDir()
   const key = draftKey.followUp(projectDir, slug, thread?.sessionId)
   const [message, setMessage, clearMessage] = useDraft(key)

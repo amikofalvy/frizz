@@ -1706,11 +1706,18 @@ function sessionThreadView(
   // the just-answered ones still on their way to the worker (answersInFlight). Unfiltered by state for
   // exactly that reason, which is why the batched read behind it is unfiltered too.
   const questionRows = registries.questions.get(row.slug) ?? []
+  // WHICH OF THEM STAND AT THIS REST — asked at it, or referenced by it with an `id:` fence
+  // (question-fences.ts). Only those queue the thread (below), and each row says so on the view, because
+  // the rail's mark and the ask count are derived from these rows by other readers (web groups.ts
+  // sessionIndicatorKind, shared needsAction): told only "open", they marked a parked or finished thread
+  // [?] for a question the queue no longer held it on. An older open question stays answerable where it
+  // was asked, and on the card, but says nothing about where this rest sits (2026-10-13).
+  const standingIds = new Set(standingQuestions(questionRows, rawTele).map((q) => q.id))
   const questions: ThreadView["questions"] = []
   for (const q of questionRows) {
     if (q.state !== "open") continue
     const spec = safeQuestionSpec(q.spec)
-    if (spec) questions.push({ id: q.id, spec, askedAt: new Date(q.asked_at).toISOString() })
+    if (spec) questions.push({ id: q.id, spec, askedAt: new Date(q.asked_at).toISOString(), standing: standingIds.has(q.id) })
   }
   // The dismissal-only case counts as in flight EXACTLY when a cancellation wake is coming — an armed
   // rest Goal with text, the same gate the scheduler's evalQuestionAnswers wakes on. Anything looser
@@ -1797,10 +1804,8 @@ function sessionThreadView(
   const archived = state === "archived"
   const limitPause = resolveLimitPause(row, tele, nowMs)
   const answerInFlight = answerAwaitingDelivery(questionRows, rawTele?.lastUserAt, nowMs)
-  // Only the questions STANDING at this rest queue the thread — asked at it, or referenced by it with an
-  // `id:` fence (question-fences.ts). An older open question stays answerable where it was asked, and on
-  // the card, but says nothing about where this rest sits (2026-10-13).
-  const standingCount = standingQuestions(questionRows, rawTele).length
+  // Only the questions STANDING at this rest queue the thread (`standingIds`, above).
+  const standingCount = standingIds.size
   const needsYou = archived ? false : deriveNeedsYou(row, tele, runtime, interactionPresence.needsUser, nowMs, limitPause, true, deliveryProcessGone, github, registeredPrWatches, armedTimerIds, armedWatches, standingCount, answerInFlight)
   const deliveryInFlight = !archived && deriveDeliveryInFlight(row, runtime, needsYou, deliveryProcessGone, answerInFlight, nowMs)
   const awaitingBackground = archived ? false : deriveAwaitingBackground(row, tele, runtime, interactionPresence.needsUser, nowMs, limitPause, deliveryProcessGone, github, registeredPrWatches, armedTimerIds, armedWatches, standingCount)

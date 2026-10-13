@@ -2151,12 +2151,24 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   // not, and tells the worker at rest. Its question never reached the human, and nothing else would say
   // so: a malformed fence draws as an inert block, and the rest reads as signed off.
   //
-  // ONE CORRECTION PER REST, at rest only, for faults in THIS rest's messages (newer than the human's
-  // last turn) — an older rest's mistakes were either corrected then or are moot now, and a refold after
-  // a restart replays the whole ring. A fault the worker already fixed later in the same rest — the same
-  // id registered or referenced after it — is not news. Counted against PARK_BUMP_MAX with the other
-  // fence corrections; a fence that registers gives the allowance back (syncQuestionFences).
+  // ONE CORRECTION PER REST, at rest only, for the faults the worker has NOT BEEN TOLD ABOUT: the ones in
+  // messages newer than both the human's last typed message (`restFromAt`, the boundary a question
+  // stands across) and the last correction of this kind Frizz delivered (`questionCorrectedAt`). Older
+  // than the first, the human has moved the thread on and the mistake is moot; older than the second, it
+  // was in that correction. A refold after a restart replays the whole ring, and both instants come from
+  // the transcript, so it reads the same window. Until 2026-10-13 the window opened at the newest USER
+  // RECORD of any kind, so a broken fence written mid-turn was forgotten if a timer or another wake
+  // landed before the worker went idle: its question never reached the human and nothing said so.
+  // A fault the worker already fixed later — the same id registered or referenced after it — is not
+  // news. Counted against PARK_BUMP_MAX with the other fence corrections; a fence that registers gives
+  // the allowance back (syncQuestionFences).
+  /** Each thread whose CURRENT rest wrote a ```question fence that could not register, keyed to that
+   *  rest's instant — rebuilt by evalQuestionFences on every tick, corrected or not (the cap may have
+   *  silenced it). SOURCE 12 reads it so an honoured park beside such a fence does not hand back the
+   *  allowance the fence is spending. */
+  const questionFaultRests = new Map<string, string>()
   function evalQuestionFences(nowMs: number): void {
+    questionFaultRests.clear()
     for (const row of deps.storage.allSessions()) {
       if (row.state === "archived" || row.archived === 1) continue
       const tele = deps.tailer.get(row.slug)
@@ -2172,9 +2184,10 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       // The agent must have spoken last, and the turn must have reached the model — SOURCE 9's guards.
       const spokeAt = tele.lastAssistantAt
       if (!spokeAt) continue
-      const restFrom = tele.lastUserAt ? Date.parse(tele.lastUserAt) : Number.NEGATIVE_INFINITY
-      if (Date.parse(spokeAt) <= restFrom) continue
+      if (tele.lastUserAt && Date.parse(spokeAt) <= Date.parse(tele.lastUserAt)) continue
       if (tele.authFault || tele.apiFault) continue
+      const instant = (at: string | undefined) => (at ? Date.parse(at) : Number.NEGATIVE_INFINITY)
+      const restFrom = Math.max(instant(tele.restFromAt ?? tele.lastUserAt), instant(tele.questionCorrectedAt))
       const rows = deps.storage.listThreadQuestions(row.slug)
       const fixedAfter = (id: string | undefined, at: string): boolean => {
         if (!id) return false
@@ -2185,6 +2198,9 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       }
       const faults = sync.faults.filter((f) => Date.parse(f.at) > restFrom && !fixedAfter(f.id, f.at))
       if (faults.length === 0) continue
+      // Only a fault written at THIS rest withholds the allowance: that is the worker repeating the
+      // mistake. An older one still waiting to be told (the cap silenced it) must not also pin the count.
+      if (faults.some((f) => Date.parse(f.at) > instant(tele.lastUserAt))) questionFaultRests.set(row.slug, spokeAt)
       if ((row.park_bumps ?? 0) >= PARK_BUMP_MAX) continue
       const fenceId = parkFenceId(QUESTION_FENCE_CAUSE, spokeAt)
       const deliveryId = wakeDeliveryId(row.slug, row.session_id, fenceId)
@@ -2292,7 +2308,15 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       // it does not give the allowance back either: a worker that keeps leaving the line out would
       // otherwise reset its own cap on every rest.
       const unanswered = needsInputRequired(row.spawned_at) && awaitingNeedsInput(tele.lastFence.hints) === null
-      if (parkIsHonoured(park, live) && !unanswered && (row.park_bumps ?? 0) > 0) deps.storage.resetParkBumps(row.slug)
+      // NOT ON A REST WHOSE ```question FENCE FAILED (2026-10-13). That fence's correction (SOURCE 14) counts
+      // against this same cap, and evalQuestionFences runs first in the tick — so a broken question fence
+      // written beside a valid park was counted and then handed straight back here, and a worker that kept
+      // rewriting both was corrected on every rest without end (measured: six identical rests, six
+      // corrections, the count never off zero). Keyed on the FAULT, not on a correction having gone out:
+      // keyed on the correction, the rest the cap silenced reset the count and the loop resumed three
+      // rests later. An honoured park proves the PARK is right, not the other fence in the same message.
+      const questionFaulted = questionFaultRests.get(row.slug) === spokeAt
+      if (parkIsHonoured(park, live) && !unanswered && !questionFaulted && (row.park_bumps ?? 0) > 0) deps.storage.resetParkBumps(row.slug)
       if (dead.length === 0 && !expired && !nameless) {
         // The answer is corrected only once the ITEMS are right. A fence that names dead work or none is
         // told about that first — adding `status:` would not make it a park, and a worker waiting on
@@ -3858,6 +3882,14 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       // so neither holds it.
       const reminder = outbox.get(wakeDeliveryId(row.slug, row.session_id, signoffFenceId(restedAt)))
       if (reminder && reminder.state !== "superseded" && reminder.state !== "exhausted") continue
+      // …AND SO DID A ```question FENCE'S CORRECTION (SOURCE 14, 2026-10-13), for the same reason. On a
+      // Goal thread every non-secret question is refused with "decide it yourself and proceed", so a rest
+      // that asked one drew that correction AND this prompt, handed over together as "Frizz held 2 wakes"
+      // — two voices for one rest, the shape the reminder hold above exists to prevent and the one an
+      // ```awaiting fence's correction already holds the Goal for (restMessageIsSignedOff). The correction
+      // is the voice that says what went wrong; the Goal speaks at the worker's next rest.
+      const questionCorrection = outbox.get(wakeDeliveryId(row.slug, row.session_id, parkFenceId(QUESTION_FENCE_CAUSE, restedAt)))
+      if (questionCorrection && questionCorrection.state !== "superseded" && questionCorrection.state !== "exhausted") continue
       const fenceId = stopHookFenceId(armed.armedAt, restedAt)
       const deliveryId = wakeDeliveryId(row.slug, row.session_id, fenceId)
       // Terminal rows stay in the store, so this alone is what makes a rest bump EXACTLY once: the same

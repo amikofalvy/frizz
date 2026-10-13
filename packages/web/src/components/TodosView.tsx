@@ -24,7 +24,7 @@ import { prefersReducedMotion } from "../lib/sheet.ts"
 import { REST_CATCH_UP_MS } from "../lib/steering.ts"
 import { returningHolds } from "../lib/queueReturn.ts"
 import { questionsByAnchor } from "../lib/questionAnchor.ts"
-import { allFencesShadowed, placedFrom, placedRestEnds, placeQuestions, questionsAtCurrentRest, registeredStandingAt } from "../lib/questionShadow.ts"
+import { allFencesShadowed, placedFrom, placedRestEnds, placeQuestions, registeredStandingAt } from "../lib/questionShadow.ts"
 import { settledQuestionPositions } from "../lib/settledQuestions.ts"
 import { Message, PermPolicyDenialCard, TranscriptSyncFallbackBanner, transcriptBackgroundShells, withoutLiveTranscriptBackgroundTools, runtimeStatusGapFor, RuntimeStatusLadder, VSpace, STEP, PICTURE_STEP, runtimeStatusRung, type RuntimeStatusState, messageGap, messageHeadIsPicture, messageRendersNothing, messageHasRenderableText, lastAssistantIndex } from "./ChatView.tsx"
 import { BLOCK_RADIUS, BLOCK_RADIUS_TOP, BLOCK_RADIUS_INNER_BOTTOM } from "./TranscriptCard.tsx"
@@ -169,8 +169,6 @@ function resumeNativeAnchoring(): void {
 
 // A message as the queue's text-only render draws it: the prose, with its tool bands dropped. The gap
 // rule (messageGap) reads a row's edges, and a text-only row's edges are prose whatever the message held.
-// A stable empty list for a thread with no `questions` yet, so the memos keyed on it hold.
-const NO_QUESTIONS: readonly RegisteredQuestionView[] = []
 
 function proseOnly(m: ChatMessage): ChatMessage {
   return { ...m, tools: [], parts: m.parts?.filter((part) => part.kind !== "tools") }
@@ -1181,16 +1179,14 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
   // anchor group; its rest's stack still carries a Send for it (placedRestEnds). A marker ABOVE the
   // window places nothing here — that message is not drawn — so its card flushes first (placedFrom).
   const placement = useMemo(() => placedFrom(placeQuestions(messages, openQuestions), visibleStart), [messages, openQuestions, visibleStart])
-  // Whether an open question is THIS rest's ending, for the residual card below (RestedCard) — off the
-  // board's questions, not the locally answered-away list (ChatView's copy of this rung says why).
-  const boardQuestions = thread.questions ?? NO_QUESTIONS
-  const questionsHere = useMemo(() => questionsAtCurrentRest(messages, boardQuestions), [messages, boardQuestions])
   const questionAnchors = useMemo(() => {
     const tail: RegisteredQuestionView[] = []
     const byAnchor = new Map<number, RegisteredQuestionView[]>()
     const tailAnchor = messages.length - 1
     const unplaced = openQuestions.filter((q) => !placement.placedIds.has(q.id))
-    for (const [anchor, group] of questionsByAnchor(messages, unplaced)) {
+    // `from`: a question the human has typed past is not hoisted to the top of this card from a rest the
+    // window cut away — it is drawn only where its message is (lib/questionAnchor questionsByAnchor).
+    for (const [anchor, group] of questionsByAnchor(messages, unplaced, { from: visibleStart })) {
       if (anchor >= tailAnchor) { tail.push(...group); continue }
       const at = byAnchor.get(anchor)
       if (at) at.push(...group)
@@ -1204,7 +1200,7 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
       if (!byAnchor.has(end)) byAnchor.set(end, [])
     }
     return { byAnchor, tail, tailSend, sendAnchors }
-  }, [messages, openQuestions, placement])
+  }, [messages, openQuestions, placement, visibleStart])
   const settledPlacement = useMemo(() => settledQuestionPositions(messages, settledQuestions), [messages, settledQuestions])
   // A thread dispatched after the free-form fence was retired never gets a fence controller: a
   // ```question with a body is prose there, drawn read-only, and the registered card is the only
@@ -1426,7 +1422,7 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
     thread,
     showWorking: running,
     registeredDone: showsRegisteredDoneCard(thread, lastAgentText),
-    restedCard: showsRestedCard(thread, lastAgentText, questionsHere),
+    restedCard: showsRestedCard(thread, lastAgentText),
     errorVisible: providerErrorVisible(visible, thread.providerError),
   }
   const queueRung = runtimeStatusRung(queueStatus)

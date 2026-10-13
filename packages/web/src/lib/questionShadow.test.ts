@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { allFencesShadowed, fenceRestatesRegistered, fenceStandsFor, markerIdsIn, placedFrom, placementNamesIn, placeQuestions, questionNames, questionsAtCurrentRest, registeredStandingAt, resolveQuestionName } from "./questionShadow.ts"
+import { allFencesShadowed, fenceRestatesRegistered, fenceStandsFor, markerIdsIn, placedFrom, placementNamesIn, placeQuestions, questionNames, registeredStandingAt, resolveQuestionName } from "./questionShadow.ts"
 import { type MessageSegment, splitQuestionBlocks } from "./questionBlocks.ts"
 
 // The pair from the 2026-08-28 report, verbatim: the registration (a plain string — the `ask` schema
@@ -211,16 +211,6 @@ test("a placement above a surface's window is dropped there, so the card rejoins
   assert.equal(placedFrom(full, 0), full, "no window, nothing to drop")
 })
 
-test("questionsAtCurrentRest: a question carried from an older rest is not the current rest's ending until something here names it", () => {
-  assert.equal(questionsAtCurrentRest(STALE, [QUESTION]), false, "asked and placed at the older rest, named nowhere since")
-  const claimed = STALE.map((m, i) => (i === 3 ? { ...m, text: CLAIM(QUESTION.id) } : m))
-  assert.equal(questionsAtCurrentRest(claimed, [QUESTION]), true, "a fence here names it")
-  const marked = STALE.map((m, i) => (i === 3 ? { ...m, text: MARKER(QUESTION.id) } : m))
-  assert.equal(questionsAtCurrentRest(marked, [QUESTION]), true, "a marker here places it")
-  assert.equal(questionsAtCurrentRest(STALE, [{ ...QUESTION, askedAt: at(25) }]), true, "asked at this rest")
-  assert.equal(questionsAtCurrentRest(STALE, []), false)
-})
-
 test("a claiming rest that also writes the marker places the card in its own prose", () => {
   const claimed = STALE.map((m, i) => (i === 3 ? { ...m, text: `${MARKER(QUESTION.id)}${CLAIM(QUESTION.id)}` } : m))
   const { placed } = placeQuestions(claimed, [QUESTION])
@@ -299,7 +289,6 @@ test("a LATER rest's `id:` reference claims the card: it leaves the asking prose
   ]
   const { placed } = placeQuestions(later, [FENCED_ROW])
   assert.deepEqual([...placed.keys()], [3])
-  assert.equal(questionsAtCurrentRest(later, [FENCED_ROW]), true, "the referencing rest is the current one, and the card is its ending")
   // A follow-up's handle is a name for the whole card.
   const byBranch = later.map((m, i) => (i === 3 ? { ...m, text: `Still need it:\n\n${REF_FENCE("sqlite-path")}` } : m))
   assert.deepEqual([...placeQuestions(byBranch, [FENCED_ROW]).placed.keys()], [3])
@@ -308,5 +297,4 @@ test("a LATER rest's `id:` reference claims the card: it leaves the asking prose
 test("a later rest that says nothing about a fenced question leaves its card in the asking prose", () => {
   const later = [...ASKED, { role: "user", at: at(8), text: "Do the docs first." }, { role: "assistant", at: at(12), text: "Docs are in." }]
   assert.deepEqual([...placeQuestions(later, [FENCED_ROW]).placed.keys()], [1])
-  assert.equal(questionsAtCurrentRest(later, [FENCED_ROW]), false)
 })

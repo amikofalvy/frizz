@@ -12,7 +12,7 @@
 // card says that instead, beside the header's Retry. Both are last in ChatView's chain: every rung above
 // is a harder reading of the same slot and wins it.
 import { CircleDashed, TriangleAlert } from "lucide-react"
-import type { ThreadView } from "@frizz/shared"
+import { hasStandingQuestion, type ThreadView } from "@frizz/shared"
 import { splitFenceBlocks } from "../lib/fenceBlocks.ts"
 import { hasQuestionBlock } from "../lib/questionBlocks.ts"
 import { CARD_BODY, TranscriptCard } from "./TranscriptCard.tsx"
@@ -30,15 +30,7 @@ export type RestedCardThread = Pick<
  *  `lastAssistantText` is the transcript's own copy of "no ```done, no ```question" in the final message:
  *  the board's `pendingQuestion` and `lastFence` say the same, but the message is what the reader is
  *  looking at, and a card claiming no sign-off directly under a fenced one would be the two disagreeing. */
-export function showsRestedCard(
-  thread: RestedCardThread | undefined,
-  lastAssistantText: string | undefined,
-  // Does an open question render at THIS rest (lib/questionShadow questionsAtCurrentRest)? Since
-  // 2026-10-05 a question asked at an earlier rest stays there unless a later fence names it, so it is not
-  // this rest's ending, and a bare rest beside it draws this card. A caller without the transcript omits
-  // it, and any open question then counts — the reading from before that change.
-  questionsHere?: boolean,
-): boolean {
+export function showsRestedCard(thread: RestedCardThread | undefined, lastAssistantText: string | undefined): boolean {
   if (!thread || thread.kind !== "session" || thread.foreign) return false
   if (thread.runtime !== "turn-idle" && thread.runtime !== "exited") return false
   if (thread.needsYou !== true) return false
@@ -46,7 +38,16 @@ export function showsRestedCard(
   // A stall is the exception to every text check below: the final record is often a tool call with no
   // prose at all, and the card is about the process, not the message.
   if (thread.crashed === true) return true
-  if (thread.lastFence || thread.pendingQuestion || (questionsHere ?? (thread.questions?.length ?? 0) > 0)) return false
+  // AN OPEN QUESTION IS THIS REST'S ENDING WHILE IT STANDS, and the server says whether it does (shared
+  // hasStandingQuestion; server standingQuestions): from when it was asked or last referenced until the
+  // human next types to the thread. Until 2026-10-13 this was worked out HERE from the transcript — the
+  // question had to render at the newest rest — so a worker that asked, was woken by a shell finishing
+  // and rested again drew "Rested without a sign-off" under a question the board still queued it for.
+  // One that no longer stands is not an ending: the human replied past it, and a bare rest after that is
+  // a bare rest and says so. Read off the BOARD's rows on purpose: a question the human has just answered
+  // stays on them until the board says the worker is running, so the beat between the two never reads as
+  // a rest that asked nothing (measured at 25ms on a real worker, 2026-10-12).
+  if (thread.lastFence || thread.pendingQuestion || hasStandingQuestion(thread)) return false
   // AN ANSWER IN FLIGHT IS NOT A BARE REST. The human answered a registered question and the worker has
   // not been handed it yet; the registered-question slot draws their answer for those seconds, and this
   // card claiming nobody signed anything off is both wrong and the louder of the two. The same field

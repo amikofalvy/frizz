@@ -4,7 +4,7 @@ import { useSnapshot } from "valtio"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useVirtualizer } from "@tanstack/react-virtual"
 import { AlertTriangle, ArrowDown, ArrowUp, Bot, Check, ChevronRight, FileText, HelpCircle, Hourglass, KeyRound, ListChecks, Loader2, Radar, TerminalSquare, type LucideIcon } from "lucide-react"
-import { awaitingFenceTitle, awaitingSteps, questionFencesLive } from "@frizz/shared"
+import { awaitingFenceTitle, awaitingSteps, questionFencesLive, RETRY_FOLLOW_UP } from "@frizz/shared"
 import type { AskQuestion, AwaitingHint, BgShellView, PendingAsk, RegisteredQuestionView, SubAgentView, ThreadView as ThreadViewData, TranscriptEdit, TranscriptMessage, TranscriptPart, TranscriptTodo, TranscriptToolCall } from "@frizz/shared"
 import { store, threadBySlug, pushDrawer, pushSubAgentDrawer, pushBackgroundShellDrawer, showToast } from "../store.ts"
 import { useBackgroundShellLines, useBoard, useProjectDir, useTranscript, type ChatMessage, type TranscriptData } from "../hooks.ts"
@@ -28,7 +28,7 @@ import { RestedCard, showsRestedCard } from "./RestedCard.tsx"
 import { ProviderErrorCard, providerErrorVisible } from "./ProviderErrorCard.tsx"
 import { answersNote, parseAnswersCard, pairAllAnswers, unrenderedAnswers, type PairedAnswer } from "../lib/answersMessage.ts"
 import { questionsByAnchor } from "../lib/questionAnchor.ts"
-import { fenceStandsFor, placedRestEnds, placeQuestions, questionsAtCurrentRest, registeredStandingAt, resolveQuestionName, type QuestionPlacement } from "../lib/questionShadow.ts"
+import { fenceStandsFor, placedRestEnds, placeQuestions, registeredStandingAt, resolveQuestionName, type QuestionPlacement } from "../lib/questionShadow.ts"
 import { settledQuestionPositions, type SettledPlacement } from "../lib/settledQuestions.ts"
 import { FrizzWake } from "./FrizzWake.tsx"
 import { LinkifiedText } from "./LinkifiedText.tsx"
@@ -347,16 +347,9 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
   // because no message carries it (lib/registeredDone). Keyed on the final assistant message so a worker
   // that also wrote the fence gets one card, from the message, not two.
   const registeredDone = showsRegisteredDoneCard(thread, lastAgentIdx >= 0 ? presentationMessages[lastAgentIdx]?.text : undefined)
-  // The RESIDUAL rung: a rest that carries no other card at all (RestedCard). Same final-message key. An
-  // open question counts as this rest's card only where it renders at this rest (questionsAtCurrentRest).
-  // Read off the BOARD's questions, not `openQuestions`: a question the human has just answered leaves
-  // the open list the instant they send, a beat before the board says the worker is running, and in that
-  // beat this rest read as one that asked nothing — "Rested without a sign-off" drew under the answer and
-  // was gone 25ms later (measured on a real worker, 2026-10-12). The rest did ask; answering it does not
-  // change that, and the board's own copy moves on together with the runtime that retires this rung.
-  const boardQuestions = thread?.questions ?? NO_QUESTIONS
-  const questionsHere = useMemo(() => questionsAtCurrentRest(messages, boardQuestions), [messages, boardQuestions])
-  const restedCard = showsRestedCard(thread, lastAgentIdx >= 0 ? presentationMessages[lastAgentIdx]?.text : undefined, questionsHere)
+  // The RESIDUAL rung: a rest that carries no other card at all (RestedCard). Same final-message key.
+  // Whether an open question is this rest's ending is the server's answer, read there off the board.
+  const restedCard = showsRestedCard(thread, lastAgentIdx >= 0 ? presentationMessages[lastAgentIdx]?.text : undefined)
   // Everything the runtime-status ladder needs that it cannot work out itself — see runtimeStatusRung.
   const runtimeStatus: RuntimeStatusState = { thread, showWorking, registeredDone, restedCard, errorVisible: providerErrorVisible(presentationMessages, thread?.providerError) }
   // Question-block interactivity in the thread view: EVERY ask stays answerable, wherever it sits —
@@ -1000,11 +993,8 @@ function VirtualizedThreadTranscript({
   // because no message carries it (lib/registeredDone). Keyed on the final assistant message so a worker
   // that also wrote the fence gets one card, from the message, not two.
   const registeredDone = showsRegisteredDoneCard(thread, lastAgentIdx >= 0 ? messages[lastAgentIdx]?.text : undefined)
-  // The RESIDUAL rung: a rest that carries no other card at all (RestedCard). Same final-message key, and
-  // the same board questions as ChatView's copy of this rung, for the same reason.
-  const boardQuestions = thread?.questions ?? NO_QUESTIONS
-  const questionsHere = useMemo(() => questionsAtCurrentRest(messages, boardQuestions), [messages, boardQuestions])
-  const restedCard = showsRestedCard(thread, lastAgentIdx >= 0 ? messages[lastAgentIdx]?.text : undefined, questionsHere)
+  // The RESIDUAL rung: a rest that carries no other card at all (RestedCard). Same final-message key.
+  const restedCard = showsRestedCard(thread, lastAgentIdx >= 0 ? messages[lastAgentIdx]?.text : undefined)
   // Everything the runtime-status ladder needs that it cannot work out itself — see runtimeStatusRung.
   // The row EXISTS when some rung wins, and its own gap is that same answer: the eager path derives both
   // from the identical call, so the two cannot disagree about which card this thread gets.
@@ -1042,7 +1032,9 @@ function VirtualizedThreadTranscript({
       return rowIdx
     }
     const unplaced = openQuestions.filter((q) => !placement.placedIds.has(q.id))
-    for (const [anchor, group] of questionsByAnchor(messages, unplaced)) {
+    // `from: 0`: a question the human has typed past, asked above the loaded window, is not hoisted over
+    // everything — it draws where its message is once that is loaded (lib/questionAnchor questionsByAnchor).
+    for (const [anchor, group] of questionsByAnchor(messages, unplaced, { from: 0 })) {
       if (anchor >= tailAnchor) { tail.push(...group); continue }
       const rowIdx = rowOf(anchor)
       const at = byRow.get(rowIdx)
@@ -2125,8 +2117,6 @@ function withSpacers(blocks: ReactNode[], h: number | ((index: number) => number
 // caller's ordinary pitch otherwise. `edges` runs parallel to the block list. See PICTURE_STEP.
 type PictureEdges = { head: boolean; tail: boolean }
 const NO_PICTURE: PictureEdges = { head: false, tail: false }
-// A stable empty list for a thread with no `questions` yet, so the memos keyed on it hold.
-const NO_QUESTIONS: readonly RegisteredQuestionView[] = []
 function pictureAwareGap(edges: readonly PictureEdges[], ordinary: number): (index: number) => number {
   return (i) => (edges[i - 1]?.tail || edges[i]?.head ? PICTURE_STEP : ordinary)
 }
@@ -4375,7 +4365,7 @@ export function LimitPauseCard({ slug, sessionId, pause }: { slug: string; sessi
     setContinuing(true)
     // The message is a non-empty constant, so `started` is always true here; the reset-on-false is a
     // belt-and-suspenders that keeps the button from sticking disabled if that ever changes.
-    const started = sendEagerFollowUp(queryClient, slug, "Continue exactly where you left off.", {
+    const started = sendEagerFollowUp(queryClient, slug, RETRY_FOLLOW_UP, {
       onSuccess: () => { setContinuing(false); showToast("Continuing…") },
       onRollback: () => setContinuing(false),
       failureToast: (m) => `Continue failed: ${m.slice(0, 80)}`,
