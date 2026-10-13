@@ -2948,6 +2948,12 @@ export const RegisteredQuestionView = z.object({
   /** A `secret` question only: the path its value will be served at. Known at registration, so the
    *  worker can prepare the command that reads it before the human has answered. */
   secretPath: z.string().optional(),
+  /** ON THE BOARD ONLY: does this question STAND at the thread's current rest — asked at it, or
+   *  referenced by it (server question-fences.ts standingQuestions)? `false` is a question that has
+   *  FADED: still open and answerable where it was asked, but not what this rest is waiting on, so it
+   *  neither queues the thread nor marks its row. Absent — the worker's own read-back, a snapshot from
+   *  before 2026-10-13 — reads as standing (hasStandingQuestion). */
+  standing: z.boolean().optional(),
 }).strict()
 export type RegisteredQuestionView = z.infer<typeof RegisteredQuestionView>
 
@@ -3873,6 +3879,20 @@ export function activeBandThread(t: ThreadView): boolean {
   return sectionOf(t) === "active" && inActiveBand(t)
 }
 
+/**
+ * Does an open registered question STAND at this thread's current rest? The server queues a thread on
+ * exactly these (board.ts → standingQuestions), so every reader that turns "has a question" into a mark
+ * or a count asks this instead of `questions.length`. Until 2026-10-13 they read the length, which was
+ * the same thing while every open question refused the park and held the queue. Once an older question
+ * could fade, the two parted: a thread parked on `status: watching`, or handed off with a ```done
+ * fence, still wore the [?] and counted under "N need you" for a question its worker had moved past —
+ * with no card for it at that rest (the 2026-08-31 report again: "marked as a question status, but
+ * there is no question").
+ */
+export function hasStandingQuestion(t: Pick<ThreadView, "questions">): boolean {
+  return (t.questions ?? []).some((q) => q.standing !== false)
+}
+
 // Moved here from web/src/groups.ts (which re-exports it) on 2026-09-30 so the SERVER can count a
 // project's asks for the phone's projects list with the rule the board's "N need you" uses.
 // A thread "needs action" when it is genuinely waiting on the human — and ONLY once the agent has
@@ -3918,7 +3938,9 @@ export function needsAction(t: ThreadView): boolean {
   // channel — the server queues it once at rest (deriveNeedsYou's openQuestions), and this predicate
   // must agree so the mobile asks-first ordering and the attention sort count it. Same rest-gate as the
   // fence net above: the worker keeps working after registering, and the card lands at its rest.
-  if ((t.questions?.length ?? 0) > 0 && t.runtime !== "running" && t.runtime !== "spawning") return true
+  // STANDING ones only (hasStandingQuestion): a question the worker has rested past since is still
+  // open, but it is not what queues the thread, so it is not what makes the row an ask.
+  if (hasStandingQuestion(t) && t.runtime !== "running" && t.runtime !== "spawning") return true
   // CRASH / STALL net (replaces the old `unread`-gated clause — `unread` no longer drives anything).
   // A thread whose status still claims WORK IN FLIGHT (active or planning) but whose backing agent
   // PROCESS is gone — `exited` (session row present, worker process dead) or `none` (registry lost the row)

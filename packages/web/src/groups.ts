@@ -3,6 +3,7 @@ import {
   futureSnoozedUntil,
   hasLiveOps,
   hasLiveSubAgents,
+  hasStandingQuestion,
   inActiveBand,
   isActivelyRunning,
   isDeclaredAwaiting,
@@ -599,7 +600,13 @@ export function sessionIndicatorKind(t: ThreadView): SessionIndicatorKind {
   // rather than the bare-rest ellipsis it wore before this branch existed (maintainer 2026-08-31: a
   // queue card showing a question beside a row marked […]). Above "snoozed" and "stalled" on purpose:
   // an ask outranks a park, and a real human ask stays a question after the worker exits.
-  if ((t.questions?.length ?? 0) > 0) return "needs-input"
+  //
+  // ONLY A QUESTION THAT STANDS AT THIS REST (shared hasStandingQuestion, 2026-10-13). The server queues
+  // on those alone, so an older open question the worker has rested past is not this row's state: read
+  // off `questions.length`, a thread parked on `status: watching` sat dimmed in Snoozed wearing the [?],
+  // and one handed off with a ```done fence wore it in place of its check — with no question card at
+  // that rest in either case. The older question keeps its card where it was asked.
+  if (hasStandingQuestion(t)) return "needs-input"
 
   if (isSnoozed(t)) return "snoozed"
   // KILLED BY A USAGE LIMIT. Its own attention mark — the yellow hourglass — because it is BOTH things

@@ -236,6 +236,42 @@ test("sessionIndicatorKind: a user snooze outranks an ask the server has already
   assert.equal(sessionIndicatorKind(thread({ kind: "session", state: "open", needsYou: true, runtime: "turn-idle", pendingQuestion: true })), "needs-input")
 })
 
+// A FADED QUESTION IS NOT THE ROW'S STATE (2026-10-13). The server queues a thread on the questions
+// STANDING at its rest — asked at it or referenced by it — and marks each open row on the view
+// (`standing`). An older open question the worker has rested past stays answerable where it was asked;
+// read off `questions.length`, it put the [?] on rows the server had parked or handed off, with no
+// question card at that rest (the 2026-08-31 report again, by a new route). The three views below are the
+// board's own output for those rests (server question-rest.test.ts builds them through the real board).
+test("sessionIndicatorKind: an open question that no longer stands does not mark the row", () => {
+  const faded = [{ ...regQuestion[0], standing: false }]
+  const standing = [{ ...regQuestion[0], standing: true }]
+  const session = { kind: "session" as const, state: "open" as const, runtime: "turn-idle" as const }
+  const awaitingTimer = { kind: "awaiting" as const, body: "", hints: [{ kind: "timer" as const, value: "tmr_aaaa" }, { kind: "for" as const, value: "3h" }] }
+  // Parked on `status: watching`: the dimmed Snoozed band, and the park's own mark — never a [?] there.
+  const watching = thread({ ...session, needsYou: false, waitStatus: "watching", lastFence: awaitingTimer, questions: faded })
+  assert.equal(sectionOf(watching), "snoozed")
+  assert.equal(sessionIndicatorKind(watching), "snoozed")
+  assert.equal(needsAction(watching), false)
+  // Handed off with a ```done fence: queued, wearing the check.
+  const done = thread({ ...session, needsYou: true, lastFence: { kind: "done", body: "- Landed it.", hints: [] }, questions: faded })
+  assert.equal(sessionIndicatorKind(done), "done")
+  assert.equal(needsAction(done), false)
+  // A bare rest: the ellipsis.
+  assert.equal(sessionIndicatorKind(thread({ ...session, needsYou: true, questions: faded })), "rest")
+  // THE SAME THREE RESTS WITH THE QUESTION STANDING are asks — referenced at the rest, or asked at it.
+  for (const view of [watching, done]) {
+    assert.equal(sessionIndicatorKind(thread({ ...view, needsYou: true, questions: standing })), "needs-input")
+    assert.equal(needsAction(thread({ ...view, needsYou: true, questions: standing })), true)
+  }
+  // A view from before the flag existed reads as standing — the old rule, for an old snapshot.
+  assert.equal(sessionIndicatorKind(thread({ ...done, questions: regQuestion })), "needs-input")
+  // One of each: the standing one decides.
+  assert.equal(sessionIndicatorKind(thread({ ...done, questions: [...faded, { ...standing[0], id: "qst_ef56ab78" }] })), "needs-input")
+  // WHILE THE THREAD RUNS the "?" inside the spinner still reads every open question: it says an
+  // answer would steer the work, which is as true of an older question as of a new one.
+  assert.equal(workingWithOpenQuestion(thread({ ...session, needsYou: false, runtime: "running", questions: faded })), true)
+})
+
 test("needsAction: a user-snoozed ask is not an attention row — the server dequeued it", () => {
   const parked = { snoozedUntil: "2999-01-01T00:00:00.000Z", runtime: "turn-idle" as const }
   assert.equal(needsAction(thread({ ...parked, pendingQuestion: true })), false)

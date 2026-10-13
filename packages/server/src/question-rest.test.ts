@@ -8,6 +8,7 @@ import assert from "node:assert/strict"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { boardAskThread, needsAction, sectionOf } from "@frizz/shared"
 import { Bus } from "./bus.ts"
 import { createBoard } from "./board.ts"
 import type { Project } from "./project.ts"
@@ -133,4 +134,144 @@ test("on a Goal thread, a refused question takes the rest: the Goal stands down 
     await w.tick(4)
     assert.ok(w.deliveries().some((id) => id.startsWith("stophook:")), "the next rest gets the Goal")
   } finally { w.close() }
+})
+
+// ── A FADED question: open, asked at an earlier rest, not referenced by this one ─────────────────────
+
+// The server queues a thread on the questions STANDING at its rest (standingQuestions), but the board
+// sent every open row alike, and both readers of the view — the rail's mark (web groups.ts
+// sessionIndicatorKind) and the ask count (shared needsAction) — took any open row for an ask. So a
+// thread whose worker had moved on wore the [?] and counted under "N need you" wherever it sat: parked in
+// Snoozed, working in Active with no card behind it, or queued as a finished handoff. That is the mark
+// the maintainer reported on 2026-08-31 ("marked as a question status, but there is no question"),
+// re-opened by the rule that lets an older question fade. The view now says which rows stand.
+async function fadedQuestion() {
+  const w = world()
+  w.user(0, "move the settings into a real store")
+  w.say(1, `One call to make first.\n\n${choice("store")}`)
+  await w.tick(2)
+  assert.deepEqual(w.view().questions.map((q) => q.standing), [true], "asked at this rest: it stands")
+  assert.equal(needsAction(w.view()), true)
+  // The human steers past it without answering, so the question belongs to an older rest from here on.
+  w.user(3, "leave that for now and finish the migration")
+  return w
+}
+
+test("a faded question beside a `status: watching` park: Snoozed, out of the queue, and not an ask", async () => {
+  const w = await fadedQuestion()
+  try {
+    w.storage.armThreadTimer({ id: "tmr_aaaa", slug: "t", prompt: "check the release", fireAtMs: Date.parse(at(120)), createdAtMs: Date.parse(at(3)) })
+    w.say(4, fence("awaiting", "status: watching\ntimers: [tmr_aaaa]\nfor: 3h"))
+    await w.tick(5)
+    const t = w.view()
+    assert.equal(t.needsYou, false, "the park is honoured — the old question does not queue the thread")
+    assert.equal(sectionOf(t), "snoozed")
+    assert.deepEqual(t.questions.map((q) => [q.spec.handle, q.standing]), [["store", false]], "still open and answerable, and marked as not standing")
+    assert.equal(needsAction(t), false, "nothing the human is being asked at this rest")
+    assert.deepEqual(w.deliveries(), [], "and the worker is not corrected for it")
+  } finally { w.close() }
+})
+
+test("a faded question beside a ```done fence or a bare rest queues the thread as that rest, not as an ask", async () => {
+  const done = await fadedQuestion()
+  try {
+    done.say(4, `Migration finished.\n\n${fence("done", "- Landed the migration on main.")}`)
+    await done.tick(5)
+    const t = done.view()
+    assert.equal(t.needsYou, true, "a done handoff queues")
+    assert.equal(t.lastFence?.kind, "done")
+    assert.equal(needsAction(t), false, "…as a handoff, not as a question")
+    assert.equal(boardAskThread(t), false, "so it is not one of the board's \"N need you\"")
+  } finally { done.close() }
+  const bare = await fadedQuestion()
+  try {
+    bare.say(4, "Migration finished.")
+    await bare.tick(5)
+    assert.equal(needsAction(bare.view()), false)
+    assert.deepEqual(bare.deliveries(), [`signoff:${at(4)}`], "a bare rest, nudged as one")
+  } finally { bare.close() }
+})
+
+test("a reference brings a faded question back to the rest, and a question beats a ```done fence", async () => {
+  const w = await fadedQuestion()
+  try {
+    w.say(4, `Migration finished, and the store is the last open call.\n\n${fence("question", "id: store")}\n\n${fence("done", "- Landed the migration on main.")}`)
+    await w.tick(5)
+    const t = w.view()
+    assert.deepEqual(t.questions.map((q) => q.standing), [true])
+    assert.equal(t.needsYou, true)
+    assert.equal(needsAction(t), true, "the question is this rest's ask, whatever the fence below it says")
+    assert.deepEqual(w.deliveries(), [], "no correction and no nudge")
+  } finally { w.close() }
+})
+
+// ── A faded question is still a question: answering it wakes the worker wherever the thread rests ────
+
+test("answering a faded question wakes the worker at a done rest and at a watching park; an archived thread keeps it for its reopening", async () => {
+  for (const shape of ["done", "watching", "archived"] as const) {
+    const w = await fadedQuestion()
+    try {
+      w.storage.armThreadTimer({ id: "tmr_aaaa", slug: "t", prompt: "check the release", fireAtMs: Date.parse(at(120)), createdAtMs: Date.parse(at(3)) })
+      w.say(4, shape === "watching" ? fence("awaiting", "status: watching\ntimers: [tmr_aaaa]\nfor: 3h") : fence("done", "- Landed the migration on main."))
+      if (shape === "archived") w.storage.setState("t", "archived")
+      await w.tick(5)
+      const [q] = w.storage.listThreadQuestions("t")
+      w.storage.answerThreadQuestion(q.id, JSON.stringify({ questionId: q.id, question: "SQLite or a JSON file?", chosen: ["SQLite"] }), Date.parse(at(6)))
+      await w.tick(7)
+      if (shape === "archived") {
+        assert.deepEqual(w.sent, [], "an archived thread is told nothing…")
+        w.storage.setState("t", "open")
+        await w.tick(8)
+      }
+      assert.equal(w.sent.length, 1, `${shape}: one wake`)
+      assert.match(w.sent[0], /^Answers to earlier questions:\n1\. “SQLite or a JSON file\?” → SQLite/)
+    } finally { w.close() }
+  }
+})
+
+test("dismissing a faded question wakes nobody and takes it off the view", async () => {
+  const w = await fadedQuestion()
+  try {
+    w.say(4, fence("done", "- Landed the migration on main."))
+    await w.tick(5)
+    const [q] = w.storage.listThreadQuestions("t")
+    w.storage.dismissThreadQuestion(q.id, Date.parse(at(6)))
+    await w.tick(7)
+    assert.deepEqual(w.sent, [])
+    assert.deepEqual(w.view().questions, [])
+    assert.equal(w.view().lastFence?.kind, "done")
+  } finally { w.close() }
+})
+
+// ── A worker whose contract still teaches `questions:` in the ```awaiting fence ───────────────────────
+
+test("a legacy `questions:` claim makes the named open question stand; an answered or unknown name is ignored without a bump", async () => {
+  // Names the open question, by the id Frizz minted for it — which is what that contract's worker holds.
+  const open = await fadedQuestion()
+  try {
+    const [q] = open.storage.listThreadQuestions("t")
+    open.say(4, fence("awaiting", `questions: [${q.id}]`))
+    await open.tick(5)
+    const t = open.view()
+    assert.deepEqual(t.questions.map((x) => x.standing), [true], "the claim is read: the question stands at this rest")
+    assert.equal(t.needsYou, true)
+    assert.deepEqual(open.deliveries(), [], "no refusal and no nudge")
+  } finally { open.close() }
+  // Names one that was answered, and one that never existed: nothing stands, nothing is refused, and the
+  // thread does not vanish from the queue behind a park on nobody.
+  for (const name of ["answered", "qst_000000000000"]) {
+    const w = await fadedQuestion()
+    try {
+      const [q] = w.storage.listThreadQuestions("t")
+      w.storage.answerThreadQuestion(q.id, JSON.stringify({ questionId: q.id, question: "SQLite or a JSON file?", chosen: ["SQLite"] }), Date.parse(at(3.2)))
+      await w.tick(3.4)
+      w.user(3.6, w.sent[0])
+      w.say(4, fence("awaiting", `questions: [${name === "answered" ? q.id : name}]`))
+      for (const minute of [5, 6, 7]) await w.tick(minute)
+      assert.deepEqual(w.deliveries().filter((id) => id.startsWith("park:")), [], `${name}: no correction, tick after tick`)
+      assert.equal(w.storage.getSession("t")?.park_bumps ?? 0, 0)
+      assert.equal(w.view().needsYou, true, `${name}: a rest waiting on nothing stays in the queue`)
+      assert.deepEqual(w.view().questions, [])
+    } finally { w.close() }
+  }
 })
