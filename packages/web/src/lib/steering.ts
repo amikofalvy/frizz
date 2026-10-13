@@ -214,6 +214,13 @@ export function transcriptBehindTurn(t: ThreadView | undefined, messages: readon
 // transcript is right: a message that LANDED after the turn's rest boundary has opened the next turn, so
 // while the board catches up the view keeps the turn it was showing. Queued ghosts are steeredSinceRest's,
 // and a failed, unconfirmed or held send has not been handed to anyone, so none of those counts.
+//
+// The same evidence opens a turn FROM A REST, when the transcript gets there first: this tab's own
+// `threadTranscript` refetch (the one ~1.5s after a rest) can land between the JSONL write of another
+// tab's message and the board delta, and then the view drew the hairline and the bubble with no Working
+// row for a frame or two before Working arrived and pushed the tail 37px (lv-turns' recordings,
+// 2026-10-13: `rpc< threadTranscript` +32ms, bubble without Working +49ms, Working +72ms). A wake's
+// divider counts as an opener there too.
 export function transcriptPastRest(t: ThreadView | undefined, messages: readonly (RestEvidence & Pick<TranscriptMessage, "queued" | "deliveryState">)[]): boolean {
   if (!t || (t.runtime !== "turn-idle" && t.runtime !== "exited")) return false
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -221,7 +228,8 @@ export function transcriptPastRest(t: ThreadView | undefined, messages: readonly
     if (m.kind === "event" && m.boundary === "rest") return false
     // A reply after the message means the rest the board reports is that message's own turn ending.
     if (m.role === "assistant" && m.kind !== "event") return false
-    if (m.role !== "user" || m.queued) continue
+    const woke = m.kind === "event" && m.boundary === "wake"
+    if (!woke && (m.role !== "user" || m.queued)) continue
     if (m.deliveryState === "failed" || m.deliveryState === "unconfirmed" || m.deliveryState === "held") continue
     // A landed message: it opened a turn only if the turn before it had ended — a rest boundary above it.
     for (let j = i - 1; j >= 0; j--) {
@@ -234,48 +242,70 @@ export function transcriptPastRest(t: ThreadView | undefined, messages: readonly
   return false
 }
 
-/** The thread as the thread view should present it: the board's, unless the board and the transcript
- *  disagree about where the turn is while the view was showing the other side of that edge —
- *  · a rest the transcript has not reached, while the view showed the turn: the turn (transcriptBehindRest);
- *  · a turn the transcript has not reached, while the view showed the rest: the rest exactly as it was last
- *    presented (transcriptBehindTurn), so the resting card and the reply slot do not change either;
- *  · a rest the transcript has already moved past into the next turn, while the view showed the turn: the
- *    turn (transcriptPastRest).
- *  Either for at most REST_CATCH_UP_MS, so a transcript that never catches up cannot pin the view. ONE hook
- *  for both ends, so there is one place that reconciles the two channels' order. Returned by identity
- *  whenever nothing is held. */
-export function useTurnHeldForTranscript(t: ThreadView | undefined, messages: readonly (RestEvidence & Pick<TranscriptMessage, "queued" | "deliveryState">)[]): ThreadView | undefined {
-  const restAhead = transcriptBehindRest(t, messages)
-  const turnAhead = !restAhead && transcriptBehindTurn(t, messages)
-  const nextTurnAhead = !restAhead && !turnAhead && transcriptPastRest(t, messages)
-  // Each held episode has its own key, so its expiry never cancels a later one: the rest by the worker's
-  // last record, the turn by the rest boundary it would be drawn under, the next turn by its opening message.
-  const key = restAhead
-    ? `rest:${t!.lastAssistantAt}`
-    : turnAhead
-      ? `turn:${messages[messages.length - 1]!.at ?? ""}`
-      : nextTurnAhead
-        ? `next:${messages[messages.length - 1]!.at ?? ""}`
-        : undefined
+type HoldEvidence = RestEvidence & Pick<TranscriptMessage, "queued" | "deliveryState">
+
+/** What the view's LAST COMMIT showed for this thread: which side of the turn's edge was on screen, and
+ *  whether its transcript had already moved past the rest. */
+export interface HoldPrior {
+  running: boolean
+  /** The thread the last commit presented at rest, if it did. */
+  restedId?: string
+  /** transcriptPastRest at the last commit; undefined while no transcript was loaded. */
+  pastRest?: boolean
+}
+
+/** WHICH SIDE OF A TURN'S EDGE TO KEEP ON SCREEN while the board and the transcript disagree about it. The
+ *  two channels report the same edge in either order, at either end of a turn, so there are four cases and
+ *  each holds only when the view was showing the side being kept:
+ *  · turn END, board first (transcriptBehindRest): the view showed the turn → keep the turn;
+ *  · turn END, transcript first and already into the next turn (transcriptPastRest): showed the turn → keep it;
+ *  · turn START, board first (transcriptBehindTurn): the view showed this thread's rest → keep that rest;
+ *  · turn START, transcript first (transcriptPastRest again): the view showed this thread's rest and SAW the
+ *    opening message arrive → present the turn now, since the board is about to. A thread OPENED on a
+ *    transcript that already ends in an unanswered message (a worker that died on it) saw nothing arrive
+ *    and reads as the board says.
+ *  `key` names the episode, for the cap. */
+export function transcriptHold(t: ThreadView | undefined, messages: readonly HoldEvidence[], prior: HoldPrior): { present: "turn" | "rest"; key: string } | undefined {
+  if (transcriptBehindRest(t, messages)) return prior.running ? { present: "turn", key: `rest:${t!.lastAssistantAt}` } : undefined
+  const last = messages[messages.length - 1]
+  if (transcriptBehindTurn(t, messages)) {
+    return !prior.running && prior.restedId === t!.id ? { present: "rest", key: `turn:${last!.at ?? ""}` } : undefined
+  }
+  if (transcriptPastRest(t, messages)) {
+    const sawItArrive = prior.restedId === t!.id && prior.pastRest === false
+    return prior.running || sawItArrive ? { present: "turn", key: `next:${last!.at ?? ""}` } : undefined
+  }
+  return undefined
+}
+
+/** The thread as the thread view should present it: the board's, unless transcriptHold says the other
+ *  side of a turn's edge stays on screen until the lagging channel catches up — for at most
+ *  REST_CATCH_UP_MS, so a channel that never catches up cannot pin the view. ONE hook for both ends and
+ *  both orders, so there is one place that reconciles the two channels. A held rest is the thread exactly
+ *  as it was last presented, so the resting card and the reply slot do not change either. Returned by
+ *  identity whenever nothing is held. */
+export function useTurnHeldForTranscript(t: ThreadView | undefined, messages: readonly HoldEvidence[]): ThreadView | undefined {
   // What the LAST COMMIT presented: read during render, written after commit, so the first render that
-  // finds the transcript behind asks whether the frame on screen was on the other side of the edge.
-  const shownRunning = useRef(false)
+  // finds the channels disagreeing asks what the frame on screen was showing.
+  const prior = useRef<HoldPrior>({ running: false })
   const shownRested = useRef<ThreadView | undefined>(undefined)
   const [expired, setExpired] = useState<string | undefined>(undefined)
+  const hold = transcriptHold(t, messages, prior.current)
+  // Each held episode has its own key, so its expiry never cancels a later one.
+  const key = hold?.key
   useEffect(() => {
     if (key === undefined) return
     const timer = setTimeout(() => setExpired(key), REST_CATCH_UP_MS)
     return () => clearTimeout(timer)
   }, [key])
-  const live = key !== undefined && expired !== key
   let presented = t
-  if (live && (restAhead || nextTurnAhead) && shownRunning.current) presented = steeredFields(t!, t!.lastUserAt)
-  else if (live && turnAhead && !shownRunning.current && shownRested.current?.id === t!.id) presented = shownRested.current
+  if (hold && expired !== hold.key) presented = hold.present === "turn" ? steeredFields(t!, t!.lastUserAt) : shownRested.current ?? t
   const running = presented?.runtime === "running" || presented?.runtime === "spawning"
+  const pastRest = messages.length > 0 ? transcriptPastRest(t, messages) : undefined
   useEffect(() => {
-    shownRunning.current = running
+    prior.current = { running, restedId: running ? undefined : presented?.id, pastRest }
     shownRested.current = running ? undefined : presented
-  }, [running, presented])
+  }, [running, presented, pastRest])
   return presented
 }
 
