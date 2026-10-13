@@ -187,3 +187,118 @@ test("a tree deeper than three levels is refused by the shared validator", () =>
   assert.deepEqual(out.asks, [])
   assert.match(out.faults[0].faults.join("\n"), /4 levels deep; the limit is 3/)
 })
+
+// ── Adversarial review, 2026-10-13 ─────────────────────────────────────────────────────────────────────
+
+const faultsIn = (text: string) => questionFencesIn(text).faults.flatMap((f) => f.faults).join("\n")
+
+test("an indented fence gives its indent back to every body line, as CommonMark does — so a fence inside a list item reads", () => {
+  const body = "id: x\nkind: choice\nquestion: Q?\noptions:\n  - label: A\n    detail: |\n      one\n  - B\n---\nContext."
+  for (const pad of [" ", "  ", "   "]) {
+    const text = fence(body).split("\n").map((l) => pad + l).join("\n")
+    const blocks = questionFenceBlocks(text)
+    assert.equal(blocks.length, 1, JSON.stringify(pad))
+    assert.deepEqual(blocks[0].read, readQuestionFence(body), JSON.stringify(pad))
+    assert.equal(blocks[0].read.form, "ask")
+  }
+  // The shape it is actually written in: under a numbered step, at the list's content column.
+  const inList = `1. First.\n2. Then decide:\n\n   ${fence("id: step\nkind: text\nquestion: Which port?").split("\n").join("\n   ")}\n3. Last.`
+  assert.deepEqual(questionFencesIn(inList).asks.map((a) => a.id), ["step"])
+  assert.deepEqual(questionFencesIn(inList).faults, [])
+  // A flush body under an indented opener still reads (only UP TO the opener's indent is taken), and four
+  // spaces is an indented code block, not a fence.
+  assert.equal(questionFenceBlocks("  ```question\nid: x\nkind: text\nquestion: Q?\n  ```")[0].read.form, "ask")
+  assert.deepEqual(questionFenceBlocks(fence("id: x").split("\n").map((l) => `    ${l}`).join("\n")), [])
+  // What the server keeps of a message is each block's own source, re-read later: that must read the same.
+  const kept = questionFenceBlocks(inList).map((b) => inList.slice(b.start, b.end).trimEnd()).join("\n\n")
+  assert.deepEqual(questionFenceBlocks(kept).map((b) => b.read), questionFenceBlocks(inList).map((b) => b.read))
+})
+
+test("a follow-up that can never hang off a registered question is refused by name, never dropped in silence", () => {
+  const q = (id: string, when?: string) => fence(`id: ${id}\nkind: choice\n${when ? `when: ${when}\n` : ""}question: ${id}?\noptions:\n  - X\n  - Y`)
+  // Its own follow-up.
+  const self = questionFencesIn(q("a", "a = X"))
+  assert.deepEqual(self.asks, [])
+  assert.deepEqual(self.faults.map((f) => f.id), ["a"])
+  assert.match(self.faults[0].faults[0], /follow-up of itself/)
+  // Two follow-ups of each other.
+  const loop = questionFencesIn(`${q("a", "b = X")}\n${q("b", "a = X")}`)
+  assert.deepEqual(loop.asks, [])
+  assert.deepEqual(loop.faults.map((f) => f.id).sort(), ["a", "b"])
+  assert.match(faultsIn(`${q("a", "b = X")}\n${q("b", "a = X")}`), /loop/)
+  // A loop beside a sound question: the sound one still registers.
+  const beside = questionFencesIn(`${q("root")}\n${q("a", "b = X")}\n${q("b", "a = X")}`)
+  assert.deepEqual(beside.asks.map((a) => a.id), ["root"])
+  assert.equal(beside.faults.length, 2)
+  // The child of a follow-up that failed goes with it, and is told so.
+  const orphaned = questionFencesIn(`${q("root")}\n${q("a", "root = Nope")}\n${q("b", "a = X")}`)
+  assert.deepEqual(orphaned.asks.map((a) => a.id), ["root"])
+  assert.deepEqual(orphaned.faults.map((f) => f.id), ["a", "b"])
+  assert.match(orphaned.faults[1].faults[0], /`a`, which could not register/)
+  // Negative control: a sound three-level tree faults nothing.
+  const sound = questionFencesIn(`${q("root")}\n${q("a", "root = X")}\n${q("b", "a = X")}`)
+  assert.deepEqual(sound.faults, [])
+  assert.deepEqual(questionHandles(sound.asks[0].spec), ["root", "a", "b"])
+})
+
+test("the same id under two different parents is a collision, not a restatement", () => {
+  const parent = fence("id: p\nkind: choice\nquestion: P?\noptions:\n  - X\n  - Y")
+  const child = (option: string) => fence(`id: c\nkind: text\nwhen: p = ${option}\nquestion: C?`)
+  const out = questionFencesIn(`${parent}\n${child("X")}\n${child("Y")}`)
+  assert.match(out.faults.flatMap((f) => f.faults).join("\n"), /two different questions in this message use `id: c`/)
+  // Negative control: the same follow-up written twice is still one.
+  assert.deepEqual(questionFencesIn(`${parent}\n${child("X")}\n${child("X")}`).faults, [])
+})
+
+test("a code block the fence's own closing line cut short is refused, and the fix is named", () => {
+  // The inner ``` closes a ```question fence: the context ends inside an open code block, and the rest of
+  // the message would render as one.
+  const early = "```question\nid: x\nkind: text\nquestion: Q?\n---\nRun this:\n```bash\nls\n```\nand tell me.\n```"
+  const blocks = questionFenceBlocks(early)
+  assert.equal(blocks[0].read.form, "invalid")
+  assert.match(blocks[0].read.form === "invalid" ? blocks[0].read.faults.join("\n") : "", /never closes.*````question/s)
+  assert.equal(blocks[0].read.form === "invalid" && blocks[0].read.id, "x")
+  // The same mistake inside an option's detail, written at an indent a closing fence still counts at.
+  const inDetail = "```question\nid: y\nkind: choice\nquestion: Q?\noptions:\n- label: A\n  detail: |\n   ```diff\n   -a\n   ```\n- B\n```"
+  assert.match(faultsIn(inDetail), /option 1: .*never closes/)
+  // Negative controls: the longer outer fence, and a detail indented past where a closer counts.
+  assert.deepEqual(questionFencesIn("````question\nid: x\nkind: text\nquestion: Q?\n---\nRun this:\n```bash\nls\n```\nand tell me.\n````").faults, [])
+  assert.deepEqual(questionFencesIn("```question\nid: y\nkind: choice\nquestion: Q?\noptions:\n  - label: A\n    detail: |\n      ```diff\n      -a\n      ```\n  - B\n```").faults, [])
+})
+
+test("an option's keys are read as keys wherever they sit — never folded into the label above them", () => {
+  const head = "id: x\nkind: choice\nquestion: Q?\noptions:\n"
+  const optionsOf = (body: string) => {
+    const r = readQuestionFence(head + body)
+    assert.equal(r.form, "ask", JSON.stringify(r))
+    return r.form === "ask" ? r.spec.options : undefined
+  }
+  // A bare label, then its keys.
+  assert.deepEqual(optionsOf("  - SQLite\n    description: one store to back up\n    recommended: true\n  - JSON file"), [
+    { label: "SQLite", description: "one store to back up", recommended: true },
+    { label: "JSON file" },
+  ])
+  // A wide gap after the dash puts the first key further right than the ones under it.
+  assert.deepEqual(optionsOf("  -   label: A\n      description: d\n  - B"), [{ label: "A", description: "d" }, { label: "B" }])
+  assert.deepEqual(optionsOf("  -   label: A\n    description: d\n    detail: |\n      body\n  - B"), [{ label: "A", description: "d\n\nbody" }, { label: "B" }])
+  // A bare label that wraps still joins its continuation.
+  assert.deepEqual(optionsOf("  - Keep the fixed sleep\n    and add a sixth try\n  - B"), [{ label: "Keep the fixed sleep and add a sixth try" }, { label: "B" }])
+  // An item nested under a bare label is a mistake with a name, not a longer label.
+  const nested = readQuestionFence(`${head}  - A\n    - B\n  - C`)
+  assert.equal(nested.form, "invalid")
+  assert.match(nested.form === "invalid" ? nested.faults.join("\n") : "", /`- B` is indented differently from the options above it/)
+})
+
+test("a one-line value is one line however it was written, and a line separator inside a value does not hide its key", () => {
+  const escaped = readQuestionFence('id: x\nkind: text\nquestion: "First line\\nsecond line"')
+  assert.equal(escaped.form === "ask" && escaped.spec.question, "First line second line")
+  const separated = readQuestionFence("id: x\nkind: text\nquestion: Before after")
+  assert.equal(separated.form === "ask" && separated.spec.question, "Before after")
+})
+
+test("front matter wrapped in a leading --- is refused for that, not for a missing id", () => {
+  const r = readQuestionFence("---\nid: x\nkind: text\nquestion: Q?\n---\nContext.")
+  assert.equal(r.form, "invalid")
+  assert.match(r.form === "invalid" ? r.faults[0] : "", /opens with `---`/)
+  assert.doesNotMatch(r.form === "invalid" ? r.faults.join("\n") : "", /no `id:`/)
+})
