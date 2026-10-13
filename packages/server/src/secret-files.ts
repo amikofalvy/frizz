@@ -5,7 +5,7 @@ import { SECRET_TTL_MS } from "@frizz/shared"
 
 /**
  * Where a SECRET answer goes instead of the database — the value the human pasted into a masked card
- * (`frizzctl secret`): a one-time code, a token, a password.
+ * (a `kind: secret` question fence; `frizzctl secret` until 2026-10-13): a one-time code, a token, a password.
  *
  * NOT A FILE. The path the worker is given is a NAMED PIPE (a FIFO, 0600 in a 0700 dir under the
  * project's state dir), and the value lives only in this process's memory. When a reader opens the pipe

@@ -84,8 +84,9 @@ function isDiskWrite(cmd) {
 // (`_live_broker_frizzctl.mts`): a bare call, an inline JSON argument, `--input <file>`, `< file`,
 // `frizzctl … && frizzctl …` and a quoted heredoc of PROSE all ran unasked, and a quoted heredoc whose
 // body holds a JSON object raised a prompt — Claude Code's own command checks read the braces and
-// quotes of a body the shell never interprets. That is the one shape `ask` most needs, since a
-// question's options do not fit on a command line.
+// quotes of a body the shell never interprets. That was the one shape `ask` most needed, since a
+// question's options do not fit on a command line; `ask` refuses since 2026-10-13 (a question is a
+// ```question fence the worker writes), and the shape stays approved for every other `--input -`.
 //
 // So this recognises exactly that shape, and it is deliberately narrower than the rule it backs up.
 // The first line is `frizzctl`, then words made only of characters the shell does not interpret, then

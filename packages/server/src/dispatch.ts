@@ -460,7 +460,7 @@ export function frizzConfigBlock(projectDir: string): string {
 // Workers have NO coherent interactive-plan-mode semantics: plan mode stays read-only until an
 // INTERACTIVE ExitPlanMode approval, which a headless dashboard worker can't satisfy (no one is at
 // the keyboard) and which blocks all edits until then — a softlock. A worker "plans" by writing a
-// durable plan file and asking via `frizzctl ask`, never via interactive plan
+// durable plan file and asking in a ```question fence, never via interactive plan
 // mode. So a worker is NEVER spawned in plan mode: `plan` is coerced to the safe frizz default
 // (`auto`). Applied inside BOTH spawn builders so dispatch, adopt, AND resume are all covered. (The
 // dispatch UI still OFFERS "plan" in its permission-mode dropdown — dropping it in web/options.ts is
@@ -661,7 +661,7 @@ export function claudeMcpConfig(mcp?: FrizzMcp, project?: WorkerMcpServers): Cla
  * already hold theirs and are not re-read.
  *
  * `Bash(frizzctl:*)` is the same promise `mcp__frizz` made at server level: a worker's own sign-off is
- * never something a human has to approve. It is what keeps `frizzctl ask` and `frizzctl done` from
+ * never something a human has to approve. It is what keeps `frizzctl done` and `frizzctl watch` from
  * becoming approval cards on a thread the human moved to `default`, where perm-policy.mjs defers every
  * prompt (`restrictive-mode`). Claude Code matches the rule against each command of the parsed line, so
  * `frizzctl … && frizzctl …` is covered and `frizzctl … && something-else` is judged on its second half.
