@@ -885,7 +885,7 @@ whole quoted string is unquoted:
 | `id` | Required. Your own name for the question: lowercase letters, digits, `-`, `_` and `.`, up to 64. Unique in this thread FOR GOOD — an id once answered or withdrawn is never asked again |
 | `kind` | Required. `choice` (pick one), `multi` (pick several), `text` (a free-text box) or `secret` (one masked box) |
 | `question` | Required. ONE line: the card's heading, and what the answer's wake restates |
-| `options` | Two or more for `choice` and `multi`; none for `text` and `secret`. Each `- ` item takes `label` (required), `description` (one line), `recommended: true`, and `detail`, an indented Markdown block drawn inside the option. A bare `- Label` is a label alone |
+| `options` | Two or more for `choice` and `multi`; none for `text` and `secret`. Each `- ` item takes `label` (required), `description` (one line), `recommended: true`, and `detail`, an indented Markdown block drawn inside the option. A bare `- Label` is a label alone; a label with a colon in it takes the key (`- label: Yes: merge it`) |
 | `danger` | `true` for the genuinely irreversible: the card turns red and the human's × cannot dismiss it |
 | `when` | `<parent id> = <option label>`: a follow-up, asked only if that option is picked (below) |
 
