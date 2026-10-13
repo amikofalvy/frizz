@@ -171,6 +171,9 @@ function makeBridge(g: Generation) {
     // What context.ts hands the bridge: this generation's own MCP script, and this generation's hooks.
     frizzMcp: { scriptPath: generation[g].mcp, stateDir: root, projectId: "probe" },
     workerConfig: (_slug, sessionId) => ({ model_reasoning_summary: "detailed", ...codexScratchpadHookConfig(generation[g].hook, sessionId) }),
+    // …and the worker contract, which rides the same resumes as the bag and must stay off the same
+    // rejoins: Codex rebuilds a loaded thread for a `baseInstructions` alone, and EXEC's command with it.
+    workerBaseInstructions: (_slug, sessionId) => `WORKER CONTRACT ${g} for ${sessionId}`,
     codexBin: CODEX_BIN, host: nativeListenCodexAppServerHost,
     now: () => new Date(), id: () => `c-${g}-${++clientId}`, requestTimeoutMs: 60_000,
     diagnostic: (event) => { diagnostics.push(event) },

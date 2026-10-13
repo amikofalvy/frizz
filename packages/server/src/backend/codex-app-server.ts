@@ -3445,8 +3445,10 @@ export class CodexAppServerBridge {
    * resume of a loaded thread as an override (`thread_processor.rs:218`, no comparison with what the
    * thread already has), and an override on a loaded, idle thread nobody subscribes to tears it down
    * and rebuilds it (`resume_running_thread`, `:4350-4380`) — the very rebuild that ends a background
-   * command. So a rejoin of a thread holding one carries neither; it is loaded already, with its
-   * instructions, and the rebuild before its next turn (startTurn) brings the contract in.
+   * command. Measured on 0.161.0 with `_live_codex_config_sync.mts`: a restart-reconcile rejoin that
+   * carried `baseInstructions` and no bag ended the thread's `sleep`, which survives the same rejoin
+   * carrying neither. So a rejoin of a thread holding one carries neither; it is loaded already, with
+   * its instructions, and the rebuild before its next turn (startTurn) brings the contract in.
    */
   private resumeRebuild(threadSlug: string, sessionId: string): { config?: Record<string, unknown>; baseInstructions?: string } {
     const baseInstructions = this.options.workerBaseInstructions?.(threadSlug, sessionId)
