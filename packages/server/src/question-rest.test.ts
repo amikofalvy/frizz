@@ -8,7 +8,7 @@ import assert from "node:assert/strict"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { boardAskThread, DONE_FENCE_CORRECTION_LEAD, formatThreadMessage, humanGapNote, limitResumeSteer, mergedWakeMessage, needsAction, PARK_CORRECTION_NAMES_LEAD, parkExpiredWakeMessage, prWatchWakeMessage, questionAnswerMessage, restPromptMessage, RETRY_FOLLOW_UP, sectionOf, shellDoneMessage, signoffNudgeMessage, timerPromptMessage, wakeDeliveryToken } from "@frizz/shared"
+import { boardAskThread, withAnswersNote, DONE_FENCE_CORRECTION_LEAD, formatThreadMessage, humanGapNote, limitResumeSteer, mergedWakeMessage, needsAction, PARK_CORRECTION_NAMES_LEAD, parkExpiredWakeMessage, prWatchWakeMessage, questionAnswerMessage, restPromptMessage, RETRY_FOLLOW_UP, sectionOf, shellDoneMessage, signoffNudgeMessage, timerPromptMessage, wakeDeliveryToken } from "@frizz/shared"
 import { Bus } from "./bus.ts"
 import { createBoard } from "./board.ts"
 import type { Project } from "./project.ts"
@@ -524,6 +524,13 @@ test("restFromAt moves only on a message the human typed, in a record of its own
     ["an answer's delivery", wake(questionAnswerMessage([{ questionId: "qst_aaaaaaaaaaaa", question: "SQLite or a JSON file?", chosen: ["SQLite"] }])), false],
     // …and one that names its question by the worker's own id is the same delivery (2026-10-13).
     ["an answer's delivery naming its question by id", wake(questionAnswerMessage([{ questionId: "qst_aaaaaaaaaaaa", question: "SQLite or a JSON file?", chosen: ["SQLite"], handle: "settings-store" }])), false],
+    // The prompt box's Send carries staged answers as an ordinary follow-up, with no token. Sent with
+    // nothing typed it is an answer and not the human typing, exactly as the card's own Send is; with a
+    // note beside the answers the human did type.
+    ["answers sent from the prompt box with nothing typed", questionAnswerMessage([{ questionId: "qst_aaaaaaaaaaaa", question: "SQLite or a JSON file?", chosen: ["SQLite"], handle: "settings-store" }]), false],
+    ["…the same, carrying the clock note", `${questionAnswerMessage([{ questionId: "qst_aaaaaaaaaaaa", question: "SQLite or a JSON file?", chosen: ["SQLite"] }])}\n\n${humanGapNote(Date.parse(at(240)), at(0))}`, false],
+    ["answers sent from the prompt box with a typed note", withAnswersNote(questionAnswerMessage([{ questionId: "qst_aaaaaaaaaaaa", question: "SQLite or a JSON file?", chosen: ["SQLite"] }]), "and skip the docs"), true],
+    ["a typed message that merely opens on the answers header's words", "Answers to earlier questions: are they in yet?", true],
     ["another thread's steer", formatThreadMessage({ slug: "release-train", title: "Release train" }, "Rebase when you can."), false],
     ["another Claude session's message", `Another Claude session sent a message:\n<cross-session-message from="uds:/tmp/x.sock" from-name="frizz-11">\nping\n</cross-session-message>`, false],
     ["the Retry button's sentence", RETRY_FOLLOW_UP, false],

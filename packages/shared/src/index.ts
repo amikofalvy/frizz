@@ -5495,6 +5495,12 @@ export function parseThreadMessage(text: string): { slug: string; title: string;
 // Retry (the rail, the thread header, the queue card) and the limit card's "Continue now" are the
 // messages the human SENDS without typing: buttons that post one fixed sentence. It says nothing about
 // any question, so it does not count either.
+//
+// ANSWERS SENT FROM THE PROMPT BOX are the other message the human sends without typing. That Send
+// carries the staged answers as an ordinary follow-up (router followUp, `withAnswersNote`), so it has no
+// delivery token, and it used to count: answering one of two questions from the prompt box retired the
+// other, where the same answer sent from the card (the scheduler's delivery) did not. It is the human
+// typing only when they typed something BESIDE the answers, which is the note under ANSWERS_NOTE_HEADER.
 /** What Retry and "Continue now" send (web lib/retrySession.ts and ChatView's LimitPauseCard post this constant). */
 export const RETRY_FOLLOW_UP = "Continue exactly where you left off."
 
@@ -5503,7 +5509,9 @@ export function isHumanTypedMessage(text: string): boolean {
   if (!text.trim()) return false
   if (isInjectedNoise(text) || isInterruptMarker(text) || isWakeDelivery(text)) return false
   if (parseThreadMessage(text) || parseCrossSessionMessage(text) || parseAgentMessage(text)) return false
-  return stripHumanGapNote(text).trim() !== RETRY_FOLLOW_UP
+  const own = stripHumanGapNote(text).trim()
+  if (own.startsWith(`${BURIED_ANSWERS_HEADER}\n`)) return splitAnswersNote(own).note !== ""
+  return own !== RETRY_FOLLOW_UP
 }
 
 /** The human-typed messages a user RECORD carries. The runtime merges whatever was queued while the
