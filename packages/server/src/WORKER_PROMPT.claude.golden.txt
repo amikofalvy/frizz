@@ -134,9 +134,16 @@ exactly ONE of them.
   until the human archives it. The fence MUTATES NOTHING.
 
   ```done
+  title: Resolver cache keyed on the normalized id
+  ---
   - Fixed the cache collision in [`src/resolver.ts`](https://github.com/acme/app/pull/391) — the lookup now keys on the normalized id.
   - Added a regression test; `npm test` green.
   ```
+
+  `title:` — OPTIONAL, the card's heading, as the fence's first line with a `---` under it, or
+  `frizzctl done --title "<phrase>"`: a short phrase in sentence case naming what LANDED, not the
+  handoff. It wraps, so name the work fully; past 120 characters it is trimmed on a word boundary.
+  Without it the card is headed "Done", which is true of every completion and specific to none.
 
   **BETTER THAN THE FENCE — RUN THE COMMAND:** `frizzctl done --body-file <file|->` takes that same body and records the
   same card, and it is the one sign-off frizz can REFUSE (exit 2). An open question or an armed registration

@@ -146,12 +146,13 @@ test("the frizz MCP server identifies as `frizz` and exposes its worker tools", 
     }
     assert.deepEqual(list.result.tools[7].inputSchema.required, ["id"])
     assert.deepEqual(Object.keys(list.result.tools[7].inputSchema.properties), ["id"])
-    // `done` takes the write-up and NOTHING ELSE. Its one argument list is the assertion that matters:
-    // there is no `force`, and there is no second parameter for a worker to reach for when the gate
-    // refuses it — a bypass riding the gated call gets learned, and the gate degrades to a two-token
-    // tax (plans/rest-by-registration.md).
+    // `done` takes the write-up and its heading, and NOTHING ELSE. Its argument list is the assertion
+    // that matters: there is no `force`, and no parameter for a worker to reach for when the gate refuses
+    // it — a bypass riding the gated call gets learned, and the gate degrades to a two-token tax
+    // (plans/rest-by-registration.md). `title` (2026-10-13) only heads the card; it changes nothing the
+    // gate reads.
     assert.deepEqual(list.result.tools[8].inputSchema.required, ["body"])
-    assert.deepEqual(Object.keys(list.result.tools[8].inputSchema.properties), ["body"])
+    assert.deepEqual(Object.keys(list.result.tools[8].inputSchema.properties), ["body", "title"])
     // `title` takes ONLY the name. It exposes no thread parameter for `goal`'s reason — the slug comes
     // from the server's env — so a worker can rename its own thread and no other.
     assert.deepEqual(list.result.tools[9].inputSchema.required, ["title"])

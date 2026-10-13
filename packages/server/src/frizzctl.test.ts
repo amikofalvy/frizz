@@ -266,6 +266,38 @@ test("a body through a quoted heredoc reaches Frizz byte for byte — backticks,
   }
 })
 
+// `--title` rides INSIDE the body, in the ```done fence's own grammar, so the server's one splitter
+// heads a registered card exactly as it heads a fenced one (2026-10-13).
+test("`done --title` sends the body as `title:`, `---`, then the ledger — and the flag replaces a title the body opens with", async () => {
+  const fake = await fakeFrizz()
+  try {
+    const ran = await run(["done", "--title", "Resolver cache\n  keyed on the normalized id ", "--body-file", "-"], { env: worker(fake), stdin: "- **Fixed** the lookup.\n" })
+    assert.equal(ran.code, 0, ran.stderr)
+    assert.deepEqual(fake.seen, [{ url: "/_frizz/proj-1/rpc/markOwnDone", body: { slug: "the-caller", body: "title: Resolver cache keyed on the normalized id\n---\n- **Fixed** the lookup." } }])
+
+    // The body's own heading block goes; one written lower down is the ledger's prose and stays.
+    fake.seen.length = 0
+    const both = await run(["done", "--title", "From the flag", "--body-file", "-"], { env: worker(fake), stdin: "title: From the body\n  continued\n---\n- Fixed.\ntitle: a sentence\n" })
+    assert.equal(both.code, 0, both.stderr)
+    assert.equal(fake.seen[0]?.body.body, "title: From the flag\n---\n- Fixed.\ntitle: a sentence")
+
+    // `--title-file` comes free with the string property, as for every text argument.
+    fake.seen.length = 0
+    const dir = mkdtempSync(join(tmpdir(), "frizzctl-title-"))
+    writeFileSync(join(dir, "title.txt"), "From a file\n")
+    const file = await run(["done", "--title-file", join(dir, "title.txt"), "--body", "- Fixed."], { env: worker(fake) })
+    assert.equal(file.code, 0, file.stderr)
+    assert.equal(fake.seen[0]?.body.body, "title: From a file\n---\n- Fixed.")
+
+    // No title, or a blank one, sends the body exactly as before.
+    fake.seen.length = 0
+    await run(["done", "--title", "  ", "--body", "---\n- Fixed."], { env: worker(fake) })
+    assert.equal(fake.seen[0]?.body.body, "---\n- Fixed.")
+  } finally {
+    fake.close()
+  }
+})
+
 test("the caller is the environment's thread and nothing a command line can say", async () => {
   const fake = await fakeFrizz()
   try {
