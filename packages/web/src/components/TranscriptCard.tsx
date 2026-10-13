@@ -8,10 +8,11 @@ import { mdToHtml } from "../lib/markdown.ts"
 // Queue cards live in the narrow needs-you rail, so a worker message carrying a long UNBREAKABLE token
 // — a Windows path, a box-drawing error dump — must wrap at the character level rather than bleed past
 // the card edge (maintainer 2026-07-10: it "looks so bad"). Applied ONLY in the dense (queue) surface:
-// `overflow-wrap:anywhere` breaks unbreakable PROSE runs to fit, and code fences additionally get
-// `whitespace-pre-wrap` + `break-all` so their long lines wrap INSIDE the <pre> instead of forcing the
-// horizontal scroll/overflow. The roomier thread view keeps its scroll-on-overflow default (wrap=false).
-export const QUEUE_WRAP = "[overflow-wrap:anywhere] [&_pre]:whitespace-pre-wrap [&_pre]:break-all"
+// `overflow-wrap:anywhere` breaks unbreakable PROSE runs to fit. Code fences needed their own pair here
+// (`whitespace-pre-wrap` + `break-all`) while the thread view scrolled them sideways; since 2026-10-13
+// a fence wraps on every surface, from the stylesheet (`.md-body pre`), so the Queue's code breaks at
+// its spaces like everyone else's.
+export const QUEUE_WRAP = "[overflow-wrap:anywhere]"
 
 // ── The shared card chrome ────────────────────────────────────────────────────────────────────────
 // Every card the transcript sets off from the prose — the ```done / ```awaiting signal fences, a

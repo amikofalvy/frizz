@@ -106,19 +106,22 @@ test("a fenced code block copies its own source, minus the renderer's trailing n
     await page.waitForFunction((i: number) => document.querySelectorAll(".md-code-copy")[i]?.classList.contains("is-copied"), {}, second.index)
     assert.equal(await page.evaluate(() => navigator.clipboard.readText()), second.text.replace(/\n$/, ""))
 
-    // THE REASON THE WRAPPER EXISTS. `pre` is the scroll container, so a button anchored inside it rides
-    // the content and slides out of view the moment a long line is scrolled sideways.
-    const held = await page.evaluate(() => {
-      const wrap = [...document.querySelectorAll<HTMLElement>("#thread .md-code")]
-        .find((w) => { const p = w.querySelector("pre")!; return p.scrollWidth > p.clientWidth + 20 })!
-      const pre = wrap.querySelector("pre")!, btn = wrap.querySelector(".md-code-copy")!
-      const offset = () => +(btn.getBoundingClientRect().right - pre.getBoundingClientRect().right).toFixed(2)
-      const before = offset()
-      pre.scrollLeft = pre.scrollWidth
-      return { before, after: offset(), scrolled: pre.scrollLeft }
-    })
-    assert.ok(held.scrolled > 100, "the fixture should hold a block wide enough to scroll")
-    assert.equal(held.after, held.before)
+    // CODE WRAPS, so no block scrolls sideways and the button has nothing to ride out of view on. The
+    // fixture's 455-character token is the case that used to scroll: it now breaks across lines inside
+    // its block, at the thread's width and at the Queue's.
+    const wrapped = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>(".md-code pre")].map((pre) => {
+      const style = getComputedStyle(pre)
+      return {
+        text: (pre.textContent ?? "").slice(0, 7),
+        scrolls: pre.scrollWidth - pre.clientWidth,
+        lines: Math.round((pre.clientHeight - parseFloat(style.paddingTop) * 2) / parseFloat(style.lineHeight)),
+      }
+    }))
+    assert.deepEqual(wrapped.filter((pre) => pre.scrolls !== 0), [], "no code block scrolls sideways")
+    const longThread = wrapped.find((pre) => pre.text === "thread_")!
+    const longQueue = wrapped.find((pre) => pre.text === "queue_0")!
+    assert.ok(longThread.lines > 2, `the thread's one long line is drawn on ${longThread.lines}`)
+    assert.ok(longQueue.lines > 2, `the Queue's one long line is drawn on ${longQueue.lines}`)
 
     assert.deepEqual(pageErrors, [])
   } finally {
