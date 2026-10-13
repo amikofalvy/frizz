@@ -15,7 +15,7 @@ import type { Project } from "./project.ts"
 import { questionFenceCorrection } from "./question-fences.ts"
 import { createScheduler } from "./scheduler.ts"
 import { createStorage, type SessionRow } from "./storage.ts"
-import { applyRecord, newTailState, type SessionTelemetry, type Tailer } from "./tailer.ts"
+import { applyEvent, applyRecord, newTailState, type SessionTelemetry, type Tailer } from "./tailer.ts"
 
 const at = (minute: number) => new Date(Date.parse("2026-10-20T10:00:00.000Z") + minute * 60_000).toISOString()
 const fence = (info: string, body: string) => `\`\`\`${info}\n${body}\n\`\`\``
@@ -345,4 +345,15 @@ test("only a record that is ALL corrections continues the rest: real news beside
       assert.deepEqual(w.view().questions.map((q) => q.standing), [c.standing], c.text.slice(0, 60))
     } finally { w.close() }
   }
+})
+
+test("the normalized (codex, ACP) fold keeps the same boundary: a correction moves lastUserAt and not restFromAt", () => {
+  const s = newTailState("c", "sid-c", "/dev/null")
+  applyEvent(s, { kind: "user-message", at: at(0), text: "move the settings into a real store", synthetic: false } as never)
+  assert.equal(s.restFromAt, at(0))
+  applyEvent(s, { kind: "user-message", at: at(2), text: `${PARK_CORRECTION_NAMES_LEAD}nothing to wait on, so it is not a park.\n\n${wakeDeliveryToken("d1")}`, synthetic: false } as never)
+  assert.equal(s.lastUserAt, at(2), "the guards that ask whether the agent spoke last still see the correction")
+  assert.equal(s.restFromAt, at(0), "the rest did not restart")
+  applyEvent(s, { kind: "user-message", at: at(4), text: "thanks, carry on", synthetic: false } as never)
+  assert.equal(s.restFromAt, at(4))
 })
