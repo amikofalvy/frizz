@@ -715,7 +715,11 @@ export function TodosView() {
           <StatusRow />
           {/* The GitHub picker's door rides inside DispatchForm's composer now (a small icon left of
               the send button), so no separate trigger here. */}
-          <DispatchForm autoFocus />
+          {/* The "Starting thread…" card FLOATS under the form. This column is centred in the window, so a
+              card in flow lifted the heading, the status row and the box 36-37px for the length of the
+              dispatch call (recorded 2026-10-13, three runs). There is no rail here to draw the pending
+              thread in, and the card is the only thing on this screen that still shows what was asked. */}
+          <DispatchForm autoFocus pendingCard="float" />
         </div>
       ) : renderItems.length === 0 ? (
         // Nothing's queued: the calm empty-inbox (NO dispatch box — the prompt box lives in the

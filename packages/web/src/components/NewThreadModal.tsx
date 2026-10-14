@@ -264,13 +264,15 @@ export function DispatchForm({
   onDispatched?: () => void
   /** The Console's project chip, first in the footer. The dispatch goes to the enclosing ProjectScope. */
   projectPicker?: ReactNode
-  /** Draw the "Starting thread…" card under the box while the dispatch call runs. Off where the surface
-   *  shows the pending thread itself: a project's sidebar draws it as a Running row (lib/pendingDispatch). */
-  pendingCard?: boolean
+  /** Draw the "Starting thread…" card under the box while the dispatch call runs. Off (`false`) where the
+   *  surface shows the pending thread itself: a project's sidebar and the Console's draw it as a Running
+   *  row (lib/pendingDispatch). `"float"` draws it OUT OF FLOW, hung under the form: for a form that is
+   *  centred in its page, where a card in flow would lift everything above it by half its own height. */
+  pendingCard?: boolean | "float"
 }) {
   const form = useDispatchForm(onDispatched, projectPicker)
   return (
-    <div className="w-full flex flex-col gap-3">
+    <div className={`w-full flex flex-col gap-3 ${pendingCard === "float" ? "relative" : ""}`}>
       <Composer
         surface="newComposer"
         autoFocus={autoFocus}
@@ -287,7 +289,11 @@ export function DispatchForm({
       {form.error && (
         <span className="px-0.5 text-[11px] text-danger truncate">{form.error}</span>
       )}
-      {pendingCard && form.pendingDispatch && <PendingDispatch prompt={form.pendingDispatch} />}
+      {pendingCard && form.pendingDispatch && (
+        // `top-full mt-3` is the place the card takes in flow (the column's own 12px gap), so it reads
+        // the same; an absolutely placed child of a flex column takes no gap and no height.
+        <PendingDispatch prompt={form.pendingDispatch} className={pendingCard === "float" ? "absolute inset-x-0 top-full mt-3" : ""} />
+      )}
       {form.accountModals}
     </div>
   )

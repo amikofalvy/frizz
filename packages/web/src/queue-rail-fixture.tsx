@@ -1,10 +1,14 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { createRoot } from "react-dom/client"
 import { MemoryRouter } from "react-router"
-import type { BoardSnapshot, CodexModel, DispatchPreferences, ThreadView as ThreadViewModel, TranscriptMessage } from "@frizz/shared"
+import type { BoardSnapshot, CodexModel, DispatchPreferences, ProjectCard, ThreadView as ThreadViewModel, TranscriptMessage } from "@frizz/shared"
+import { ConsoleSidebar } from "./components/ConsoleSidebar.tsx"
 import { Sidebar } from "./components/Sidebar.tsx"
 import { TodosView } from "./components/TodosView.tsx"
 import { TooltipProvider } from "./components/Tooltip.tsx"
+import { setConsoleGroup } from "./lib/consoleBoard.ts"
+import { pickConsoleDispatchProject } from "./lib/consoleDispatchProject.ts"
+import { threadKey } from "./lib/threadKey.ts"
 import { store } from "./store.ts"
 import "./styles.css"
 
@@ -18,6 +22,13 @@ import "./styles.css"
 //     card below (lib/sidebarScrollspy markerRow);
 //   · a dispatch from the prompt box put a "Starting thread…" card between the box and the rail for the
 //     length of the dispatch call, so every row moved down 73px and back up (lib/pendingDispatch).
+//
+// `?surface=` picks which prompt box the dispatch is made from (the default is a project's sidebar):
+//
+//   · `console` — the real <ConsoleSidebar/> over two projects' threads, at `/console` so the page keys
+//     and routes as the Console does. `&group=status|project` picks the grouping, `&pick=<slug>` the
+//     project the chip points at (`gamma` has nothing on the Console, so its block does not exist yet);
+//   · `first-run` — a board with no thread at all: the centred prompt box, and no rail to draw a row in.
 //
 // The server is modelled on what those recordings showed. A follow-up's board delta (the thread running,
 // off the queue) lands tens of milliseconds after the click, well after the optimistic commit. A
@@ -72,7 +83,28 @@ function makeThread(id: string, title: string, n: number, over: Partial<ThreadVi
   } as unknown as ThreadViewModel
 }
 
-store.board = { projectDir: "/fixture/frizz", threads: CARDS.map((c, i) => makeThread(c.id, c.title, i)) } as BoardSnapshot
+// Read before the Console branch rewrites the address.
+const params = new URL(window.location.href).searchParams
+const surface = params.get("surface") ?? "project"
+
+const PROJECTS = ["alpha", "beta", "gamma"].map((slug) => ({ id: `id-${slug}`, slug, name: slug[0].toUpperCase() + slug.slice(1), path: `/fixture/${slug}`, stale: false, iconStatus: "none" }) as unknown as ProjectCard)
+// On the Console every thread is named by its project and its slug (lib/threadKey): the cards alternate
+// between two projects, and each project has one thread running already.
+const cardProject = (n: number) => (n % 2 === 0 ? "alpha" : "beta")
+const consoleThreads = () => [
+  ...CARDS.map((c, i) => makeThread(threadKey(cardProject(i), c.id), c.title, i)),
+  ...["alpha", "beta"].map((project, i) => makeThread(threadKey(project, `long-job-${project}`), `Long job in ${project}`, i, { runtime: "running", needsYou: false, lastUserAt: new Date(T0 + (i + 5) * 60_000).toISOString() })),
+]
+
+if (surface === "console") {
+  history.replaceState(null, "", "/console")
+  setConsoleGroup(params.get("group") === "status" ? "status" : "project")
+  pickConsoleDispatchProject(params.get("pick") ?? "beta")
+}
+store.board = {
+  projectDir: "/fixture/frizz",
+  threads: surface === "console" ? consoleThreads() : surface === "first-run" ? [] : CARDS.map((c, i) => makeThread(c.id, c.title, i)),
+} as BoardSnapshot
 store.drawers = []
 
 const setThreads = (next: (threads: readonly ThreadViewModel[]) => ThreadViewModel[]) => {
@@ -91,7 +123,6 @@ function transcriptFor(slug: string) {
 
 const codexModels: CodexModel[] = [{ slug: "gpt-5.6-sol", displayName: "GPT-5.6 Sol", defaultEffort: "medium", efforts: ["low", "medium", "high"] }]
 const preferences: DispatchPreferences = { backend: "codex", claude: { permissionMode: "auto" }, codex: { model: "gpt-5.6-sol", effort: "medium", permissionMode: "default" } }
-const params = new URL(window.location.href).searchParams
 // How long the dispatch call takes, and how far its answer trails the board delta that carries the row.
 const dispatchMs = Number(params.get("dispatchMs") ?? 400)
 const answerLagMs = Number(params.get("answerLagMs") ?? 12)
@@ -112,8 +143,13 @@ function slugOf(url: URL, init?: RequestInit): string | null {
 const nativeFetch = window.fetch.bind(window)
 window.fetch = async (input, init) => {
   const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, window.location.origin)
-  const rpc = /^\/_frizz\/rpc\/(\w+)/.exec(url.pathname)?.[1]
+  // `/_frizz/rpc/<name>`, or `/_frizz/<project>/rpc/<name>` for a call the Console addressed to a project.
+  const route = /^\/_frizz\/(?:([\w-]+)\/)?rpc\/(\w+)/.exec(url.pathname)
+  const rpc = route?.[2]
+  const project = route?.[1]
   if (!rpc) return nativeFetch(input, init)
+  if (rpc === "projectsList") return json(PROJECTS)
+  if (rpc === "projectsRailCounts") return json(Object.fromEntries(PROJECTS.map((p) => [p.id, { queued: 0, running: 0, asks: 0 }])))
   if (rpc === "dispatchPreferencesGet") return json(preferences)
   if (rpc === "codexModels") return json(codexModels)
   if (rpc === "acpAgents") return json([])
@@ -125,7 +161,8 @@ window.fetch = async (input, init) => {
     // The turn starts: the thread is running and off the queue, as the server's own delta reports it.
     await wait(60)
     const now = new Date().toISOString()
-    setThreads((threads) => threads.map((t) => (t.id === slug ? ({ ...t, runtime: "running", needsYou: false, lastUserAt: now, lastActivityAt: now } as ThreadViewModel) : t)))
+    const id = project && slug ? threadKey(project, slug) : slug
+    setThreads((threads) => threads.map((t) => (t.id === id ? ({ ...t, runtime: "running", needsYou: false, lastUserAt: now, lastActivityAt: now } as ThreadViewModel) : t)))
     return json({})
   }
   if (rpc === "dispatch") {
@@ -133,7 +170,9 @@ window.fetch = async (input, init) => {
     const now = new Date().toISOString()
     // A fresh thread's own row: running, its title still the machine's guess (displayTitle draws the
     // "Spinning up a thread…" placeholder for it).
-    setThreads((threads) => [...threads, makeThread("started-thread", "started-thread", 0, { titleAuto: true, runtime: "running", needsYou: false, spawnedAt: now, lastUserAt: now, lastAssistantAt: undefined, lastActivityAt: now } as Partial<ThreadViewModel>)])
+    // On the Console the row is the project's own thread, named by its key; the call still answers with
+    // the bare slug, as the server does (api/rpc.ts keys it on the way back).
+    setThreads((threads) => [...threads, makeThread(project ? threadKey(project, "started-thread") : "started-thread", "started-thread", 0, { titleAuto: true, runtime: "running", needsYou: false, spawnedAt: now, lastUserAt: now, lastAssistantAt: undefined, lastActivityAt: now } as Partial<ThreadViewModel>)])
     await wait(answerLagMs)
     return json({ slug: "started-thread", sessionId: "started-session" })
   }
@@ -149,7 +188,7 @@ createRoot(document.getElementById("root")!).render(
       <MemoryRouter>
         <div className="relative min-h-screen bg-bg text-fg text-sm">
           <div className="flex min-h-screen justify-center gap-[clamp(28px,3.4vw,52px)] px-5 max-[800px]:flex-col max-[800px]:justify-start max-[800px]:gap-0 max-[800px]:px-3">
-            <Sidebar />
+            {surface === "console" ? <ConsoleSidebar /> : surface === "first-run" ? null : <Sidebar />}
             <main id="workpane" className="w-[720px] max-w-[62vw] min-w-0 flex flex-col py-5 min-h-screen max-[800px]:w-full max-[800px]:max-w-none">
               <TodosView />
             </main>

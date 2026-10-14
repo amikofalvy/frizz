@@ -420,10 +420,12 @@ export function Sidebar() {
 // the recorder that watches the rail (2026-10-13) saw one geometry change per dispatch with it, the row
 // appearing, where the "Starting thread…" card it replaces had three.
 // Not a button: there is no thread to open yet, and it is gone within the dispatch call's answer.
-function StartingRow({ entry }: { entry: PendingDispatchEntry }) {
+// `leading` is ThreadRow's own slot, in the same place: the Console's rows carry their project's square.
+export function StartingRow({ entry, leading }: { entry: PendingDispatchEntry; leading?: ReactNode }) {
   return (
     <div data-sidebar-starting role="status" aria-label="Starting thread" className="relative flex min-w-0 items-start rounded-md">
       <div className="min-w-0 flex-1 flex items-start gap-2 pb-1 pl-5 pr-1.5 pt-1 text-left">
+        {leading}
         <span className="w-4 h-[19px] shrink-0 flex items-center justify-center">
           <span className="flex items-center justify-center"><BoxSpinner /></span>
         </span>

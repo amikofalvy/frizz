@@ -1,5 +1,6 @@
 import { useMemo } from "react"
 import { proxy, useSnapshot } from "valtio"
+import { keyProject, splitThreadKey, threadKey } from "./threadKey.ts"
 
 // A DISPATCH THE SERVER HAS NOT SHOWN YET — the thread a prompt box just started, between the click and
 // the board delta that carries its row.
@@ -19,7 +20,18 @@ import { proxy, useSnapshot } from "valtio"
 //
 // So the pending thread is kept HERE, where the rail can read it, and the rail draws it as the Running
 // row it is about to become (StartingRow in Sidebar.tsx): one row appears at the click, and the real
-// one takes its place without anything moving. The same shape as lib/steering.ts and
+// one takes its place without anything moving.
+//
+// THE CONSOLE'S RAIL does the same (ConsoleSidebar.tsx). Its card was taller, 81px for the project chip's
+// longer prompt line, so the round trip there was 93px, in either grouping (three runs each). Grouped by
+// status the row leads the Running band wearing its project's square; grouped by project it leads its
+// own project's running rows, and a project with nothing on the Console opens its block at the click
+// (lib/consoleBoard.ts projectBlocks) instead of when the row lands.
+//
+// THE FIRST-RUN FORM has no rail to draw a row in, and keeps the card: it is the one thing on that screen
+// that still shows what was asked. But the form is centred in the window, so a card in flow lifted the
+// heading, the status row and the box 36-37px for the length of the call. It is drawn out of flow there,
+// hung under the form (DispatchForm `pendingCard="float"`). The same shape as lib/steering.ts and
 // lib/optimisticArchive.ts — a hint that asserts what the server is about to report and yields the
 // moment it does.
 export interface PendingDispatchEntry {
@@ -28,7 +40,7 @@ export interface PendingDispatchEntry {
   project: string | undefined
   backend: string
   model: string
-  /** The thread's slug, once the dispatch call has answered. */
+  /** The thread's slug, once the dispatch call has answered. On the Console, its key. */
   slug?: string
 }
 
@@ -74,24 +86,40 @@ export function dispatchFailed(key: number): void {
 }
 
 /**
+ * The id the board shows an answered dispatch under. On a project's page that is the slug the call
+ * answered with. On the Console the board's ids are keys (lib/threadKey), and the call already answers
+ * with one (api/rpc.ts rekeyOutput); a bare slug is keyed here all the same, so the match never depends
+ * on which of the two a caller was handed.
+ */
+function landedId(entry: PendingDispatchEntry): string | undefined {
+  if (entry.slug === undefined) return undefined
+  return entry.project === undefined || splitThreadKey(entry.slug) ? entry.slug : threadKey(entry.project, entry.slug)
+}
+
+/**
  * The pending dispatches the board does not show yet, oldest first.
  *
  * An ANSWERED dispatch is matched by its slug. One still in flight has no slug, and the board delta that
  * carries its row usually beats the call's own answer, so it is matched by any thread the board has gained
  * since it was sent — each such thread claimed by one dispatch, oldest first. Without that the row would
  * be drawn twice (the stand-in and the real one) until the call answered.
+ *
+ * ON THE CONSOLE the board is every project's, its ids are keys, and each dispatch went to one project
+ * (`entry.project`). So an answered dispatch is matched by its KEY, and one in flight only by a thread
+ * its own project has gained: a thread that starts in another project meanwhile is not this one's row.
  */
 export function unlandedDispatches(
   entries: readonly PendingDispatchEntry[],
   boardIds: ReadonlySet<string>,
   known: (key: number) => ReadonlySet<string> | undefined = (key) => knownAt.get(key),
 ): PendingDispatchEntry[] {
-  const claimed = new Set(entries.flatMap((entry) => (entry.slug ? [entry.slug] : [])))
+  const claimed = new Set(entries.flatMap((entry) => landedId(entry) ?? []))
   return entries.filter((entry) => {
-    if (entry.slug) return !boardIds.has(entry.slug)
+    const own = landedId(entry)
+    if (own !== undefined) return !boardIds.has(own)
     const before = known(entry.key)
     for (const id of boardIds) {
-      if (before?.has(id) || claimed.has(id)) continue
+      if (before?.has(id) || claimed.has(id) || keyProject(id) !== entry.project) continue
       claimed.add(id)
       return false
     }
@@ -103,4 +131,10 @@ export function unlandedDispatches(
 export function usePendingDispatches(project: string | undefined): readonly PendingDispatchEntry[] {
   const list = useSnapshot(pending).list as readonly PendingDispatchEntry[]
   return useMemo(() => list.filter((entry) => entry.project === project), [list, project])
+}
+
+/** The Console's pending dispatches: every project's, each naming the project its chip pointed at. */
+export function useConsolePendingDispatches(): readonly PendingDispatchEntry[] {
+  const list = useSnapshot(pending).list as readonly PendingDispatchEntry[]
+  return useMemo(() => list.filter((entry) => entry.project !== undefined), [list])
 }

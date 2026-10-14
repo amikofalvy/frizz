@@ -3,6 +3,7 @@ import type { ThreadView } from "@frizz/shared"
 import { activeBandThread } from "@frizz/shared"
 import { orderByInteraction, orderQueue, queued } from "../groups.ts"
 import type { QueueDirection } from "../groups.ts"
+import type { PendingDispatchEntry } from "./pendingDispatch.ts"
 import { keyProject } from "./threadKey.ts"
 
 // THE CONSOLE'S TWO BANDS AND ITS TWO GROUPINGS.
@@ -77,22 +78,34 @@ export interface ProjectBlock {
   project: string
   waiting: ThreadView[]
   running: ThreadView[]
+  /** Dispatches to this project whose rows the board has not delivered yet (lib/pendingDispatch), oldest first. */
+  starting: PendingDispatchEntry[]
 }
 
 /**
  * One block per project with anything waiting or running, in `order` (the rail's). Rows keep the order
  * they arrive in, so each block's waiting rows are in queue order. A project missing from `order` — one
  * whose threads are still on the board after the rail dropped it — goes last rather than vanishing.
+ *
+ * A thread that is STARTING counts as something running: a dispatch to a project with nothing else on
+ * the Console opens that project's block at the click, where the thread's own row then lands, instead
+ * of the block arriving with the row and pushing every block under it down a second time.
  */
-export function projectBlocks(waiting: readonly ThreadView[], running: readonly ThreadView[], order: readonly string[]): ProjectBlock[] {
+export function projectBlocks(
+  waiting: readonly ThreadView[],
+  running: readonly ThreadView[],
+  order: readonly string[],
+  starting: readonly PendingDispatchEntry[] = [],
+): ProjectBlock[] {
   const blocks = new Map<string, ProjectBlock>()
   const block = (project: string) => {
     let b = blocks.get(project)
-    if (!b) blocks.set(project, (b = { project, waiting: [], running: [] }))
+    if (!b) blocks.set(project, (b = { project, waiting: [], running: [], starting: [] }))
     return b
   }
   for (const t of waiting) block(keyProject(t.id) ?? "").waiting.push(t)
   for (const t of running) block(keyProject(t.id) ?? "").running.push(t)
+  for (const entry of starting) if (entry.project !== undefined) block(entry.project).starting.push(entry)
   const rank = new Map(order.map((project, i) => [project, i]))
   return [...blocks.values()].sort((a, b) => (rank.get(a.project) ?? order.length) - (rank.get(b.project) ?? order.length))
 }

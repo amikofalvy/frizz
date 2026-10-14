@@ -22,12 +22,13 @@ import {
   type ConsoleGroup,
 } from "../lib/consoleBoard.ts"
 import { keyProject } from "../lib/threadKey.ts"
+import { unlandedDispatches, useConsolePendingDispatches, type PendingDispatchEntry } from "../lib/pendingDispatch.ts"
 import { ProjectScope } from "../lib/projectScope.tsx"
 import { CONSOLE_TOP_PX } from "../lib/homeView.ts"
 import { DispatchForm } from "./NewThreadModal.tsx"
 import { useConsoleDispatchTarget } from "./ConsoleProjectChip.tsx"
 import { ProjectSquare } from "./ProjectRail.tsx"
-import { SectionHeader, SubAgentRows, ThreadRow, useQueueScrollspy } from "./Sidebar.tsx"
+import { SectionHeader, StartingRow, SubAgentRows, ThreadRow, useQueueScrollspy } from "./Sidebar.tsx"
 import { StatusRow } from "./StatusRow.tsx"
 
 // THE CONSOLE'S SIDEBAR — a project board's sidebar, drawn from every open project at once.
@@ -68,6 +69,14 @@ export function ConsoleSidebar() {
   const order = useMemo(() => projects.map((project) => project.slug), [projects])
   const waiting = consoleCardOrder(consoleQueue(all, direction), group, order)
   const running = consoleRunning(all)
+  // A dispatch from the prompt box above, drawn as the Running row it is about to become — the project
+  // sidebar's own treatment (Sidebar.tsx StartingRow). With the "Starting thread…" card that stood under
+  // this box instead, every row moved down 93px at the click and back up when the call answered, and the
+  // thread's own row landed under the card in between (recorded 2026-10-13, three runs per grouping).
+  // The board's ids are only gathered while one is pending.
+  const pending = useConsolePendingDispatches()
+  const starting = useMemo(() => (pending.length === 0 ? pending : unlandedDispatches(pending, new Set(all.map((t) => t.id)))), [pending, all])
+  const runningCount = running.length + starting.length
   const { railRef, activeId, navigateToQueueCard } = useQueueScrollspy(snap.view, snap.drawers.length, waiting.map((t) => t.id))
 
   const row = (t: ThreadView, opts: { square: boolean; waiting: boolean }) => (
@@ -85,6 +94,9 @@ export function ConsoleSidebar() {
       <SubAgentRows t={t} />
     </div>
   )
+  const startingRow = (entry: PendingDispatchEntry, opts: { square: boolean }) => (
+    <StartingRow key={`starting-${entry.key}`} entry={entry} leading={opts.square ? <RowSquare project={bySlug.get(entry.project ?? "")} /> : undefined} />
+  )
 
   return (
     <aside className={CONSOLE_SIDEBAR_COLUMN_CLASS} style={{ paddingTop: CONSOLE_TOP_PX }} data-console-sidebar>
@@ -96,23 +108,31 @@ export function ConsoleSidebar() {
         </div>
         <GroupSwitch group={group} />
         <div ref={railRef} data-sidebar-rail className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden pb-10 max-[800px]:overflow-y-visible">
-          {waiting.length === 0 && running.length === 0 ? (
+          {waiting.length === 0 && runningCount === 0 ? (
             <div className="py-1 pl-5 pr-1.5 text-[11.5px] text-muted-50">Nothing waiting or running</div>
           ) : group === "status" ? (
             <>
               {waiting.length > 0 && <SectionHeader label="Queue" count={waiting.length} />}
               {waiting.map((t) => row(t, { square: true, waiting: true }))}
-              {running.length > 0 && waiting.length > 0 && <hr className="my-3 border-border/50" />}
-              {running.length > 0 && <SectionHeader label="Running" count={running.length} />}
+              {runningCount > 0 && waiting.length > 0 && <hr className="my-3 border-border/50" />}
+              {runningCount > 0 && <SectionHeader label="Running" count={runningCount} />}
+              {/* Newest first, the band's own order: a thread that starts lands at the top. */}
+              {[...starting].reverse().map((entry) => startingRow(entry, { square: true }))}
               {running.map((t) => row(t, { square: true, waiting: false }))}
             </>
           ) : (
-            projectBlocks(waiting, running, order).map((block, i) => (
+            projectBlocks(waiting, running, order, starting).map((block, i) => (
               <section key={block.project} aria-label={bySlug.get(block.project)?.name ?? block.project} data-console-project={block.project}>
                 {i > 0 && <hr className="my-3 border-border/50" />}
                 <ProjectHeader project={bySlug.get(block.project)} slug={block.project} />
                 {block.waiting.map((t) => row(t, { square: false, waiting: true }))}
-                <RunningRows project={block.project} rows={block.running} render={(t) => row(t, { square: false, waiting: false })} />
+                <RunningRows
+                  project={block.project}
+                  rows={block.running}
+                  starting={block.starting}
+                  render={(t) => row(t, { square: false, waiting: false })}
+                  renderStarting={(entry) => startingRow(entry, { square: false })}
+                />
               </section>
             ))
           )}
@@ -147,12 +167,31 @@ function ProjectHeader({ project, slug }: { project: ProjectCard | undefined; sl
  * many you think is appropriate, with a Show more button"). Three keeps a busy project's block about
  * as tall as a queue of three.
  */
-function RunningRows({ project, rows, render }: { project: string; rows: ThreadView[]; render: (t: ThreadView) => ReactNode }) {
+function RunningRows({
+  project,
+  rows,
+  starting,
+  render,
+  renderStarting,
+}: {
+  project: string
+  rows: ThreadView[]
+  starting: PendingDispatchEntry[]
+  render: (t: ThreadView) => ReactNode
+  renderStarting: (entry: PendingDispatchEntry) => ReactNode
+}) {
   const expanded = useRunningExpanded(project)
-  const capped = rows.length > RUNNING_CAP
-  const shown = capped && !expanded ? rows.slice(0, RUNNING_CAP) : rows
+  // A thread that is starting is one of the running rows already, for the cap as for the eye: it takes
+  // the top place its own row will land in (newest first), so the cap cuts the same rows before the row
+  // lands as after.
+  const total = starting.length + rows.length
+  const capped = total > RUNNING_CAP
+  const room = capped && !expanded ? RUNNING_CAP : total
+  const shownStarting = [...starting].reverse().slice(0, room)
+  const shown = rows.slice(0, room - shownStarting.length)
   return (
     <>
+      {shownStarting.map(renderStarting)}
       {shown.map(render)}
       {capped ? (
         <button
@@ -216,7 +255,8 @@ function ConsoleDispatch() {
   const { project, chip } = useConsoleDispatchTarget()
   return (
     <ProjectScope project={project?.slug}>
-      <DispatchForm projectPicker={chip} />
+      {/* No "Starting thread…" card under this box: the rail draws the pending thread itself (above). */}
+      <DispatchForm projectPicker={chip} pendingCard={false} />
     </ProjectScope>
   )
 }

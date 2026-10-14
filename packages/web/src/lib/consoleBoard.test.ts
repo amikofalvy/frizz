@@ -26,3 +26,19 @@ test("a project the rail no longer lists keeps its block, last, rather than losi
   const blocks = projectBlocks([t("gone~w"), t("a~w")], [], ["a"])
   assert.deepEqual(blocks.map((b) => b.project), ["a", "gone"])
 })
+
+test("a thread that is starting opens its project's block, in the rail's order, and joins a block that exists", () => {
+  const starting = [
+    { key: 1, project: "c", backend: "claude", model: "opus" },
+    { key: 2, project: "a", backend: "codex", model: "sol" },
+    // A project page's dispatch names no project and belongs to no block.
+    { key: 3, project: undefined, backend: "claude", model: "opus" },
+  ]
+  const blocks = projectBlocks([t("b~w")], [t("a~r")], ["a", "b", "c"], starting)
+  assert.deepEqual(
+    blocks.map((b) => [b.project, b.waiting.length, b.running.length, b.starting.map((e) => e.key)]),
+    [["a", 0, 1, [2]], ["b", 1, 0, []], ["c", 0, 0, [1]]],
+  )
+  // Without one, a project with nothing waiting or running still has no block.
+  assert.deepEqual(projectBlocks([t("b~w")], [t("a~r")], ["a", "b", "c"]).map((b) => b.project), ["a", "b"])
+})
