@@ -6,7 +6,8 @@ import test from "node:test"
 
 // A file dropped ANYWHERE on a thread's surface goes into that surface's prompt box — on its queue card,
 // in its drawer and on its full-screen page alike, because the zone is the thread surface's
-// (components/ThreadSurface.tsx) and not any one of them's. It was the queue card's alone from 2026-10-12
+// (components/ThreadSurface.tsx) and not any one of them's. On the full-screen page, which is one
+// thread's alone, that is the whole page: the gutter and the rail beside the column too (ThreadPageZone). It was the queue card's alone from 2026-10-12
 // to 2026-10-13, and the same drop on the drawer or on /full opened the file in place of the app.
 //
 // Real server, real broker, real /attach upload; the worker is the scripted one, so nothing signs in:
@@ -31,6 +32,8 @@ test("a file dropped anywhere on a thread's queue card, drawer or full-screen pa
   const onDrawer = file("on-drawer.txt")
   const onDrawerBox = file("on-drawer-box.txt")
   const onFull = file("on-full.txt")
+  const onFullGutter = file("on-full-gutter.txt")
+  const onFullRail = file("on-full-rail.txt")
 
   const { createRpcClient } = await import("../../../../scripts/lib/rpc-client.mjs")
   const api = createRpcClient(`${baseUrl}/`)
@@ -136,6 +139,23 @@ test("a file dropped anywhere on a thread's queue card, drawer or full-screen pa
     await new Promise((r) => setTimeout(r, 400))
     assert.deepEqual(await chips(full), ["on-card.txt", "on-full.txt"])
     assert.deepEqual(await hinted(full), { hint: false, dashed: false }, "the hint clears on drop")
+
+    // 4. …AND ANYWHERE ELSE ON THAT PAGE. It is this one thread's page, and at this width its column is
+    // half of it: the gutter beside the column and the rail on the other side are still "anywhere".
+    const column = await page.$eval("main[data-standalone-thread]", (el) => { const r = el.getBoundingClientRect(); return { left: r.left, right: r.right } })
+    assert.ok(column.left > 80, "there is a gutter beside the column at this width")
+    await dropAt({ x: Math.round(column.left / 2), y: 450 }, full, onFullGutter)
+    await waitForChips(full, 3)
+    await dropAt(await point("[data-focus-rail]", (r) => ({ x: r.left + r.width / 2, y: r.top + r.height / 2 })), full, onFullRail)
+    await waitForChips(full, 4)
+    await new Promise((r) => setTimeout(r, 400))
+    assert.deepEqual(await chips(full), ["on-card.txt", "on-full.txt", "on-full-gutter.txt", "on-full-rail.txt"], "each drop is one upload, wherever on the page it landed")
+    // Off the window altogether: the hover ends, as it does when a drag leaves a card.
+    await page.mouse.dragEnter({ x: Math.round(column.left / 2), y: 450 }, files([onFull]))
+    await page.mouse.dragOver({ x: Math.round(column.left / 2), y: 450 }, files([onFull]))
+    await page.waitForFunction((sel) => document.querySelector(sel)?.textContent?.includes("Drop file to attach"), { timeout: 5000 }, `${full} [data-composer-box]`)
+    await page.$eval("[data-thread-page-zone]", (zone) => zone.dispatchEvent(new DragEvent("dragleave", { bubbles: true, relatedTarget: null })))
+    await page.waitForFunction((sel) => !document.querySelector(sel)?.textContent?.includes("Drop file to attach"), { timeout: 5000 }, `${full} [data-composer-box]`)
 
     assert.deepEqual(errors, [], "no console/page errors during the flow")
   } finally {
