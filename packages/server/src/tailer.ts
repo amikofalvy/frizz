@@ -39,6 +39,7 @@ import { log as frizzLog } from "./logging.ts"
 import { frizzTempDir } from "./frizz-paths.ts"
 import { pidIsAlive } from "./project-identity.ts"
 import { redactToolPayload } from "./credential-redaction.ts"
+import { jsonCopy, jsonEqual } from "./json-value.ts"
 
 // The JSONL tailer: incrementally reads each registered session's Claude Code transcript
 // (~/.claude/projects/<cwdSlug>/<session_id>.jsonl) to derive liveness telemetry — last activity
@@ -2927,7 +2928,19 @@ export interface SubAgentLookup {
 }
 
 export interface Tailer {
-  get(slug: string): SessionTelemetry | undefined
+  /**
+   * The thread's derived telemetry, or undefined when it has none (not tailed yet, or tailed under a
+   * session/generation its row has since moved past).
+   *
+   * `row`, when given, is the thread's registry row as the caller already holds it from
+   * `storage.allSessions()` in the same synchronous turn — the board passes it so a build of N threads
+   * does not re-fetch N rows by slug. It must be the current row; a row for another slug is ignored.
+   *
+   * THE RESULT IS SHARED AND MUST NOT BE MUTATED. While nothing about the thread changes, every call
+   * returns the identical object (see `telemetryMemo` in createTailer), which is how the board tells an
+   * untouched thread from a changed one without comparing it field by field.
+   */
+  get(slug: string, row?: SessionRow): SessionTelemetry | undefined
   // FOREIGN session ids (JSONL files in the project dir with no registry row — maintainer terminals)
   // whose transcript is FRESH (recent mtime): the board lists these as read-only session threads.
   // Keyed by session id (the thread id for a foreign thread IS its session id).
@@ -4366,6 +4379,7 @@ export function createTailer(deps: TailerDeps): Tailer {
   function dismissOp(slug: string, id: string): boolean {
     const state = states.get(slug)
     if (!state || !registeredStateIsCurrent(state)) return false
+    touchState(state)
     // DURABLE FIRST, and unconditionally — before the in-memory retirement and regardless of whether
     // anything was live to retire. The in-memory maps do not survive a frizz restart, and the op's
     // dispatch record does; a dismissal that lived only in memory is exactly how a killed shell came
@@ -5392,6 +5406,8 @@ export function createTailer(deps: TailerDeps): Tailer {
     const transcriptDirty: string[] = []
     const nowMs = now()
     adoptionBindings = new Map()
+    // The registered states this tick read (see touchState), re-validated once it is done with them.
+    const visited: Array<[TailState, SessionRow]> = []
     const rows = deps.storage.allSessions()
     rowsAtLastTick = rows
     // ARCHIVED ROWS PRIME LAST. Priming is bounded per tick, so on a cold board the registry's order
@@ -5508,6 +5524,11 @@ export function createTailer(deps: TailerDeps): Tailer {
         }
         states.set(row.slug, state)
       }
+      // Everything below may change what `get` derives for this state, so its memo is due a check
+      // (telemetryMemo). Re-validated as soon as the loop ends, so the cost lands in the tick that did
+      // the work rather than in the next board build.
+      touchState(state)
+      visited.push([state, row])
 
       // Read-side discovery: rebind a drifted transcript / flag a boot-failure stall. A no-op for a
       // healthy bound session (offset > 0). May rebind + reset primed → the prime branch below replays
@@ -5801,6 +5822,7 @@ export function createTailer(deps: TailerDeps): Tailer {
       flushCache(nowMs)
     }
 
+    for (const [state, row] of visited) memoizedTelemetry(state, row)
     if (dirty) deps.onChange()
     if (transcriptDirty.length) deps.onTranscriptChange?.(transcriptDirty)
 
@@ -6061,47 +6083,101 @@ export function createTailer(deps: TailerDeps): Tailer {
       : undefined
   }
 
+  // The same test, of a row the caller already holds (Tailer.get's `row`).
+  function currentRowAmong(state: TailState, row: SessionRow): SessionRow | undefined {
+    return row.session_id === state.sessionId && (row.runtime_generation ?? 0) === state.runtimeGeneration ? row : undefined
+  }
+
+  // What `get` derives from one state. `row` is the registered row it is current for (undefined for a
+  // foreign thread, which has none).
+  function telemetryOf(s: TailState, row: SessionRow | undefined): SessionTelemetry {
+    // pendingQuestion: the latest assistant message carries a ```question fence and the HUMAN has not
+    // answered it. NO REST-GATE, and that is the point. It used to require `turn === "idle"` as well,
+    // copied from the `humanBlocked` net where the gate is genuinely needed — that signal is a thread
+    // FILE flag written mid-turn, ~150ms after dispatch, long before the ask text exists, so counting
+    // it early yields a card with no visible ask. This flag is derived from the ask TEXT ITSELF: by the
+    // time it is true the question is on disk and in the chat, so there is nothing to wait for.
+    //
+    // What the gate did instead was make the ask disappear the instant anything re-opened the turn —
+    // and the chat, which reads the transcript rather than the turn, went on drawing the answerable
+    // card. One thread showed its ```question card AND the working shimmer, in the Active rail instead
+    // of the queue (maintainer 2026-08-24: "this needs to be structurally impossible"). An unanswered
+    // question is a claim on the HUMAN; whether the agent happens to be mid-turn is a fact about the
+    // agent. The board reports both, and `boardRuntime` decides which one the row is allowed to draw.
+    //
+    // AND ONLY FOR A THREAD THAT STILL SPEAKS THE FENCE (2026-09-11). The free-form ```question fence
+    // is retired from the worker contract — a worker asks via `mcp__frizz__ask`, a registered row —
+    // so for a thread dispatched at or after the cutover a fence in its prose is prose: it must not
+    // queue the thread, degrade its runtime, excuse the sign-off nudge or turn the Goal's bump. A
+    // thread dispatched BEFORE it is a legacy worker whose fence is still its ask, and everything
+    // downstream keeps treating it as one. This is the ONE gate: `lastAssistantHasQuestion` stays
+    // the fold's plain fact about the TEXT (and the tail cache may restore it from an older build),
+    // and every consumer — board queue, `degradeIfAwaitingAnswer`, the ThreadView, both scheduler
+    // reads — sees only what leaves here. Gated on the live row rather than a value stamped into the
+    // state at creation so a (re)spawn that bumps `spawned_at` is read the moment it lands. A foreign
+    // thread has no row and reads as legacy, which is what `questionFencesLive` does with unknown.
+    const pendingQuestion = s.lastAssistantHasQuestion && questionFencesLive(row?.spawned_at)
+    const nowMs = now()
+    return { turn: s.turn, permPrompt: s.permPrompt, permPolicy: s.permPolicy, permDenies: s.permDenies, model: s.model, effort: s.effort, profileAt: s.profileAt, profileRevision: s.profileRevision, permissionMode: s.permissionMode, permissionModeAt: s.permissionModeAt, permissionModeRevision: s.permissionModeRevision, lastActivityAt: s.lastActivityAt, lastAssistantAt: s.lastAssistantAt, lastAssistant: s.lastAssistant, lastAssistantLine: s.lastAssistantLine, liveTool: newestLiveTool(s), aiTitle: s.aiTitle, customTitle: s.customTitle, customTitleRevision: s.customTitleRevision, subAgents: subAgentViews(s, nowMs), droppedReports: [...s.queuedReports.values()], bgShells: [...bgShellViews(s), ...codexBgShellViews(s)], retiredShells: retiredShellViews(s), retiredSubAgents: retiredSubAgentViews(s), questionSightings: s.questionSightings, pendingAsk: s.pendingAsk, pendingQuestion, lastAssistantAllDone: s.lastAssistantAllDone, lastUserAt: s.lastUserAt, restFromAt: s.restFromAt, questionCorrectedAt: s.questionCorrectedAt, lastUserText: s.lastUserText, firstUserText: s.firstUserText, lastFence: s.lastFence, noTranscript: s.noTranscript, authFault: s.authFault, apiFault: s.apiFault, providerError: s.providerError, limitFault: s.limitFault, contextTokens: s.contextTokens, contextWindow: s.contextWindow, lastCompactionAt: s.lastCompactionAt }
+  }
+
+  // ---- telemetryMemo: the SAME object while nothing about the thread changed ---------------------------
+  // `get` used to build a fresh SessionTelemetry on every call, so a reader could never tell an unchanged
+  // thread from a changed one without comparing it whole. The board asks for every thread on every build
+  // — 5,000 objects per refresh on a 5,000-thread board, nearly all of them archived threads nothing has
+  // touched in weeks — and it needs exactly that distinction to skip re-deriving them (board.ts
+  // archivedViewMemo).
+  //
+  // So each state keeps the object it last returned, and returns it again while it is still right:
+  //   * TOUCH. Every path that can change a state bumps its touch count first (touchState): the tick, for
+  //     each state it reads; dismissOp, notePermissionMode and permissionAnswered. Untouched, a state's
+  //     derivation cannot have moved — unless it is VOLATILE.
+  //   * VOLATILE: a state whose derivation reads something besides its own fields — the clock (a
+  //     sub-agent goes stale after a quiet window), the OS (a background shell's liveness probe), a
+  //     sub-agent's output file mtime, the codex bridge's background execs. Those are re-derived on every
+  //     call, touched or not.
+  //   * A re-derivation that comes out EQUAL to what was last returned hands back the previous object, so
+  //     a touch that changed nothing (the dormant sweep reads every archived thread every 10s and changes
+  //     nothing) costs one comparison and no identity. Equality is checked against a deep COPY taken when
+  //     the object was built, not against the object itself: its nested values are the state's own, and a
+  //     fold that edited one in place would otherwise compare equal to itself.
+  //   * `spawned_at` is the one row field the derivation reads (pendingQuestion), so a respawn re-derives.
+  const touches = new WeakMap<TailState, number>()
+  const telemetryMemos = new WeakMap<TailState, { touch: number; spawnedAt: string | undefined; tele: SessionTelemetry; copy: unknown }>()
+  function touchState(state: TailState): void {
+    touches.set(state, (touches.get(state) ?? 0) + 1)
+  }
+  function telemetryIsVolatile(s: TailState): boolean {
+    return s.subAgents.size > 0 || s.retiredSubAgents.size > 0 || (deps.codexBackgroundExecs !== undefined && !s.foreign && !s.paneDead)
+  }
+  function memoizedTelemetry(s: TailState, row: SessionRow): SessionTelemetry {
+    const touch = touches.get(s) ?? 0
+    const memo = telemetryMemos.get(s)
+    const sameRow = memo !== undefined && memo.spawnedAt === row.spawned_at
+    if (sameRow && memo.touch === touch && !telemetryIsVolatile(s)) return memo.tele
+    const fresh = telemetryOf(s, row)
+    if (sameRow && jsonEqual(memo.copy, fresh)) {
+      memo.touch = touch
+      return memo.tele
+    }
+    telemetryMemos.set(s, { touch, spawnedAt: row.spawned_at, tele: fresh, copy: jsonCopy(fresh) })
+    return fresh
+  }
+
   function registeredStateIsCurrent(state: TailState): boolean {
     return currentRowFor(state) !== undefined
   }
 
   return {
-    get(slug) {
+    get(slug, rowHint) {
       // Registered states win the key; a foreign thread resolves by its session id (its thread id).
       const registered = states.get(slug)
-      const row = registered ? currentRowFor(registered) : undefined
-      const s = registered
-        ? row ? registered : undefined
-        : foreignStates.get(slug)
-      if (!s) return undefined
-      // pendingQuestion: the latest assistant message carries a ```question fence and the HUMAN has not
-      // answered it. NO REST-GATE, and that is the point. It used to require `turn === "idle"` as well,
-      // copied from the `humanBlocked` net where the gate is genuinely needed — that signal is a thread
-      // FILE flag written mid-turn, ~150ms after dispatch, long before the ask text exists, so counting
-      // it early yields a card with no visible ask. This flag is derived from the ask TEXT ITSELF: by the
-      // time it is true the question is on disk and in the chat, so there is nothing to wait for.
-      //
-      // What the gate did instead was make the ask disappear the instant anything re-opened the turn —
-      // and the chat, which reads the transcript rather than the turn, went on drawing the answerable
-      // card. One thread showed its ```question card AND the working shimmer, in the Active rail instead
-      // of the queue (maintainer 2026-08-24: "this needs to be structurally impossible"). An unanswered
-      // question is a claim on the HUMAN; whether the agent happens to be mid-turn is a fact about the
-      // agent. The board reports both, and `boardRuntime` decides which one the row is allowed to draw.
-      //
-      // AND ONLY FOR A THREAD THAT STILL SPEAKS THE FENCE (2026-09-11). The free-form ```question fence
-      // is retired from the worker contract — a worker asks via `mcp__frizz__ask`, a registered row —
-      // so for a thread dispatched at or after the cutover a fence in its prose is prose: it must not
-      // queue the thread, degrade its runtime, excuse the sign-off nudge or turn the Goal's bump. A
-      // thread dispatched BEFORE it is a legacy worker whose fence is still its ask, and everything
-      // downstream keeps treating it as one. This is the ONE gate: `lastAssistantHasQuestion` stays
-      // the fold's plain fact about the TEXT (and the tail cache may restore it from an older build),
-      // and every consumer — board queue, `degradeIfAwaitingAnswer`, the ThreadView, both scheduler
-      // reads — sees only what leaves here. Gated on the live row rather than a value stamped into the
-      // state at creation so a (re)spawn that bumps `spawned_at` is read the moment it lands. A foreign
-      // thread has no row and reads as legacy, which is what `questionFencesLive` does with unknown.
-      const pendingQuestion = s.lastAssistantHasQuestion && questionFencesLive(row?.spawned_at)
-      const nowMs = now()
-      return { turn: s.turn, permPrompt: s.permPrompt, permPolicy: s.permPolicy, permDenies: s.permDenies, model: s.model, effort: s.effort, profileAt: s.profileAt, profileRevision: s.profileRevision, permissionMode: s.permissionMode, permissionModeAt: s.permissionModeAt, permissionModeRevision: s.permissionModeRevision, lastActivityAt: s.lastActivityAt, lastAssistantAt: s.lastAssistantAt, lastAssistant: s.lastAssistant, lastAssistantLine: s.lastAssistantLine, liveTool: newestLiveTool(s), aiTitle: s.aiTitle, customTitle: s.customTitle, customTitleRevision: s.customTitleRevision, subAgents: subAgentViews(s, nowMs), droppedReports: [...s.queuedReports.values()], bgShells: [...bgShellViews(s), ...codexBgShellViews(s)], retiredShells: retiredShellViews(s), retiredSubAgents: retiredSubAgentViews(s), questionSightings: s.questionSightings, pendingAsk: s.pendingAsk, pendingQuestion, lastAssistantAllDone: s.lastAssistantAllDone, lastUserAt: s.lastUserAt, restFromAt: s.restFromAt, questionCorrectedAt: s.questionCorrectedAt, lastUserText: s.lastUserText, firstUserText: s.firstUserText, lastFence: s.lastFence, noTranscript: s.noTranscript, authFault: s.authFault, apiFault: s.apiFault, providerError: s.providerError, limitFault: s.limitFault, contextTokens: s.contextTokens, contextWindow: s.contextWindow, lastCompactionAt: s.lastCompactionAt }
+      const row = registered
+        ? rowHint && rowHint.slug === slug ? currentRowAmong(registered, rowHint) : currentRowFor(registered)
+        : undefined
+      if (registered) return row ? memoizedTelemetry(registered, row) : undefined
+      const foreign = foreignStates.get(slug)
+      return foreign ? telemetryOf(foreign, undefined) : undefined
     },
     // The CURRENT fresh foreign session ids (mtime within FOREIGN_FRESH_MS, capped), mtime-desc. Kept
     // as the last scan's result — recomputed at most every FOREIGN_SCAN_EVERY ticks.
@@ -6122,12 +6198,14 @@ export function createTailer(deps: TailerDeps): Tailer {
     notePermissionMode(slug, permissionMode) {
       const state = states.get(slug)
       if (state) {
+        touchState(state)
         state.permissionMode = permissionMode
       }
     },
     permissionAnswered(slug) {
       const state = states.get(slug)
       if (!state?.primed || !state.permPrompt) return
+      touchState(state)
       const row = currentRowFor(state)
       if (row) state.permPrompt = permBlocked(state, row, state.turn)
     },

@@ -2216,7 +2216,7 @@ export function createBoard(
         project.dir,
         storage,
         row,
-        tailer.get(row.slug),
+        tailer.get(row.slug, row),
         legacyTerminalCache.has(row.slug),
         interactionPresence,
         nowMs,

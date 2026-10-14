@@ -130,10 +130,19 @@ test("a write that leaves the threads as they were does not end the wait", () =>
     const snapshot = f.storage.allSessions()
     assert.equal(f.look(1000), "skipped")
 
-    // The registry snapshot is re-read after a write to ANY of the project's tables, and comes back
-    // as an equal one in a new array. Here the operator dismissed a background op on some thread.
+    // A write to another of the project's tables re-reads no session rows at all (change-tracking.ts):
+    // the operator dismissed a background op on some thread.
     f.storage.retireOp("rested", "sid-rested", "toolu_gone")
-    assert.notEqual(f.storage.allSessions(), snapshot, "the snapshot really was replaced")
+    assert.equal(f.storage.allSessions(), snapshot, "another table's write leaves the snapshot as it was")
+    assert.equal(f.look(1000), "skipped")
+
+    // A session write that stores what was already there still re-reads that row, and comes back as an
+    // equal snapshot in a new array. (The first upsert normalizes the fixture's NULL state to "open".)
+    f.storage.upsertSession({ ...f.storage.getSession("rested")! })
+    f.settle()
+    const settled = f.storage.allSessions()
+    f.storage.upsertSession({ ...f.storage.getSession("rested")! })
+    assert.notEqual(f.storage.allSessions(), settled, "the snapshot really was replaced")
     assert.equal(f.look(1000), "skipped", "an equal snapshot is not a change")
   } finally { f.close() }
 })
