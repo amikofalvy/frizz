@@ -300,6 +300,8 @@ export function QuestionBlockCard({
                   type="password"
                   data-secret-answer
                   data-surface="questionAnswer"
+                  // Escape climbs out to the options, as in the box below, and the drawer stays open.
+                  data-claims-escape
                   autoComplete="off"
                   autoCorrect="off"
                   autoCapitalize="off"
@@ -334,12 +336,13 @@ export function QuestionBlockCard({
               // Its own surface tag — deliberately NOT the queue card's `queueComposer`, which is the
               // separate free-form prompt box at the bottom of the card. Escape climbs out onto this
               // question's own options grid (where the number keys answer it) and stops here rather than
-              // reaching App's window handler. NOTE (verified in the real app 2026-07-26): stopping it does NOT keep an
-              // enclosing thread drawer open — Radix's DismissableLayer takes Escape on the document
-              // in the CAPTURE phase, so it has already dismissed the sheet before this bubble-phase
-              // handler runs. The typed answer survives that (it lives in the draft store), but the
-              // "Escape climbs out of the box first" intent only holds on the queue card.
+              // reaching App's window handler. Stopping it is not what keeps an enclosing thread drawer
+              // open — Radix's DismissableLayer takes Escape on the document in the CAPTURE phase, ahead
+              // of this bubble-phase handler — so the box CLAIMS the key, the way the prompt box and the
+              // title editor do (ThreadSheet reads `data-claims-escape`). Until 2026-10-13 it did not, and
+              // the climb-out held on the queue card alone: in a drawer the same Escape closed the drawer.
               data-surface="questionAnswer"
+              data-claims-escape
               value={freetext}
               onChange={(e) => interactive.onText(e.target.value)}
               onKeyDown={(e) => {
