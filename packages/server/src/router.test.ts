@@ -1898,6 +1898,34 @@ test("a codex follow-up opens the ledger entry delivered — its receipt names t
   h.storage.close()
 })
 
+// A CHARACTER NO PROVIDER CAN BE HANDED. The send used to be refused outright ("This message holds a
+// control or incomplete character frizz can't send. Edit and resend.", maintainer 2026-10-13: "wtf why
+// not strip this?"). It is taken out instead — and from the LEDGER's copy too, not only the worker's:
+// a delivery is matched to its transcript record by text, so an entry that kept the character would
+// never match the record of what was actually sent and would draw a second bubble beside it.
+test("a follow-up carrying undeliverable characters is sent without them, and recorded that way", async () => {
+  const pasted = `first line${String.fromCodePoint(0x2028)}second ${String.fromCodePoint(27)}[1mline${String.fromCharCode(0xd83d)}`
+  const cleaned = "first line\nsecond [1mline"
+  const { h, slug, calls } = restartHarness()
+  await h.router.followUp.handler({ input: { slug, sessionId: `sid-${slug}`, message: pasted, deliveryId: "d-pasted" } })
+  assert.equal(calls[0]?.text, cleaned, "the worker receives the message with those characters taken out")
+  assert.equal(parseDeliveryLedger(h.storage.getSession(slug)!.delivery_ledger).find((i) => i.id === "d-pasted")?.text, cleaned, "…and the ledger holds the same words")
+  // Nothing but such characters is nothing to send, and says so rather than delivering an empty turn.
+  await assert.rejects(
+    h.router.followUp.handler({ input: { slug, sessionId: `sid-${slug}`, message: String.fromCodePoint(0, 27, 127), deliveryId: "d-empty" } }),
+    /There is nothing to send/,
+  )
+  assert.equal(calls.length, 1)
+  h.storage.close()
+
+  // "Send to queue" writes its own ledger entry before any transport is called: the same words there.
+  const mid = interruptHarness()
+  await mid.h.router.followUp.handler({ input: { slug: mid.slug, sessionId: `sid-${mid.slug}`, message: pasted, deliveryId: "d-held", hold: true } })
+  const held = parseDeliveryLedger(mid.h.storage.getSession(mid.slug)!.delivery_ledger).find((i) => i.id === "d-held")
+  assert.deepEqual([held?.state, held?.text], ["held", cleaned])
+  mid.h.storage.close()
+})
+
 // The kirby bug (2026-09-02): ~/Documents was itself an adopted project, so picking a brand-new
 // empty folder under it "added" documents — the picker navigated to another project's board, and no
 // flow could create the new project at all.

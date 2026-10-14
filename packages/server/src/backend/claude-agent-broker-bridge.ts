@@ -9,7 +9,7 @@ import { adoptOrForkBroker, killBroker, lastKnownBrokerDaemon, liveBrokerRecord,
 import { connectClaudeBroker, type ClaudeBrokerClient } from "./claude-broker-client.ts"
 import { describeClaudeBrokerExit, readClaudeBrokerExit, type ClaudeBrokerExitRecord } from "./claude-broker-diagnostics.ts"
 import type { ClaudeDiagnostic, ClaudePermissionDecision, ClaudePermissionRequest, ClaudeQueryEvent, ClaudeSkillInfo } from "./claude-agent-sdk-protocol.ts"
-import { CLAUDE_AGENT_SDK_MAX_INPUT_BYTES, CLAUDE_BROKER_CAPABILITY_CANCEL_INPUT, CLAUDE_BROKER_CAPABILITY_INPUT_ACK, CLAUDE_BROKER_CAPABILITY_LIST_SKILLS, CLAUDE_BROKER_CAPABILITY_RENAME, CLAUDE_BROKER_CAPABILITY_STOP_TASK, CLAUDE_BROKER_CAPABILITY_SUBAGENT_STEER, validateInputMessage } from "./claude-agent-sdk-protocol.ts"
+import { CLAUDE_AGENT_SDK_MAX_INPUT_BYTES, CLAUDE_BROKER_CAPABILITY_CANCEL_INPUT, CLAUDE_BROKER_CAPABILITY_INPUT_ACK, CLAUDE_BROKER_CAPABILITY_LIST_SKILLS, CLAUDE_BROKER_CAPABILITY_RENAME, CLAUDE_BROKER_CAPABILITY_STOP_TASK, CLAUDE_BROKER_CAPABILITY_SUBAGENT_STEER, deliverableInputText, validateInputMessage } from "./claude-agent-sdk-protocol.ts"
 import type { BrokerRecord, ClaudeBrokerConfig } from "./claude-agent-broker.ts"
 import type { InteractionSessionScope, InteractionStore } from "../interaction-store.ts"
 import {
@@ -312,7 +312,14 @@ export interface ClaudeAgentBrokerBridge {
  * validator on this side turns that into a thrown RPC the composer can roll back and toast, which is the
  * whole difference between "frizz refused my message" and "frizz ate my message".
  *
- * The protocol error's own wording is a boundary label (`input.text contains unsafe text`) aimed at a
+ * A CHARACTER THE WIRE CANNOT CARRY IS TAKEN OUT, NOT REFUSED (`deliverableInputText`): a stray control
+ * code or half of a surrogate pair is nothing the worker could have read, and refusing the send for it
+ * made a human hunt an invisible character through their own paste. It happens here because this is
+ * the one place every input to a Claude worker passes — a dispatch, a follow-up, a sub-agent steer, a
+ * wake — and before the frame, so it also holds against a daemon an older build left running. The
+ * router cleans an operator's follow-up earlier still, so the delivery ledger records these same words.
+ *
+ * The protocol error's own wording is a boundary label (`input.text exceeds 65536 bytes`) aimed at a
  * developer reading a stack trace. This is the string a human reads in a toast after pressing Enter, so
  * it names the problem and what to do about it — and it has to FIT: sendEagerFollowUp renders it as
  * `Steer failed — ${message.slice(0, 160)}`, so anything longer is cut off mid-sentence (measured in the
@@ -321,14 +328,11 @@ export interface ClaudeAgentBrokerBridge {
  */
 export function validatedInput(message: { id: string; text: string; parentToolUseId?: string }): ReturnType<typeof validateInputMessage> {
   try {
-    return validateInputMessage(message)
+    return validateInputMessage({ ...message, text: deliverableInputText(message.text) })
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
     if (/exceeds/.test(detail)) {
       throw new Error(`This message is too long to send (the limit is ${CLAUDE_AGENT_SDK_MAX_INPUT_BYTES / 1024}KB). Shorten it and resend.`)
-    }
-    if (/unsafe text/.test(detail)) {
-      throw new Error("This message holds a control or incomplete character frizz can't send. Edit and resend.")
     }
     throw new Error(`frizz could not send this message: ${detail}`)
   }
@@ -686,7 +690,8 @@ export function createClaudeAgentBrokerBridge(deps: ClaudeBrokerBridgeDeps): Cla
       // Measured against a real daemon in `_live_broker_input_drop.mts`: one sentence delivered, the same
       // sentence with a single emoji appended vanished with zero diagnostics. Most of that class is now
       // deliverable (validateInputMessage no longer applies the display-grade class to a prompt body),
-      // but the residue — an oversized body, a C0 control, a replayed uuid — must FAIL THE OPERATOR'S
+      // and a C0 control or a lone surrogate is taken out of the text rather than refused (see
+      // validatedInput). The residue — an oversized body, a replayed uuid — must FAIL THE OPERATOR'S
       // SEND rather than evaporate. Running the validator before the frame is what makes that happen:
       // the throw reaches the RPC, which rolls the optimistic bubble back and toasts.
       //
@@ -807,14 +812,13 @@ export function createClaudeAgentBrokerBridge(deps: ClaudeBrokerBridgeDeps): Cla
       }
       // VALIDATE HERE, not only in the daemon. `sendInput` writes a socket frame and returns; the
       // daemon calls `handle.send(...).catch(() => {})`, so a message the protocol validator rejects
-      // (a control byte, an over-long body) is discarded THERE with nobody to tell. For a follow-up
-      // that has always been true and is out of scope to change — it is a shared hot path whose
-      // error handling deliberately never kills a session. For a STEER it is unacceptable: the RPC
-      // would answer `delivered: true` for a message that never reached the child, which is exactly
-      // the "an input that silently drops a steer is worse than no input" failure the prompt box is
-      // gated on. Measured on the promoted artifact: an ESC/BEL steer was accepted and vanished.
-      // Running the same pure validator first turns that into an error the operator actually sees.
-      const message = validateInputMessage({ id: inputIdFor(input.deliveryId), text: input.text, parentToolUseId: input.subAgentId })
+      // (a control byte, an over-long body) is discarded THERE with nobody to tell. For a STEER that
+      // is unacceptable: the RPC would answer `delivered: true` for a message that never reached the
+      // child, which is exactly the "an input that silently drops a steer is worse than no input"
+      // failure the prompt box is gated on. Measured on the promoted artifact: an ESC/BEL steer was
+      // accepted and vanished. `validatedInput` takes those characters out and delivers the rest, and
+      // turns what it still cannot send into an error the operator actually sees.
+      const message = validatedInput({ id: inputIdFor(input.deliveryId), text: input.text, parentToolUseId: input.subAgentId })
       // Acknowledged for the same reason a follow-up is: `delivered: true` must mean the daemon has it.
       await deliver(held, message)
     },

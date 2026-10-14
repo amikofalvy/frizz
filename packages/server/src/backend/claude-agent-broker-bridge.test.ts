@@ -522,6 +522,36 @@ test("concurrent follow-ups to a daemon-less thread share ONE cold resume, and b
   }
 })
 
+// A character the wire cannot carry used to cost the operator the whole send: the bridge refused it
+// with "This message holds a control or incomplete character frizz can't send. Edit and resend.", and
+// the human was left hunting an invisible character through their own paste (maintainer 2026-10-13:
+// "wtf why not strip this?"). The daemon on the other end of this socket still runs the refusing
+// validator, so the message arriving at all is the proof the bridge cleaned it before the frame.
+// Negative control: against the refusing bridge, the first `followUp` below rejects.
+test("a follow-up and a dispatch carrying undeliverable characters arrive without them", { timeout: 25_000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "cbrk-strip-"))
+  const exe = join(dir, "fake-claude--basic.mjs")
+  copyFileSync(fakeCli, exe); chmodSync(exe, 0o700)
+  const bridge = createClaudeAgentBrokerBridge({ stateDir: dir, executablePath: exe, env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" } })
+  const sessionId = randomUUID()
+  const slug = "pasted-with-a-stray-character"
+  const inputs = () => { try { return readFileSync(join(dir, "capture.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as { kind: string; uuid?: string; text?: string }).filter((r) => r.kind === "user-input") } catch { return [] } }
+  const esc = String.fromCodePoint(27), lineSeparator = String.fromCodePoint(0x2028), loneSurrogate = String.fromCharCode(0xd83d)
+  try {
+    await bridge.spawnDispatch({ threadSlug: slug, sessionId, cwd: dir, prompt: `start${String.fromCodePoint(0)} here`, permissionMode: "default" })
+    const deliveryId = randomUUID()
+    await bridge.followUp({ threadSlug: slug, sessionId, cwd: dir, text: `first line${lineSeparator}second ${esc}[1mline${loneSurrogate} 🚀`, deliveryId })
+    for (let i = 0; i < 100 && !inputs().some((r) => r.uuid === deliveryId); i++) await sleep(50)
+    assert.equal(inputs().find((r) => r.uuid === deliveryId)?.text, "first line\nsecond [1mline 🚀", "the follow-up reached claude with the characters taken out and nothing else changed")
+    assert.ok(inputs().some((r) => r.text === "start here"), "…and so did the dispatch's opening prompt")
+  } finally {
+    bridge.releaseSession(slug, sessionId, "session-deleted")
+    bridge.close()
+    try { const r = readBrokerRecord(claudeBrokerRecordPath(dir, sessionId)); if (r) process.kill(r.daemonPid, "SIGKILL") } catch {}
+    await rmEventually(dir)
+  }
+})
+
 // A daemon forked by an OLDER build survives the upgrade by hours and has no `input-result` to send.
 // The bridge must read that off the record and not wait for an answer that never comes — a follow-up
 // to such a thread would otherwise fail every time, 30s late. Simulated by stripping the capability

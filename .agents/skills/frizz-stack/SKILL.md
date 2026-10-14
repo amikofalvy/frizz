@@ -176,6 +176,28 @@ This is the sanctioned exception to "never hand-write rows": the row is the fixt
 then exercises the REAL tailer → board → push → render pipeline end-to-end. Dozens of worked examples live
 in `scripts/seed-*.mjs`.
 
+### A scripted worker behind the REAL broker
+
+Appended records start at the tailer, so they skip everything before it: dispatch, the broker daemon, the
+delivery ledger, a steer's queue, runtime ingest. When the behavior lives THERE (the order in which a send,
+its echo and the board's delta reach a page; a steer handed over at a tool boundary; the instant a turn
+ends), boot the stack with `--claude-bin=$PWD/scripts/scripted-claude.mjs`. It is a stand-in `claude`
+binary: the real broker spawns it, it speaks the stream-json protocol and writes real transcript JSONL, and
+it holds no credentials, so it cannot raise a keychain dialog and its timings repeat.
+
+```js
+await api.mutate("dispatch", { prompt: "[script ending=steps paras=14] …", backend: "claude", model: "haiku", effort: "low" })
+```
+
+The first message's `[script …]` token is the whole script: how the turn ends
+(`ending=done|steps|needs|bare|question`, the last one registering a real question through `frizzctl ask`),
+how long it runs (`paras`, `tools`, `toolms`, `think`), and what each later turn does (`reply`,
+`replyparas`, `replytools`, `replythink`). A message that arrives mid-turn is a steer. The file's header
+lists every knob. The workers are still detached broker daemons: kill them by PID when the stack goes.
+
+`scripts/layout-timeline.mjs` records a thread page or a drawer on such a stack: every layout it paints
+around a send, an answer, a steer or a turn's end, with the event that committed each.
+
 ---
 
 ## Composes with

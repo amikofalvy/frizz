@@ -3798,6 +3798,7 @@ export const Message = memo(function Message({ m, answering, dense, paired, text
             body={fseg.body}
             hints={fseg.hints}
             wrap={dense}
+            pastRest={staleAwaiting}
           />,
         )
         continue
@@ -4203,7 +4204,7 @@ export function InlineVisualization({ file }: { file: string }) {
 // its thread's Archive is the header's check (ThreadLifecycleActions). `awaiting` → THE RESTING CARD ITSELF
 // (AwaitingBackgroundCard), which is the whole point: one component draws that card on every surface and
 // at every runtime, so steering a worker cannot re-shape it. See the branch below.
-export function FenceCard({ fenceKind, body, hints, wrap }: { fenceKind: FenceKind; body: string; hints: AwaitingHint[]; wrap?: boolean }) {
+export function FenceCard({ fenceKind, body, hints, wrap, pastRest }: { fenceKind: FenceKind; body: string; hints: AwaitingHint[]; wrap?: boolean; pastRest?: boolean }) {
   // BLOCK markdown, not inline. A fence's prose is arbitrary Markdown since frontmatter landed
   // (2026-08-17), and inline rendering flattened a worker's paragraphs and lists into one run — the shape
   // a handoff most often takes.
@@ -4251,7 +4252,17 @@ export function FenceCard({ fenceKind, body, hints, wrap }: { fenceKind: FenceKi
     // A white "Mark as done" button, deliberately redundant with the header's check — the same completion
     // mutation, styled as the primary (light-on-dark) verb. Only shown when the thread can actually take
     // the action, and never on a phone (see `isMobile` above).
-    const markDone = doneThread && !isMobile ? (
+    //
+    // AND ONLY WHILE THE THREAD RESTS ON THIS CARD. `pastRest` is Message's `staleAwaiting`: the thread
+    // is running, or the worker has spoken since. The verb belongs to the rest, as an awaiting card's
+    // Snooze does ("the interactive elements obviously are no longer interactive", below), and it used to
+    // outlive it: every earlier done card in a thread kept a live white button, and a reply to an ARCHIVED
+    // thread grew one on the card being replied to. The thread un-archives a beat after the reply's bubble
+    // is drawn, so that card gained 35px in a frame of its own — 3 geometry states for one send, measured
+    // 2026-10-13 with scripts/layout-timeline.mjs; 2 now. A card the thread moves past under a live button
+    // gives it up in the frame that draws the bubble, which is the frame a steps card folds in. The CARD
+    // is untouched: it is the same record, without its button.
+    const markDone = doneThread && !isMobile && !pastRest ? (
       <CardActions>
         <StateButton
           thread={doneThread}
