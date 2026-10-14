@@ -1050,7 +1050,9 @@ const SIGNOFF_HINT_KEY = "signoff:rest"
 const SIGNOFF_NUDGE_MAX = 2
 /** SOURCE 12's cap on CORRECTIVE bumps (nameless / retired / dead). Three, not two: there are three
  *  distinct corrections and a worker may legitimately need to be told about more than one. `expired` is
- *  uncounted — re-parking on still-running work is unlimited by explicit decision (2026-08-15). */
+ *  uncounted — re-parking on still-running work is unlimited by explicit decision (2026-08-15).
+ *  The count comes back for an honoured park, a ```question fence that registers, and a message the
+ *  human types (evalParkBumpRelease). */
 const PARK_BUMP_MAX = 3
 /** The kill switch. Not in the UI — this lands on every live thread at once, so there has to be a way
  *  to stop it that is not a code change. Absent (the default) means ON. */
@@ -2170,6 +2172,57 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     deps.storage.countSignoffNudge(item.slug, item.fenceId)
   }
 
+
+  // ---- THE HUMAN TYPING HANDS THE CORRECTIVE ALLOWANCE BACK (2026-10-13) ----------------------------
+  //
+  // PARK_BUMP_MAX exists to break a closed loop between Frizz and a worker: correct, wake, the same
+  // mistake under a new instant, correct. Its count came back for two things only, both of them things
+  // Frizz cannot cause by correcting: a park it could honour, and a ```question fence that registered.
+  // So a worker that used up its three corrections and did neither was never corrected again, for
+  // anything, for the life of the thread — whatever the human said to it afterwards. Driven through a
+  // real broker (verify-question-fence-wakes, case L): a fence with no `kind:` at every rest, three
+  // corrections, a silent fourth rest as intended; the human replies, the worker writes the same fence,
+  // and nothing was ever queued for it again. `park_bumps` 3, with an anchor three rests old.
+  //
+  // A MESSAGE THE HUMAN TYPES IS THE THIRD THING FRIZZ CANNOT CAUSE, and it is the one that ends the
+  // episode the count was about: they have seen the thread, and what the worker does next is a new
+  // attempt in front of them, not another lap of the loop. Every count is anchored on the REST it
+  // corrected (countParkBump), so a `restFromAt` later than the anchor means the human has typed since
+  // the last correction was counted, and the allowance is handed back — for every counted correction
+  // alike: a dead, nameless or retired park, a missing `status:`, a ```question fence, a ```done fence.
+  // Reset in storage, so the row says what the scheduler acts on, and here, ahead of the three passes
+  // that read the cap, so none of them reads a stale one. (The per-cause budgets of SOURCES 14 and 15
+  // key on the same boundary and come back in the same instant: correctionAllowedSinceHuman.)
+  //
+  // `restFromAt` AND NOTHING ELSE. It moves only on a message the human typed (shared
+  // isHumanTypedMessage): not on a wake, not on a correction, not on Retry's fixed sentence, not on
+  // answers sent with nothing typed beside them. `lastUserAt` moves on every one of those, Frizz's own
+  // corrections included, and a reset keyed on it would be the correction resetting its own cap. A tail
+  // folded before `restFromAt` existed therefore hands nothing back until its human next types.
+  //
+  // AN ANCHOR WRITTEN BEFORE THIS DATE IS A FENCE ID, `park:<cause>:<rest>`, not an instant: the rest is
+  // read out of it, so a thread already stuck at the cap comes back when its human has typed since.
+  // Anything else an anchor might hold parses to no instant and simply never matches.
+  //
+  // THE SIGN-OFF REMINDER'S CAP DOES NOT DO THIS, AND THE DIFFERENCE IS DELIBERATE — do not make either
+  // match the other. SIGNOFF_NUDGE_MAX comes back only when the thread signs off (see "ONLY A FENCE
+  // GIVES THE ALLOWANCE BACK" in the SOURCE 9 header, and the test that pins it). That comment names its
+  // reason: the human's word was the original intent and could not be honoured, because Frizz's own
+  // nudge lands as a user record and "the human spoke" was a condition the nudge satisfied by nudging.
+  // It was written before `restFromAt` could tell the two apart. Whether the reminder's cap should now
+  // follow is a decision about that cap, recorded there and not reopened here.
+  function evalParkBumpRelease(): void {
+    for (const row of deps.storage.allSessions()) {
+      if ((row.park_bumps ?? 0) <= 0 || !row.park_bump_anchor) continue
+      if (row.state === "archived" || row.archived === 1) continue
+      const typedAt = Date.parse(deps.tailer.get(row.slug)?.restFromAt ?? "")
+      const anchor = row.park_bump_anchor
+      const countedAt = Date.parse(isParkFenceId(anchor) ? parkFenceRestOf(anchor) : anchor)
+      if (!Number.isFinite(typedAt) || !Number.isFinite(countedAt) || typedAt <= countedAt) continue
+      deps.storage.resetParkBumps(row.slug)
+      log(`waker: ${row.slug} — corrective allowance handed back: the human has typed since the last correction`)
+    }
+  }
 
   // ---- SOURCE 12: A PARK THAT RAN OUT, OR THAT NAMED SOMETHING DEAD -------------------------------
   //
@@ -4531,6 +4584,9 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     // reminder took, and it reads that off the outbox — so the reminder has to be there first. Before
     // this the two went out in one tick, 5 ms apart, and the second arrived stale (see evalRestPrompts).
     try {
+      // Before any pass that reads the corrective cap: a message the human typed since the last counted
+      // correction hands the allowance back.
+      evalParkBumpRelease()
       // SOURCE 14 first: a rest whose question fence failed is answered by that correction, and the
       // sign-off nudge reads the outbox to stand down for it.
       evalQuestionFences(now())
