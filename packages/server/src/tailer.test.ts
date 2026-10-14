@@ -613,6 +613,11 @@ function bashFg(id: string, description: string | null, command: string) {
 function autoBackgroundAck(taskId: string, seconds = 590) {
   return `Command did not complete within its ${seconds}s timeout and was moved to the background (ID: ${taskId}). Output is being written to: /tmp/tasks/${taskId}.output. You will be notified when it completes. To check interim output, use Read on that file path.`
 }
+// The same handoff when "send now" caused it, verbatim (claude 2.1.296, 2026-10-13): the runtime moves
+// the running command aside so the pushed message can be read, and the command keeps running.
+function sendNowBackgroundAck(taskId: string) {
+  return `Command was moved to the background (ID: ${taskId}) so that a message that arrived while it was running can reach you; it was not interrupted. Output is being written to: /tmp/tasks/${taskId}.output. You will be notified when it completes. If it is still running after 30m in the background, it will be stopped and you will be notified. To check interim output, use Read on that file path.`
+}
 // A Claude Code Monitor is inherently a background watcher; persistent=true removes its timeout.
 function monitorUse(id: string, description: string, command: string, persistent = true) {
   return {
@@ -1106,6 +1111,23 @@ test("applyRecord: an auto-backgrounded shell retires on its own <task-notificat
   assert.equal(s.subAgents.size, 1)
   applyRecord(s, taskNotificationAttachment("toolu_fg", "completed", "b2hk8870c"))
   assert.equal(s.subAgents.size, 0, "the completion notification must clear the promoted shell")
+  assert.equal(s.retiredShells.get("toolu_fg")?.status, "completed")
+})
+
+test("applyRecord: a foreground Bash moved aside by \"send now\" becomes a tracked live shell, and retires on its notification", () => {
+  // Without this the build a pushed message arrived under kept running with nothing showing it: the
+  // thread read as rested the moment the worker stopped to wait for it, and a fence naming its id was
+  // refused as naming nothing live.
+  const s = newTailState("t", "s", "/x")
+  applyRecord(s, bashFg("toolu_fg", "Run the repo build", "make build"))
+  applyRecord(s, resultText("toolu_fg", sendNowBackgroundAck("bqzw0r5ao")))
+  const entry = s.subAgents.get("toolu_fg")
+  assert.equal(entry?.kind, "shell", "moved aside, not finished: it is a live shell from here on")
+  assert.equal(entry?.label, "Run the repo build")
+  assert.equal(entry?.taskId, "bqzw0r5ao", "the id the worker was handed, which is the one it will name in a fence")
+  assert.equal(entry?.outputFile, "/tmp/tasks/bqzw0r5ao.output")
+  applyRecord(s, taskNotificationAttachment("toolu_fg", "completed", "bqzw0r5ao"))
+  assert.equal(s.subAgents.size, 0)
   assert.equal(s.retiredShells.get("toolu_fg")?.status, "completed")
 })
 

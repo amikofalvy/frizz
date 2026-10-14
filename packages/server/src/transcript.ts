@@ -1662,11 +1662,13 @@ function interruptCutToolResult(text: string): boolean {
   return text.trimStart().startsWith(CLAUDE_REJECTED_TOOL_LEAD)
 }
 
-// The harness's AUTO-BACKGROUND handoff: a foreground `Bash` that outlives its `timeout` is not
-// cancelled and has not failed — it is now a detached shell that will notify on exit, exactly like one
-// launched with `run_in_background`. Kept in lockstep with the tailer's AUTO_BACKGROUND_ACK_RE.
+// The harness's AUTO-BACKGROUND handoff: a foreground `Bash` that outlives its `timeout` — or that the
+// runtime moved aside so a message pushed through with "send now" could reach the worker — is not
+// cancelled and has not failed. It is now a detached shell that will notify on exit, exactly like one
+// launched with `run_in_background`. Kept in lockstep with the tailer's AUTO_BACKGROUND_ACK_RE, which
+// quotes both wordings.
 function autoBackgroundedToolResult(text: string): boolean {
-  return /^\s*Command did not complete within its .{0,40}?and was moved to the background/.test(text)
+  return /^\s*Command (?:did not complete within its .{0,40}?and )?was moved to the background/.test(text)
 }
 
 // Back-fill real Claude tool results. Read keeps its dedicated excerpt field; ordinary tools expose a
@@ -1722,7 +1724,8 @@ function attachToolResults(
     }
     // A foreground `Bash` that outlives its `timeout` is AUTO-BACKGROUNDED by the harness, which says so
     // only here, in the result ("Command did not complete within its 590s timeout and was moved to the
-    // background (ID: …)"). From this record on it is an ordinary detached shell, so the card must become
+    // background (ID: …)"); so is one the runtime moved aside for a message pushed through with "send
+    // now". From this record on it is an ordinary detached shell, so the card must become
     // one: registered in `backgroundShells` and marked background, which both keeps it pending (its
     // terminal signal is now the <task-notification>, not this ack) and routes it through the branch
     // below that captures its runtime task id. Without this the launch card read COMPLETED the moment the

@@ -1670,7 +1670,7 @@ function newestLiveTool(state: TailState): LiveTool | undefined {
 // its completion (an error/denial result also means the dispatch is over). The earlier discriminator
 // ("no output_file: token ⇒ foreground") retired live background children of the two path-less ack
 // shapes — including every mailbox-style Agent and every background shell — on their own launch ack.
-const LAUNCH_ACK_RE = /^\s*(Async agent launched successfully|Spawned successfully|Command running in background|Monitor started|Command did not complete within its)/
+const LAUNCH_ACK_RE = /^\s*(Async agent launched successfully|Spawned successfully|Command running in background|Monitor started|Command did not complete within its|Command was moved to the background)/
 
 // The FIFTH launch shape, and the only one that arrives for a call nothing registered: Claude Code
 // AUTO-BACKGROUNDS a foreground `Bash` that outlives its `timeout` and says so in the result —
@@ -1683,7 +1683,15 @@ const LAUNCH_ACK_RE = /^\s*(Async agent launched successfully|Spawned successful
 // hold its thread Active, and its completion correlated to nothing. 881 of these acks sit in the local
 // transcript corpus; one thread hit it three times in an hour (2026-07-30, reported as "a background
 // bash script completed, but it did not resume the agent"). Promoted in trackLaunchResults.
-const AUTO_BACKGROUND_ACK_RE = /^\s*Command did not complete within its .{0,40}?and was moved to the background/
+//
+// THE SAME HANDOFF HAS A SECOND CAUSE since 2026-10-13: "send now" asks the runtime to push a waiting
+// message through, and the runtime makes way by moving the running foreground Bash aside —
+//   "Command was moved to the background (ID: bqzw0r5ao) so that a message that arrived while it was
+//    running can reach you; it was not interrupted. Output is being written to: …"
+// (verbatim, claude 2.1.296). Nothing about the shell differs from the timeout case, so both wordings
+// promote it. A foreground AGENT moved aside the same way answers with the ordinary async-launch ack,
+// which LAUNCH_ACK_RE has always kept tracking.
+const AUTO_BACKGROUND_ACK_RE = /^\s*Command (?:did not complete within its .{0,40}?and )?was moved to the background/
 
 // Move a tracked AGENT entry into the bounded retained ring (drawer review), evicting the oldest.
 // Shared by the foreground-completion path and the <task-notification> path.

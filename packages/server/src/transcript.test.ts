@@ -1010,6 +1010,41 @@ test("a FOREGROUND Bash auto-backgrounded on timeout keeps its card pending, the
   assert.equal(msgs.at(-1)?.kind, "event", "the wake it caused is shown as a turn boundary")
 })
 
+test("a Bash that \"send now\" moved to the background stays pending, shows the message, and ends on its notification", () => {
+  // The record sequence a real session wrote (claude 2.1.296, 2026-10-13): the call's result is the
+  // handoff, the pushed message is folded into the SAME turn as a queued_command attachment, and the
+  // command's own completion arrives later as a task-notification.
+  const launch = JSON.stringify({
+    type: "assistant",
+    timestamp: "2026-10-14T01:37:27.000Z",
+    message: { id: "m-build", content: [{ type: "tool_use", id: "bash-build", name: "Bash", input: { command: "make build", description: "Run the repo build", timeout: 120000 } }] },
+  })
+  const handoff = JSON.stringify({
+    type: "user",
+    timestamp: "2026-10-14T01:37:33.000Z",
+    toolUseResult: { stdout: "", stderr: "", interrupted: false, backgroundTaskId: "bqzw0r5ao", backgroundedToDeliverMessage: true },
+    message: { content: [{ type: "tool_result", tool_use_id: "bash-build", content: "Command was moved to the background (ID: bqzw0r5ao) so that a message that arrived while it was running can reach you; it was not interrupted. Output is being written to: /tmp/tasks/bqzw0r5ao.output. You will be notified when it completes." }] },
+  })
+  const pushed = JSON.stringify({
+    type: "attachment",
+    timestamp: "2026-10-14T01:37:33.110Z",
+    attachment: { type: "queued_command", prompt: "fyi the build is pretty slow on this machine today", source_uuid: "f42e8d9a-d329-475b-9f94-0841f86a6b2f", commandMode: "prompt", origin: { kind: "human" }, humanTurn: true },
+  })
+  const moved = parseTranscript([launch, handoff, pushed].join("\n"))
+  const card = moved[0].tools[0]
+  assert.equal(card.status, "pending", "moved aside, not finished and not cancelled")
+  assert.equal(card.backgroundState, "background")
+  assert.equal(card.shellId, "bash-build")
+  assert.ok(moved.some((m) => m.role === "user" && m.text === "fyi the build is pretty slow on this machine today"), "the pushed message renders as the human's, in the turn that took it in")
+
+  const notification = JSON.stringify({
+    type: "attachment",
+    timestamp: "2026-10-14T01:38:12.000Z",
+    attachment: { type: "queued_command", commandMode: "task-notification", prompt: "<task-notification>\n<task-id>bqzw0r5ao</task-id>\n<tool-use-id>bash-build</tool-use-id>\n<status>completed</status>\n<summary>Background command \"Run the repo build\" completed (exit code 0)</summary>\n</task-notification>" },
+  })
+  assert.equal(parseTranscript([launch, handoff, pushed, notification].join("\n"))[0].tools[0].status, "completed", "the build's own completion ends the card")
+})
+
 test("a `stopped` RECOVERY notification back-fills EVERY orphaned card it names (task-ids only)", () => {
   // A new session's recovery record carries one block naming every orphan by runtime task-id, NO
   // tool-use-ids, status "stopped". Both cards must end (cancelled), not just the first.
