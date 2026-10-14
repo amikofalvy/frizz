@@ -10,16 +10,22 @@ const queue = readFileSync(new URL("./TodosView.tsx", import.meta.url), "utf8")
 // with no card at its end, on the thread page, on /full and on the queue card alike. These pin the
 // wiring: the card is the LAST rung of the runtime-status ladder, above the residual rung.
 //
-// They used to pin it TWICE — once per transcript path — and pin each path's own gate beside it, because
-// the ladder was written out in both and a rung without its gate is a card that never renders (a gate
-// without its rung is the empty slot of 2026-08-25, one surface over). The ladder is ONE function now
-// (runtimeStatusRung) and both gates are that one call, so there is no second copy to keep honest and no
-// gate that can disagree with it: what is left to pin is the ORDER of the rungs, and that the gate is
-// derived rather than restated.
+// They used to pin it once per transcript path, and each path's own gate beside it, because the ladder was
+// written out in every surface and a rung without its gate is a card that never renders (a gate without its
+// rung is the empty slot of 2026-08-25, one surface over). The ladder is ONE function (runtimeStatusRung),
+// its inputs ONE model (useRuntimeTail) and its drawing ONE component (RuntimeStatusSlot) for every surface
+// since 2026-10-14, so what is left to pin is the ORDER of the rungs, and that nothing derives them twice.
 
-test("both transcript paths compute the predicate off the final assistant message", () => {
-  const sites = chat.match(/const registeredDone = showsRegisteredDoneCard\(thread, lastAgentIdx >= 0 \? \w+\[lastAgentIdx\]\?\.text : undefined\)/g) ?? []
-  assert.equal(sites.length, 2, "one per transcript path (plain and virtualized)")
+test("the slot's model computes the predicate once, off the final assistant message", () => {
+  const model = chat.match(/export function useRuntimeTail\([\s\S]*?\n}/)?.[0]
+  assert.ok(model, "useRuntimeTail must exist")
+  assert.match(model, /const last = lastAgentIdx >= 0 \? messages\[lastAgentIdx\] : undefined/)
+  assert.match(model, /registeredDone: showsRegisteredDoneCard\(thread, last\?\.text\)/)
+  assert.match(model, /restedCard: showsRestedCard\(thread, last\?\.text, last\?\.refusedFences\)/)
+  for (const derive of ["showsRegisteredDoneCard(", "showsRestedCard(", "providerErrorVisible("]) {
+    assert.equal(chat.split(derive).length - 1, 1, `${derive} is the model's call, and nothing else's`)
+    assert.ok(!queue.includes(derive), `the queue card calls no ${derive} of its own`)
+  }
 })
 
 test("the card is the last rung of the one ladder, after the resting card", () => {
@@ -37,8 +43,9 @@ test("the card is the last rung of the one ladder, after the resting card", () =
 })
 
 test("every gate is the ladder's own answer, so the slot opens exactly when a rung renders", () => {
-  assert.match(chat, /\{tailReady && runtimeStatusRung\(runtimeStatus\) !== null && \(/, "the plain path's spacer gate")
-  assert.match(chat, /const hasRuntimeStatus = runtimeStatusRung\(runtimeStatus\) !== null/, "the virtualized path's row gate")
+  assert.match(chat, /const rung = runtimeStatusRung\(state\)\n/, "the model asks the ladder once")
+  assert.match(chat, /shown: rung !== null \|\| Boolean\(thread\?\.permPolicy\)/, "the slot draws for a rung, or for the denial beside it")
+  assert.match(chat, /const hasRuntimeRow = runtimeTail\.shown/, "the virtualized row exists exactly when the slot draws")
   // The spacing is the same answer again: only the Working… rung is a meta line rather than a card.
   assert.match(chat, /runtimeStatusRung\(state\) === "working" \? workingIndicatorGap\(messages\) : STEP/)
   // Nothing may re-derive the ladder by hand beside it. Three calls decide it, and no fourth spelling.
@@ -47,13 +54,10 @@ test("every gate is the ladder's own answer, so the slot opens exactly when a ru
 
 // The queue card drew its own copy of this chain until 2026-10-09. It now feeds the same predicates into
 // the same ladder, so it cannot draw a different card — and nothing on it may draw one by hand.
-test("the queue card draws the same card off the same predicate, through the same ladder", () => {
-  const lastText = "const lastAgentText = lastAgentIdx >= 0 ? messages[lastAgentIdx]?.text : undefined"
-  assert.ok(queue.includes(lastText))
-  assert.ok(queue.includes("registeredDone: showsRegisteredDoneCard(thread, lastAgentText),"))
-  // …with the refused question fences of that same message, as the thread page passes them.
-  assert.ok(queue.includes("const lastAgentRefused = lastAgentIdx >= 0 ? messages[lastAgentIdx]?.refusedFences : undefined"))
-  assert.ok(queue.includes("restedCard: showsRestedCard(thread, lastAgentText, lastAgentRefused),"))
-  assert.match(queue, /<RuntimeStatusLadder\n[\s\S]*?\n\s*wrap\n\s*\/>/)
-  assert.doesNotMatch(queue, /<(FenceCard|RestedCard|LimitPauseCard|PendingAskCard|PermPromptBanner|AwaitingBackgroundCard)\b/, "no rung is drawn by hand beside the ladder")
+test("the queue card draws the same card off the same model, through the same slot", () => {
+  assert.match(queue, /const runtimeTail = useRuntimeTail\(surface\.transcript, coalescedVisible, activityVisible\)/)
+  assert.match(queue, /<RuntimeStatusSlot tail=\{runtimeTail\} wrap \/>/)
+  assert.match(chat, /<RuntimeStatusSlot tail=\{runtimeTail\} \/>/, "the thread view's row draws the same component")
+  assert.equal(chat.match(/<RuntimeStatusLadder\b/g)?.length, 1, "the slot is the ladder's one caller")
+  assert.doesNotMatch(queue, /<(RuntimeStatusLadder|PermPolicyDenialCard|FenceCard|RestedCard|LimitPauseCard|PendingAskCard|PermPromptBanner|AwaitingBackgroundCard)\b/, "no rung is drawn by hand beside the slot")
 })

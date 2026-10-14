@@ -4,7 +4,7 @@ import { useQueryClient } from "@tanstack/react-query"
 import { useSnapshot } from "valtio"
 import { isDirectSubAgent, type EditedFile, type ThreadLinkView, type ThreadView } from "@frizz/shared"
 import { useHomeDir, useProjectDir, useTranscript } from "../hooks.ts"
-import { mergeBackgroundShells } from "../lib/childOps.ts"
+import { shellWatched, threadOps } from "../lib/threadOps.ts"
 import { childOpDismisser } from "../lib/dismissChildOp.ts"
 import { editedFileTree, flattenEditedFileTree } from "../lib/editedFileTree.ts"
 import { newestFileChangeKey } from "../lib/editedFilesRefresh.ts"
@@ -15,7 +15,7 @@ import { tildePath } from "../lib/paths.ts"
 import { prefs } from "../lib/prefs.ts"
 import { PRIMER } from "../lib/primer.ts"
 import { AgentRow, BgShellRow, CommandWatchRow, GithubWatchRow, ON_CAP, ROW_INSET, TimerRow, WaitGrid, WaitRow, type WaitGroup } from "./AwaitingBackgroundCard.tsx"
-import { transcriptBackgroundShells } from "./ChatView.tsx"
+import { transcriptBackgroundShells } from "../lib/transcriptShells.ts"
 
 // THE FULLSCREEN PAGE'S OPERATIONAL RAIL — what is going on in this thread, listed beside the transcript
 // (maintainer 2026-08-28): its sub-agents and background shells (live, or stale and saying so), the
@@ -45,7 +45,7 @@ import { transcriptBackgroundShells } from "./ChatView.tsx"
 // hiding the strip hides the row. Two had been the strip's alone: the files and links the worker SAVED
 // for the human (`thread.links`, the same list the phone's ⋯ sheet calls "Files and links"), and a
 // Codex thread's background execs, which reach the page through its transcript rather than the board's
-// shell telemetry — merged here exactly as the strip merges them (mergeBackgroundShells).
+// shell telemetry — both read off lib/threadOps, the one list the strip and the line of counts read too.
 //
 // It floats on the page background and is VERTICALLY CENTERED like the sidebar, rather than pinned to
 // the top — the maintainer's call on the mockup's top-anchored version. The liveness readouts that
@@ -220,31 +220,21 @@ export function FocusRail({ thread }: { thread: ThreadView }) {
   const files = transcript.data?.editedFiles ?? []
   const changeKey = useMemo(() => newestFileChangeKey(transcript.data?.messages ?? []), [transcript.data?.messages])
   useEditedFilesRefresh(thread.id, transcript.data !== undefined, changeKey, thread.runtime === "running" || thread.runtime === "spawning")
-  // EVERY DIRECT CHILD THE BOARD LISTS, in each of its three states — what the ops strip under the
-  // prompt box lists, because on /full this rail is that strip's replacement (ff185621) and a row it
-  // drops is shown nowhere. A RESTED child is one whose own run ended while sub-agents it dispatched are
-  // still working (the server emits it only while that fan-out runs, tailer anchorRoots), so it stands
-  // for the branch; a STALE one is quiet past its window and draws as such (AgentRow). This rail kept
-  // only running and rested until 2026-10-05, so a stale child vanished from /full altogether. The card
-  // keeps its own set: it counts the results the thread still AWAITS (`liveAgents`). For the same reason
-  // each agent and shell row carries the strip's stop/clear ×, under the strip's own gate.
-  const agents = (thread.subAgents ?? []).filter(isDirectSubAgent)
-  // The board's shells PLUS the transcript's: a Codex background exec is transcript-native and the board
-  // reports none for it (ChatView.transcriptBackgroundShells). A Claude shell arrives through both, and
-  // the merge reconciles the two on its launch id, so it still draws once. A STALE one — a process the
-  // OS confirmed gone — stays listed, as on the strip, and BgShellRow says so.
+  // THE ROWS ARE lib/threadOps' — what the line of counts over the prompt box and its panels list, by the
+  // same rules, because on /full this rail is that line's replacement (ff185621) and a row it drops is
+  // shown nowhere. The shells include the transcript's: a Codex background exec is transcript-native and
+  // the board reports none for it (lib/transcriptShells). A STALE child — quiet past its
+  // window — and a STALE shell — a process the OS confirmed gone — stay listed, and their rows say so
+  // (AgentRow, BgShellRow). Each agent and shell row carries the strip's stop/clear ×, under its gate,
+  // and a shell a watch names says so in its tooltip, as the strip's row does (shellWatched).
   const transcriptShells = useMemo(() => transcriptBackgroundShells(transcript.data?.messages ?? []), [transcript.data?.messages])
-  const shells = mergeBackgroundShells(thread.bgShells ?? [], transcriptShells)
-  // AN ARCHIVED THREAD WATCHES NOTHING, though its registrations stay armed for the day it is reopened:
-  // the scheduler neither fires its timers nor polls its PRs and issues (scheduler.ts evalTimers, and the
-  // per-watcher liveness skip). Rowed here, a past-due timer read "firing…" forever and a PR row froze on
-  // its last reading, so the rail leaves them out until the thread is reopened.
-  const watching = thread.state !== "archived"
-  const github = (thread.watches ?? []).filter((w) => watching && w.kind === "github" && w.state === "armed")
-  const prs = github.filter((w) => w.subject !== "issue")
-  const issues = github.filter((w) => w.subject === "issue")
-  const timers = (thread.watches ?? []).filter((w) => watching && w.kind === "timer" && w.state === "armed")
-  const commands = (thread.watches ?? []).filter((w) => watching && w.kind === "command" && w.state === "armed")
+  const { agents: unresolved, shells, prs, issues, commands, timers } = threadOps(thread, transcriptShells)
+  const isWatched = shellWatched(thread)
+  // ONE LEVEL of children: the rail's rows are the awaiting card's table (AgentRow), which draws no tree,
+  // where the panel over a prompt box indents a child's own children under it (ChildOpRow `depth`). A
+  // RESTED child is one whose own run ended while sub-agents it dispatched are still working (the server
+  // emits it only while that fan-out runs, tailer anchorRoots), so it stands for its branch here.
+  const agents = unresolved.filter(isDirectSubAgent)
   const { railFilesCollapsed } = useSnapshot(prefs)
   // The card's order — most-alive first — then the files, which are not a wait at all. The files are
   // also the one group that FOLDS (maintainer 2026-09-03): a worker that touched 22 files fills the
@@ -252,7 +242,7 @@ export function FocusRail({ thread }: { thread: ThreadView }) {
   // preference (lib/prefs.ts), so it holds across threads and reloads.
   const groups: WaitGroup[] = [
     { head: "Sub-agents", rows: agents.map((a) => <AgentRow key={a.id ?? a.label} agent={a} slug={thread.id} now={now} onDismiss={childOpDismisser(thread.id, a)} />) },
-    { head: "Background shells", rows: shells.map((s) => <BgShellRow key={s.id ?? s.label} shell={s} slug={thread.id} now={now} onDismiss={childOpDismisser(thread.id, s, "SHELL")} />) },
+    { head: "Background shells", rows: shells.map((s) => <BgShellRow key={s.id ?? s.label} shell={s} slug={thread.id} now={now} onDismiss={childOpDismisser(thread.id, s, "SHELL")} watched={isWatched(s)} />) },
     { head: "Pull requests", rows: prs.map((w) => <GithubWatchRow key={w.id} watch={w} />) },
     { head: "Issues", rows: issues.map((w) => <GithubWatchRow key={w.id} watch={w} />) },
     { head: "Command watches", rows: commands.map((w) => <CommandWatchRow key={w.id} watch={w} now={now} />) },

@@ -1,7 +1,14 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import {
+  COMMAND_WATCH_FALLBACK,
+  commandWatchCancelledWakeMessage,
+  commandWatchExpiredWakeMessage,
+  commandWatchPassedWakeMessage,
   formatGithubWakeSteer,
+  interruptEndedSubAgentsMessage,
+  parseCommandWatchWake,
+  parseInterruptEndedWake,
   isGithubWakeBacklog,
   parseGithubWakeSteer,
   parseLimitResumeWake,
@@ -352,6 +359,37 @@ test("text that is not a shell-done wake parses as none", () => {
     null,
     "only the first line may claim the divider",
   )
+})
+
+// ---- parseCommandWatchWake / parseInterruptEndedWake ----
+//
+// Both arrived in the chat as the raw-prose card until 2026-10-14, printing their closing instructions
+// to the worker — "Carry on with whatever you were waiting on it for", "register it again with
+// `frizzctl watch-command add`", "re-dispatch it or take its work over" — at the operator. The parse is
+// what the divider draws from, so what it returns must keep the news and drop exactly those.
+test("a command watch's three wakes round-trip, keeping the command and the news and none of the worker's instructions", () => {
+  const command = "test -f /tmp/released && echo ```done```"
+  const passed = parseCommandWatchWake(commandWatchPassedWakeMessage({ id: "cmw_3d480448ae89", command, output: "0.13.12\n", runs: 44, armedMs: 7_680_000 }))
+  assert.deepEqual(passed, { kind: "passed", id: "cmw_3d480448ae89", command, summary: "Exited 0 on check 44, 2h 8m after it was armed. Its output ended:", output: "0.13.12" })
+  assert.deepEqual(parseCommandWatchWake(commandWatchPassedWakeMessage({ id: "cmw_a1", command, output: "", runs: 1, armedMs: 60_000 })),
+    { kind: "passed", id: "cmw_a1", command, summary: "Exited 0 on check 1, 1m after it was armed. It printed nothing." })
+
+  const expired = parseCommandWatchWake(commandWatchExpiredWakeMessage({ id: "cmw_a1", command, lastRun: { outcome: "exit", exitCode: 1, output: "npm error 404\n```" } }))
+  assert.deepEqual(expired, { kind: "expired", id: "cmw_a1", command, summary: "Its last check exited 1, ending:", output: "npm error 404\n```" })
+  assert.deepEqual(parseCommandWatchWake(commandWatchExpiredWakeMessage({ id: "cmw_a1", command })), { kind: "expired", id: "cmw_a1", command, summary: "It never completed a check." })
+
+  // The reason is the server gate's refusal, which carries the same fallback instruction as the trailer.
+  const cancelled = parseCommandWatchWake(commandWatchCancelledWakeMessage({ id: "cmw_a1", command, reason: `this thread runs in \`default\` permission mode. ${COMMAND_WATCH_FALLBACK}` }))
+  assert.deepEqual(cancelled, { kind: "cancelled", id: "cmw_a1", command, summary: "Frizz stopped it: this thread runs in default permission mode." })
+
+  for (const wake of [passed, expired, cancelled]) assert.doesNotMatch(`${wake!.summary} ${wake!.output ?? ""}`, /frizzctl|Carry on|background shell|wake you/, wake!.kind)
+  assert.equal(parseCommandWatchWake(shellDoneMessage({ taskId: "b1", label: "build", status: "completed" })), null)
+})
+
+test("the interrupt note round-trips to the sub-agents it names, without the instructions around them", () => {
+  const agents = [{ taskId: "abc9b9b5f0da4c677", label: "Audit the auth flow — both halves" }, { label: "Survey the readouts" }]
+  assert.deepEqual(parseInterruptEndedWake(interruptEndedSubAgentsMessage(agents)), { agents })
+  assert.equal(parseInterruptEndedWake("- `a1` — not a note"), null)
 })
 
 // ---- parseTimerWake ----

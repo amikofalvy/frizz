@@ -89,12 +89,41 @@ test("what each transcript message means is derived in the shell alone, and hand
   // Every surface draws its transcript through it. A bare Message on a surface is a line that carries no
   // question — a queued bubble, a lifted wake — and takes the message, `dense` and its pairing only.
   const bare = /^<Message (?:key=\{`[^`]*`\} )?m=\{[^}]+\}(?: dense)?(?: paired=\{[^}]+\})? \/>$/
-  for (const [file, viaThreadMessage, own] of [["components/TodosView.tsx", 2, 0], ["components/ChatView.tsx", 2, 1]] as const) {
+  for (const [file, viaThreadMessage, own] of [["components/TodosView.tsx", 2, 0], ["components/ChatView.tsx", 1, 1]] as const) {
     const text = sources.get(file)!
     assert.equal((text.match(/<ThreadMessage\b/g) ?? []).length, viaThreadMessage, `${file} draws its transcript messages through ThreadMessage`)
     const sites = text.match(/<Message [^\n]*?\/>/g) ?? []
     for (const site of sites) assert.match(site, bare, `${file}: ${site}`)
     assert.equal((text.match(/<Message\b/g) ?? []).length, sites.length + own, `${file} has no other Message site`)
+  }
+})
+
+// WHAT A SURFACE DRAWS, AND WHAT IT READS AROUND IT — the list it draws of its transcript, the status rung
+// at that list's tail, an earlier page and the ops a thread lists — were built once per surface until
+// 2026-10-14, and two had drifted: the thread view's model read the running background calls the card's
+// had taken out, and the line of counts went on listing watches the rail had learned to leave out.
+test("the drawn transcript, the status rung, an earlier page and a thread's ops each have one source", () => {
+  const surfaces = ["components/ChatView.tsx", "components/TodosView.tsx"]
+  // The list (useThreadMessages): its steps are the shell's calls, and each surface calls it once.
+  for (const step of ["useTranscriptHeldForBoard(", "useRefusedFences("]) assert.deepEqual(filesWith(step), [SHELL], `${step} is a step of useThreadMessages`)
+  for (const step of ["useArrivedQuestions(", "useSettledQuestions("]) assert.deepEqual(filesWith(step), ["components/RegisteredQuestionCards.tsx", SHELL], `${step} is a step of useThreadMessages`)
+  assert.deepEqual(filesWith("useThreadMessages("), [...surfaces, SHELL].sort())
+  for (const file of surfaces) assert.equal((sources.get(file)!.match(/useThreadMessages\(/g) ?? []).length, 1, `${file} builds its list once`)
+
+  // The status rung (useRuntimeTail, RuntimeStatusSlot): derived and drawn in ChatView, mounted once per surface.
+  for (const derive of ["runtimeStatusRung(", "runtimeStatusGapFor(", "<RuntimeStatusLadder"]) assert.deepEqual(filesWith(derive), ["components/ChatView.tsx"])
+  const chat = sources.get("components/ChatView.tsx")!
+  assert.equal((chat.match(/<RuntimeStatusLadder\b/g) ?? []).length, 1, "the ladder is drawn by the slot alone")
+  for (const file of surfaces) assert.equal((sources.get(file)!.match(/<RuntimeStatusSlot\b/g) ?? []).length, 1, `${file} mounts one status slot`)
+
+  // An earlier page (lib/loadEarlier): fetched, checked and merged in one place.
+  assert.deepEqual(filesWith("threadTranscriptEarlier("), ["api/contract.ts", "lib/loadEarlier.ts"])
+  assert.deepEqual(filesWith("prependEarlierPage("), ["lib/loadEarlier.ts", "lib/transcriptPagination.ts"])
+
+  // A thread's ops (lib/threadOps): nothing that lists them picks its own rows off the thread.
+  assert.deepEqual(filesWith("mergeBackgroundShells("), ["lib/threadOps.ts"])
+  for (const file of ["components/ChatView.tsx", "components/FocusRail.tsx", "components/QueueOpsSummary.tsx", "lib/queueOpsCounts.ts"]) {
+    assert.doesNotMatch(sources.get(file)!, /\.watches\b/, `${file} reads its watches through lib/threadOps`)
   }
 })
 

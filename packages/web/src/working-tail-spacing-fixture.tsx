@@ -20,7 +20,7 @@ import "./styles.css"
 // the full STEP break, so the tight run stays a statement about META adjacency rather than a blanket
 // "the shimmer always hugs".
 //
-// `?surface=child` mounts the REAL sub-agent drawer on the same transcript — the drawer runs the plain
+// `?surface=child` mounts the REAL sub-agent drawer on the same transcript — the drawer runs a plain
 // (non-virtualized) column, so both spacing paths are measured from one fixture.
 
 const SLUG = "working-tail-spacing"
@@ -147,7 +147,7 @@ function Fixture() {
     <div className="relative h-screen bg-bg text-fg text-sm">
       <div className="mx-auto flex h-screen w-full max-w-full flex-col border-x border-border">
         {/* The PRODUCTION path: both real ThreadView callers virtualize. */}
-        <ThreadView slug={SLUG} virtualized />
+        <ThreadView slug={SLUG} />
       </div>
       <Drawers />
     </div>
