@@ -1543,8 +1543,9 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
       {/* STICKY header: the title and its facts on the left, whole-item icon actions on the right — the
           thread header's own pieces (ChatView ThreadHeader), in the card's padding. It drew one more
           line until 2026-10-14, a needs-human thread's `statusText` — which nothing in the server sets, and
-          a session thread's status is never needs-human — so only fixtures ever drew it. Pins to the scroll container's top (opaque bg + bottom rule) as the body scrolls
-          under it, so the actions stay reachable through a long card. Rounding is STATE-DEPENDENT:
+          a session thread's status is never needs-human — so only fixtures ever drew it. Pins to the
+          scroll container's top (opaque bg + bottom rule) as the body scrolls under it, so the actions
+          stay reachable through a long card. Rounding is STATE-DEPENDENT:
           collapsed, the header IS the whole card and takes the full block radius; otherwise it is
           rounded-top-only + a border-b, the dock carrying the bottom corners (a rounded-top + border-b
           would read as squared/doubled edges inside the shell). */}
