@@ -891,7 +891,7 @@ export function Composer({
           onSubmit()
         }}
         disabled={!canSend}
-        title={phone.onLongPressSend ? "Send · hold to interrupt and send now" : "Send"}
+        title={phone.onLongPressSend ? "Send · hold to send now" : "Send"}
         aria-label="Send"
         // The ↑ is solid whenever it is the verb; with nothing to send it is the same disc, dimmed.
         // `[-webkit-touch-callout:none]` + `select-none`: a long press must not raise iOS's callout.

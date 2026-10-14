@@ -3554,7 +3554,9 @@ function UserBubble({ text, rawText, queued, held, deliveryUnconfirmed, delivery
             onMouseDown={(e) => e.preventDefault()}
             onClick={deliverNow}
             disabled={pushNowPending}
-            title="Send now — interrupts what the worker is doing so it reads the queue immediately"
+            // What it costs the work in flight is the runtime's call: a running command or sub-agent
+            // carries on in the background; an answer being written is cut short (router followUp).
+            title="Send now — the worker reads the queue immediately, and a command it is running carries on in the background"
             aria-label="Send now"
             className="icon-hover-outline absolute bottom-0 right-full mr-2 flex h-7 w-7 items-center justify-center rounded-lg text-muted opacity-0 outline-none transition-[opacity,color,background-color] group-hover:opacity-100 enabled:hover:bg-panel-2/70 enabled:hover:text-fg enabled:focus-visible:opacity-100 enabled:focus-visible:bg-panel-2/70 enabled:focus-visible:ring-1 enabled:focus-visible:ring-muted/80 enabled:focus-visible:ring-offset-1 enabled:focus-visible:ring-offset-bg enabled:active:bg-elevated"
           >
