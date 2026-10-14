@@ -405,7 +405,12 @@ export function NewThreadDialog({ onClose }: { onClose: () => void }) {
   ) : (
     <>
       <RadixDialog.Title className="mb-1 text-[14px] font-medium">New thread</RadixDialog.Title>
-      <DispatchForm autoFocus onDispatched={onClose} projectPicker={target.chip} />
+      {/* No "Starting thread…" card: the dialog is centred, so the card arriving in flow grew it by 74px
+          and lifted its title and prompt box 37px for the length of the dispatch call, and then the
+          dialog closed (2026-10-13, the call answering at +461ms). Floated, it would hang off the
+          panel's edge. The rail behind the scrim draws the thread as the Running row it becomes
+          (lib/pendingDispatch), and the toast and the Send spinner say it is starting. */}
+      <DispatchForm autoFocus onDispatched={onClose} projectPicker={target.chip} pendingCard={false} />
     </>
   )
   useEffect(() => () => {
