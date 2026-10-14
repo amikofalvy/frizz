@@ -14,7 +14,10 @@ import test from "node:test"
 // A dev stack has no launcher, so `/_frizz/control/status` is the one thing answered here rather than
 // by the server — which is also what lets the test say "restarting" and name a second build. The poll
 // is woken with the app's own wake event (api/supervisorStatus.ts) instead of waiting out its 8s rest
-// cadence. The notification half replaces `Notification` and `document.hidden` in the page, since a
+// cadence. The Escape test's stalled hold is three minutes of silence, so it answers 503 and moves the
+// page's clock instead of waiting them out; its drawer is a WORKING thread's, since a queued thread's
+// link opens its card (that worker runs for about two minutes: kill the stack's workers with the
+// stack). The notification half replaces `Notification` and `document.hidden` in the page, since a
 // headless tab is always the visible one and has nowhere to show a notification; the event itself is
 // the server's own `notify` for a scripted turn that ends, read off the feed's socket for the control.
 // The test writes the stack's `notifications` setting and leaves it off.
@@ -24,7 +27,9 @@ const OVERLAY = '[role="alertdialog"][aria-label="Updating and restarting Frizz"
 const WAKE = "frizz:supervisor-status-wake"
 const ARMED = "frizz:reload-after-update-restart"
 
+type Page = import("puppeteer").Page
 type Shell = { name: string; url: string; root: string }
+type Answer = { state: "ready" | "restarting"; artifactDigest: string }
 type AppStore = typeof import("../store.ts")
 type PageGlobals = {
   frizzPageFrameE2eStore: () => Promise<AppStore>
@@ -33,7 +38,7 @@ type PageGlobals = {
 }
 
 // One scripted thread at rest, for the full-screen page to show and the board to queue; and the two
-// shells' URLs. Shared by both tests.
+// shells' URLs. Shared by every test here.
 let prepared: Promise<{ api: ReturnType<typeof import("../../../../scripts/lib/rpc-client.mjs").createRpcClient>; projectSlug: string; shells: Shell[] }> | null = null
 function prepare() {
   return (prepared ??= (async () => {
@@ -88,6 +93,50 @@ function installNotificationStub(): void {
 
 const settle = (ms = 400) => new Promise((resolve) => setTimeout(resolve, ms))
 
+// THE SUPERVISOR THIS PAGE HEARS: what it says (`null` is silence, the way a server that is down
+// answers), how often it was asked, and how often the document was loaded.
+async function supervisorFor(page: Page, name: string) {
+  let answer: Answer | null = { state: "ready", artifactDigest: "build-a" }
+  let polls = 0
+  let documents = 0
+  await page.setRequestInterception(true)
+  page.on("request", (r) => {
+    if (new URL(r.url()).pathname === "/_frizz/control/status") {
+      polls++
+      if (answer === null) void r.respond({ status: 503, contentType: "text/plain", body: "down" })
+      else void r.respond({ status: 200, contentType: "application/json", body: JSON.stringify({ protocol: 1, updateRestart: false, ...answer }) })
+      return
+    }
+    if (r.isNavigationRequest() && r.frame() === page.mainFrame()) documents++
+    void r.continue()
+  })
+  // One more answer, asked for now and applied by the time this resolves.
+  const poll = async () => {
+    const before = polls
+    await page.evaluate((wake) => { window.dispatchEvent(new Event(wake)) }, WAKE)
+    for (let i = 0; i < 100 && polls === before; i++) await settle(50)
+    assert.ok(polls > before, `${name}: the supervisor was asked again`)
+    await settle(150)
+  }
+  return {
+    say(next: Answer | null) { answer = next },
+    poll,
+    documents: () => documents,
+    /** "restarting" from the build that is answering now, and the overlay it raises. */
+    async restart() {
+      answer = { artifactDigest: answer?.artifactDigest ?? "build-a", state: "restarting" }
+      await poll()
+      await page.waitForSelector(OVERLAY, { visible: true }).catch((error) => { throw new Error(`${name}: no restart overlay while the supervisor says "restarting"`, { cause: error }) })
+    },
+    /** The same build answering "ready" again, and the overlay gone. */
+    async back() {
+      answer = { artifactDigest: answer?.artifactDigest ?? "build-a", state: "ready" }
+      await poll()
+      await page.waitForSelector(OVERLAY, { hidden: true })
+    },
+  }
+}
+
 test("the board and the full-screen thread page both follow a restart: the overlay, inert content, and a reload onto a new build", { skip: !baseUrl, timeout: 240_000 }, async () => {
   const { shells } = await prepare()
   const { launchHeadless } = await import("../../../../scripts/lib/headless-browser.mjs")
@@ -100,28 +149,8 @@ test("the board and the full-screen thread page both follow a restart: the overl
       page.on("pageerror", (e) => errors.push(String(e)))
       page.on("console", (m) => { if (m.type() === "error" && !/404|favicon/i.test(m.text())) errors.push(m.text()) })
 
-      // What the supervisor says, and how often it was asked and the document was loaded.
-      let answer: { state: "ready" | "restarting"; artifactDigest: string } = { state: "ready", artifactDigest: "build-a" }
-      let polls = 0
-      let documents = 0
-      await page.setRequestInterception(true)
-      page.on("request", (r) => {
-        if (new URL(r.url()).pathname === "/_frizz/control/status") {
-          polls++
-          void r.respond({ status: 200, contentType: "application/json", body: JSON.stringify({ protocol: 1, updateRestart: false, ...answer }) })
-          return
-        }
-        if (r.isNavigationRequest() && r.frame() === page.mainFrame()) documents++
-        void r.continue()
-      })
-      // One more answer, asked for now and applied by the time this resolves.
-      const poll = async () => {
-        const before = polls
-        await page.evaluate((wake) => { window.dispatchEvent(new Event(wake)) }, WAKE)
-        for (let i = 0; i < 100 && polls === before; i++) await settle(50)
-        assert.ok(polls > before, `${shell.name}: the supervisor was asked again`)
-        await settle(150)
-      }
+      const supervisor = await supervisorFor(page, shell.name)
+      const { poll, restart } = supervisor
       const mark = () => page.evaluate(() => { (globalThis as unknown as PageGlobals).frizzPageFrameE2eMarker = true })
       const marked = () => page.evaluate(() => (globalThis as unknown as PageGlobals).frizzPageFrameE2eMarker === true)
       const box = `${shell.root} textarea`
@@ -147,19 +176,14 @@ test("the board and the full-screen thread page both follow a restart: the overl
       const atRest = { overlay: false, coversWindow: false, overlayInert: false, contentInert: false, clickLandsOnOverlay: false, boxTakesFocus: true }
       const blocked = { overlay: true, coversWindow: true, overlayInert: false, contentInert: true, clickLandsOnOverlay: true, boxTakesFocus: false }
       const loaded = () => page.waitForSelector(box, { visible: true })
-      const restart = async () => {
-        answer = { ...answer, state: "restarting" }
-        await poll()
-        await page.waitForSelector(OVERLAY, { visible: true }).catch((error) => { throw new Error(`${shell.name}: no restart overlay while the supervisor says "restarting"`, { cause: error }) })
-      }
 
       await page.goto(shell.url, { waitUntil: "domcontentloaded" })
       await loaded()
       await mark()
       // Counted from here: the first page a fresh vite serves can load twice on its own account (it
       // reloads the tab once it has optimized the dependencies it discovered).
-      const before = documents
-      const reloads = () => documents - before
+      const before = supervisor.documents()
+      const reloads = () => supervisor.documents() - before
 
       // THE CONTROL: the same build answering "ready" throughout raises nothing and reloads nothing.
       for (let i = 0; i < 3; i++) await poll()
@@ -171,15 +195,13 @@ test("the board and the full-screen thread page both follow a restart: the overl
       assert.deepEqual(await read(), blocked, `${shell.name}: while restarting`)
 
       // The same build coming back lifts the block and loads nothing: a reload is for a NEW build.
-      answer = { state: "ready", artifactDigest: "build-a" }
-      await poll()
-      await page.waitForSelector(OVERLAY, { hidden: true })
+      await supervisor.back()
       assert.deepEqual(await read(), atRest, `${shell.name}: the same build back`)
       assert.deepEqual({ marked: await marked(), reloads: reloads() }, { marked: true, reloads: 0 }, `${shell.name}: the same build coming back does not reload`)
 
       // 2. "ready" from a DIFFERENT build than the one that served this page: the tab reloads in place.
       await restart()
-      answer = { state: "ready", artifactDigest: "build-b" }
+      supervisor.say({ state: "ready", artifactDigest: "build-b" })
       await page.waitForFunction(() => (globalThis as unknown as PageGlobals).frizzPageFrameE2eMarker !== true, { timeout: 15_000 })
         .catch((error) => { throw new Error(`${shell.name}: a "ready" naming another build did not reload the tab`, { cause: error }) })
       await loaded()
@@ -195,7 +217,7 @@ test("the board and the full-screen thread page both follow a restart: the overl
       await mark()
       await page.evaluate((key, to) => sessionStorage.setItem(key, to), ARMED, destination)
       await restart()
-      answer = { state: "ready", artifactDigest: "build-b" }
+      supervisor.say({ state: "ready", artifactDigest: "build-b" })
       await page.waitForFunction(() => (globalThis as unknown as PageGlobals).frizzPageFrameE2eMarker !== true && location.search === "?after=update", { timeout: 15_000 })
         .catch((error) => { throw new Error(`${shell.name}: the armed destination was not taken`, { cause: error }) })
       await loaded()
@@ -203,6 +225,107 @@ test("the board and the full-screen thread page both follow a restart: the overl
       assert.equal(reloads(), 2, `${shell.name}: one load onto the destination`)
 
       assert.deepEqual(errors, [], `${shell.name}: no page errors`)
+      await page.close()
+    }
+  } finally {
+    await browser.close()
+  }
+})
+
+test("Escape does nothing while the restart overlay blocks, on either shell, and works again once it stops blocking", { skip: !baseUrl, timeout: 240_000 }, async () => {
+  const { api, shells } = await prepare()
+  const [full, board] = shells
+  // A drawer needs a thread that is WORKING: a queued thread's link opens its card instead.
+  const { slug: working } = await api.mutate("dispatch", { prompt: "[script ending=done paras=2 tools=40 toolms=3000] Keep working", backend: "claude", model: "haiku", effort: "low" }) as { slug: string }
+  let running = false
+  for (let i = 0; i < 120 && !running; i++) {
+    const snapshot = await api.query("board") as { threads: { id: string; runtime: string }[] }
+    running = snapshot.threads.find((t) => t.id === working)?.runtime === "running"
+    if (!running) await settle(250)
+  }
+  assert.ok(running, "a scripted thread is working")
+
+  const { launchHeadless } = await import("../../../../scripts/lib/headless-browser.mjs")
+  const browser = await launchHeadless()
+  try {
+    const open = async (name: string) => {
+      const page = await browser.newPage()
+      await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 })
+      const errors: string[] = []
+      page.on("pageerror", (e) => errors.push(String(e)))
+      // The 503 is this test's own: it is how the supervisor goes silent.
+      page.on("console", (m) => { if (m.type() === "error" && !/404|503|favicon/i.test(m.text())) errors.push(m.text()) })
+      return { page, errors, supervisor: await supervisorFor(page, name) }
+    }
+    // Escape, and long enough for whatever it started to show: a drawer's slide-out is 210ms and the
+    // fullscreen door's view transition starts within a frame or two.
+    const escape = async (page: Page) => {
+      await page.keyboard.press("Escape")
+      await settle(600)
+    }
+    const blocking = (page: Page) => page.$(OVERLAY).then((overlay) => overlay !== null)
+
+    // THE FULL-SCREEN PAGE. Escape at rest is its way out (fullscreenEscape.e2e.test.ts), and under the
+    // block it used to take it: the tab went to the board behind the scrim.
+    {
+      const { page, errors, supervisor } = await open(full.name)
+      const onFull = () => page.evaluate(() => location.pathname.endsWith("/full") && document.querySelector("main[data-standalone-thread]") !== null)
+      const leftFull = (when: string) => page.waitForFunction(() => !location.pathname.endsWith("/full") && !document.querySelector("main[data-standalone-thread]"), { timeout: 10_000 })
+        .catch((error) => { throw new Error(`${full.name}: Escape did not exit fullscreen ${when}`, { cause: error }) })
+      const load = async () => {
+        await page.goto(full.url, { waitUntil: "domcontentloaded" })
+        await page.waitForSelector(`${full.root} textarea`, { visible: true })
+      }
+
+      await load()
+      await supervisor.restart()
+      await escape(page)
+      assert.deepEqual({ onFull: await onFull(), blocking: await blocking(page) }, { onFull: true, blocking: true }, `${full.name}: Escape under the block leaves the page where it is`)
+      // The same build back: the page is live again, and so is its Escape.
+      await supervisor.back()
+      await escape(page)
+      await leftFull("once the server was back")
+
+      // THE STALLED HOLD: nothing has answered for three minutes, the overlay is a notice and the page
+      // is interactive again. The swallow has to be gone with the block, or a tab whose server never
+      // came back could not even close its own drawers.
+      await load()
+      await supervisor.restart()
+      await escape(page)
+      assert.equal(await onFull(), true, `${full.name}: Escape under the block, before the hold stalls`)
+      supervisor.say(null)
+      await supervisor.poll() // the first unanswered poll starts the hold's clock
+      await page.evaluate(() => { const real = Date.now.bind(Date); Date.now = () => real() + 200_000 })
+      await supervisor.poll()
+      await page.waitForSelector('[role="alert"]', { visible: true })
+      assert.deepEqual({ onFull: await onFull(), blocking: await blocking(page), inert: await page.$eval(full.root, (el) => el.closest("[inert]") !== null) }, { onFull: true, blocking: false, inert: false }, `${full.name}: stalled, the block is lifted`)
+      await escape(page)
+      await leftFull("once the hold had stalled")
+
+      assert.deepEqual(errors, [], `${full.name}: no page errors`)
+      await page.close()
+    }
+
+    // THE BOARD, with a thread's drawer open. The sheet is portaled out of the page (ThreadSheet), so
+    // `inert` never covered it, and both Radix and the drawer stack close it on Escape.
+    {
+      const { page, errors, supervisor } = await open(board.name)
+      const boardPath = new URL(board.url).pathname
+      const drawer = `.frizz-sheet-panel [data-thread-surface="${working}"]`
+      const drawerOpen = () => page.evaluate((selector, path) => ({ drawer: document.querySelector(selector) !== null, path: location.pathname === path }), drawer, `${boardPath}/thread/${working}`)
+
+      await page.goto(`${board.url}/thread/${working}`, { waitUntil: "domcontentloaded" })
+      await page.waitForSelector(drawer, { visible: true })
+      await supervisor.restart()
+      await escape(page)
+      assert.deepEqual({ ...await drawerOpen(), blocking: await blocking(page) }, { drawer: true, path: true, blocking: true }, `${board.name}: Escape under the block leaves the drawer open`)
+      await supervisor.back()
+      assert.deepEqual(await drawerOpen(), { drawer: true, path: true }, `${board.name}: the drawer is still open when the server is back`)
+      await page.keyboard.press("Escape")
+      await page.waitForFunction((selector, path) => !document.querySelector(selector) && location.pathname === path, { timeout: 10_000 }, drawer, boardPath)
+        .catch((error) => { throw new Error(`${board.name}: Escape did not close the drawer once the server was back`, { cause: error }) })
+
+      assert.deepEqual(errors, [], `${board.name}: no page errors`)
       await page.close()
     }
   } finally {

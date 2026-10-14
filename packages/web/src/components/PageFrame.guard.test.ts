@@ -50,5 +50,8 @@ test("both page shells stand in the frame, once, and wire none of it themselves"
   }
   const frame = sources.get(FRAME)!
   // The overlay is a sibling of the inert root, never inside it: it has to stay interactive.
-  assert.match(frame, /<RestartOverlay[\s\S]*?\/>[\s\S]*?<div inert=\{restarting && !hold\.stalled\} className=\{className\} style=\{style\}>\s*\{children\}\s*<\/div>/)
+  assert.match(frame, /<RestartOverlay[\s\S]*?\/>[\s\S]*?<div inert=\{blocking\} className=\{className\} style=\{style\}>\s*\{children\}\s*<\/div>/)
+  // One fact drives both halves of the block: the page is inert, and deaf to Escape, exactly while the
+  // overlay blocks, and neither once the hold has stalled.
+  assert.match(frame, /const blocking = restarting && !hold\.stalled\n\s*useEscapeSwallowed\(blocking\)/)
 })

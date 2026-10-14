@@ -25,6 +25,8 @@ export function stalledRestartCopy(silentFor: string | undefined): string {
 //  • ⌘/Ctrl + K/I — the global palette/doc chords (App.tsx), which would otherwise open surfaces
 //    behind the scrim. NOT N: ⌘N is the browser's new-window shortcut and frizz no longer binds it,
 //    so swallowing it here would hijack the browser for no gain.
+//  • Escape is not in this list: it unwinds the page's drawers and leaves full screen from listeners
+//    outside the page, and PageFrame swallows it for as long as this overlay blocks (PageFrame.tsx).
 // The rpc-layer mutation gate remains as a final backstop; between these, the "Frizz is restarting"
 // red error is unreachable through ordinary interaction.
 function swallowsInteractionKey(event: KeyboardEvent): boolean {

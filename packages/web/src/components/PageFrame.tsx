@@ -30,13 +30,18 @@ import { RestartOverlay } from "./RestartOverlay.tsx"
 // mirrored onto the store by the board and by nothing else.
 //
 // Both shells render THROUGH this component now: it is their root element, so neither can have the
-// overlay without going inert under it, or follow the supervisor without mirroring the setting.
+// overlay without going inert under it and deaf to Escape, or follow the supervisor without mirroring
+// the setting.
 // PageFrame.guard.test.ts fails when the overlay is mounted, or the mirror written, anywhere else, and
 // pageFrame.e2e.test.ts drives both shells through a restart on a real stack. Something a tab owes the
 // server on every page belongs here. (The all-projects grid is not one of the two and has never
 // followed a restart.)
 export function PageFrame({ className, style, children }: { className: string; style?: CSSProperties; children: ReactNode }) {
   const { restarting, message, hold } = useControlPlane()
+  // The overlay BLOCKS until the hold stalls; past that it is a notice over a page that is interactive
+  // again (RestartOverlay.tsx).
+  const blocking = restarting && !hold.stalled
+  useEscapeSwallowed(blocking)
   useNotificationsMirror()
   return (
     <>
@@ -51,7 +56,7 @@ export function PageFrame({ className, style, children }: { className: string; s
           stalled the overlay stops blocking, and so does this. The overlay is `fixed`, and a sibling of
           the page's root is also clear of anything inside the page that is transformed (the full-screen
           page's sliding row would otherwise be its containing block). */}
-      <div inert={restarting && !hold.stalled} className={className} style={style}>
+      <div inert={blocking} className={className} style={style}>
         {children}
       </div>
     </>
@@ -140,6 +145,30 @@ function useControlPlane(): { restarting: boolean; message: string | null; hold:
     // on the status object could miss it.
   }, [supervisorStatus, supervisorAnsweredAt])
   return { restarting: snap.controlPlaneState === "restarting", message: snap.controlPlaneMessage, hold }
+}
+
+// ESCAPE DOES NOTHING UNDER THE BLOCK. `inert` keeps focus and the pointer out of the page, but the
+// Escape chain is not in the page: DrawerStack unwinds from a `window` listener and Radix dismisses its
+// layers from one on the document, and neither asks whether the page under them is inert. So with the
+// overlay up, Escape still closed a drawer behind the scrim on the board, and on the full-screen page it
+// left the page altogether, since the chain's last step there is "exit fullscreen" (seen 2026-10-13:
+// the tab went from `/thread/<slug>/full` to the board under the overlay). CAPTURE on `window` is the
+// first stop a key makes, ahead of Radix's document-capture listener and DrawerStack's bubble one, so
+// stopping it here stops every one of them. Installed only while the overlay BLOCKS: once the hold has
+// stalled the page is interactive again, and Escape has to close its drawers and leave full screen.
+// (The other keys the block swallows are RestartOverlay's own guard; this one is here because it is
+// about the page's layers, which are the frame's to protect on both shells.)
+function useEscapeSwallowed(blocking: boolean): void {
+  useEffect(() => {
+    if (!blocking) return
+    const swallow = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return
+      event.preventDefault()
+      event.stopImmediatePropagation()
+    }
+    window.addEventListener("keydown", swallow, { capture: true })
+    return () => window.removeEventListener("keydown", swallow, { capture: true })
+  }, [blocking])
 }
 
 // Mirror settings.notifications onto the store so the (React-free) SSE handler can gate desktop
