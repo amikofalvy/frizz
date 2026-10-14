@@ -26,8 +26,9 @@ async function launch() {
   return { browser, page, errors }
 }
 
-// Gaps between consecutive tool cards WITHIN one message column ([data-transcript-column] — see the
-// marker's note in ChatView), tagged with WHAT LIES BETWEEN the two cards.
+// Gaps between consecutive tool cards WITHIN one transcript column — the thread's virtualized one
+// ([data-virtualized-transcript]) or the sub-agent drawer's plain one ([data-transcript-column]) —
+// tagged with WHAT LIES BETWEEN the two cards.
 // `nth` picks the column: the drawer mounts OVER the thread, so both are in the DOM at once.
 //
 // The tag used to be `sameMessage` — do the two cards share a display-message root — on the premise
@@ -37,7 +38,7 @@ async function launch() {
 // tag is therefore what actually sits in the gap, which is what decides its height either way.
 async function gaps(page: import("puppeteer").Page, nth: number) {
   return page.evaluate((idx) => {
-    const scope = document.querySelectorAll("[data-transcript-column]")[idx]
+    const scope = document.querySelectorAll("[data-virtualized-transcript], [data-transcript-column]")[idx]
     const cards = [...scope.querySelectorAll(".frizz-bash")]
     // Classified by what is PAINTED in the gap, found by geometry — the fixture's prose shares a message
     // root with its own tool band, so "a prose-only message root" would find nothing.
@@ -98,7 +99,7 @@ for (const [surface, query, column] of [
 
       // The bottom slot, read out of whichever column this surface owns.
       const readWorkingSlot = (idx: number) => page.evaluate((i) => {
-        const scope = document.querySelectorAll("[data-transcript-column]")[i]
+        const scope = document.querySelectorAll("[data-virtualized-transcript], [data-transcript-column]")[i]
         const working = scope.querySelector<HTMLElement>("[data-working-indicator]")
         return {
           workingActivity: working?.dataset.workingActivity,
@@ -108,13 +109,13 @@ for (const [surface, query, column] of [
       }, idx)
 
       await page.goto(fixtureUrl("live"), { waitUntil: "networkidle0" })
-      await page.waitForFunction((n) => document.querySelectorAll("[data-transcript-column]").length > n, {}, column)
+      await page.waitForFunction((n) => document.querySelectorAll("[data-virtualized-transcript], [data-transcript-column]").length > n, {}, column)
       await page.waitForFunction((idx) => {
-        const scope = document.querySelectorAll("[data-transcript-column]")[idx]
+        const scope = document.querySelectorAll("[data-virtualized-transcript], [data-transcript-column]")[idx]
         return scope?.querySelector("[data-working-indicator]")?.textContent?.includes("Final workflow validation")
       }, {}, column)
       const live = await page.evaluate((idx) => {
-        const scope = document.querySelectorAll("[data-transcript-column]")[idx]
+        const scope = document.querySelectorAll("[data-virtualized-transcript], [data-transcript-column]")[idx]
         const disclosures = [...scope.querySelectorAll<HTMLElement>("[data-tool-activity] button")]
         const labels = disclosures.map((button) => button.getAttribute("aria-label") ?? "")
         const visibleCards = [...scope.querySelectorAll<HTMLElement>(".frizz-bash")].filter((card) => card.offsetParent !== null).length
@@ -153,9 +154,9 @@ for (const [surface, query, column] of [
       // has sat thinking since the clock beside it started (maintainer 2026-08-08). History must NOT
       // move in the same beat — the digest count is unchanged from the live pass.
       await page.goto(fixtureUrl("gap"), { waitUntil: "networkidle0" })
-      await page.waitForFunction((n) => document.querySelectorAll("[data-transcript-column]").length > n, {}, column)
+      await page.waitForFunction((n) => document.querySelectorAll("[data-virtualized-transcript], [data-transcript-column]").length > n, {}, column)
       await page.waitForFunction((idx) => {
-        const scope = document.querySelectorAll("[data-transcript-column]")[idx]
+        const scope = document.querySelectorAll("[data-virtualized-transcript], [data-transcript-column]")[idx]
         return scope?.querySelector("[data-working-indicator]") !== null
       }, {}, column)
       const gap = await readWorkingSlot(column)
@@ -167,9 +168,9 @@ for (const [surface, query, column] of [
       assert.equal(gap.digests, live.labels.length, "the run's digest must not appear in history during the gap")
 
       await page.goto(fixtureUrl("settled"), { waitUntil: "networkidle0" })
-      await page.waitForFunction((n) => document.querySelectorAll("[data-transcript-column]").length > n, {}, column)
+      await page.waitForFunction((n) => document.querySelectorAll("[data-virtualized-transcript], [data-transcript-column]").length > n, {}, column)
       const collapsed = await page.evaluate((idx) => {
-        const scope = document.querySelectorAll("[data-transcript-column]")[idx]
+        const scope = document.querySelectorAll("[data-virtualized-transcript], [data-transcript-column]")[idx]
         const disclosures = [...scope.querySelectorAll<HTMLElement>("[data-tool-activity] button")]
         const labels = disclosures.map((button) => button.getAttribute("aria-label") ?? "")
         // INK, not boxes. This used to read `chevronRect.left - labelRect.right` and pin it to 3–5px,
@@ -243,9 +244,9 @@ for (const [surface, query, column] of [
       // as "a random uncollapsed bash call" (maintainer 2026-09-12; "Fold it once finished", 2026-09-13).
       // So it folds: the digest/card/digest arrangement above becomes ONE digest carrying all seven.
       await page.goto(fixtureUrl("settled", "finished"), { waitUntil: "networkidle0" })
-      await page.waitForFunction((n) => document.querySelectorAll("[data-transcript-column]").length > n, {}, column)
+      await page.waitForFunction((n) => document.querySelectorAll("[data-virtualized-transcript], [data-transcript-column]").length > n, {}, column)
       const folded = await page.evaluate((idx) => {
-        const scope = document.querySelectorAll("[data-transcript-column]")[idx]
+        const scope = document.querySelectorAll("[data-virtualized-transcript], [data-transcript-column]")[idx]
         const labels = [...scope.querySelectorAll<HTMLElement>("[data-tool-activity] button")].map((button) => button.getAttribute("aria-label") ?? "")
         const visibleCards = [...scope.querySelectorAll<HTMLElement>(".frizz-bash")].filter((card) => card.offsetParent !== null).length
         return { labels, visibleCards }

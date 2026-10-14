@@ -207,7 +207,7 @@ function Harness() {
   // The same box StandaloneThreadPage gives /full: a full-height, max-w-[900px] column.
   return (
     <div className="mx-auto flex h-dvh w-full max-w-[900px] min-w-0 flex-col overflow-hidden border-x border-border bg-panel">
-      <ThreadView slug={SLUG} virtualized showReturnToQueue />
+      <ThreadView slug={SLUG} showReturnToQueue />
     </div>
   )
 }

@@ -8,7 +8,7 @@ import "./styles.css"
 
 // Browser QA for A STEPS CARD THAT OUTLIVES ITS REST (2026-10-08, maintainer: "We need to continue showing
 // the to do instructions even after they are complete & the thread has moved on"). The drawer, mounted as
-// production mounts it (ThreadView, virtualized), over a transcript whose ```awaiting fence handed the
+// production mounts it (ThreadView), over a transcript whose ```awaiting fence handed the
 // human steps — and then, per `?at=`, where the thread has got to since:
 //
 //   ?at=rest     the thread is still resting on the steps — the tail's resting card states them, with the box
@@ -119,7 +119,7 @@ createRoot(document.getElementById("root")!).render(
         <div className="mx-auto flex h-screen w-[760px] max-w-full flex-col border-x border-border">
           {/* `?drawer=1` hands it a close, which is what makes it a DRAWER — the one mount that takes the
               phone's chrome below the breakpoint, and with it the phone bar, which sends no answers. */}
-          <ThreadView slug={SLUG} virtualized onClose={PARAMS.has("drawer") ? () => {} : undefined} />
+          <ThreadView slug={SLUG} onClose={PARAMS.has("drawer") ? () => {} : undefined} />
         </div>
       </div>
     </TooltipProvider>

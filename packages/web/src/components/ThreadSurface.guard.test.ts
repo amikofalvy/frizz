@@ -89,7 +89,7 @@ test("what each transcript message means is derived in the shell alone, and hand
   // Every surface draws its transcript through it. A bare Message on a surface is a line that carries no
   // question — a queued bubble, a lifted wake — and takes the message, `dense` and its pairing only.
   const bare = /^<Message (?:key=\{`[^`]*`\} )?m=\{[^}]+\}(?: dense)?(?: paired=\{[^}]+\})? \/>$/
-  for (const [file, viaThreadMessage, own] of [["components/TodosView.tsx", 2, 0], ["components/ChatView.tsx", 2, 1]] as const) {
+  for (const [file, viaThreadMessage, own] of [["components/TodosView.tsx", 2, 0], ["components/ChatView.tsx", 1, 1]] as const) {
     const text = sources.get(file)!
     assert.equal((text.match(/<ThreadMessage\b/g) ?? []).length, viaThreadMessage, `${file} draws its transcript messages through ThreadMessage`)
     const sites = text.match(/<Message [^\n]*?\/>/g) ?? []

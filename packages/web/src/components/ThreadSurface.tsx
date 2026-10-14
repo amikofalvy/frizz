@@ -73,6 +73,8 @@ export interface ThreadSurfaceOptions {
  *  each copy for the same line. */
 export interface ThreadTranscript {
   thread: ThreadView | undefined
+  /** The list every index below addresses: the surface's own (ThreadSurfaceSource.messages). */
+  messages: readonly ChatMessage[]
   running: boolean
   /** The last thing the agent SAID (lib/lastAssistant), or -1. */
   lastAgentIdx: number
@@ -219,6 +221,7 @@ export function useThreadSurface(source: ThreadSurfaceSource, options: ThreadSur
   const transcript = useMemo<ThreadTranscript>(
     () => ({
       thread,
+      messages,
       running,
       lastAgentIdx,
       awaitingCut,
@@ -234,7 +237,7 @@ export function useThreadSurface(source: ThreadSurfaceSource, options: ThreadSur
       inFlightAnswers,
       answeringForMessage,
     }),
-    [thread, running, lastAgentIdx, awaitingCut, restingShown, openQuestions, fencesLive, fenceQuestions, shadowedByMessage, placement, settledPlacement, paired, inFlightAnswers, answeringForMessage],
+    [thread, messages, running, lastAgentIdx, awaitingCut, restingShown, openQuestions, fencesLive, fenceQuestions, shadowedByMessage, placement, settledPlacement, paired, inFlightAnswers, answeringForMessage],
   )
 
   // The surface is the zone and its prompt box the intake (lib/fileDrop). Files given while no box is
