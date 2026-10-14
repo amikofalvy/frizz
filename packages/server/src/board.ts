@@ -9,7 +9,7 @@ import { dirname, join } from "node:path"
 import watcher from "@parcel/watcher"
 import type { BoardSnapshot, ClaudeModel, ThreadView, RuntimeState, ThreadRecurringPrompt, ProviderError } from "@frizz/shared"
 import { standingQuestions, type QuestionFenceFault } from "./question-fences.ts"
-import { AskedQuestionSchema, BoardDiffer, PermissionMode, SnoozeUntil, ThreadSlug, awaitingNeedsInput, formatElapsed, awaitingStatus, awaitingSteps, isDirectSubAgent, splitDoneFrontmatter, needsInputRequired, questionAnswerMessage, questionsCancelledWakeMessage, type AskedQuestion, type PermissionMode as PermissionModeValue, type QuestionAnswer, type QuestionDismissal } from "@frizz/shared"
+import { AskedQuestionSchema, BoardDiffer, PermissionMode, SnoozeUntil, ThreadSlug, awaitingNeedsInput, formatElapsed, awaitingStatus, awaitingSteps, isDirectSubAgent, splitDoneFrontmatter, needsInputRequired, nameQuestionAnswer, questionAnswerMessage, questionsCancelledWakeMessage, type AskedQuestion, type NamedQuestionAnswer, type PermissionMode as PermissionModeValue, type QuestionAnswer, type QuestionDismissal } from "@frizz/shared"
 import type { Bus } from "./bus.ts"
 import type { Project } from "./project.ts"
 import { isHeadlessRow, isBrokerClaudeRow, sessionTitleLocked, type ThreadQuestionRow } from "./storage.ts"
@@ -489,6 +489,16 @@ export function safeQuestionAnswer(raw: string | null): QuestionAnswer | undefin
   }
 }
 
+/** A row's stored answer AS A MESSAGE CARRIES IT: each question named by the id the worker asked it
+ *  under, read off the row and its spec tree at this moment and never stored (shared
+ *  nameQuestionAnswer). The board's in-flight card and the scheduler's delivery both compose from this,
+ *  which is what keeps the two byte-identical — and an answer stored before the wake learned the id
+ *  (2026-10-13) is named all the same, because nothing about it was missing from the row. */
+export function wakeQuestionAnswer(q: Pick<ThreadQuestionRow, "answer" | "spec" | "handle">): NamedQuestionAnswer | undefined {
+  const parsed = safeQuestionAnswer(q.answer)
+  return parsed && nameQuestionAnswer(parsed, safeQuestionSpec(q.spec), q.handle)
+}
+
 /** THE ANSWER THE HUMAN HAS ALREADY SENT, WHICH THE WORKER HAS NOT SEEN YET — as the exact message the
  *  delivery will carry, so the card the chat draws while it is in flight and the card it draws once it
  *  lands are built from the same bytes and the swap is invisible.
@@ -513,7 +523,7 @@ export function safeQuestionAnswer(raw: string | null): QuestionAnswer | undefin
  *  (maintainer 2026-09-02). The message is the wake's own bytes, exactly as for an answer. */
 export function answersInFlight(rows: readonly ThreadQuestionRow[], lastUserAt: string | undefined, wakeOnDismissals = false): string | undefined {
   const userAt = lastUserAt ? Date.parse(lastUserAt) : Number.NaN
-  const answers: QuestionAnswer[] = []
+  const answers: NamedQuestionAnswer[] = []
   const dismissed: QuestionDismissal[] = []
   for (const q of rows) {
     if (q.settled_at == null) continue
@@ -524,7 +534,7 @@ export function answersInFlight(rows: readonly ThreadQuestionRow[], lastUserAt: 
       continue
     }
     if (q.state !== "answered") continue
-    const parsed = safeQuestionAnswer(q.answer)
+    const parsed = wakeQuestionAnswer(q)
     if (parsed) answers.push(parsed)
   }
   if (answers.length > 0) return questionAnswerMessage(answers, dismissed)

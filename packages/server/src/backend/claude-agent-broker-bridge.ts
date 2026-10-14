@@ -173,8 +173,12 @@ export interface ClaudeAgentBrokerBridge {
    * clicking, so the card is denied and the turn reads their message). A machine's message must not:
    * a timer coming due is not the operator declining a command. With it set the cards stay open and the
    * message waits in the daemon's queue behind the parked turn, to be read once the operator answers.
+   *
+   * `human` says a PERSON typed the text, and reaches the runtime as the message's origin. It is what
+   * lets `sendNow` move a running call aside for this message instead of aborting the turn
+   * (ClaudeInputMessage.human), so it is set on the operator's own sends and on nothing Frizz writes.
    */
-  followUp(input: { threadSlug: string; sessionId: string; cwd: string; text: string; deliveryId?: string; permissionMode?: ClaudeBrokerConfig["permissionMode"]; appendSystemPrompt?: string; model?: string; effort?: string; freshProcess?: boolean; keepOpenCards?: boolean }): Promise<void>
+  followUp(input: { threadSlug: string; sessionId: string; cwd: string; text: string; deliveryId?: string; permissionMode?: ClaudeBrokerConfig["permissionMode"]; appendSystemPrompt?: string; model?: string; effort?: string; freshProcess?: boolean; keepOpenCards?: boolean; human?: boolean }): Promise<void>
   /**
    * Steer ONE running Agent-tool sub-agent: deliver `text` into the child's own conversation rather
    * than the thread's main turn. `subAgentId` is the dispatch tool_use id — the same id the board's
@@ -219,24 +223,34 @@ export interface ClaudeAgentBrokerBridge {
    */
   cancelFollowUp(input: { threadSlug: string; sessionId: string; deliveryId: string }): Promise<boolean>
   /**
-   * PREEMPT the operation running right now, so a follow-up already handed to the CLI's queue is read
-   * at once instead of at the next sampling boundary.
+   * SEND NOW: have a follow-up already handed to the CLI's queue read at once, instead of when the
+   * operation running right now ends.
    *
    * WHY THIS EXISTS. Claude Code is not slow to dequeue — measured across 14 days of this project's
    * own transcripts, it drains the queue at the FIRST sampling boundary that exists. The wait an
    * operator feels is the remaining time of whatever was already in flight: a long `Bash` (62–105s in
    * the worst real cases) or a single reasoning+answer generation (73–133s). Mid-turn operator prose
-   * therefore waited p50 13.8s, p90 49s, p99 2.5m. Nothing but preempting that operation can beat it.
+   * therefore waited p50 13.8s, p90 49s, p99 2.5m. Nothing but getting that operation out of the way
+   * can beat it.
    *
-   * ORDER IS THE CONTRACT: the caller must have delivered the message BEFORE calling this. The SDK's
-   * interrupt receipt reports `still_queued`, i.e. an interrupt aborts the turn WITHOUT discarding
-   * queued inputs — so a message queued first is what the next turn starts on, immediately.
+   * HOW IT GETS OUT OF THE WAY, since 2026-10-13: the runtime is asked to push the waiting message
+   * through (ClaudeInterruptOptions). A foreground Bash or Agent call is MOVED TO THE BACKGROUND and
+   * keeps running, and the turn takes the message in at once — nothing is killed, and the call's result
+   * says what happened. Only when the runtime has nothing it can move (the model is mid-answer; a
+   * message Frizz wrote is waiting too; the CLI or the daemon predates send-now) is the turn ABORTED,
+   * which is all this did before: the running call then ends on Claude Code's stock rejection
+   * paragraph (workerPrompt.ts CLAUDE_INTERRUPTED_CALL), and the next turn opens on the queue.
+   * `deliveryId` names the message this is for, when the caller has just sent one.
    *
-   * Returns false when there is no live daemon to interrupt. That is not an error: the follow-up has
+   * ORDER IS THE CONTRACT: the caller must have delivered the message BEFORE calling this. Both forms
+   * act on what is QUEUED — a send-now does nothing at all when nothing is waiting, and the abort
+   * leaves queued input intact (its receipt reports `still_queued`) for the next turn to open on.
+   *
+   * Returns false when there is no live daemon to ask. That is not an error: the follow-up has
    * already been delivered by then and will be read the ordinary way. This never attaches and never
    * cold-resumes — a turn only exists inside a running process.
    */
-  interruptTurn(input: { threadSlug: string; sessionId: string }): boolean
+  interruptTurn(input: { threadSlug: string; sessionId: string; deliveryId?: string }): boolean
   /**
    * Reattach at boot to every broker daemon this project left running, without waiting for someone to
    * touch the thread.
@@ -326,7 +340,7 @@ export interface ClaudeAgentBrokerBridge {
  * browser when the cap was 90: a 150-char version rendered as "…or h"). Keep each of these well under
  * 160 characters.
  */
-export function validatedInput(message: { id: string; text: string; parentToolUseId?: string }): ReturnType<typeof validateInputMessage> {
+export function validatedInput(message: { id: string; text: string; parentToolUseId?: string; human?: boolean }): ReturnType<typeof validateInputMessage> {
   try {
     return validateInputMessage({ ...message, text: deliverableInputText(message.text) })
   } catch (error) {
@@ -698,7 +712,7 @@ export function createClaudeAgentBrokerBridge(deps: ClaudeBrokerBridgeDeps): Cla
       // FIRST, before any process state is touched: a message that cannot be delivered must not cost a
       // cold resume, and must certainly not cost the `freshProcess` daemon retirement below — killing the
       // operator's worker on the way to refusing their message is the worst possible order.
-      const message = validatedInput({ id: inputIdFor(input.deliveryId), text: input.text })
+      const message = validatedInput({ id: inputIdFor(input.deliveryId), text: input.text, ...(input.human ? { human: true } : {}) })
       // Stamped before anything can await, so a second follow-up racing this one already sees it (see
       // `lastInputAt`); withdrawn if the message never reaches the daemon.
       const handedBefore = inputHandedAt.get(input.sessionId)
@@ -763,8 +777,14 @@ export function createClaudeAgentBrokerBridge(deps: ClaudeBrokerBridgeDeps): Cla
       // Fire-and-forget by design, and it is why this needs no capability gate: the daemon's frame
       // handler answers nothing, so there is nothing to wait for and nothing to time out on. A daemon
       // too old to know the frame ignores it, and the follow-up — already delivered above — is simply
-      // read at the ordinary time. The degradation is "no faster", never "lost".
-      held.client.interrupt()
+      // read at the ordinary time. The degradation is "no faster", never "lost". The same goes for the
+      // send-now it now carries: a daemon older than the field reads a plain interrupt.
+      //
+      // The message is named only when its id IS the uuid the CLI queued it under (see cancelFollowUp):
+      // a name the CLI has never heard answers "nothing waiting" and does nothing, so an id that is not
+      // one is left out and the send-now speaks for whatever is waiting.
+      const named = input.deliveryId !== undefined && inputIdFor(input.deliveryId) === input.deliveryId
+      held.client.interrupt({ sendNow: named ? { messageId: input.deliveryId } : {} })
       return true
     },
 

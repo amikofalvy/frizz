@@ -127,7 +127,7 @@ function optionValue(flag) {
 
 function handleHostControl(message) {
   const request = message.request ?? {}
-  record({ kind: "host-control", requestId: message.request_id, subtype: request.subtype, mode: request.mode })
+  record({ kind: "host-control", requestId: message.request_id, subtype: request.subtype, mode: request.mode, sendNow: request.send_now, messageUuid: request.message_uuid })
   if (request.subtype === "initialize") {
     initializeCount += 1
     const pending = (scenario === "redelivery" || scenario === "conflicting-redelivery") && initializeCount > 1
@@ -155,6 +155,16 @@ function handleHostControl(message) {
   }
   if (request.subtype === "interrupt") {
     if (scenario === "hanging-control") return
+    // A send-now, as real claude 2.1.296 answers one (_live_broker_send_now.mts): it acts only on a
+    // message it already HOLDS, so a request that arrives before the message it names is answered
+    // `nothing_waiting` and does nothing. Only a CLI that advertises the capability reads the field.
+    if (request.send_now === true && scenario.startsWith("send-now")) {
+      const waiting = queuedInputs.has(request.message_uuid)
+      return respond(message.request_id, {
+        still_queued: [...queuedInputs],
+        send_now: scenario === "send-now-unreadable" ? "sideways" : waiting ? "delivering" : "nothing_waiting",
+      })
+    }
     respond(message.request_id, scenario === "controls-no-receipt" ? {} : {
       still_queued: ["11111111-1111-4111-8111-111111111111", "internal-queue-id"],
     })
@@ -274,11 +284,11 @@ function handleUserMessage(message) {
   // `parent_tool_use_id` is captured because it is not decoration: null routes the message to this
   // session's main thread, a `toolu_…` routes it INTO that running sub-agent's own conversation. The
   // adapter is the only thing that decides which, so the wire frame is where it has to be asserted.
-  record({ kind: "user-input", uuid: message.uuid, text: extractText(message.message?.content), parentToolUseId: message.parent_tool_use_id ?? null })
+  record({ kind: "user-input", uuid: message.uuid, text: extractText(message.message?.content), parentToolUseId: message.parent_tool_use_id ?? null, ...(message.origin ? { origin: message.origin } : {}) })
   // Under `hold-inputs` the fake never answers, which is precisely the real "queued behind a running
   // turn" state a cancel targets — so that is when an input is cancellable. Every other scenario runs
   // the input immediately, matching a CLI that has already dequeued it.
-  if (scenario === "hold-inputs" && typeof message.uuid === "string") queuedInputs.add(message.uuid)
+  if ((scenario === "hold-inputs" || scenario.startsWith("send-now")) && typeof message.uuid === "string") queuedInputs.add(message.uuid)
   if (scenario === "crash") {
     process.stderr.write("fake child crash\n")
     process.exit(17)
@@ -491,7 +501,7 @@ function handleUserMessage(message) {
     }
     return
   }
-  if (scenario === "hold-inputs") return
+  if (scenario === "hold-inputs" || scenario.startsWith("send-now")) return
   if (scenario === "synthetic-receipt") {
     send({
       type: "user",
@@ -619,7 +629,7 @@ function emitSystemInit() {
     output_style: "default",
     skills: ["review", "explore"],
     plugins: [{ name: "fake-plugin", path: "/tmp/fake-plugin" }],
-    capabilities: scenario === "controls-no-receipt" ? [] : ["interrupt_receipt_v1", "future_unknown_capability"],
+    capabilities: scenario === "controls-no-receipt" ? [] : scenario.startsWith("send-now") ? ["interrupt_receipt_v1", "interrupt_send_now_v1"] : ["interrupt_receipt_v1", "future_unknown_capability"],
     uuid: "20000000-0000-4000-8000-000000000001",
     session_id: sessionId,
   })

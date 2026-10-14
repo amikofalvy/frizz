@@ -6,7 +6,7 @@ import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { Hono } from "hono"
 import { mountRouter } from "@frizz/rpc/server"
-import { DISPATCH_TASK_BANNER_MARKER, parseThreadMessage, type BoardSnapshot, type Settings, type ThreadView, type TranscriptMessage } from "@frizz/shared"
+import { DISPATCH_TASK_BANNER_MARKER, formatThreadMessage, parseThreadMessage, type BoardSnapshot, type Settings, type ThreadView, type TranscriptMessage } from "@frizz/shared"
 import type { BoardManager } from "./board.ts"
 import { appendDelivery, parseDeliveryLedger, projectDeliveryLedger } from "./delivery-ledger.ts"
 import { createWakeDeliveryStore } from "./wake-store.ts"
@@ -1454,6 +1454,30 @@ test("interrupt and send frees the sends already queued ahead of it too", async 
   h.storage.close()
 })
 
+// What "send now" hands the bridge, since the bridge turns it into the runtime's own send-now: WHO
+// typed the message (the runtime moves a running call aside only for a person's, and aborts the turn
+// for anything else) and WHICH message it is for.
+test("send now tells the runtime a person typed the message, and names it", async () => {
+  const { h, slug } = interruptHarness()
+  const deliveryId = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
+  const sent: Array<{ human?: boolean; deliveryId?: string }> = []
+  const pushed: Array<{ deliveryId?: string }> = []
+  ;(h.ctx as { claudeBroker?: unknown }).claudeBroker = {
+    followUp: async (input: { human?: boolean; deliveryId?: string }) => void sent.push({ human: input.human, deliveryId: input.deliveryId }),
+    interruptTurn: (input: { deliveryId?: string }) => { pushed.push({ deliveryId: input.deliveryId }); return true },
+  }
+  await h.router.followUp.handler({ input: { slug, sessionId: `sid-${slug}`, message: "read this", deliveryId, interrupt: true } })
+  assert.deepEqual(sent, [{ human: true, deliveryId }])
+  assert.deepEqual(pushed, [{ deliveryId }])
+  // A peer thread's message arrives by the same route and is nobody's typing.
+  sent.length = 0
+  await h.router.followUp.handler({
+    input: { slug, sessionId: `sid-${slug}`, message: formatThreadMessage({ slug: "other-thread", title: "Other thread" }, "the audit is done") },
+  })
+  assert.deepEqual(sent.map((entry) => entry.human), [false])
+  h.storage.close()
+})
+
 test("an ordinary follow-up never preempts the turn", async () => {
   const { h, slug, order } = interruptHarness()
   await h.router.followUp.handler({ input: { slug, sessionId: `sid-${slug}`, message: "whenever you get to it" } })
@@ -1530,7 +1554,7 @@ test("push-it-now refuses a runtime frizz holds no control channel into", async 
   h.storage.setClaudeRuntime(slug, "legacy")
   const result = await h.router.deliverQueuedNow.handler({ input: { slug, sessionId: `sid-${slug}` } })
   assert.equal(result.interrupted, false)
-  assert.match(result.reason ?? "", /can't be interrupted/)
+  assert.match(result.reason ?? "", /isn't available on this thread's runtime/)
   h.storage.close()
 })
 
@@ -2317,6 +2341,43 @@ test("answers sent with a follow-up settle their questions and travel in the sam
   // different (answerless) message, and it must not deliver twice.
   await h.router.followUp.handler({ input })
   assert.equal(sent.length, 1)
+  h.storage.close()
+})
+
+// A FENCE-ASKED question's answer names it by the worker's own id (2026-10-13), on this path as on the
+// scheduler's: the id is read off the row and its spec tree, never off the request.
+test("answers sent with a follow-up name a fence-asked question, and its follow-up, by the worker's own ids", async () => {
+  const { h, slug, sid, sent, ledger, setTurn } = holdHarness()
+  setTurn("idle")
+  h.storage.askThreadQuestion({
+    id: "qst_fence", slug, handle: "store", askedAtMs: Date.now(),
+    spec: JSON.stringify({
+      handle: "store", question: "Which store?", kind: "question",
+      options: [{ label: "SQLite", followUps: [{ handle: "sqlite-path", question: "Which path?", kind: "question" }] }, { label: "JSON file" }],
+    }),
+  })
+  ask(h, slug, "qst_plain", "Which path?")
+  await h.router.followUp.handler({
+    input: {
+      slug, sessionId: sid, deliveryId: "d-named", message: "`store` “Which store?” → JSON file",
+      answers: [
+        { questionId: "qst_fence", question: "Which store?", chosen: ["SQLite"], followUps: [{ questionId: "qst_fence", question: "Which path?", chosen: [], text: "/tmp" }] },
+        { questionId: "qst_plain", question: "Which path?", chosen: ["SQLite"] },
+      ],
+    },
+  })
+  const wire = [
+    "Answers to earlier questions:",
+    "1. `store` “Which store?” → SQLite",
+    "2. ⤷ `sqlite-path` “Which path?” → /tmp",
+    "3. “Which path?” → SQLite",
+    "",
+    "Sent with these answers:",
+    "`store` “Which store?” → JSON file",
+  ].join("\n")
+  assert.ok(sent[0].text.startsWith(wire), sent[0].text)
+  assert.equal(ledger()[0].text, wire, "and the bubble shows the same words")
+  assert.equal(h.storage.getThreadQuestion("qst_fence")?.answer?.includes("sqlite-path"), false, "the row keeps the answer as it was sent: no id is stored")
   h.storage.close()
 })
 

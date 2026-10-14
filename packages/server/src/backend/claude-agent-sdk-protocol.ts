@@ -199,7 +199,34 @@ export interface ClaudeInputMessage {
   // carried the token) while the same session's null-addressed control reached only the main thread.
   // There is no control-request equivalent — this field IS the entire steering channel.
   parentToolUseId?: string
+  // A PERSON TYPED THIS. The adapter stamps the SDK message `origin: { kind: "human" }`, and that stamp
+  // is what the runtime's own "send now" needs: asked to push a waiting message through, the CLI moves
+  // the call the turn is waiting on to the background ONLY for a message it counts as a person's, and
+  // aborts the turn for any other (measured 2026-10-13, claude 2.1.296: the same request with and
+  // without the stamp — see ClaudeInterruptOptions). Absent on everything Frizz writes itself — a wake,
+  // a goal, a peer thread's message — because the stamp is a claim about who is speaking.
+  human?: boolean
 }
+
+// "SEND NOW", as the runtime means it: push a message that is waiting behind the running turn through
+// to the model without killing what the turn is doing. `messageId` is the id `send` gave that message.
+//
+// What the CLI does with it depends on what it holds (measured live, claude 2.1.296 / SDK 0.3.296,
+// _live_broker_send_now.mts):
+//   - a foreground Bash or Agent call in flight, and every waiting message a person's ⇒ the call is
+//     MOVED TO THE BACKGROUND and keeps running; its result says so ("Command was moved to the
+//     background (ID: …) so that a message that arrived while it was running can reach you; it was not
+//     interrupted."), the message is folded into the same turn, and nothing is aborted — `delivering`.
+//   - nothing it can move (the model is mid-answer, or a message Frizz wrote is waiting too) ⇒ the turn
+//     is aborted exactly as a plain interrupt aborts it, marker and all — `stopped`.
+//   - the named message is not waiting any more (the turn already took it in) ⇒ nothing — `nothing_waiting`.
+// A CLI that does not advertise `interrupt_send_now_v1` is sent the plain interrupt instead.
+export interface ClaudeInterruptOptions {
+  sendNow?: { messageId?: string }
+}
+
+export const CLAUDE_SEND_NOW_OUTCOMES = ["stopped", "delivering", "nothing_waiting"] as const
+export type ClaudeSendNowOutcome = typeof CLAUDE_SEND_NOW_OUTCOMES[number]
 
 export interface ClaudeCommandCapability {
   name: string
@@ -418,6 +445,8 @@ export type ClaudeElicitationResult =
 
 export interface ClaudeInterruptReceipt {
   stillQueued: string[]
+  /** Present only when a send-now was asked for and the CLI itself answered it. */
+  sendNow?: ClaudeSendNowOutcome
 }
 
 export type ClaudeDiagnostic =
@@ -556,7 +585,9 @@ export function validateInputMessage(value: ClaudeInputMessage): ClaudeInputMess
   // other id that crosses this membrane. Omitted stays omitted — the adapter turns that into the
   // null the SDK expects for a main-thread turn, so an unaddressed send is byte-identical to before.
   const parentToolUseId = boundedOptionalId(value.parentToolUseId, "input.parentToolUseId")
-  return parentToolUseId === undefined ? { id, text } : { id, text, parentToolUseId }
+  // Only the literal `true` is a claim that a person typed this; anything else is no claim at all.
+  const human = value.human === true ? { human: true as const } : {}
+  return parentToolUseId === undefined ? { id, text, ...human } : { id, text, parentToolUseId, ...human }
 }
 
 export function validatePermissionMode(value: unknown): ClaudePermissionMode {

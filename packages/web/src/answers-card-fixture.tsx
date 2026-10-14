@@ -1,6 +1,6 @@
 import { createRoot } from "react-dom/client"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { questionAnswerMessage, type TranscriptMessage } from "@frizz/shared"
+import { nameQuestionAnswer, questionAnswerMessage, type AskedQuestion, type QuestionAnswer, type TranscriptMessage } from "@frizz/shared"
 import { Message } from "./components/ChatView.tsx"
 import { TooltipProvider } from "./components/Tooltip.tsx"
 import "./styles.css"
@@ -55,6 +55,34 @@ const registered = {
   parts: [],
 } as unknown as TranscriptMessage
 
+// THE SAME ANSWER TO A QUESTION ASKED BY FENCE, whose rows carry the worker's own id on the wire
+// (``N. `settings-store` “…” → …``, shared answerRowId). The id is the worker's vocabulary and the card
+// does not draw it, so this card must be the one above it, pixel for pixel — which is what the fixture is
+// for: `?ids=1` prints both wires under their cards so the difference is on the page and only there.
+const fenceSpec: AskedQuestion = {
+  handle: "settings-store", question: "Should the settings store use SQLite or a JSON file?", kind: "question",
+  options: [
+    { label: "SQLite", followUps: [{ handle: "migrate-at-boot", question: "Migrate the existing rows at boot?", kind: "question", options: [{ label: "Yes, at boot" }, { label: "No" }] }] },
+    { label: "JSON file" },
+  ],
+}
+const fenceAnswer: QuestionAnswer = {
+  questionId: "qst_a", question: "Should the settings store use SQLite or a JSON file?", chosen: ["SQLite"],
+  followUps: [{ questionId: "qst_b", question: "Migrate the existing rows at boot?", chosen: ["Yes, at boot"] }],
+}
+const fenceAsked = {
+  sourceId: "u6",
+  role: "user",
+  text: questionAnswerMessage(
+    [nameQuestionAnswer(fenceAnswer, fenceSpec, "settings-store")],
+    [{ question: "What should the new importer flag be called?", handle: "importer-flag" }],
+  ),
+  tools: [],
+  parts: [],
+} as unknown as TranscriptMessage
+const showWires = new URLSearchParams(location.search).has("ids")
+const Wire = ({ text }: { text: string }) => showWires ? <pre data-wire className="mt-2 whitespace-pre-wrap text-[11px] leading-snug text-muted">{text}</pre> : null
+
 // A registered question that SPANS LINES — a procedure ending in a public key on its own line, restated
 // verbatim on the wire (2026-09-23). The row runs five lines; it has to reach this card, not the raw
 // bubble the single-line row pattern used to drop it into.
@@ -106,10 +134,24 @@ function Fixture() {
           <Message m={buried} />
         </div>
       </div>
-      <div>
+      <div data-fixture="registered">
         <div className="mb-2 text-[11px] uppercase tracking-wide text-muted-70">Registered-question answers, with a follow-up and a dismissal</div>
         <div className="flex flex-col rounded-lg border border-border bg-panel p-4">
           <Message m={registered} />
+        </div>
+        <Wire text={registered.text} />
+      </div>
+      <div data-fixture="fence-asked">
+        <div className="mb-2 text-[11px] uppercase tracking-wide text-muted-70">…the same answers to questions asked by fence (ids on the wire)</div>
+        <div className="flex flex-col rounded-lg border border-border bg-panel p-4">
+          <Message m={fenceAsked} />
+        </div>
+        <Wire text={fenceAsked.text} />
+      </div>
+      <div data-fixture="fence-asked-in-flight">
+        <div className="mb-2 text-[11px] uppercase tracking-wide text-muted-70">…and that one IN FLIGHT</div>
+        <div className="flex flex-col rounded-lg border border-border bg-panel p-4">
+          <Message m={{ ...fenceAsked, queued: true } as unknown as TranscriptMessage} />
         </div>
       </div>
       <div data-fixture="multi-select">
@@ -130,7 +172,7 @@ function Fixture() {
           <Message m={multiline} />
         </div>
       </div>
-      <div>
+      <div data-fixture="registered-in-flight">
         <div className="mb-2 text-[11px] uppercase tracking-wide text-muted-70">…the same one IN FLIGHT (the seconds before the worker has it)</div>
         <div className="flex flex-col rounded-lg border border-border bg-panel p-4">
           <Message m={{ ...registered, queued: true } as unknown as TranscriptMessage} />

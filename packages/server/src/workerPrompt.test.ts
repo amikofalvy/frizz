@@ -15,6 +15,23 @@ test("both worker backends receive the gerund activity-caption contract", () => 
   }
 })
 
+// "SEND NOW" ENDS A CLAUDE TURN TO DELIVER A MESSAGE, and the runtime answers the tool call it cut off
+// with its stock rejection: "The user doesn't want to proceed with this tool use … STOP what you are
+// doing and wait". Frizz cannot change that text, so the contract says what it is. Measured on real
+// broker sessions (see CLAUDE_INTERRUPTED_CALL): without the section 4 of 24 workers stopped to ask the
+// human how to re-run the call a remark had interrupted, and with it none of 19 did.
+test("only Claude's contract explains the tool result an interrupting message leaves behind", () => {
+  const claude = buildWorkerPrompt("claude")
+  assert.match(claude, /^## When a message cuts a tool call short$/m)
+  // The rule is recalled by the text it is about, so it has to quote the runtime's own opening words.
+  assert.match(claude, /"The user doesn't want to proceed with this tool use … STOP what you are doing"/)
+  assert.match(claude, /Nothing rejected the call — it was cut off part-way — and it is no\s+correction/)
+  assert.match(claude, /The message that follows is the whole signal/)
+  assert.match(claude, /re-run the call if it is still needed/)
+  // No other transport ends a turn for a message: a Codex steer is read at the next step, an ACP one queues.
+  for (const backend of ["codex", "acp"] as const) assert.doesNotMatch(buildWorkerPrompt(backend), /cuts a tool call short/)
+})
+
 // ONE PLACE FOR WORKTREES. The contract named none until 2026-10-11, and four projects on one machine
 // had four conventions, two of them outside the project. The path is also known to the server: the
 // board's `.frizz` watcher prunes `worktrees` (board.test.ts pins that list) and repo-files.ts reads a
@@ -101,7 +118,10 @@ test("the contract teaches the structured question fence, and none of the gramma
     assert.match(c, /ON A THREAD CARRYING A GOAL, FRIZZ REFUSES THE QUESTION/)
     assert.match(c, /a correction opening `⚠️ Your ```question fence` names the fault/)
     assert.match(c, /`frizzctl unask <id>`/)
-    assert.match(c, /An open question also blocks `frizzctl done`/)
+    // One gate for both sign-offs: the command is refused, the fence is corrected (scheduler SOURCE 15).
+    assert.match(c, /\*\*NO SIGN-OFF AS DONE WHILE ANY QUESTION OF YOURS IS OPEN\*\* — at every rest, whether the question still stands or the human has typed past it/)
+    assert.match(c, /`frizzctl done` refuses, naming each open question by its id\. A ` ```done ` fence cannot be refused, so Frizz corrects it instead: one message for that rest, opening `⚠️ Your ```done fence`/)
+    assert.doesNotMatch(c, /write no `done` fence beside it/, "the done rule is its own paragraph now, and reaches past the rest that asked")
     // Question QUALITY survives the move intact.
     assert.match(c, /NO "I" AND NO "you" ANYWHERE IN A QUESTION/)
     assert.match(c, /Write the question in the human's OWN vocabulary/)

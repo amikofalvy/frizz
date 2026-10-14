@@ -17,7 +17,11 @@ const baseUrl = process.env.FRIZZ_SIGNAL_CARD_HEADS_E2E_URL
 //      baseline, 20px under a title's) and the body's first cap the same distance under the rule;
 //   3. every kind glyph's ink centres on its word's cap band, at one ink gap from the word, though each
 //      glyph carries different dead space in its box — and the question's × centres on the same band;
-//   4. a bare done card draws no rule, and its Mark-as-done band's border sits where the rule would.
+//   4. a bare done card draws no rule, and its Mark-as-done band's border sits where the rule would;
+//   5. the QUESTION card's kinds paint one ink height: "Select multiple" drew a 7px list glyph beside the
+//      10px circle of "Question" until 2026-10-13 (KindLabel's `evenInk`);
+//   6. an answered question keeps the kind its live card wore: a settled `multi` read "Question" until
+//      2026-10-13, so the card changed its name as it greyed in place.
 const MEASURE = () => {
   const ctx = document.createElement("canvas").getContext("2d")!
   const metrics = (node: Text) => {
@@ -72,6 +76,9 @@ const MEASURE = () => {
       ruleToBody: rule && bodyText && !card.querySelector("[data-card-actions]")?.contains(bodyText) ? metrics(bodyText).capTop - rule.getBoundingClientRect().top : null,
       headToBand: !rule && band ? band.getBoundingClientRect().top - headBaseline : null,
       glyphVsCap: capMid - (glyph.top + glyph.bottom) / 2,
+      glyphInk: glyph.bottom - glyph.top,
+      question: !!kind.closest(".bg-question"),
+      settled: !!kind.closest("[data-settled-question]"),
       glyphToWord: word.inkLeft - glyph.right,
       xVsCap: x ? capMid - (ink(x).top + ink(x).bottom) / 2 : null,
     }
@@ -134,6 +141,16 @@ test("every block type heads with its kind over its title, at one rhythm", {
     const empty = by("g-done-empty")
     assert.equal(empty.headToRule, null, "no rule over a card with no body")
     near(empty.headToBand, 18, 0.5, "the band's border sits at the rule's distance")
+
+    // 5. One ink height across the question card's kinds (stroke excluded, as `ink` reads it).
+    const asked = cards.filter((c) => c.question)
+    assert.ok(asked.some((c) => c.kind === "Question") && asked.some((c) => c.kind === "Select multiple"), "both kinds are on the page")
+    const inks = asked.map((c) => c.glyphInk)
+    assert.ok(Math.max(...inks) - Math.min(...inks) < 1, `question kind glyphs' ink heights: ${asked.map((c) => `${c.kind} ${c.glyphInk.toFixed(2)}`).join(", ")}`)
+
+    // 6. Settled cards are headed as their live cards were; only a follow-up is named by its position.
+    const answered = (await read("registered-question-fixture.html?fence=settled&view=thread")).filter((c) => c.settled)
+    assert.deepEqual(answered.map((c) => c.kind), ["Question", "Follow-up", "Select multiple"])
 
     assert.deepEqual(errors, [])
   } finally {

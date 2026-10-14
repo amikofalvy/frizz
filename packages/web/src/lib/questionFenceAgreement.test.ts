@@ -18,7 +18,10 @@ import { readFileSync } from "node:fs"
 import { Lexer, type Token } from "marked"
 import { questionFenceBlocks, questionFencesIn, questionHandles } from "@frizz/shared"
 import { splitFenceBlocks } from "./fenceBlocks.ts"
-import { followUpParentsIn, questionFenceIdsIn, splitMessageQuestions, splitQuestionBlocks } from "./questionBlocks.ts"
+import { awaitsItsMessage } from "./questionArrival.ts"
+import { followUpParentsIn, hasQuestionBlock, questionFenceIdsIn, splitMessageQuestions, splitQuestionBlocks } from "./questionBlocks.ts"
+import { refusedFencesByMessage } from "./questionFaults.ts"
+import { placementNamesIn } from "./questionShadow.ts"
 
 const TEXT = "id: x\nkind: text\nquestion: Q?"
 const fence = (body: string, ticks = "```") => `${ticks}question\n${body}\n${ticks}`
@@ -46,7 +49,7 @@ function markedView(text: string): string[] {
   const walk = (tokens: Token[], path: string) => {
     for (const t of tokens) {
       if (t.type === "code" && /^question$/i.test((t as { lang?: string }).lang ?? "")) out.push(`${path}code`)
-      if (t.type === "html" && t.raw.includes("```question")) out.push(`${path}html`)
+      if (t.type === "html" && /(?:`{3}|~{3})[ \t]*question/i.test(t.raw)) out.push(`${path}html`)
       const kids = (t as { tokens?: Token[] }).tokens
       if (kids) walk(kids, `${path}${t.type}>`)
       for (const item of (t as { items?: { tokens?: Token[] }[] }).items ?? []) walk(item.tokens ?? [], `${path}item>`)
@@ -91,6 +94,24 @@ const handMade: Record<string, string> = {
   plain: `Lead.\n\n${fence(TEXT)}\n\nAfter.`,
   crlf: `Lead.\r\n\r\n${fence(TEXT).replace(/\n/g, "\r\n")}\r\n`,
   "tilde fence": `~~~question\n${TEXT}\n~~~`,
+  "tilde fence, four long": `Lead.\n\n~~~~question\n${TEXT}\n~~~~\n\nAfter.`,
+  "tilde fence, capitalised": `~~~Question\n${TEXT}\n~~~`,
+  "tilde fence closed by backticks": `~~~question\n${TEXT}\n\`\`\`\n\nAfter.`,
+  "backtick fence closed by tildes": `\`\`\`question\n${TEXT}\n~~~\n\nAfter.`,
+  "tilde fence, a reference": "Still need this:\n\n~~~question\nid: x\n~~~",
+  "tilde fence, an invalid kind": "~~~question\nid: x\nkind: pick\nquestion: Q?\n~~~",
+  "tilde fence, free-form": "~~~question\nShip tonight?\n\nA. Yes\nB. No\n~~~",
+  "tilde fence quoted in a backtick fence": `\`\`\`md\n~~~question\n${TEXT}\n~~~\n\`\`\``,
+  "tilde fence quoted in a longer backtick fence": `\`\`\`\`\n~~~question\n${TEXT}\n~~~\n\`\`\`\``,
+  "tilde fence in a blockquote": indented(`~~~question\n${TEXT}\n~~~`, "> "),
+  "tilde fence indented 4": indented(`~~~question\n${TEXT}\n~~~`, "    "),
+  "tilde fence in a numbered list": `1. First\n2. Then:\n\n${indented(`~~~question\n${TEXT}\n~~~`, "   ")}\n3. Last`,
+  "tilde fence, code in the context": `Lead.\n\n~~~question\n${TEXT}\n---\nRun this:\n\n\`\`\`sql\nSELECT 1\n\`\`\`\n\nand tell me.\n~~~\n\nAfter.`,
+  "tilde fence, a bare code block in the context": `~~~question\n${TEXT}\n---\nRun:\n\`\`\`\nls\n\`\`\`\ntell me\n~~~`,
+  "tilde fence, code in the context, then a done fence": `~~~question\n${TEXT}\n---\n\`\`\`sql\nSELECT 1\n\`\`\`\n~~~\n\n\`\`\`done\nShipped.\n\`\`\``,
+  "tilde fence, then a backtick one": `~~~question\n${TEXT}\n~~~\n\n${fence("id: y\nkind: text\nquestion: Y?")}`,
+  "tilde follow-up beside a backtick parent": `${choice("p")}\n\n~~~question\nid: c\nkind: text\nwhen: p = go\nquestion: C?\n~~~`,
+  "tilde orphan follow-up": "~~~question\nid: c\nkind: text\nwhen: p = go\nquestion: C?\n~~~",
   "indented 3": indented(fence(TEXT), "   "),
   "indented 3, body flush": `   \`\`\`question\n${TEXT}\n   \`\`\``,
   "indented 4": indented(fence(TEXT), "    "),
@@ -109,6 +130,18 @@ const handMade: Record<string, string> = {
   "closer shorter than the opener": `\`\`\`\`question\n${TEXT}\n\`\`\`\n\`\`\`\``,
   "info string with a trailing space": `\`\`\`question \n${TEXT}\n\`\`\``,
   "info string capitalised": `\`\`\`Question\n${TEXT}\n\`\`\``,
+  "info string in capitals": `Lead.\n\n\`\`\`QUESTION\n${TEXT}\n\`\`\`\n\nAfter.`,
+  "info string capitalised, four backticks, code in the context": `\`\`\`\`Question\n${TEXT}\n---\n\`\`\`sh\nls\n\`\`\`\n\`\`\`\`\n\nTail.`,
+  "info string capitalised, a reference": "```Question\nid: x\n```",
+  "info string capitalised, an invalid kind": "```Question\nid: x\nkind: pick\nquestion: Q?\n```",
+  "info string capitalised, free-form": "```Question\nShip tonight?\n\nA. Yes\nB. No\n```",
+  "info string capitalised, quoted in a longer fence": `\`\`\`\`md\n\`\`\`Question\n${TEXT}\n\`\`\`\n\`\`\`\``,
+  "info string capitalised, in a blockquote": indented(`\`\`\`Question\n${TEXT}\n\`\`\``, "> "),
+  "info string capitalised, indented 4": indented(`\`\`\`Question\n${TEXT}\n\`\`\``, "    "),
+  "info string after a space": `\`\`\` question\n${TEXT}\n\`\`\``,
+  "legacy marker, capitalised": "```Question qst_abcdef123456\n```",
+  "legacy multi, capitalised": "```Question multi\nWhich?\n- A. x\n- B. y\n```",
+  "legacy multi, tilde": "~~~question multi\nWhich?\n- A. x\n- B. y\n~~~",
   "zero-width space before the opener": `​${fence(TEXT)}`,
   "legacy marker": "```question qst_abcdef123456\n```",
   "legacy multi": "```question multi\nWhich?\n- A. x\n- B. y\n```",
@@ -152,6 +185,8 @@ const wrappers: Record<string, (s: string) => string> = {
 }
 const variants: Record<string, string> = {
   text: fence(TEXT),
+  "tilde text": `~~~question\n${TEXT}\n~~~`,
+  "capitalised text": `\`\`\`Question\n${TEXT}\n\`\`\``,
   choice: fence("id: y\nkind: choice\nquestion: Pick?\noptions:\n  - label: A\n    description: d\n  - B"),
   "context with code": fence("id: z\nkind: text\nquestion: Z?\n---\n```sh\nls\n```", "````"),
   reference: fence("id: x"),
@@ -175,8 +210,9 @@ test("the web cuts the message exactly where the shared reader found a fence, an
     // Every block is the opener line through the closer line: nothing of the prose on either side.
     for (const b of valid) {
       const source = text.slice(b.start, b.end)
-      assert.match(source, /^ {0,3}`{3,}question[ \t]*\r?\n/, name)
-      assert.match(source.trimEnd(), /`{3,}$/, name)
+      assert.match(source, /^ {0,3}(`{3,}|~{3,})[ \t]*question[ \t]*\r?\n/i, name)
+      // …closed by a run of the character it opened with.
+      assert.ok(source.trimEnd().endsWith(/^ {0,3}(`{3,}|~{3,})/.exec(source)![1]), name)
     }
   }
 })
@@ -202,6 +238,7 @@ test("what the server keeps of a message — each fence's own source — reads t
 // it hands the follow-up to the registrar unjudged.
 const WEB_ONLY: Record<string, string[]> = {
   "an orphan follow-up": ["p"],
+  "tilde orphan follow-up": ["p"],
 }
 
 test("the web cuts a card slot for exactly the ids the server registers or references", () => {
@@ -317,17 +354,147 @@ test("what the shared reader takes for a fence, against what marked would have d
     if (blocks === 0 && drawn.some((d) => d.endsWith("code"))) unread.push(name)
   }
   assert.deepEqual(read, ["in <details>, no blank line", "in an HTML comment"])
+  // What is left unread is a fence that never closed, and the forms a worker QUOTES a sample in. A tilde
+  // fence and a capitalised info string were on this list until the reader took them (2026-10-13).
   assert.deepEqual(unread, [
-    "tilde fence",
+    "tilde fence closed by backticks",
+    "backtick fence closed by tildes",
+    "tilde fence in a blockquote",
     "in a blockquote",
     "unclosed (a streaming tail)",
-    "info string capitalised",
+    "info string capitalised, in a blockquote",
     "text, in a blockquote",
+    "tilde text, in a blockquote",
+    "capitalised text, in a blockquote",
     "choice, in a blockquote",
     "context with code, in a blockquote",
     "reference, in a blockquote",
   ])
 })
+
+// ── The openers a markdown reader takes for the same block ─────────────────────────────────────────────
+
+// The forms the reader took on 2026-10-13 (shared code-fences.ts questionFenceOpener). The server registers
+// each, so the page has to draw the card for each — and must not ALSO hand the fence to marked, which would
+// draw a code block labelled `question` beside it.
+const NEW_FORMS: [name: string, ids: string[]][] = [
+  ["tilde fence", ["x"]],
+  ["tilde fence, four long", ["x"]],
+  ["tilde fence, capitalised", ["x"]],
+  ["tilde fence, a reference", ["x"]],
+  ["tilde fence in a numbered list", ["x"]],
+  ["tilde fence, code in the context", ["x"]],
+  ["tilde fence, a bare code block in the context", ["x"]],
+  ["tilde fence, then a backtick one", ["x", "y"]],
+  ["tilde follow-up beside a backtick parent", ["p"]],
+  ["info string capitalised", ["x"]],
+  ["info string in capitals", ["x"]],
+  ["info string capitalised, four backticks, code in the context", ["x"]],
+  ["info string capitalised, a reference", ["x"]],
+  ["info string after a space", ["x"]],
+]
+
+test("a tilde fence and a capitalised info string: the server registers it, and the page draws its card and no code block", () => {
+  for (const [name, ids] of NEW_FORMS) {
+    const text = inputs[name]
+    const v = view(text)
+    assert.deepEqual([v.server, v.web, v.faults, v.legacyCards], [ids, ids, 0, 0], name)
+    // What is left for marked once the cards are cut out holds no fence line at all.
+    const segments = splitMessageQuestions(text, true)
+    assert.deepEqual(segments.filter((s) => s.kind === "question").map((s) => (s.kind === "question" ? s.fence?.id : "")), ids.length === 1 && name.includes("follow-up") ? ["p", "c"] : ids, name)
+    for (const s of segments) {
+      if (s.kind !== "prose") continue
+      assert.doesNotMatch(s.text, /^ {0,3}(`{3,}|~{3,})/m, `${name}: no fence line is left in the prose`)
+      assert.deepEqual(markedView(s.text), [], `${name}: and marked draws no question code block`)
+    }
+    // EVERY READER BEHIND A GATE sees it: each of these returned early on a literal ```question.
+    assert.equal(hasQuestionBlock(text), true, name)
+    assert.deepEqual(placementNamesIn(text), ids, name)
+    assert.deepEqual(questionFenceIdsIn(text), ids, name)
+  }
+  assert.deepEqual(splitMessageQuestions(inputs["tilde fence, code in the context"], true).map((s) => (s.kind === "prose" ? s.text : s.fence?.id)), ["Lead.\n\n", "x", "\nAfter."])
+  // A follow-up written on tildes in a later message than its parent claims the parent's slot.
+  assert.deepEqual(followUpParentsIn(inputs["tilde orphan follow-up"]), ["p"])
+  // The row that arrives before its message is held until a message names it — a tilde fence names it.
+  const row = { id: "qst_1", askedAt: "2026-10-20T10:00:05.000Z", spec: { handle: "x", question: "Q?", kind: "question" as const } }
+  const message = (text: string) => [{ role: "assistant" as const, text, at: "2026-10-20T10:00:00.000Z" }]
+  assert.equal(awaitsItsMessage(row, message("Nothing yet.")), true)
+  for (const name of ["tilde fence", "info string in capitals", "info string capitalised, a reference"]) assert.equal(awaitsItsMessage(row, message(inputs[name])), false, name)
+  // A fence the server refused is matched to its message by id, whatever its opener.
+  const refused = refusedFencesByMessage(message(inputs["tilde fence"]), [{ at: "2026-10-20T10:00:00.000Z", id: "x", faults: ["`id: x` is already used"] }])
+  assert.deepEqual([...refused].map(([i, set]) => [i, [...set]]), [[0, ["x"]]])
+  assert.deepEqual(splitMessageQuestions(inputs["tilde fence"], true, refused.get(0)).map((s) => s.kind), ["prose"], "…and is then the code block it is")
+})
+
+test("a new-form fence that does not read is a code block, and one that is quoted stays quoted", () => {
+  // Tried the grammar and failed: corrected by the server, a code block on the page, never the legacy card.
+  for (const name of ["tilde fence, an invalid kind", "info string capitalised, an invalid kind"]) {
+    const v = view(inputs[name])
+    assert.deepEqual([v.server, v.web, v.faults, v.legacyCards, v.marked], [[], [], 1, 0, ["code"]], name)
+    assert.deepEqual(splitMessageQuestions(inputs[name], true).map((s) => s.kind), ["prose"], name)
+  }
+  // Free-form under a new opener: the legacy card knows one opener and this is not it, so it is a code
+  // block too — and now the server says so, where it used to say nothing.
+  for (const name of ["tilde fence, free-form", "info string capitalised, free-form"]) {
+    const v = view(inputs[name])
+    assert.deepEqual([v.server, v.web, v.legacyCards, v.marked], [[], [], 0, ["code"]], name)
+    assert.ok(v.faults > 0, name)
+  }
+  // Quoted, in every way a sample is quoted: nothing registers, nothing is corrected, no card.
+  for (const name of ["tilde fence quoted in a backtick fence", "tilde fence quoted in a longer backtick fence", "tilde fence in a blockquote", "tilde fence indented 4", "info string capitalised, quoted in a longer fence", "info string capitalised, in a blockquote", "info string capitalised, indented 4", "quoted in a tilde fence"]) {
+    const v = view(inputs[name])
+    assert.deepEqual([v.server, v.web, v.faults, v.legacyCards], [[], [], 0, 0], name)
+    assert.equal(hasQuestionBlock(inputs[name]), false, name)
+  }
+  // Closed by the other character, it never closed: marked runs it to the end of the message as code.
+  for (const name of ["tilde fence closed by backticks", "backtick fence closed by tildes"]) {
+    assert.deepEqual([view(inputs[name]).server, view(inputs[name]).faults, view(inputs[name]).marked], [[], 0, ["code"]], name)
+  }
+  // A done fence after a tilde question that holds a code block is still a signal fence.
+  const segments = splitFenceBlocks(inputs["tilde fence, code in the context, then a done fence"])
+  assert.deepEqual(segments.map((s) => (s.kind === "fence" ? s.fenceKind : "prose")), ["prose", "done"])
+})
+
+test("a legacy thread, and the legacy forms on any thread, are untouched by the new openers", () => {
+  // THE LEGACY READER KNOWS ONE OPENER: three backticks and a lowercase `question` at the margin. Every
+  // input here reads through it exactly as it did, new forms included — on a legacy thread a tilde or
+  // capitalised fence was a code block before and is one now.
+  const expected: Record<string, unknown[]> = {
+    "legacy marker": [{ kind: "question", text: "", questionKind: "question", danger: false, registeredId: "qst_abcdef123456" }],
+    "legacy multi": [{ kind: "question", text: "Which?\n- A. x\n- B. y", questionKind: "multi", danger: false }],
+    "legacy marker, capitalised": [{ kind: "prose", text: inputs["legacy marker, capitalised"] }],
+    "legacy multi, capitalised": [{ kind: "prose", text: inputs["legacy multi, capitalised"] }],
+    "legacy multi, tilde": [{ kind: "prose", text: inputs["legacy multi, tilde"] }],
+    "tilde fence": [{ kind: "prose", text: inputs["tilde fence"] }],
+    "tilde fence, free-form": [{ kind: "prose", text: inputs["tilde fence, free-form"] }],
+    "info string capitalised": [{ kind: "prose", text: inputs["info string capitalised"] }],
+    "info string capitalised, free-form": [{ kind: "prose", text: inputs["info string capitalised, free-form"] }],
+    "info string after a space": [{ kind: "prose", text: inputs["info string after a space"] }],
+    "tilde fence, code in the context": [{ kind: "prose", text: inputs["tilde fence, code in the context"] }],
+  }
+  for (const [name, segments] of Object.entries(expected)) {
+    assert.deepEqual(splitQuestionBlocks(inputs[name]), segments, name)
+    assert.deepEqual(splitMessageQuestions(inputs[name], false), segments, `${name}: a legacy thread`)
+  }
+  // The free-form fence itself, in each shape the legacy grammar has: one card, the same bytes in it.
+  const freeForm: [text: string, segments: unknown[]][] = [
+    ["```question\nShip tonight?\n\nA. Yes\nB. No\n```", [{ kind: "question", text: "Ship tonight?\n\nA. Yes\nB. No", questionKind: "question", danger: false }]],
+    ["Lead.\n\n```question danger\nDrop the table?\n```\n\nAfter.", [{ kind: "prose", text: "Lead.\n\n" }, { kind: "question", text: "Drop the table?", questionKind: "question", danger: true }, { kind: "prose", text: "\n\nAfter." }]],
+    // Beside a tilde or capitalised block on the same legacy thread: that block is prose, the fence a card.
+    ["~~~question\nnot an ask here\n~~~\n\n```question\nWhich port?\n```", [{ kind: "prose", text: "~~~question\nnot an ask here\n~~~\n\n" }, { kind: "question", text: "Which port?", questionKind: "question", danger: false }]],
+    ["```Question\nnot an ask here\n```\n\n```question\nWhich port?\n```", [{ kind: "prose", text: "```Question\nnot an ask here\n```\n\n" }, { kind: "question", text: "Which port?", questionKind: "question", danger: false }]],
+    // A legacy fence QUOTED inside a tilde block stays quoted.
+    ["~~~md\n```question\nWhich port?\n```\n~~~", [{ kind: "prose", text: "~~~md\n```question\nWhich port?\n```\n~~~" }]],
+  ]
+  for (const [text, segments] of freeForm) {
+    assert.deepEqual(splitQuestionBlocks(text), segments, text)
+    assert.deepEqual(splitMessageQuestions(text, false), segments, text)
+    assert.equal(hasQuestionBlock(text), segments.some((s) => (s as { kind: string }).kind === "question"), text)
+  }
+  // On a thread that DOES speak the fence, a free-form fence with the taught opener keeps the legacy card.
+  assert.deepEqual(splitMessageQuestions(freeForm[0][0], true), freeForm[0][1])
+})
+
 
 test("a fence that tried the grammar and failed is a code block, whatever its backticks or indent", () => {
   // It used to "keep the rendering it had": splitQuestionBlocks over the same bytes. That reader knows one

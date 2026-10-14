@@ -8,7 +8,7 @@ import assert from "node:assert/strict"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { boardAskThread, formatThreadMessage, humanGapNote, limitResumeSteer, mergedWakeMessage, needsAction, PARK_CORRECTION_NAMES_LEAD, parkExpiredWakeMessage, prWatchWakeMessage, questionAnswerMessage, restPromptMessage, RETRY_FOLLOW_UP, sectionOf, shellDoneMessage, signoffNudgeMessage, timerPromptMessage, wakeDeliveryToken } from "@frizz/shared"
+import { boardAskThread, withAnswersNote, DONE_FENCE_CORRECTION_LEAD, formatThreadMessage, humanGapNote, limitResumeSteer, mergedWakeMessage, needsAction, PARK_CORRECTION_NAMES_LEAD, parkExpiredWakeMessage, prWatchWakeMessage, questionAnswerMessage, restPromptMessage, RETRY_FOLLOW_UP, sectionOf, shellDoneMessage, signoffNudgeMessage, timerPromptMessage, wakeDeliveryToken } from "@frizz/shared"
 import { Bus } from "./bus.ts"
 import { createBoard } from "./board.ts"
 import type { Project } from "./project.ts"
@@ -212,7 +212,9 @@ test("a reference brings a faded question back to the rest, and a question beats
     assert.deepEqual(t.questions.map((q) => q.standing), [true])
     assert.equal(t.needsYou, true)
     assert.equal(needsAction(t), true, "the question is this rest's ask, whatever the fence below it says")
-    assert.deepEqual(w.deliveries(), [], "no correction and no nudge")
+    // No nudge, and nothing wrong with the reference. The done fence beside an open question is corrected
+    // on its own account (SOURCE 15, pinned in question-done.test.ts).
+    assert.deepEqual(w.deliveries(), [`park:done-open-question:${at(4)}`])
   } finally { w.close() }
 })
 
@@ -234,8 +236,12 @@ test("answering a faded question wakes the worker at a done rest and at a watchi
         w.storage.setState("t", "open")
         await w.tick(8)
       }
-      assert.equal(w.sent.length, 1, `${shape}: one wake`)
-      assert.match(w.sent[0], /^Answers to earlier questions:\n1\. “SQLite or a JSON file\?” → SQLite/)
+      // (The done rest also drew SOURCE 15's correction at minute 5, for signing off over the open
+      // question. The answer is what this test is about, and it arrives whatever became of that.)
+      const wakes = w.sent.filter((m) => !m.startsWith(DONE_FENCE_CORRECTION_LEAD))
+      assert.equal(wakes.length, 1, `${shape}: one wake`)
+      // The wake names the question by the id its fence gave it, ahead of the restated text (2026-10-13).
+      assert.match(wakes[0], /^Answers to earlier questions:\n1\. `store` “SQLite or a JSON file\?” → SQLite\n/)
     } finally { w.close() }
   }
 })
@@ -245,10 +251,12 @@ test("dismissing a faded question wakes nobody and takes it off the view", async
   try {
     w.say(4, fence("done", "- Landed the migration on main."))
     await w.tick(5)
+    // (The done fence over the open question has drawn SOURCE 15's correction by now.)
+    const before = w.sent.length
     const [q] = w.storage.listThreadQuestions("t")
     w.storage.dismissThreadQuestion(q.id, Date.parse(at(6)))
     await w.tick(7)
-    assert.deepEqual(w.sent, [])
+    assert.equal(w.sent.length, before, "the dismissal sends nothing")
     assert.deepEqual(w.view().questions, [])
     assert.equal(w.view().lastFence?.kind, "done")
   } finally { w.close() }
@@ -455,7 +463,9 @@ test("a question asked mid-turn outranks a ```done fence many machine wakes late
     assert.equal(needsAction(t), true, "the row is the question's, not the done's")
     assert.equal(boardAskThread(t), true)
     // And the bare rests on the way never drew the sign-off reminder: a standing question signs a rest off.
-    assert.deepEqual(w.deliveries(), [], "SOURCE 9 stayed quiet at every bare rest behind the question")
+    assert.deepEqual(w.deliveries().filter((id) => id.startsWith("signoff:")), [], "SOURCE 9 stayed quiet at every bare rest behind the question")
+    // The done fence itself is another matter: it signed off over an open question (SOURCE 15).
+    assert.deepEqual(w.deliveries(), [`park:done-open-question:${at(9)}`])
   } finally { w.close() }
 })
 
@@ -512,6 +522,15 @@ test("restFromAt moves only on a message the human typed, in a record of its own
     ["a wake and then the human's message, joined into one record", `${wake(shell)}\n${typed}`, true],
     ["a typed message that quotes a correction's lead", `Why did it say "${PARK_CORRECTION_NAMES_LEAD}nothing"?`, true],
     ["an answer's delivery", wake(questionAnswerMessage([{ questionId: "qst_aaaaaaaaaaaa", question: "SQLite or a JSON file?", chosen: ["SQLite"] }])), false],
+    // …and one that names its question by the worker's own id is the same delivery (2026-10-13).
+    ["an answer's delivery naming its question by id", wake(questionAnswerMessage([{ questionId: "qst_aaaaaaaaaaaa", question: "SQLite or a JSON file?", chosen: ["SQLite"], handle: "settings-store" }])), false],
+    // The prompt box's Send carries staged answers as an ordinary follow-up, with no token. Sent with
+    // nothing typed it is an answer and not the human typing, exactly as the card's own Send is; with a
+    // note beside the answers the human did type.
+    ["answers sent from the prompt box with nothing typed", questionAnswerMessage([{ questionId: "qst_aaaaaaaaaaaa", question: "SQLite or a JSON file?", chosen: ["SQLite"], handle: "settings-store" }]), false],
+    ["…the same, carrying the clock note", `${questionAnswerMessage([{ questionId: "qst_aaaaaaaaaaaa", question: "SQLite or a JSON file?", chosen: ["SQLite"] }])}\n\n${humanGapNote(Date.parse(at(240)), at(0))}`, false],
+    ["answers sent from the prompt box with a typed note", withAnswersNote(questionAnswerMessage([{ questionId: "qst_aaaaaaaaaaaa", question: "SQLite or a JSON file?", chosen: ["SQLite"] }]), "and skip the docs"), true],
+    ["a typed message that merely opens on the answers header's words", "Answers to earlier questions: are they in yet?", true],
     ["another thread's steer", formatThreadMessage({ slug: "release-train", title: "Release train" }, "Rebase when you can."), false],
     ["another Claude session's message", `Another Claude session sent a message:\n<cross-session-message from="uds:/tmp/x.sock" from-name="frizz-11">\nping\n</cross-session-message>`, false],
     ["the Retry button's sentence", RETRY_FOLLOW_UP, false],

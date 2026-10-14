@@ -11,11 +11,12 @@ import { showToast, store, threadBySlug } from "../store.ts"
 // typing, before they know how long the worker is going to take. This is the same capability offered
 // AFTERWARDS, from the one surface that is on screen for the whole wait: the queued bubble.
 //
-// There is nothing to send here — the words are already queued. All that is left is the interrupt, and
-// the SDK's interrupt aborts a turn WITHOUT discarding queued input, so the next turn opens on exactly
-// the messages the operator is looking at. That asymmetry is why this needed no new delivery path.
+// There is nothing to send here — the words are already queued. All that is left is asking the runtime
+// to push them through: it moves a running command or sub-agent to the background and the turn takes
+// the queue in, or — with nothing it can move — aborts the turn, which leaves queued input intact for
+// the next one to open on (router deliverQueuedNow). Either way no new delivery path was needed.
 //
-// It preempts the TURN, so with several bubbles queued it delivers all of them, in order. The button's
+// It acts on the QUEUE, so with several bubbles queued it delivers all of them, in order. The button's
 // title says that rather than implying it singles out the one under the pointer.
 
 // Which surfaces can offer this at all: the same broker-backed-Claude boundary as unqueue (a codex
@@ -49,7 +50,7 @@ export function useDeliverQueuedNow(slug: string | null): {
     // Resolved at CLICK time, not render time — a thread re-dispatched under an open drawer must not
     // interrupt the session the bubble was painted for. The server enforces this too.
     const sessionId = threadBySlug(store.board, slug)?.sessionId
-    if (!sessionId) { showToast("This thread has no live session to interrupt"); return }
+    if (!sessionId) { showToast("This thread has no live session to send to"); return }
     setPending(true)
     void rpc.deliverQueuedNow({ slug, sessionId }).then(
       (result) => {

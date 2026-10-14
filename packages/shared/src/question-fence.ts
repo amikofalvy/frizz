@@ -40,7 +40,7 @@
 // indented block under a key (`detail: |`) is taken as written.
 
 import { parse as parseYaml } from "yaml"
-import { fencedInteriors, questionFenceClose } from "./code-fences.ts"
+import { fencedInteriors, mayHoldQuestionFence, questionFenceClose, questionFenceOpener } from "./code-fences.ts"
 import type { AskedOption, AskedQuestion } from "./index.ts"
 import { ASK_MAX_DEPTH, askedQuestionFaults } from "./index.ts"
 
@@ -88,17 +88,17 @@ export interface QuestionFenceBlock {
   read: QuestionFenceRead
 }
 
-// An opener whose info string is exactly `question`. A ```question qst_… placement marker and the retired
-// ```question multi / danger info strings are NOT this grammar — they carry tokens — and stay with the
-// legacy readers (web lib/questionBlocks).
-const OPENER_RE = /^( {0,3})(`{3,})question[ \t]*$/
+// THE OPENER is the shared scanner's call (code-fences.ts questionFenceOpener): an info string that is the
+// word `question` and nothing else — on backticks or tildes, in any case. A ```question qst_… placement
+// marker and the retired ```question multi / danger info strings are NOT this grammar — they carry tokens —
+// and stay with the legacy readers (web lib/questionBlocks).
 
 /** Every question fence in a message, in order, skipping one that sits inside another code block — a
  *  worker DOCUMENTING the grammar wraps its sample in a longer fence, and that sample is not an ask. An
  *  unclosed fence is not a block: the renderer would run it to the end of the message, and nothing that
  *  never finished is registered — nor corrected, since a turn interrupted mid-fence is nobody's mistake. */
 export function questionFenceBlocks(text: string): QuestionFenceBlock[] {
-  if (!text.includes("question")) return []
+  if (!mayHoldQuestionFence(text)) return []
   const quoted = fencedInteriors(text)
   // An interior starts at the first character after its opening line, so an opener on the very next line
   // sits AT `from` — inside.
@@ -110,12 +110,12 @@ export function questionFenceBlocks(text: string): QuestionFenceBlock[] {
     const line = lines[i].replace(/\r$/, "")
     const lineStart = offset
     offset += lines[i].length + 1
-    const m = OPENER_RE.exec(line)
-    if (!m || inside(lineStart)) continue
-    const ticks = m[2].length
-    // Where it ends is the shared scanner's call (code-fences.ts questionFenceClose): a code block written
-    // inside the fence, opened with an info string, is stepped over rather than taken for the closer.
-    const end = questionFenceClose(lines, i + 1, ticks)
+    const opener = questionFenceOpener(line)
+    if (!opener || inside(lineStart)) continue
+    // Where it ends is the shared scanner's call too (questionFenceClose): a code block written inside the
+    // fence, opened with an info string, is stepped over rather than taken for the closer — and only a run
+    // of the opener's OWN character closes it, so a ~~~question is never closed by backticks.
+    const end = questionFenceClose(lines, i + 1, opener.len, opener.char)
     if (!end) break
     const close = end.close
     let closeEnd = offset
@@ -125,9 +125,9 @@ export function questionFenceBlocks(text: string): QuestionFenceBlock[] {
     // content line). A fence written inside a list item sits at the item's content column, body and all,
     // and read with that indent left on, every key was "indented under nothing" and the fence had "no
     // `id:`" — a correction that named nothing the worker could see wrong.
-    const dedent = new RegExp(`^ {0,${m[1].length}}`)
+    const dedent = new RegExp(`^ {0,${opener.indent}}`)
     const body = lines.slice(i + 1, close).map((l) => l.replace(/\r$/, "").replace(dedent, "")).join("\n")
-    const read = readQuestionFence(body)
+    const read = readQuestionFence(body, opener.char)
     // CUT SHORT: the only line that closes this fence is one that closes a code block inside it. The read
     // nearly always says so itself (its context or a detail ends inside the open block); where the block
     // sat somewhere no value reaches, it is said here, so a cut-off fence never registers.
@@ -200,10 +200,12 @@ function openFenceIn(markdown: string): string | undefined {
 // 2026-10-13 — and a block the worker opened and never closed. Nothing else about such a fence is wrong, so
 // it is named here or it is never named.
 //
-// A ~~~ block cannot close a backtick fence, so one left open is only what it looks like.
+// A block made of the OTHER character cannot close the fence (a ~~~ block inside a backtick question, a
+// ``` block inside a ~~~question), so one left open is only what it looks like. The fix is worded for the
+// taught form whichever character the worker used: four backticks outside is what always has room.
 const FENCE_LENGTH_FIX = "Write it again with room for the block: the `question` lines take four backticks (````question to open, ```` to close); the code block inside keeps three"
-function openFenceFault(where: string, run: string): string {
-  if (run[0] === "~") return `${where} ends inside a ${run} code block that is never closed — close it with ${run} on a line of its own`
+function openFenceFault(where: string, run: string, fence: "`" | "~"): string {
+  if (run[0] !== fence) return `${where} ends inside a ${run} code block that is never closed — close it with ${run} on a line of its own`
   return `${where} ends inside an unclosed ${run} code block: the fence is cut off there, and whatever follows it in your message reads as code. ${FENCE_LENGTH_FIX}`
 }
 
@@ -283,6 +285,38 @@ function readFrontmatter(lines: readonly string[]): Frontmatter {
   return { keys, options, faults }
 }
 
+// A BARE LABEL THAT OPENS ON `Word:` — `- Yes: merge it`, `- A: SQLite`, `- JSON: no dependency`.
+//
+// A bare item is its label, and an item that opens on a key is that key, and this line is both: the same
+// shape as `- label: SQLite`. It was read as the key `Yes`, which no option has, and so drew three faults —
+// "unknown key `Yes:`", "no `label:`", "needs two or more options" — none of which said what to write.
+// It is still REFUSED: taking any `Word: text` for a label would also take `- lable: SQLite` and
+// `- name: SQLite` for labels, silently, and the worker's description or recommendation with them. So the
+// two are told apart by the word, and each gets the fault that fits it:
+//
+//   · A KEY IS A SINGLE LOWERCASE WORD (`label`, `description`, and so `lable`, `name`, `desc`). A word of
+//     that shape that is not an option key is a key the worker got wrong: "unknown key `lable:`", as
+//     before, and the option under it has no label, as before. Because a lowercase label can open the same
+//     way (`- yes: merge it`), that fault ends with the line to write if the label is what was meant.
+//   · ANYTHING ELSE before the colon — a capital, a digit (`Yes`, `A`, `JSON`, `v2`) — is the start of a
+//     label. ONE fault, naming the line and giving the line to write instead; a second such line in the
+//     same fence gets its own line to write and not the explanation again.
+//
+// The label of the second kind is then read as written, so nothing downstream reports what its fault
+// already covers (a missing label, too few options); the fence is refused on the fault alone.
+const KEY_SHAPE = /^[a-z][a-z_-]*$/
+/** How much of the worker's own line a fault quotes back. A label runs to LABEL_MAX; a line longer than
+ *  this is named by its opening, and the fix is described rather than spelled. */
+const FAULT_ECHO_MAX = 160
+const echoed = (text: string) => (text.length <= FAULT_ECHO_MAX ? text : `${text.slice(0, FAULT_ECHO_MAX)}…`)
+/** The line that makes `text` a label whatever it holds. A JSON string is a YAML double-quoted scalar, so
+ *  the line spelled here reads back as exactly `text`. */
+const labelLine = (text: string) => (text.length <= FAULT_ECHO_MAX ? `\`- label: ${JSON.stringify(text)}\`` : '`- label: "…"` with the whole label inside the quotes')
+function colonLabelFault(n: number, text: string, word: string, first: boolean): string {
+  if (!first) return `option ${n}: \`- ${echoed(text)}\` reads as a key named \`${word}\` too — write ${labelLine(text)}`
+  return `option ${n}: \`- ${echoed(text)}\` reads as a key named \`${word}\`, and an option's keys are ${QUESTION_FENCE_OPTION_KEYS.map((x) => `\`${x}\``).join(", ")} — a label that holds a colon is written ${labelLine(text)}`
+}
+
 /** The `options:` list: `- ` items, each a set of `key: value` lines (or a bare label), at any indent. */
 function readOptions(
   lines: readonly string[],
@@ -294,6 +328,7 @@ function readOptions(
   if (inline && inline !== "[]") faults.push("`options:` takes a list on the lines below it — `  - label: …`")
   let i = from
   let dashIndent = -1
+  let colonLabels = 0
   while (i < lines.length) {
     const line = lines[i]
     if (line.trim() === "") {
@@ -324,12 +359,13 @@ function readOptions(
     // the first one's is wherever the text after the dash starts. Reading every key against one assumed
     // column (dash + 2) folded `description:` into the label above it whenever the dash was followed by
     // more than one space.
-    const readKey = (text: string, at: number, column: number): number => {
+    const readKey = (text: string, at: number, column: number, opensItem = false): number => {
       const k = KEY_RE.exec(text)
       if (!k) return -1
       const key = k[1].toLowerCase()
       if (!(QUESTION_FENCE_OPTION_KEYS as readonly string[]).includes(key)) {
-        faults.push(`option ${options.length}: unknown key \`${k[1]}:\` — an option's keys are ${QUESTION_FENCE_OPTION_KEYS.map((x) => `\`${x}\``).join(", ")}`)
+        // On the item's own line the same shape may be a lowercase label (see colonLabelFault's note).
+        faults.push(`option ${options.length}: unknown key \`${k[1]}:\` — an option's keys are ${QUESTION_FENCE_OPTION_KEYS.map((x) => `\`${x}\``).join(", ")}${opensItem ? `; if \`${echoed(text)}\` is the label itself, write ${labelLine(text)}` : ""}`)
         return collectBlock(lines, at, column).next
       }
       if (option.has(key)) faults.push(`option ${options.length}: \`${key}:\` is written twice`)
@@ -340,7 +376,12 @@ function readOptions(
     const isOptionKey = (text: string) => (QUESTION_FENCE_OPTION_KEYS as readonly string[]).includes(KEY_RE.exec(text)?.[1].toLowerCase() ?? "")
     i++
     if (first) {
-      const next = KEY_RE.test(first) ? readKey(first, i, line.length - (item[2] ?? "").length) : -1
+      const word = KEY_RE.exec(first)?.[1]
+      // `Word: text` where the word is neither an option key nor shaped like one: a label, refused once
+      // and by name (colonLabelFault), then read as the bare label it was meant to be.
+      const colonLabel = word !== undefined && !isOptionKey(first) && !KEY_SHAPE.test(word)
+      if (colonLabel) faults.push(colonLabelFault(options.length, first, word, colonLabels++ === 0))
+      const next = word !== undefined && !colonLabel ? readKey(first, i, line.length - (item[2] ?? "").length, true) : -1
       if (next === -1) {
         // A BARE ITEM IS ITS LABEL — `- Keep the fixed sleep` — the short form a follow-up's options take.
         // A label that wraps continues on the lines under it, UP TO the first one that is an option key
@@ -383,8 +424,9 @@ function readOptions(
 }
 
 /** Read ONE fence body. Pure: the same text always reads the same way, which is what lets the server match
- *  a fence it has seen before against the row it registered. */
-export function readQuestionFence(body: string): QuestionFenceRead {
+ *  a fence it has seen before against the row it registered. `fence` is the character the fence around it
+ *  is made of, which changes one thing only: which unclosed code block reads as the fence cut short. */
+export function readQuestionFence(body: string, fence: "`" | "~" = "`"): QuestionFenceRead {
   const lines = body.split("\n").map((l) => l.replace(/\r$/, ""))
   // The FIRST unindented `---` ends the front matter; a later one is a horizontal rule in the body, and an
   // indented one belongs to a `detail: |` block.
@@ -429,7 +471,7 @@ export function readQuestionFence(body: string): QuestionFenceRead {
   else if (question.length > QUESTION_MAX) faults.push(`\`question:\` is ${question.length} characters; keep it to one line and put the rest below the \`---\``)
   if (context.length > CONTEXT_MAX) faults.push(`the body below \`---\` is ${context.length} characters; the limit is ${CONTEXT_MAX}`)
   const openInContext = openFenceIn(context)
-  if (openInContext) faults.push(openFenceFault("the body below `---`", openInContext))
+  if (openInContext) faults.push(openFenceFault("the body below `---`", openInContext, fence))
 
   const headerValue = fm.keys.get("header")
   const header = headerValue ? lineOf(headerValue) : undefined
@@ -466,7 +508,7 @@ export function readQuestionFence(body: string): QuestionFenceRead {
     const text = parts.join("\n\n")
     if (text.length > DESCRIPTION_MAX) faults.push(`${where}the description and detail run ${text.length} characters; the limit is ${DESCRIPTION_MAX}`)
     const openInOption = openFenceIn(text)
-    if (openInOption) faults.push(openFenceFault(`${where}its detail`, openInOption))
+    if (openInOption) faults.push(openFenceFault(`${where}its detail`, openInOption, fence))
     const recommendedValue = o.get("recommended")
     const recommended = recommendedValue ? booleanOf(recommendedValue, "recommended", faults, where) : undefined
     options.push({ label, ...(text ? { description: text } : {}), ...(recommended ? { recommended: true } : {}) })

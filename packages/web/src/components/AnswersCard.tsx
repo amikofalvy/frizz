@@ -24,7 +24,12 @@ export function AnswersCard({ answers, queued, sourceId }: { answers: PairedAnsw
               // question in this app wears (RegisteredQuestionCards). The wire form is flat — an
               // indented line there reads as a continuation of the row above (see questionAnswerMessage)
               // — so this indent is the only place the tree survives into the reading.
-              <div key={i} className={a.followUp ? "ml-3 flex flex-col gap-1 border-l border-border pl-3" : "flex flex-col gap-1"}>
+              //
+              // THE WORKER'S ID FOR THE QUESTION IS NOT DRAWN. A fence-asked question's row carries it
+              // on the wire (shared answerRowId) so the worker can tell two same-worded questions
+              // apart; the human asked nothing by id, and reads the question restated right here. It
+              // stays on the row as an attribute, for a verifier and for whoever inspects the card.
+              <div key={i} data-answer-id={a.handle} className={a.followUp ? "ml-3 flex flex-col gap-1 border-l border-border pl-3" : "flex flex-col gap-1"}>
                 {a.question && (
                   <div title={a.question} className="line-clamp-2 min-w-0 [overflow-wrap:anywhere] text-[11px] leading-snug text-muted">
                     {a.question}

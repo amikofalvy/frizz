@@ -36,12 +36,17 @@ test("a fence that is not a live wait is skipped before it ever reaches a card",
 // prose, above the resting card, on every rested awaiting thread (maintainer 2026-08-28, with a
 // screenshot). So the owning surfaces pass `restingCardShown` and the block never reaches the card.
 test("a fence the resting card states never reaches the card either", () => {
-  // Every surface that owns a thread passes the flag for the LAST agent message only — the one whose
-  // fence the resting card is about — so the memo boundary holds for every other row.
+  // The flag is set for the LAST agent message only — the one whose fence the resting card is about — so
+  // the memo boundary holds for every other row. ONE place answers it for every surface: the thread
+  // surface's `hidesAwaiting` (ThreadSurface.tsx), which ThreadMessage hands to Message. Each surface used
+  // to pass it at each of its own Message sites, four in two files.
   const chat = source
   const todos = readFileSync(new URL("./TodosView.tsx", import.meta.url), "utf8")
-  assert.equal(chat.match(/restingCardShown=\{(?:row\.)?messageIndex === lastAgentIdx && restingShown\}/g)?.length, 2, "both thread-view columns pass it")
-  assert.equal(todos.match(/restingCardShown=\{globalIdx === lastAgentIdx && restingShown\}/g)?.length, 2, "both queue-card message paths pass it")
+  const shell = readFileSync(new URL("./ThreadSurface.tsx", import.meta.url), "utf8")
+  assert.match(shell, /hidesAwaiting: \(index\) => \[awaitingCut >= 0 && index < awaitingCut, index === lastAgentIdx && restingShown\] as const/)
+  assert.match(chat, /const \[staleAwaiting, restingCardShown\] = t\.hidesAwaiting\(index\)/, "ThreadMessage takes both reasons from the surface")
+  assert.equal(chat.match(/restingCardShown=\{/g)?.length, 1, "ThreadMessage is the only site that passes it")
+  assert.doesNotMatch(todos, /restingCardShown=|staleAwaiting=/, "the queue card draws its messages through ThreadMessage")
   // …and the emptiness walk agrees, or a fence-only last message keeps its spacer and its rest divider.
   const helper = source.match(/export function rendersNothingIn[\s\S]*?\n}/)?.[0]
   assert.ok(helper, "rendersNothingIn must exist")
@@ -49,8 +54,9 @@ test("a fence the resting card states never reaches the card either", () => {
   assert.match(helper, /entry\.messageIndex === awaitingCut\) stated\.add\(entry\.message\)/, "…and marks the last message as stated")
   assert.match(helper, /messageRendersNothing\(message, stale\.has\(message\), stated\.has\(message\)\)/, "…as its own reason, not one more stale member")
   assert.equal(chat.match(/rendersNothingIn\([a-zA-Z]+, awaitingCut, restingShown\)/g)?.length, 3, "every rendersNothingIn call passes it")
-  assert.match(todos, /const hidesAwaiting = \(idx: number\) => \[isStaleAwaiting\(idx\), idx === lastAgentIdx && restingShown\] as const/)
-  assert.doesNotMatch(todos, /message(?:RendersNothing|HasRenderableText)\([a-z]+, isStaleAwaiting\(/, "the queue card's predicates take both reasons")
+  assert.match(todos, /const \{ lastAgentIdx, hidesAwaiting, [^}]*\} = surface\.transcript/, "the queue card's walk asks the surface")
+  assert.equal(todos.match(/message(?:RendersNothing|HasRenderableText)\(m, \.\.\.hidesAwaiting\(globalIdx\)\)/g)?.length, 2, "the queue card's predicates take both reasons")
+  assert.doesNotMatch(todos, /isStaleAwaiting|showsRestingCard\(/, "…and derive neither for themselves")
 })
 
 // THE TAIL MOUNTS WITH THE TRANSCRIPT, NOT BEFORE IT. The board lands first, so the queue card used to
@@ -148,7 +154,10 @@ test("a settled fence that handed the human steps keeps its card, with no thread
 // is how the position reaches a row builder that only takes `(message) => boolean`, and it keys on the
 // message OBJECT because coalescing replaces that object when it absorbs a tool tail.
 test("every transcript surface cuts staleness at the same index", () => {
-  const scan = source.match(/export function lastAssistantIndex[\s\S]*?\n}/)?.[0]
+  const lastAssistant = readFileSync(new URL("../lib/lastAssistant.ts", import.meta.url), "utf8")
+  const shell = readFileSync(new URL("./ThreadSurface.tsx", import.meta.url), "utf8")
+  const todos = readFileSync(new URL("./TodosView.tsx", import.meta.url), "utf8")
+  const scan = lastAssistant.match(/export function lastAssistantIndex[\s\S]*?\n}/)?.[0]
   assert.ok(scan, "lastAssistantIndex must exist")
   // SAID, not "is the last assistant ROW". A `kind:"event"` line — rest, wake, compaction, sub-agent
   // completion — carries role:"assistant" and no utterance. Counting one puts the cut AFTER the fence it
@@ -157,11 +166,9 @@ test("every transcript surface cuts staleness at the same index", () => {
   // the "light gray lines" reports, and restyling the body twice could never have fixed it.
   assert.match(scan, /messages\[i\]\.kind !== "event"/, "a synthetic event row is not the agent speaking")
   // Nobody re-derives it by hand — a second copy of the scan is how two surfaces' cuts drift apart.
-  assert.equal(
-    source.match(/for \(let i = messages\.length - 1; i >= 0; i--\) if \(messages\[i\]\.role === "assistant"/g)?.length,
-    1,
-    "the last-assistant scan must exist exactly once, inside lastAssistantIndex",
-  )
+  const scans = (text: string) => text.match(/for \(let i = messages\.length - 1; i >= 0; i--\) if \(messages\[i\]\.role === "assistant"/g)?.length ?? 0
+  assert.equal(scans(lastAssistant), 1, "the last-assistant scan must exist exactly once, inside lastAssistantIndex")
+  assert.equal(scans(source) + scans(todos) + scans(shell), 0, "no surface, and not the shell, carries a second copy")
   const helper = source.match(/export function rendersNothingIn[\s\S]*?\n}/)?.[0]
   assert.ok(helper, "rendersNothingIn must exist")
   assert.match(helper, /new WeakSet<ChatMessage>\(\)/, "it keys on the message object the entry holds")
@@ -171,9 +178,13 @@ test("every transcript surface cuts staleness at the same index", () => {
   // sits past every message while running, so each fence in the window is stale; at rest it is the last
   // assistant message, which the resting card at the tail keys on too. This replaced the 2026-08-28 rule
   // that kept the card at the last REST while the worker ran past it (lib/restAnchor, deleted with it).
-  assert.equal(source.match(/const awaitingCut = running \? (?:presentationMessages|messages)\.length : lastAgentIdx/g)?.length, 2, "both columns cut past every message while running")
+  // The cut is the thread surface's, computed once for the queue card and both of the thread view's
+  // columns (it was written out in each until 2026-10-13, and this reversal had to be applied to each).
+  assert.equal(shell.match(/const awaitingCut = running \? messages\.length : lastAgentIdx/g)?.length, 1, "the cut sits past every message while running")
+  assert.doesNotMatch(source + todos, /const awaitingCut = /, "no surface computes a cut of its own")
+  assert.equal(source.match(/\{ (?:lastAgentIdx, )?awaitingCut, restingShown, [^}]*\} = (?:surface\.transcript|useThreadTranscript\(\))/g)?.length, 2, "both columns read it from the surface")
   assert.doesNotMatch(source, /lastRest\(|restAnchor\.ts|restedAt/, "the rest anchor is gone; nothing keeps a card at a rest the worker ran past")
-  assert.equal(source.match(/staleAwaiting=\{awaitingCut >= 0 && (?:row\.)?messageIndex < awaitingCut\}/g)?.length, 2, "the renderer cuts at the same index")
+  assert.equal(source.match(/staleAwaiting=\{/g)?.length, 1, "the renderer is handed the surface's answer, at ThreadMessage alone")
   assert.doesNotMatch(source, /staleAwaiting=\{lastAgentIdx/, "no surface may still cut at the last message")
   // Both transcript columns go through it; a bare `messageRendersNothing` handed to a row builder is the
   // regression — it cannot see position, so it reports a settled fence-only message as visible.

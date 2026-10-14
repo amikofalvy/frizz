@@ -613,6 +613,11 @@ function bashFg(id: string, description: string | null, command: string) {
 function autoBackgroundAck(taskId: string, seconds = 590) {
   return `Command did not complete within its ${seconds}s timeout and was moved to the background (ID: ${taskId}). Output is being written to: /tmp/tasks/${taskId}.output. You will be notified when it completes. To check interim output, use Read on that file path.`
 }
+// The same handoff when "send now" caused it, verbatim (claude 2.1.296, 2026-10-13): the runtime moves
+// the running command aside so the pushed message can be read, and the command keeps running.
+function sendNowBackgroundAck(taskId: string) {
+  return `Command was moved to the background (ID: ${taskId}) so that a message that arrived while it was running can reach you; it was not interrupted. Output is being written to: /tmp/tasks/${taskId}.output. You will be notified when it completes. If it is still running after 30m in the background, it will be stopped and you will be notified. To check interim output, use Read on that file path.`
+}
 // A Claude Code Monitor is inherently a background watcher; persistent=true removes its timeout.
 function monitorUse(id: string, description: string, command: string, persistent = true) {
   return {
@@ -1107,6 +1112,52 @@ test("applyRecord: an auto-backgrounded shell retires on its own <task-notificat
   applyRecord(s, taskNotificationAttachment("toolu_fg", "completed", "b2hk8870c"))
   assert.equal(s.subAgents.size, 0, "the completion notification must clear the promoted shell")
   assert.equal(s.retiredShells.get("toolu_fg")?.status, "completed")
+})
+
+test("applyRecord: a foreground Bash moved aside by \"send now\" becomes a tracked live shell, and retires on its notification", () => {
+  // Without this the build a pushed message arrived under kept running with nothing showing it: the
+  // thread read as rested the moment the worker stopped to wait for it, and a fence naming its id was
+  // refused as naming nothing live.
+  const s = newTailState("t", "s", "/x")
+  applyRecord(s, bashFg("toolu_fg", "Run the repo build", "make build"))
+  applyRecord(s, resultText("toolu_fg", sendNowBackgroundAck("bqzw0r5ao")))
+  const entry = s.subAgents.get("toolu_fg")
+  assert.equal(entry?.kind, "shell", "moved aside, not finished: it is a live shell from here on")
+  assert.equal(entry?.label, "Run the repo build")
+  assert.equal(entry?.taskId, "bqzw0r5ao", "the id the worker was handed, which is the one it will name in a fence")
+  assert.equal(entry?.outputFile, "/tmp/tasks/bqzw0r5ao.output")
+  applyRecord(s, taskNotificationAttachment("toolu_fg", "completed", "bqzw0r5ao"))
+  assert.equal(s.subAgents.size, 0)
+  assert.equal(s.retiredShells.get("toolu_fg")?.status, "completed")
+})
+
+test("applyRecord: a blocking Agent moved aside by \"send now\" becomes a tracked live sub-agent, and retires on its notification", () => {
+  // `run_in_background: false` is the one Agent dispatch the fold never registers, so a child the
+  // runtime moved to the background mid-flight was running with no row, and a fence naming it was
+  // refused. Its result is then the ack every background child answers with.
+  const s = newTailState("t", "s", "/x")
+  applyRecord(s, dispatch("toolu_fg", "Blocking child", false))
+  assert.equal(s.subAgents.size, 0, "while it blocks, the spinner covers it")
+  applyRecord(s, resultText("toolu_fg", "Async agent launched successfully.\nagentId: abc9 (internal ID - do not mention to user.)\noutput_file: /tmp/tasks/abc9.output\nDo NOT Read or tail this file."))
+  const entry = s.subAgents.get("toolu_fg")
+  assert.equal(entry?.kind, "agent", "moved aside, not finished: it is a live child from here on")
+  assert.equal(entry?.label, "Blocking child")
+  assert.equal(entry?.subagentType, "frizz:opus-high", "the cell its dispatch carried")
+  assert.equal(entry?.taskId, "abc9", "the id the worker was handed, which is the one it will name in a fence")
+  assert.equal(s.pendingShells?.size ?? 0, 0, "the park is consumed by the result that promoted it")
+  applyRecord(s, taskNotification("toolu_fg", "completed"))
+  assert.equal(s.subAgents.size, 0)
+  assert.equal(s.retiredSubAgents.get("toolu_fg")?.status, "completed")
+})
+
+test("applyRecord: a blocking Agent that simply reports leaves nothing tracked and nothing parked", () => {
+  const s = newTailState("t", "s", "/x")
+  applyRecord(s, dispatch("toolu_fg", "Blocking child", false))
+  assert.equal(s.pendingShells?.size, 1, "parked only until its result lands")
+  applyRecord(s, resultText("toolu_fg", "The child read the three files and found nothing to change."))
+  assert.equal(s.subAgents.size, 0, "a report is the end of a foreground child, not a launch")
+  assert.equal(s.retiredSubAgents.size, 0, "and it was never a row to retire")
+  assert.equal(s.pendingShells?.size ?? 0, 0, "the park is released either way")
 })
 
 test("applyRecord: an ORDINARY foreground Bash result leaves nothing tracked and nothing parked", () => {

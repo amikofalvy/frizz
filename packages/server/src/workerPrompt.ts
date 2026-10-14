@@ -298,6 +298,7 @@ exactly ONE of them.
   blocks it, and the refusal names each one by id — because a question nobody answered dies unread with
   the card, and a live wait means the thing you were waiting for has not happened. A fence cannot be
   refused: by the time anything could object, the human has already read a completion you did not earn.
+  (Over an open question Frizz objects after the fact, with a correction: see Questions for the human.)
   Resolve the blockers for real (\`unask\` what you decided yourself, \`unwatch\` what stopped mattering)
   and run it again. There is NO force flag and there will not be one.
 
@@ -766,6 +767,16 @@ The API call is the unit of cost, not the tokens you type: each message re-reads
 //     prose above it is unanswerable from the card on the board, which is where the human answers it.
 //   - The four-backtick rule is shown, not stated: a code block inside the fence closes it early otherwise,
 //     and the rest of the question falls out as prose.
+//   - "A label with a colon in it takes the key": the sentence above the table calls a colon safe in any
+//     VALUE, and the cell called a bare `- Label` a label, so `- Yes: merge it` read as allowed. It is
+//     refused (the same shape as `- lable: SQLite`, which must not pass for a label), and the fault gives
+//     the line to write; these words are there so the first try does not need it.
+//
+// WHAT THE READER TAKES AND THE CONTRACT DOES NOT TEACH (third round, 2026-10-13). A `~~~question` fence, a
+// capitalised info string (`Question`) and a space before the word register exactly as the taught fence
+// does (shared code-fences.ts questionFenceOpener): each used to draw as a code block and say nothing to
+// anyone. They are tolerated, never advertised — one spelling in every example, the fix in every
+// correction worded for three backticks (four around a code block) and a lowercase `question`.
 //
 // MEASURED ON REAL MODELS (2026-10-13, 40-odd single replies from Haiku, Sonnet and Opus given this whole
 // contract and a task that ends in an ask; outputs scored with the shared parser). Every fence written
@@ -809,7 +820,8 @@ You run under a dashboard, not a live chat, so a question is a ROW the human sti
 never a sentence in a message. You ask by writing a \`question\` fence in your own message: when the
 message lands, Frizz registers the question under the \`id:\` you gave it and draws an answerable card
 EXACTLY WHERE YOU WROTE THE FENCE. The row outlives the message — your turn ending, a compaction, a Frizz
-restart — and the answer comes back to you as its own wake, restating what was asked.
+restart — and the answer comes back to you as its own wake, naming each question by its \`id\` and
+restating what was asked.
 
 ANYTHING YOU NEED BACK BEFORE YOU CAN GO ON IS A QUESTION, whatever you would call it: a choice between
 options, a go-ahead for the plan you recommend, a name or a number only they can pick, a yes to one risky
@@ -844,7 +856,7 @@ whole quoted string is unquoted:
 | \`id\` | Required. Your own name for the question: lowercase letters, digits, \`-\`, \`_\` and \`.\`, up to 64. Unique in this thread FOR GOOD — an id once answered or withdrawn is never asked again |
 | \`kind\` | Required. \`choice\` (pick one), \`multi\` (pick several), \`text\` (a free-text box) or \`secret\` (one masked box) |
 | \`question\` | Required. ONE line: the card's heading, and what the answer's wake restates |
-| \`options\` | Two or more for \`choice\` and \`multi\`; none for \`text\` and \`secret\`. Each \`- \` item takes \`label\` (required), \`description\` (one line), \`recommended: true\`, and \`detail\`, an indented Markdown block drawn inside the option. A bare \`- Label\` is a label alone |
+| \`options\` | Two or more for \`choice\` and \`multi\`; none for \`text\` and \`secret\`. Each \`- \` item takes \`label\` (required), \`description\` (one line), \`recommended: true\`, and \`detail\`, an indented Markdown block drawn inside the option. A bare \`- Label\` is a label alone; a label with a colon in it takes the key (\`- label: Yes: merge it\`) |
 | \`danger\` | \`true\` for the genuinely irreversible: the card turns red and the human's × cannot dismiss it |
 | \`when\` | \`<parent id> = <option label>\`: a follow-up, asked only if that option is picked (below) |
 
@@ -1000,13 +1012,22 @@ id: settings-store
 \`frizzctl activity\` lists every open question by its id. A question you no longer want answered is
 not one you leave out of the write-up — it is one you withdraw with \`frizzctl unask <id>\`, above all
 when you worked the answer out yourself: the difference between deciding something and quietly hoping
-nobody answers. An open question also blocks \`frizzctl done\` until it is answered or withdrawn.
+nobody answers.
 
 **A QUESTION IS THE HANDBACK, AND THE ONLY FENCE ITS REST NEEDS** — at the rest that asks or references
-it, and at every rest while it still stands, write no \`done\` fence beside it and no \`awaiting\` fence
-after it: not \`status: needs_input\` (the question already puts the thread in the human's queue) and
-not a park. The one exception is work that is ALSO still running — a sub-agent, a build — whose
-\`awaiting\` fence names that work. The answer arrives as your next user message, as its own wake.`
+it, and at every rest while it still stands, write no \`awaiting\` fence after it: not
+\`status: needs_input\` (the question already puts the thread in the human's queue) and not a park. The
+one exception is work that is ALSO still running — a sub-agent, a build — whose \`awaiting\` fence
+names that work. The answer arrives as your next user message, as its own wake.
+
+**NO SIGN-OFF AS DONE WHILE ANY QUESTION OF YOURS IS OPEN** — at every rest, whether the question still
+stands or the human has typed past it: a done card invites the human to archive the thread, and the
+question dies unread with it. \`frizzctl done\` refuses, naming each open question by its id. A
+\` \`\`\`done \` fence cannot be refused, so Frizz corrects it instead: one message for that rest, opening
+\`⚠️ Your \`\`\`done fence\`, naming the same questions. Either way there are two ways out. Decide the
+question yourself, withdraw it with \`frizzctl unask <id>\`, and sign off done again. Or keep it open and
+rest on it: write no \`done\`, and where the human has typed past the question, end on its REFERENCE,
+which puts the thread back in their queue until it is answered.`
 
 // The "never a question" command rule pins a recurring card shape (2026-08-24): "Want me to repair
 // it?" over `pnpm install` in the shared checkout, with "the human runs it themselves" as the
@@ -1504,6 +1525,47 @@ this one ends — nothing can interrupt you mid-turn except a stop. So rest prom
 done rather than idling inside it, and read the newest human message first when a turn opens.`,
 }
 
+// A TOOL CALL CUT OFF BY "SEND NOW". Claude only: the SDK interrupt is the one transport that ends a turn
+// to deliver a message (⌘⏎, and the ↑ beside a queued bubble) — a Codex steer is read at the next step
+// and an ACP follow-up queues. Claude Code answers the call that was running with the stock paragraph it
+// also uses for a real rejection: "The user doesn't want to proceed with this tool use. The tool use was
+// rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are
+// doing and wait for the user to tell you how to proceed.", then a note inviting a memory. That text is
+// written inside the CLI, so Frizz cannot change it, and a worker believes it: the call "was rejected
+// before it ran" (it ran for seconds and was killed), so it stops and asks what to do.
+//
+// THIS IS THE FALLBACK NOW, NOT THE USUAL CASE. Since 2026-10-13 a send now asks for the runtime's own
+// send-now first (`interruptTurn` in backend/claude-agent-broker-bridge.ts), which moves a running Bash
+// or Agent call to the background and answers it with the truth ("Command was moved to the background
+// … it was not interrupted"), so no call is cut and the paragraph above is never written. A worker
+// still reads it when that request ends the turn instead: a message Frizz wrote itself is waiting
+// beside the person's, or the CLI or the thread's daemon predates send-now
+// (backend/_live_broker_send_now.mts measures both arms). So does a call the runtime has no way to
+// move: it backgrounds a foreground shell or sub-agent and aborts the turn for anything else, an MCP
+// or web call included (read out of Claude Code 2.1.296, not measured). The section stays for those.
+//
+// MEASURED 2026-10-13 on real broker sessions (backend/_live_broker_interrupt_cut_call.mts — Opus; a 45s
+// build cut 6s in by "fyi the build is pretty slow on this machine today"). Under this contract without
+// the section, 4 of 24 workers stopped and asked the human how to re-run the build, each saying the
+// call was declined "before it started"; with no contract at all, 3 of 3 did. With the section, none of
+// 19 did. The stall is intermittent — three of those four fell inside one minute, and the twenty runs
+// after it produced one — so read the rate loosely.
+//
+// A standing rule rather than a note on the message, because the message is usually sent first: all 6
+// such results in this machine's transcripts were a Bash call, the interrupt receipt, then the message,
+// and 5 of the 6 messages had sat in the queue for 3-47s before they were pushed through.
+//
+// Claude Code 2.1.296 does carry the right text — "[Tool call did not complete: the turn was ended to
+// deliver the message that follows. Nothing refused it; re-run it if still needed.]" — but only for an
+// abort a plugin's hooks module raises (`$.turn.abort`), never for the SDK's `interrupt`.
+const CLAUDE_INTERRUPTED_CALL = `## When a message cuts a tool call short
+
+A tool result reading "The user doesn't want to proceed with this tool use … STOP what you are doing"
+is the runtime's stock text for a call that was RUNNING when a message was pushed through to you:
+Frizz ends your turn to deliver it. Nothing rejected the call — it was cut off part-way — and it is no
+correction. The message that follows is the whole signal: act on it, carry on with the work, and
+re-run the call if it is still needed.`
+
 // Backend-neutral: every backend's shell runs the ONE `frizzctl`, so the command and its usage are
 // identical. Kept as one shared section (not a per-kind record) — there is nothing backend-specific to
 // say about it. What differs per backend is only how the shell's ENVIRONMENT learns which thread is
@@ -1665,6 +1727,7 @@ export function buildWorkerPrompt(kind: BackendKind = "claude", opts: { monitors
     SCRATCHPAD[kind],
     kind === "claude" ? `${WORKTREES}\n${WORKTREES_HARNESS}` : WORKTREES,
     BACKEND[kind],
+    kind === "claude" ? CLAUDE_INTERRUPTED_CALL : null,
     THREAD_NAME,
     SPAWN_THREAD,
     STEER_THREADS,

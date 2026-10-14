@@ -1,10 +1,12 @@
 import { useEffect, useState, type DragEvent } from "react"
 
 // FILE DROP ZONES. A prompt box takes a file dragged in from the desktop (Composer's attachment intake),
-// and a queue card takes one ANYWHERE on it, handing it to its own prompt box (maintainer 2026-10-12:
-// "You should be able to drag a file anywhere onto a card in the queue in order to drop it into the
-// chat"). Both are `useFileDropZone` on a different element; `FileIntakeHandle` is how a zone that is
-// not the box itself reaches the box's intake.
+// and a thread's surface takes one ANYWHERE on it, handing it to its own prompt box (maintainer
+// 2026-10-12: "You should be able to drag a file anywhere onto a card in the queue in order to drop it
+// into the chat"). That was wired on the queue card alone at first; the zone is the thread surface's now
+// (components/ThreadSurface.tsx), so the drawer and the full-screen page take a file the same way. Both
+// are `useFileDropZone` on a different element; `FileIntakeHandle` is how a zone that is not the box
+// itself reaches the box's intake.
 
 // A drag that STARTED in this page is not a file being brought in, even when it carries one: Chromium
 // hands an <img> drag its bytes as a File, so a screenshot nudged a few pixels inside a card would attach
@@ -74,7 +76,8 @@ export interface SurfaceFileDrop {
 
 /** A surface's prompt box, as the place a file dropped on the surface goes. The surface owns the zone,
  *  the box owns the intake (type and size checks, upload, chip, draft). Files given while no box is
- *  registered — a collapsed queue card has none — wait here and go to the box as it mounts. */
+ *  registered — a collapsed queue card has none, nor a drawer whose body has not mounted yet — wait here
+ *  and go to the box as it mounts. */
 export class FileIntakeHandle {
   private take: ((files: File[]) => void) | null = null
   private held: File[] = []

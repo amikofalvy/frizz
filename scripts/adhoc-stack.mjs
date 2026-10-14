@@ -14,10 +14,11 @@
 // It prints ONE json line to stdout: {"url","port","home","project"} once /health is green,
 // then stays up until SIGINT/SIGTERM, deleting the temp HOME on exit (unless --keep). Run it with Bash
 // run_in_background:true, parse that json line, then drive the url with Chrome DevTools MCP or shot.mjs.
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, symlinkSync } from "node:fs"
+import { existsSync, mkdtempSync, rmSync, mkdirSync, writeFileSync, symlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
-import { frizzPaths } from "../packages/server/src/frizz-paths.ts"
+import { frizzPaths, projectStateDir } from "../packages/server/src/frizz-paths.ts"
+import { adhocFrizzRoot } from "./lib/adhoc-frizz-root.mjs"
 
 const args = process.argv.slice(2)
 const flag = (k) => args.includes(`--${k}`)
@@ -48,21 +49,37 @@ const creds = flag("creds")
 // --home=/abs reuses a sandbox a previous `--keep` run left behind, which is the only way to verify
 // anything that happens at BOOT against state that already exists — a schema migration, a registry
 // repair, resume/recovery. Implies --keep: a HOME you were handed is never one this run may delete.
+// --home=$HOME is the other use: the real HOME, for a live Claude worker that must find the keychain.
+// Frizz's own state is then the machine's `~/.frizz` if it has one and a temp root of this run's if
+// it does not; see `frizzRoot` below.
 const reuseHome = opt("home", undefined)
 const keep = flag("keep") || reuseHome !== undefined
 
 // Sandbox HOME first — resolveProject() reads homedir() lazily, so setting it now redirects the whole
 // state tree (~/.frizz/projects/<id>/) into the throwaway dir before the server derives any path.
 const home = reuseHome ?? mkdtempSync(join(tmpdir(), "frizz-adhoc-home-"))
-mkdirSync(join(home, ".frizz"), { recursive: true })
 const realHome = process.env.HOME
-process.env.HOME = home
-// The pinned Claude Code and Codex (runtimes.ts) live under the cache root, which the sandbox HOME
-// just moved — so without this every stack would download both pins again. Point the sandbox at the
+// The pinned Claude Code and Codex (runtimes.ts) live under the cache root, which the sandbox HOME is
+// about to move — so without this every stack would download both pins again. Point the sandbox at the
 // machine's real copies; a stack that must exercise provisioning itself sets FRIZZ_RUNTIMES_DIR.
-if (!process.env.FRIZZ_RUNTIMES && !process.env.FRIZZ_RUNTIMES_DIR) {
-  process.env.FRIZZ_RUNTIMES_DIR = join(frizzPaths({ home: realHome }).cache, "runtimes")
+// Resolved FIRST: everything below changes what `frizzPaths()` answers.
+const realRuntimes = join(frizzPaths({ home: realHome }).cache, "runtimes")
+// Frizz's own state. A sandbox HOME gets its `.frizz`; the REAL home is never given one, because that
+// folder existing is what tells every Frizz process on the machine to use it (lib/adhoc-frizz-root.mjs).
+const frizzRoot = adhocFrizzRoot({ home, realHome, legacyExists: existsSync(join(home, ".frizz")) })
+let isolatedRoot
+if (frizzRoot === "sandbox") mkdirSync(join(home, ".frizz"), { recursive: true })
+if (frizzRoot === "isolated") {
+  // These are inherited by everything the stack starts, which is what keeps a worker's daemon and its
+  // `frizzctl` on the same roots as the server. It also means a tool in a worker that honors XDG
+  // (a package cache, opencode's login under XDG_DATA_HOME) sees empty directories here.
+  isolatedRoot = mkdtempSync(join(tmpdir(), "frizz-adhoc-state-"))
+  for (const [name, dir] of [["XDG_DATA_HOME", "data"], ["XDG_STATE_HOME", "state"], ["XDG_CACHE_HOME", "cache"]]) {
+    process.env[name] = join(isolatedRoot, dir)
+  }
 }
+process.env.HOME = home
+if (!process.env.FRIZZ_RUNTIMES && !process.env.FRIZZ_RUNTIMES_DIR) process.env.FRIZZ_RUNTIMES_DIR = realRuntimes
 // See `--creds` above: on macOS a sandbox HOME never gets Claude's login.
 const claudeLogin = creds && !(process.platform === "darwin" && home !== realHome)
 if (creds) {
@@ -102,6 +119,9 @@ if (flag("seed")) {
 let close = async () => {}
 const cleanup = () => {
   if (!keep) { try { rmSync(home, { recursive: true, force: true }) } catch {} }
+  // The isolated root is this run's own even though the HOME is not, so `--home` alone (which only
+  // implies --keep to protect the HOME it was handed) does not keep it; an explicit --keep does.
+  if (isolatedRoot && !flag("keep")) { try { rmSync(isolatedRoot, { recursive: true, force: true }) } catch {} }
 }
 const stop = (code) => {
   void (async () => {
@@ -155,8 +175,12 @@ try {
     slug, port, home, project: projectDir,
     // The launcher is the project whose `server.lock` this process publishes — the one file every
     // worker on this stack, in ANY project, reads the port out of.
-    launcher: launcher ? { id: launcher.id, slug: launcher.slug, dir: projectDir, serverLock: join(home, ".frizz", "projects", launcher.id, "server.lock") } : undefined,
+    launcher: launcher ? { id: launcher.id, slug: launcher.slug, dir: projectDir, serverLock: join(projectStateDir(launcher.id, home), "server.lock") } : undefined,
     tenants,
+    // Where Frizz's own state is: "sandbox" (<home>/.frizz), "shared" (the real ~/.frizz) or
+    // "isolated" (a temp root, named here, that this run deletes on exit unless --keep).
+    frizzRoot,
+    ...(isolatedRoot ? { isolatedRoot } : {}),
     wakers: flag("wakers"),
     creds,
     claudeLogin,

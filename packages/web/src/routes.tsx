@@ -6,9 +6,7 @@ import { ProjectGrid } from "./components/ProjectGrid.tsx"
 import { ProjectRail, RAIL_INSET_CLASS } from "./components/ProjectRail.tsx"
 import { StandaloneThreadPage } from "./components/StandaloneThreadPage.tsx"
 import { TooltipProvider } from "./components/Tooltip.tsx"
-import { GithubHovercards } from "./components/GithubHovercards.tsx"
-import { Toaster } from "./components/Toaster.tsx"
-import { LightboxHost } from "./components/Lightbox.tsx"
+import { PageHosts } from "./components/PageHosts.tsx"
 import { applyPath, registerNavigate } from "./lib/router.ts"
 import { CONSOLE_PATH, innerPath, isConsolePath } from "./lib/base-path.ts"
 import { bindConsole, feedIsBoundTo, feedIsConsole, leaveConsole, rebindProject } from "./api/socket.ts"
@@ -71,19 +69,10 @@ function RootLayout() {
         <Outlet />
       </div>
       {atHome && !isMobile ? <HomeSwitcher railVisible={railVisible} /> : null}
-      {/* HOSTED BY THE LAYOUT, not by the board. It lived inside <App/>, so `showToast` from anywhere
-          else raised a toast with nowhere to render — silently, since the store field is set either
-          way. The grid is the page that needed one (it is where a bad project URL now lands), and it
-          is exactly the page that could never show one. Fixed-positioned, so it is inert until a
-          toast exists. */}
-      <Toaster />
-      {/* The image viewer a ```lightbox gallery opens (components/Lightbox.tsx). Hosted here rather
-          than by the gallery, which is a virtualized transcript row that can unmount under it. */}
-      <LightboxHost />
-      {/* ALSO hosted by the layout, and for the same reason: prose carrying `#123` renders on the
-          board, in a drawer and on the standalone `/thread/<slug>/full` page alike, and one delegated
-          listener at the root covers all three. Inert until a pointer rests on a reference. */}
-      <GithubHovercards />
+      {/* HOSTED BY THE LAYOUT, not by the board: the toaster lived inside <App/>, so `showToast` from
+          anywhere else raised a toast with nowhere to render — silently, since the store field is set
+          either way. The full-screen page, outside this layout, mounts the same set (PageHosts). */}
+      <PageHosts />
     </TooltipProvider>
   )
 }
@@ -283,11 +272,9 @@ function StandaloneRoute() {
   return (
     <>
       <StandaloneThreadPage slug={thread!} />
-      {/* Its own, since it is outside the layout. This page renders a full transcript, so it has the
-          copy-a-code-block control — whose only feedback is a toast, which until now had nowhere to
-          go here. Skipping the rail does not mean skipping the feedback. */}
-      <Toaster />
-      <LightboxHost />
+      {/* Its own, since it is outside the layout — and the SAME set the layout mounts. Skipping the
+          rail does not mean skipping the toast, the image viewer or a reference's card. */}
+      <PageHosts />
     </>
   )
 }

@@ -4,7 +4,7 @@ import { useSnapshot } from "valtio"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useVirtualizer } from "@tanstack/react-virtual"
 import { AlertTriangle, ArrowDown, ArrowUp, Bot, Check, ChevronRight, FileText, HelpCircle, Hourglass, KeyRound, ListChecks, Loader2, Radar, TerminalSquare, type LucideIcon } from "lucide-react"
-import { awaitingFenceTitle, awaitingSteps, questionFencesLive, RETRY_FOLLOW_UP } from "@frizz/shared"
+import { awaitingFenceTitle, awaitingSteps, RETRY_FOLLOW_UP } from "@frizz/shared"
 import type { AskQuestion, AwaitingHint, BgShellView, PendingAsk, RegisteredQuestionView, SubAgentView, ThreadView as ThreadViewData, TranscriptEdit, TranscriptMessage, TranscriptPart, TranscriptTodo, TranscriptToolCall } from "@frizz/shared"
 import { store, threadBySlug, pushDrawer, pushSubAgentDrawer, pushBackgroundShellDrawer, showToast } from "../store.ts"
 import { useBackgroundShellLines, useBoard, useProjectDir, useTranscript, type ChatMessage, type TranscriptData } from "../hooks.ts"
@@ -26,17 +26,18 @@ import { splitFenceBlocks, type FenceKind } from "../lib/fenceBlocks.ts"
 import { showsRegisteredDoneCard } from "../lib/registeredDone.ts"
 import { RestedCard, showsRestedCard } from "./RestedCard.tsx"
 import { ProviderErrorCard, providerErrorVisible } from "./ProviderErrorCard.tsx"
-import { answersNote, parseAnswersCard, pairAllAnswers, unrenderedAnswers, type PairedAnswer } from "../lib/answersMessage.ts"
+import { answersNote, parseAnswersCard, type PairedAnswer } from "../lib/answersMessage.ts"
 import { questionsByAnchor } from "../lib/questionAnchor.ts"
-import { fenceStandsFor, placedRestEnds, placeQuestions, registeredStandingAt, resolveQuestionName, type QuestionPlacement } from "../lib/questionShadow.ts"
-import { settledQuestionPositions, type SettledPlacement } from "../lib/settledQuestions.ts"
+import { fenceStandsFor, placedRestEnds, resolveQuestionName } from "../lib/questionShadow.ts"
 import { FrizzWake } from "./FrizzWake.tsx"
 import { LinkifiedText } from "./LinkifiedText.tsx"
 import { parseSentContext, splitProseByTokens, tokenLabel, type SentContextItem } from "../lib/composerContext.ts"
 import { AnswersCard } from "./AnswersCard.tsx"
 import { DividerQuotedTitle, WAKE_DIVIDER_WIDE_ONLY, WakeDivider } from "./WakeDivider.tsx"
-import { useLiveAnswering, type LiveAnswering } from "../lib/answering.ts"
-import { SendScopeContext, useComposerSendHandle, usePromptBoxSends, useSendScope } from "../lib/sendScope.tsx"
+import { usePromptBoxSends } from "../lib/sendScope.tsx"
+import { QueueDismissContext, ThreadSlugContext } from "../lib/threadContexts.ts"
+import { lastAssistantIndex } from "../lib/lastAssistant.ts"
+import { ThreadSurface, useThreadSurface, useThreadTranscript } from "./ThreadSurface.tsx"
 import { useIsMobile } from "../lib/mobile.ts"
 import { MobileAnswerSheet } from "./MobileAnswerSheet.tsx"
 import { PhoneAnswerBar, PhoneQuestionsContext, type PhoneQuestions } from "./PhoneQuestionCards.tsx"
@@ -85,7 +86,7 @@ import { ChildOpRow } from "./ChildOpRow.tsx"
 import { ThreadLinks } from "./ThreadLinks.tsx"
 import { TRANSCRIPT_META_LABEL_CLASS, transcriptMetaChevronClass } from "../lib/transcriptMetaLabels.ts"
 import { InteractionStack } from "./InteractionCards.tsx"
-import { ClosedQuestionCard, RegisteredAnsweringProvider, RegisteredQuestionCard, RegisteredQuestionStack, SettledQuestionCard, SettledQuestionStack, UnregisteredQuestionCard, openQuestionsOf, useArrivedQuestions, useFenceQuestions, useRefusedFences, useSettledQuestions, type FenceQuestionRow, type SettledQuestion } from "./RegisteredQuestionCards.tsx"
+import { ClosedQuestionCard, RegisteredQuestionCard, RegisteredQuestionStack, SettledQuestionCard, SettledQuestionStack, UnregisteredQuestionCard, openQuestionsOf, useArrivedQuestions, useRefusedFences, useSettledQuestions, type FenceQuestionRow, type SettledQuestion } from "./RegisteredQuestionCards.tsx"
 // The shared card chrome and THE question card both live in their own modules now, so every
 // surface can render them without importing the thread view. QuestionBlockCard in particular is
 // shared with the native-AskUserQuestion path, which reaches it through InteractionCards.tsx —
@@ -120,13 +121,9 @@ import { META_CARD_STEP, PICTURE_STEP, STEP, TIME_BREAK_ABOVE, TIME_BREAK_BELOW,
 // answering controller). Re-exported here so existing importers keep working.
 export type { BlockAnswer, MessageAnswering }
 
-// The thread slug the current message tree belongs to — set by ChatView so a nested AgentBlock can
-// resolve its live tracked sub-agent (for the "running Nm" header + drill-in drawer) without threading
-// the slug through every intermediate. Null in surfaces that don't provide it (the queue card, a
-// sub-agent's own transcript) → AgentBlocks there render as plain (non-live) prompt cards. The QUEUE
-// card also provides this now (maintainer 2026-07-15): its sub-agent blocks go live (spinner +
-// drill-in) AND its done/awaiting fence cards resolve their thread to show the confirm button.
-export const ThreadSlugContext = createContext<string | null>(null)
+// ThreadSlugContext and QueueDismissContext are the thread surface's (components/ThreadSurface.tsx
+// provides both). Re-exported here so existing importers keep working.
+export { ThreadSlugContext, QueueDismissContext }
 
 // The slug a rendered SUB-AGENT REFERENCE resolves its drill-in against, for message trees that are
 // NOT the thread's own transcript. Only the sub-agent drawer sets it (with the PARENT thread's slug),
@@ -147,15 +144,6 @@ function useChildDrillSlug(): string | null {
   const drillSlug = useContext(ChildDrillSlugContext)
   return threadSlug ?? drillSlug
 }
-
-// A QUEUE card provides this so any in-transcript dismissal control — the ```done fence's Mark-as-done
-// button, the ```awaiting fence's park button — routes its OWN card through the queue's user-initiated
-// exit (fade → auto-scroll the next card to the viewport top) instead of the passive board-departure
-// "hold a neighbour in place" path. `dismiss` is exactly the card's `onResolve(slug)`; `cancel` reinstates
-// an OPTIMISTICALLY dismissed card (its `onUnresolve(slug)`) when the completion RPC declines — reached
-// without threading either through the fence renderer. Null off the queue (the thread drawer), where there
-// is no queue to scroll — there the fence buttons behave as before (archive/snooze, no scroll).
-export const QueueDismissContext = createContext<{ dismiss: () => void; cancel: () => void } | null>(null)
 
 function isLiveTranscriptBackgroundTool(tool: TranscriptToolCall): boolean {
   return tool.status === "pending" && tool.backgroundState === "background"
@@ -233,19 +221,24 @@ export function ThreadView({ slug, onStatusApplied, onClose, virtualized = false
   // the page sets it off the same SPLIT_MIN_PX the `split:` variant shows the pane at. A thread opened
   // in a drawer over /full is not the rail's thread, so it keeps its own ops strip.
   const { splitFileViewer } = useSnapshot(store)
+  // The header is handed to ChatView, which owns the thread's surface (ThreadSurface): the surface is
+  // the whole thread, header included, as the queue card's is.
   return (
-    <div className="flex-1 min-h-0 flex flex-col">
-      {phone ? (
+    <ChatView
+      slug={slug}
+      virtualized={virtualized}
+      phone={phone}
+      railBeside={showReturnToQueue && splitFileViewer}
+      header={phone ? (
         <MobileThreadHeader slug={slug} onClose={onClose} />
       ) : (
         <ThreadHeader slug={slug} onStatusApplied={onStatusApplied} onClose={onClose} showReturnToQueue={showReturnToQueue} />
       )}
-      <ChatView slug={slug} virtualized={virtualized} phone={phone} railBeside={showReturnToQueue && splitFileViewer} />
-    </div>
+    />
   )
 }
 
-function ChatView({ slug, virtualized, phone = false, railBeside = false }: { slug: string; virtualized: boolean; phone?: boolean; railBeside?: boolean }) {
+function ChatView({ slug, virtualized, phone = false, railBeside = false, header }: { slug: string; virtualized: boolean; phone?: boolean; railBeside?: boolean; header: ReactNode }) {
   const board = useBoard()
   const boardThread = threadBySlug(board, slug)
   // ANSWERED registered questions stay in the transcript, greyed, where their open card stood (see
@@ -308,16 +301,16 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
   // …and the Working line's clock starts at that send. Until the turn lands, the newest landed message
   // is the rest's own, which would caption the fresh run with the hours since the agent last spoke.
   const steerSince = steered !== boardThread ? steered?.lastUserAt : undefined
-  // NO AWAITING CARD WHILE THE THREAD RUNS. An awaiting card states a REST — "the worker stopped here, on
-  // these waits" — and a spinning thread is not at rest on anything, so every fence in the window is
-  // stale: the cut sits past the last message. At rest the cut is the last assistant message, and the
-  // resting card at the tail keys on the same index. (From 2026-08-28 to 2026-09-24 the card was kept
-  // at the last rest while the worker ran past it, anchored on the rest event — lib/restAnchor, since
-  // deleted — because a bump had left the "Agent rested" hairline pointing at nothing. The maintainer
-  // reversed it on a screenshot of exactly that card above a spinning worker: "When the agent is
-  // running, an awaiting card should never be shown at all. It just doesn't make sense to show old
-  // awaiting cards when the agent is active.")
-  const awaitingCut = running ? presentationMessages.length : lastAgentIdx
+  // THE SURFACE (ThreadSurface) owns everything that is the thread's rather than this layout's: the
+  // fenced-question controller, the send scope, the drop zone, every context the transcript reads, and
+  // what each message MEANS (surface.transcript) — which fence is settled, which registered question a
+  // message carries, which answers it pairs with. This component decides only how the drawer and the
+  // full-screen page lay those out. `messages` and `presentationMessages` share their indices, so the
+  // model's answers address the rows below directly.
+  const surface = useThreadSurface({ slug, thread, messages, openQuestions, settledQuestions })
+  // No awaiting card while the thread runs, and none on the message the resting card states — the cut
+  // and its reasons are the surface's (ThreadTranscript), so this column and the queue card cannot differ.
+  const { awaitingCut, restingShown, paired, inFlightAnswers } = surface.transcript
   // Presentation-only coalescing: provider batching must not mint one loader per pure tool turn.
   // Original indices ride beside the display message so paired answers continue to
   // address server truth, never the compacted array.
@@ -339,19 +332,11 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
   // `restingShown` is the third reason a fence draws nothing (see rendersNothingIn): the resting card at
   // the tail states the last message's wait, so that message's fence block is skipped — and a message
   // that was ONLY the fence renders nothing, which the spacer walk has to know.
-  const restingShown = showsRestingCard(thread)
   const activityMessages = useMemo(() => {
     const entries = running ? historicalToolActivityMessages(coalescedActivityMessages) : coalescedActivityMessages
     return withoutRedundantRestDividers(entries, rendersNothingIn(entries, awaitingCut, restingShown))
   }, [coalescedActivityMessages, running, awaitingCut, restingShown])
   const showWorking = running
-  // Question↔answer pairing for "Answers:" user messages, precomputed at the LIST level (the lookback
-  // needs the whole list; Message renders per-message). null — a stable primitive — at every ordinary
-  // index, so the memoized Message only sees a `paired` prop change on actual answers-messages.
-  const paired = useMemo(() => pairAllAnswers(messages), [messages])
-  // What the human's in-flight answer still has to SAY — the rows of it no message above is already
-  // drawing, so the pinned card stands down instead of doubling one the transcript now carries itself.
-  const inFlightAnswers = useMemo(() => unrenderedAnswers(messages, thread?.answersInFlight), [messages, thread?.answersInFlight])
   // The CURRENT ASK — the human's most recent landed turn (see lastAskIndex for what is excluded and
   // why); it supplies the retry text after a provider fault. -1 when the transcript has no human turn yet.
   const lastUserIdx = useMemo(() => lastAskIndex(messages), [messages])
@@ -366,30 +351,10 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
   const runtimeStatus: RuntimeStatusState = { thread, showWorking, registeredDone, restedCard, errorVisible: providerErrorVisible(presentationMessages, thread?.providerError) }
   // Question-block interactivity in the thread view: EVERY ask stays answerable, wherever it sits —
   // scroll back to a question a sub-agent return / the agent's own continuation buried and answer it in
-  // place. answeringForMessage wires each ask's chips AND its own bottom Send button (scoped to just
-  // that message's blocks). The queue card runs the identical scope through the same controller.
+  // place. The surface's controller wires each ask's chips AND its own bottom Send button (scoped to just
+  // that message's blocks); the queue card runs the identical scope through the same controller.
   // THE PROMPT BOX SENDS THEM (lib/sendScope): with the thread's prompt box mounted under this
   // transcript, Enter in a block is that box's send, and no message draws a Send answers of its own.
-  const composerSend = useComposerSendHandle()
-  const { answeringForMessage, stagedCount, takeAnswers } = useLiveAnswering(slug, messages, undefined, { composer: composerSend })
-  const sendScope = useSendScope(composerSend, { stagedCount, takeAnswers })
-  // The registered questions standing at each message — its rest and every later one — so a fence
-  // restating or naming one folds into its card.
-  const shadowedByMessage = useMemo(() => registeredStandingAt(messages, openQuestions), [messages, openQuestions])
-  // Where the worker PLACED its registered questions — the message whose empty ```question qst_… marker
-  // names each one, from the newest rest that claims the question onward (lib/questionShadow). A placed
-  // card renders in that slot and is subtracted from its anchor group; every other question renders at
-  // its anchor as before.
-  const placement = useMemo(() => placeQuestions(messages, openQuestions), [messages, openQuestions])
-  // Where each ANSWERED question's card stood when it was answered — the same two readers, replayed over
-  // the transcript as it was before the answer (lib/settledQuestions).
-  const settledPlacement = useMemo(() => settledQuestionPositions(messages, settledQuestions), [messages, settledQuestions])
-  // A thread dispatched after the free-form fence was retired never gets a fence controller: a
-  // ```question with a body is prose there, drawn read-only, and the registered card is the only
-  // answerable thing (shared QUESTION_FENCE_RETIRED_AT). A legacy thread keeps the whole fence path.
-  const fencesLive = questionFencesLive(thread?.spawnedAt)
-  // …and speaks THE QUESTION FENCE instead: every row it knows, which a fence's `id:` resolves against.
-  const fenceQuestions = useFenceQuestions(fencesLive, openQuestions, settledQuestions, thread)
   // (The SSE-mode lastActivityAt refetch effect that lived here moved into transcript-live.ts: the
   // manager applies the same activity-edge pull to EVERY observed transcript that the push channel
   // doesn't cover, so no surface has to wire its own.)
@@ -443,9 +408,8 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
   }, [q, queryClient, slug])
 
   return (
-    <ThreadSlugContext.Provider value={slug}>
-    <SendScopeContext.Provider value={sendScope}>
-    <RegisteredAnsweringProvider thread={thread}>
+    <ThreadSurface surface={surface} className="flex-1 min-h-0 flex flex-col">
+    {header}
     <PhoneQuestionsContext.Provider value={phoneQuestions}>
     <div
       data-drawer-scroll-ready={q.isPending ? "false" : "true"}
@@ -486,14 +450,6 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
           transcriptRef={transcriptRef}
           transcriptKey={q.data?.transcriptKey}
           messages={presentationMessages}
-          paired={paired}
-          inFlightAnswers={inFlightAnswers}
-          answeringForMessage={answeringForMessage}
-          placement={placement}
-          settledPlacement={settledPlacement}
-          openQuestions={openQuestions}
-          fencesLive={fencesLive}
-          fenceQuestions={fenceQuestions}
           thread={thread}
           running={running}
           steerSince={steerSince}
@@ -565,20 +521,7 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
               (m, i) => {
                 const messageIndex = activityMessages[i].messageIndex
                 return (
-                  <Message
-                    key={i}
-                    m={m}
-                    answering={fencesLive ? answeringForMessage(m) : undefined}
-                    showSendButton
-                    paired={paired[messageIndex]}
-                    staleAwaiting={awaitingCut >= 0 && messageIndex < awaitingCut}
-                    restingCardShown={messageIndex === lastAgentIdx && restingShown}
-                    shadowedBy={shadowedByMessage.get(messageIndex)}
-                    placed={placement.placed.get(messageIndex)}
-                    settledPlaced={settledPlacement.placed.get(messageIndex)}
-                    fenceQuestions={fenceQuestions}
-                    thread={thread}
-                  />
+                  <ThreadMessage key={i} m={m} index={messageIndex} showSendButton />
                 )
               },
               // QUEUED (optimistic, not-yet-in-the-log) messages are pinned to the very BOTTOM
@@ -685,9 +628,7 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
       {phone && answerSheetOpen && <RegisteredAnswerSheet questions={openQuestions} onClose={() => setAnswerSheetOpen(false)} />}
     </div>
     </PhoneQuestionsContext.Provider>
-    </RegisteredAnsweringProvider>
-    </SendScopeContext.Provider>
-    </ThreadSlugContext.Provider>
+    </ThreadSurface>
   )
 }
 
@@ -907,14 +848,6 @@ function VirtualizedThreadTranscript({
   transcriptRef,
   transcriptKey,
   messages,
-  paired,
-  inFlightAnswers,
-  answeringForMessage,
-  placement,
-  settledPlacement,
-  openQuestions,
-  fencesLive,
-  fenceQuestions,
   thread,
   running,
   steerSince,
@@ -934,19 +867,6 @@ function VirtualizedThreadTranscript({
   transcriptRef: React.RefObject<HTMLDivElement | null>
   transcriptKey?: string
   messages: ChatMessage[]
-  paired: (PairedAnswer[] | null)[]
-  // Computed by the parent off the SAME list — the in-flight answer's rows this transcript is not
-  // already drawing. See unrenderedAnswers.
-  inFlightAnswers: PairedAnswer[] | null
-  answeringForMessage: LiveAnswering["answeringForMessage"]
-  // The worker's marker placements and the fence gate, both computed by the parent off the SAME list.
-  placement: QuestionPlacement<RegisteredQuestionView>
-  settledPlacement: SettledPlacement<SettledQuestion>
-  // The board's open questions minus the ones already drawn settled (openQuestionsOf).
-  openQuestions: readonly RegisteredQuestionView[]
-  fencesLive: boolean
-  // Every row the thread knows, when it speaks the question fence (useFenceQuestions); else undefined.
-  fenceQuestions: readonly FenceQuestionRow[] | undefined
   thread: ThreadViewData | undefined
   running: boolean
   // The send that ended the rest, while the board has yet to report its turn — the parent's copy says why.
@@ -972,12 +892,12 @@ function VirtualizedThreadTranscript({
   const liveToolActivity = running ? liveToolActivityTail(coalescedActivityMessages) : undefined
   const liveActivityLabel = liveToolActivity ? toolActivityLabel(liveToolActivity, projectDir) : undefined
   const liveRuntimeStart = running ? laterInstant(liveRuntimeStartedAt(coalescedActivityMessages), steerSince) : undefined
-  const lastAgentIdx = useMemo(() => lastAssistantIndex(messages), [messages])
-  // No awaiting card while the thread runs — see the drawer's copy above.
-  const awaitingCut = running ? messages.length : lastAgentIdx
+  // What the thread says about each message, from the surface this transcript is drawn in — the same
+  // model the eager column above and the queue card read. `messages` here is the presentation list,
+  // which shares its indices with the list the model was built over.
+  const { lastAgentIdx, awaitingCut, restingShown, paired, inFlightAnswers, placement, settledPlacement, openQuestions } = useThreadTranscript()
   // Redundant rest hairlines dropped exactly as in the drawer's copy above, with the same third
   // draws-nothing reason (the resting card stating the last message's fence).
-  const restingShown = showsRestingCard(thread)
   const activityMessages = useMemo(() => {
     const entries = running ? historicalToolActivityMessages(coalescedActivityMessages) : coalescedActivityMessages
     return withoutRedundantRestDividers(entries, rendersNothingIn(entries, awaitingCut, restingShown))
@@ -1084,10 +1004,6 @@ function VirtualizedThreadTranscript({
     }
     return byRow
   }, [messageRows, settledPlacement.anchored])
-  // The same rows, keyed by message index, for the fold: a fence restating or naming a registration
-  // standing at that message draws nothing of its own (lib/questionShadow).
-  const shadowedByMessage = useMemo(() => registeredStandingAt(messages, openQuestions), [messages, openQuestions])
-
   const rows = useMemo<VirtualThreadRow[]>(() => {
     const next: VirtualThreadRow[] = [{ key: "head-anchor", kind: "head-anchor" }]
     if (transportFallback) next.push({ key: "transport-fallback", kind: "transport-fallback" })
@@ -1680,29 +1596,11 @@ function VirtualizedThreadTranscript({
               </div>
             ) : row.kind === "message" ? (
               // A time break heads the row it dates, INSIDE it, so the virtualizer measures the two as
-              // one and nothing can ever be drawn over the message below. It replaces the row's gap:
-              // TIME_BREAK_ABOVE is the air above the reading (none at the very top of the transcript,
-              // where the row already starts flush), and TIME_BREAK_BELOW ties it to its own message.
-              <div className="relative flex flex-col px-6" style={{ paddingTop: row.timeBreak && row.timeBreakAt ? (row.gap === 0 ? 0 : TIME_BREAK_ABOVE) : row.gap }}>
-                {row.timeBreak && row.timeBreakAt ? (
-                  <>
-                    <TimeBreakLine at={row.timeBreakAt} kind={row.timeBreak} />
-                    <VSpace h={TIME_BREAK_BELOW} />
-                  </>
-                ) : null}
-                <Message
-                  m={row.message}
-                  answering={fencesLive ? answeringForMessage(row.message) : undefined}
-                  showSendButton
-                  paired={paired[row.messageIndex]}
-                  staleAwaiting={awaitingCut >= 0 && row.messageIndex < awaitingCut}
-                  restingCardShown={row.messageIndex === lastAgentIdx && restingShown}
-                  shadowedBy={shadowedByMessage.get(row.messageIndex)}
-                  placed={placement.placed.get(row.messageIndex)}
-                  settledPlaced={settledPlacement.placed.get(row.messageIndex)}
-                  fenceQuestions={fenceQuestions}
-                  thread={thread}
-                />
+              // one and nothing can ever be drawn over the message below. It replaces the row's gap
+              // (TimeBreakHead brings its own air; none above it at the very top of the transcript).
+              <div className="relative flex flex-col px-6" style={{ paddingTop: row.timeBreak && row.timeBreakAt ? 0 : row.gap }}>
+                {row.timeBreak && row.timeBreakAt ? <TimeBreakHead at={row.timeBreakAt} kind={row.timeBreak} flush={row.gap === 0} /> : null}
+                <ThreadMessage m={row.message} index={row.messageIndex} showSendButton />
               </div>
             ) : row.kind === "runtime-status" ? (
               <div className="px-6" style={{ paddingTop: runtimeStatusGap }}>
@@ -1925,10 +1823,23 @@ export function messageHeadIsPicture(m: ChatMessage): boolean {
 function TimeBreakLine({ at, kind }: { at: string; kind: TimeBreak }) {
   const { day, time } = timeBreakLabel(at, kind)
   return (
-    <time dateTime={at} className="block select-none text-center text-[11px] leading-4 [font-variant-numeric:tabular-nums] text-muted-45">
+    <time dateTime={at} data-time-break={kind} className="block select-none text-center text-[11px] leading-4 [font-variant-numeric:tabular-nums] text-muted-45">
       {day ? <span className="font-medium text-muted-60">{day} </span> : null}
       {time}
     </time>
+  )
+}
+// THE READING WITH ITS AIR, which together take the place of the gap above the message they date:
+// TIME_BREAK_ABOVE over the reading (none when `flush`, at the very top of what a surface draws, where
+// the row already starts flush) and TIME_BREAK_BELOW tying it to its own message. Both surfaces that
+// draw a transcript draw a break through this, so the two cannot space it differently.
+export function TimeBreakHead({ at, kind, flush = false }: { at: string; kind: TimeBreak; flush?: boolean }) {
+  return (
+    <>
+      {flush ? null : <VSpace h={TIME_BREAK_ABOVE} />}
+      <TimeBreakLine at={at} kind={kind} />
+      <VSpace h={TIME_BREAK_BELOW} />
+    </>
   )
 }
 
@@ -1957,23 +1868,6 @@ export function messageRendersNothing(m: ChatMessage, staleAwaiting?: boolean, r
   if (m.kind === "event" || m.kind === "reasoning" || m.role === "user") return false
   if (m.parts && m.parts.length > 0) return m.parts.every((p) => (p.kind === "tools" ? p.tools.length === 0 : blankText(m, p.text, staleAwaiting, restingCardShown)))
   return (m.tools?.length ?? 0) === 0 && blankText(m, m.text, staleAwaiting, restingCardShown)
-}
-// THE LAST THING THE AGENT SAID. Any ```awaiting fence above it states a wait that has already resolved —
-// the worker spoke again, so whatever it named came back or was given up on — and draws nothing at all
-// (see renderText). All three transcript surfaces cut at this index, so it lives in one place: when they
-// disagree, one of them either strands a live fence or keeps drawing a settled one.
-//
-// SAID, NOT "IS THE LAST ASSISTANT ROW". A `kind:"event"` line carries `role:"assistant"` but nothing the
-// agent uttered — it is frizz's own synthetic marker for a rest, a wake, a compaction or a sub-agent
-// completion. Counting one made the cut land AFTER the fence it was supposed to protect, and every rested
-// thread ends with exactly such a row ("Agent rested"), so EVERY live fence read as settled: the card and
-// its hourglass came off the one wait that was still open, and its body dropped to free-standing prose.
-// That is the "light gray lines" the maintainer kept reporting on threads whose wait had not resolved at
-// all (2026-08-20), and it survived being restyled twice because the tone was never the defect. Reasoning
-// is the model's OWN output and still counts: a worker that wakes and thinks has resumed.
-export function lastAssistantIndex(messages: readonly ChatMessage[]): number {
-  for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === "assistant" && messages[i].kind !== "event") return i
-  return -1
 }
 
 // The later of two ISO instants, either of which may be missing or unparseable.
@@ -3562,7 +3456,9 @@ function UserBubble({ text, rawText, queued, held, deliveryUnconfirmed, delivery
             onMouseDown={(e) => e.preventDefault()}
             onClick={deliverNow}
             disabled={pushNowPending}
-            title="Send now — interrupts what the worker is doing so it reads the queue immediately"
+            // What it costs the work in flight is the runtime's call: a running command or sub-agent
+            // carries on in the background; an answer being written is cut short (router followUp).
+            title="Send now — the worker reads the queue immediately, and a command it is running carries on in the background"
             aria-label="Send now"
             className="icon-hover-outline absolute bottom-0 right-full mr-2 flex h-7 w-7 items-center justify-center rounded-lg text-muted opacity-0 outline-none transition-[opacity,color,background-color] group-hover:opacity-100 enabled:hover:bg-panel-2/70 enabled:hover:text-fg enabled:focus-visible:opacity-100 enabled:focus-visible:bg-panel-2/70 enabled:focus-visible:ring-1 enabled:focus-visible:ring-muted/80 enabled:focus-visible:ring-offset-1 enabled:focus-visible:ring-offset-bg enabled:active:bg-elevated"
           >
@@ -3609,6 +3505,39 @@ function UserBubble({ text, rawText, queued, held, deliveryUnconfirmed, delivery
         <div aria-hidden className="h-0 overflow-visible text-[11px] text-muted">Taking it back…</div>
       )}
     </div>
+  )
+}
+
+// A TRANSCRIPT MESSAGE ON A THREAD SURFACE — `Message`, handed everything its thread says about it.
+// The queue card and both of the thread view's columns draw a message through this, and it takes only
+// what a LAYOUT decides (`dense`, `textOnly`, `showSendButton`) plus the message's index in the surface's
+// list. Which fence is settled, which registered question the message carries or restates, which answers
+// it pairs with and whether its fenced questions are answerable all come from the surface
+// (ThreadSurface.tsx ThreadTranscript). Each of those was a prop every call site had to remember — four
+// sites in two files, kept alike by tests that grepped each one for the same line — and a prop one site
+// forgot was a behaviour one surface silently lacked.
+//
+// `Message` itself stays the component for a message that is NOT a thread's own transcript row: the
+// sub-agent sheet's, and a queued bubble, which is the human's unsent words and carries none of this.
+export function ThreadMessage({ m, index, dense, textOnly, showSendButton }: { m: ChatMessage; index: number; dense?: boolean; textOnly?: boolean; showSendButton?: boolean }) {
+  const t = useThreadTranscript()
+  const [staleAwaiting, restingCardShown] = t.hidesAwaiting(index)
+  return (
+    <Message
+      m={m}
+      dense={dense}
+      textOnly={textOnly}
+      showSendButton={showSendButton}
+      answering={t.fencesLive ? t.answeringForMessage(m) : undefined}
+      paired={t.paired[index]}
+      staleAwaiting={staleAwaiting}
+      restingCardShown={restingCardShown}
+      shadowedBy={t.shadowedByMessage.get(index)}
+      placed={t.placement.placed.get(index)}
+      settledPlaced={t.settledPlacement.placed.get(index)}
+      fenceQuestions={t.fenceQuestions}
+      thread={t.thread}
+    />
   )
 }
 

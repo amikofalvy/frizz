@@ -209,7 +209,13 @@ test("sendMessage composes the caller's own onRollback ahead of the failure tail
 test("the queue card wires the reversal; the thread page does not", () => {
   const todos = readFileSync(new URL("../components/TodosView.tsx", import.meta.url), "utf8")
   const chat = readFileSync(new URL("../components/ChatView.tsx", import.meta.url), "utf8")
-  assert.match(todos, /onSendFailed: \(\) => onUnresolve\(thread\.id\)/, "the card reinstates itself")
-  // The thread page has no card to reinstate, so it passes no tail at all.
-  assert.ok(!/onSendFailed/.test(chat), "the thread page must not wire a card reversal it has no card for")
+  const shell = readFileSync(new URL("../components/ThreadSurface.tsx", import.meta.url), "utf8")
+  // The card tells its surface how it leaves and comes back; the shell (ThreadSurface) turns that into
+  // the controller's onSent and its reversal, so the two cannot be wired apart.
+  assert.match(todos, /const cancelThisCard = useCallback\(\(\) => onUnresolve\(thread\.id\)/, "the card can reinstate itself")
+  assert.match(todos, /exit: \{ dismiss: dismissThisCard, cancel: cancelThisCard \}/, "…and hands that to its surface")
+  assert.match(shell, /\{ onSendFailed: exit\?\.cancel, composer \}/, "the shell reinstates a surface whose send was refused")
+  // The thread page has no card to reinstate, so it names no exit at all.
+  assert.match(chat, /const surface = useThreadSurface\(\{ slug, thread, messages, openQuestions, settledQuestions \}\)\n/, "the thread page must not wire a card reversal it has no card for")
+  assert.ok(!/onSendFailed/.test(chat))
 })

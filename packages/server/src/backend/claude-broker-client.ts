@@ -7,6 +7,7 @@ import { ThreadSkillSource } from "@frizz/shared"
 import type {
   ClaudeDiagnostic,
   ClaudeInputMessage,
+  ClaudeInterruptOptions,
   ClaudePermissionDecision,
   ClaudePermissionRequest,
   ClaudeSkillInfo,
@@ -52,7 +53,10 @@ export interface ClaudeBrokerClient {
    */
   deliverInput(message: ClaudeInputMessage, options: { acknowledged: boolean; timeoutMs?: number }): Promise<void>
   answerPermission(requestId: string, decision: ClaudePermissionDecision): void
-  interrupt(): void
+  /** Abort the running turn — or, with `sendNow`, ask the runtime to push a waiting message through,
+   *  which aborts only when it cannot move what the turn is waiting on (ClaudeInterruptOptions).
+   *  Fire-and-forget either way: the daemon answers nothing. */
+  interrupt(options?: ClaudeInterruptOptions): void
   /**
    * Take a still-queued input back out of the session, by the id `sendInput` supplied. The ONE
    * round-trip in this protocol: resolves with the CLI's own verdict (true ⇒ the agent will never
@@ -271,7 +275,7 @@ export function connectClaudeBroker(
       catch { pendingInputs.delete(requestId); clearTimeout(timer); reject(undelivered(false)) }
     }),
     answerPermission: (requestId: string, decision: ClaudePermissionDecision) => send({ t: "permission", requestId, decision }),
-    interrupt: () => send({ t: "interrupt" }),
+    interrupt: (options?: ClaudeInterruptOptions) => send({ t: "interrupt", ...(options?.sendNow ? { sendNow: options.sendNow } : {}) }),
     cancelInput: (id: string) => new Promise<boolean>((resolve, reject) => {
       if (closed) { reject(new Error("the broker connection is closed")); return }
       const requestId = `cancel-${++cancelSeq}`

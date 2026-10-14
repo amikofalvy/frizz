@@ -22,7 +22,8 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { X } from "lucide-react"
-import type { AskedQuestion, ClosedQuestionView, QuestionAnswer, RegisteredQuestionView, SettledQuestionView, ThreadView } from "@frizz/shared"
+import { nameQuestionAnswer } from "@frizz/shared"
+import type { AskedQuestion, ClosedQuestionView, NamedQuestionAnswer, QuestionAnswer, RegisteredQuestionView, SettledQuestionView, ThreadView } from "@frizz/shared"
 import { rpc } from "../api/rpc.ts"
 import { draftKey, draftStore, useDraftValues, useProjectDir } from "../lib/drafts.ts"
 import { clearSteered, markAnswered, markSteered } from "../lib/steering.ts"
@@ -34,7 +35,7 @@ import type { PairedAnswer } from "../lib/answersMessage.ts"
 import { ROOT_PATH, liveQuestionNodes, nodeAnswered, registeredAnswer, settledQuestionNodes, toParsedQuestion } from "../lib/registeredQuestion.ts"
 import { decodeQuestionPick, encodeQuestionPick, questionSpecAt } from "../lib/registeredPicks.ts"
 import { AnswersCard } from "./AnswersCard.tsx"
-import { QueueDismissContext } from "./ChatView.tsx"
+import { QueueDismissContext } from "../lib/threadContexts.ts"
 import { QuestionBlockCard } from "./QuestionBlockCard.tsx"
 import { CompactQuestionList, usePhoneQuestions } from "./PhoneQuestionCards.tsx"
 
@@ -67,8 +68,12 @@ export interface RegisteredAnswering {
 /** The staged answers as the prompt box's send needs them, with the three edges of that send. */
 export interface RegisteredTake {
   answers: QuestionAnswer[]
-  /** The same answers as the human may read them back — a secret's value never reaches a bubble. */
-  display: QuestionAnswer[]
+  /** The same answers as the human may read them back — a secret's value never reaches a bubble —
+   *  each named by the id its question was asked under, as the server names it in the message it
+   *  composes (shared nameQuestionAnswer; the id is read off the spec, which is all the board's view
+   *  of a question carries). The optimistic bubble is drawn from these, and the in-flight card stands
+   *  down for a row the transcript already draws only when the two agree on that id. */
+  display: NamedQuestionAnswer[]
   /** The send has committed locally: the cards grey in place. */
   onOptimistic: () => void
   onSuccess: () => void
@@ -231,7 +236,7 @@ export function useRegisteredAnswering(thread: ThreadView | undefined): Register
     }
     return {
       answers: staged,
-      display: displayed(pairs),
+      display: displayed(pairs).map((answer, i) => nameQuestionAnswer(answer, pairs[i].q.spec, pairs[i].q.handle)),
       onOptimistic: () => {
         setError(undefined)
         settleOptimistically(slug, pairs)
@@ -347,9 +352,12 @@ export function SettledQuestionCard({ s, wrap }: { s: SettledQuestion; wrap?: bo
     <QuestionBlockCard
       key={node.path}
       question={node.question}
-      // "Question" even for a `multi`: its own title, "Select multiple", is an instruction nobody can act
-      // on any more.
-      label={node.depth > 1 ? "Follow-up" : node.question.secret ? "Secret" : "Question"}
+      // THE KIND THE LIVE CARD NAMED — "Question", "Select multiple" or "Secret", the card's own default —
+      // so answering a question does not rename it. A settled `multi` read "Question" until 2026-10-13, on
+      // the reasoning that "Select multiple" is an instruction nobody can act on any more; but the line
+      // is the card's KIND, it sits over the same checked boxes, and a card that changed its name as it
+      // greyed read as a different question.
+      label={node.depth > 1 ? "Follow-up" : undefined}
       settled={node.settled}
       wrap={wrap}
     />
@@ -482,8 +490,8 @@ export function ClosedQuestionCard({ spec, state, wrap }: { spec: AskedQuestion;
 }
 const NOT_ANSWERED = { chosenIdxs: [] }
 
-/** Mount ONCE per surface that draws registered cards in more than one place. Must sit INSIDE the
- *  surface's QueueDismissContext, which the send reads. */
+/** Mounted ONCE per thread surface, by the surface's shell (ThreadSurface) — INSIDE its
+ *  QueueDismissContext, which the send reads. */
 export function RegisteredAnsweringProvider({ thread, children }: { thread: ThreadView | undefined; children: ReactNode }) {
   const answering = useRegisteredAnswering(thread)
   return <RegisteredAnsweringContext.Provider value={answering}>{children}</RegisteredAnsweringContext.Provider>

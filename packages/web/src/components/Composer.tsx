@@ -220,9 +220,10 @@ export function Composer({
   // For a surface whose send lives OUTSIDE this box (the phone's new-thread page puts Start in its
   // header): an upload in flight must hold that send too, as it holds Enter and ↑ here.
   onUploadingChange?: (uploading: boolean) => void
-  // THE SURFACE IS THE DROP ZONE. The queue card takes a file dropped anywhere on it (lib/fileDrop), so
-  // this box binds no drop handlers of its own there: it draws its drop hint while `over` and registers
-  // its intake on `intake`. Absent, the box itself is the zone.
+  // THE SURFACE IS THE DROP ZONE. A thread's surface — its queue card, drawer or full-screen page —
+  // takes a file dropped anywhere on it (ThreadSurface, lib/fileDrop), so this box binds no drop handlers
+  // of its own there: it draws its drop hint while `over` and registers its intake on `intake`. Absent
+  // (a box that is not a thread's: the dispatch form, a sub-agent's steer), the box itself is the zone.
   fileDrop?: SurfaceFileDrop
 }) {
   const taRef = useRef<HTMLTextAreaElement>(null)
@@ -890,7 +891,7 @@ export function Composer({
           onSubmit()
         }}
         disabled={!canSend}
-        title={phone.onLongPressSend ? "Send · hold to interrupt and send now" : "Send"}
+        title={phone.onLongPressSend ? "Send · hold to send now" : "Send"}
         aria-label="Send"
         // The ↑ is solid whenever it is the verb; with nothing to send it is the same disc, dimmed.
         // `[-webkit-touch-callout:none]` + `select-none`: a long press must not raise iOS's callout.

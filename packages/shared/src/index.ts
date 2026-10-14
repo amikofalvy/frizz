@@ -1250,7 +1250,8 @@ export type ThreadRecurringPrompt = z.infer<typeof ThreadRecurringPrompt>
 
 // Claude Code narrates its OWN control action into the transcript: every turn cut short leaves a bare
 // `[Request interrupted by user]` user record. Frizz cuts turns short as a feature — "send now" (⌘⏎ and
-// the queue's push-through button) interrupts the running turn so the worker reads the queue at once —
+// the queue's push-through button) aborts the running turn when the runtime has no call it can move
+// aside, so the worker reads the queue at once —
 // so the marker landed as a human bubble directly above the very message that caused it, saying nothing
 // the reader did not just do (maintainer 2026-08-14). The broker's own shutdown writes the same record,
 // which is worse: nobody typed anything at all.
@@ -1974,10 +1975,67 @@ export const PARK_CORRECTION_NEEDS_INPUT_LEAD = "⚠️ Your ```awaiting fence g
  *  every fence after the fact, so this is the only way a worker hears that its question never reached the
  *  human (server question-fences.ts). */
 export const QUESTION_FENCE_CORRECTION_LEAD = "⚠️ Your ```question fence "
+/** The sixth (2026-10-13): a ```done fence that signed a rest off while a question of the thread was still
+ *  open. `frizzctl done` refuses there and a fence cannot be refused, so this is the same gate applied
+ *  after the fact (scheduler SOURCE 15). */
+export const DONE_FENCE_CORRECTION_LEAD = "⚠️ Your ```done fence "
 /** Is this delivered wake one of frizz's fence corrections? */
 export function isParkCorrection(text: string): boolean {
   const t = text.trimStart()
-  return t.startsWith(PARK_CORRECTION_NAMES_LEAD) || t.startsWith(PARK_CORRECTION_RETIRED_LEAD) || t.startsWith(PARK_CORRECTION_QUESTION_LEAD) || t.startsWith(PARK_CORRECTION_NEEDS_INPUT_LEAD) || t.startsWith(QUESTION_FENCE_CORRECTION_LEAD)
+  return t.startsWith(PARK_CORRECTION_NAMES_LEAD) || t.startsWith(PARK_CORRECTION_RETIRED_LEAD) || t.startsWith(PARK_CORRECTION_QUESTION_LEAD) || t.startsWith(PARK_CORRECTION_NEEDS_INPUT_LEAD) || t.startsWith(QUESTION_FENCE_CORRECTION_LEAD) || t.startsWith(DONE_FENCE_CORRECTION_LEAD)
+}
+
+// ---- SIGNING OFF AS DONE OVER AN OPEN QUESTION: ONE GATE, TWO SIGN-OFFS ----------------------------
+// A worker finishes by command (`frizzctl done`) or by fence (```done), and an open question blocks both:
+// the command is refused on the spot, the fence is corrected at the rest it closed (scheduler SOURCE 15).
+// The two were taught as one thing and enforced as two until 2026-10-13: the gate bound only the workers
+// that used the better command, and a fence left the thread showing a question with a live "Mark as done"
+// under it.
+//
+// THE WORDS ARE HERE SO THE TWO CANNOT DRIFT. `cc-worker/lib/frizz-tools.mjs` is dependency-free on
+// purpose (it ships to a worker as plain .mjs and imports nothing but node), so it holds its own copy of
+// this function under the same name, and server `question-done.test.ts` pins the two outputs equal.
+/** An open question as either refusal names it: the worker's own id (the one `frizzctl unask` takes) and
+ *  the question's text. */
+export interface DoneBlockingQuestion {
+  id: string
+  question: string
+}
+
+/** The paragraph both refusals share: how many questions are open, each by id with its first line, and
+ *  the two ways out. */
+export function doneOpenQuestionsRefusal(questions: readonly DoneBlockingQuestion[]): string {
+  const lines = questions.map((q) => `  ${q.id}  ${(q.question ?? "").split("\n")[0]}`)
+  return (
+    `${lines.length} question${lines.length === 1 ? "" : "s"} the human has not answered:\n${lines.join("\n")}\n` +
+    "Each one dies unread with a done card. Decide it yourself and withdraw it (`frizzctl unask <id>`), or leave it " +
+    "open and keep working until it is answered."
+  )
+}
+
+/** What follows a correction's lead when a ```done fence closed a rest over open questions. The lead is
+ *  the caller's: alone it is DONE_FENCE_CORRECTION_LEAD, and beside a ```question fence that could not
+ *  register it rides under that correction as a second paragraph, so one rest draws one message.
+ *
+ *  The command's refusal can stop at the two ways out, because nothing was recorded. A fence already was:
+ *  the message that carries it is the thread's rest, so the last paragraph says what the NEXT message has
+ *  to be for each way out. The reference is asked for whether or not the question has faded: it is right
+ *  in both cases, and a bare rest behind a question the human has typed past would be nudged for a missing
+ *  sign-off, a second correction earned by following the first. */
+export function doneOverOpenQuestionsBody(questions: readonly DoneBlockingQuestion[]): string {
+  const one = questions.length === 1
+  return [
+    `closed a rest while ${one ? "a question" : "questions"} of this thread ${one ? "is" : "are"} still open, so the human is shown a finished thread and ${one ? "an unanswered question" : "unanswered questions"} at once, and archiving on the done card ends ${one ? "the question" : "them"} unread.`,
+    "",
+    doneOpenQuestionsRefusal(questions),
+    "",
+    "Your next message is the rest that counts, and it takes one of two shapes:",
+    "",
+    `- You withdrew ${one ? "it" : "every one"}: sign off done again, and it stands.`,
+    one
+      ? "- You still need the answer: write no ```done fence. End on a ```question fence carrying its `id:` alone, which keeps the thread in the human's queue on it, and sign off done once it is answered."
+      : "- You still need an answer: write no ```done fence. End on a ```question fence for each one you still need, carrying its `id:` alone, which keeps the thread in the human's queue on them, and sign off done once they are answered.",
+  ].join("\n")
 }
 
 export function timerPromptMessage(prompt: string, fireAt: string): string {
@@ -3169,6 +3227,75 @@ export interface QuestionDismissal {
   handle?: string
 }
 
+/** THE WORKER'S OWN ID ON AN ANSWER ROW — ``N. `settings-store` “question” → answer``, the id in backticks
+ *  between the row's number (and its follow-up marker) and the opening quote.
+ *
+ *  A worker asks by id, is corrected by id, references by id and withdraws by id; until 2026-10-13 the
+ *  ANSWER was the one message that named a question by its text alone. That is enough only while no two
+ *  questions share a text, and two follow-ups under different options often do ("Which path?"), each
+ *  marked by nothing but the follow-up arrow.
+ *
+ *  WHERE IT SITS IS WHAT KEEPS THE HUMAN'S TEXT OUT OF IT. Everything the human types on this wire comes
+ *  AFTER a row's `” → `, and its later lines are indented (ANSWER_CONTINUATION_INDENT), so no typed text
+ *  can reach the head of a row: an answer that reads "`store` “fake” → x" is an answer, on whichever row
+ *  it was given. (What is typed BESIDE the answers goes under ANSWERS_NOTE_HEADER, which ends the rows.)
+ *  After the arrow the same token would be forgeable by any typed answer; inside the quotes it would
+ *  read as part of the question the worker asked.
+ *
+ *  ONLY A FENCE-ASKED QUESTION HAS ONE, and a row without it is the wire as it has always been, byte for
+ *  byte — a question `ask` registered, a thread dispatched before the fence cutover, the browser's own
+ *  composeAnswerWire, and every transcript already on disk. So the one reader (the web's
+ *  parseBuriedAnswersMessage) takes the id as OPTIONAL and reads both forms.
+ *
+ *  The pattern restates the fence's id grammar (question-fence.ts ID_RE) rather than importing it: a
+ *  stored handle that somehow falls outside it — a spec written by hand — is left off the row instead of
+ *  written where it could break one, and that row is then the old form, which still names its question. */
+export const ANSWER_ROW_ID_PATTERN = "[a-z0-9][a-z0-9._-]{0,63}"
+const ANSWER_ROW_ID = new RegExp(`^${ANSWER_ROW_ID_PATTERN}$`)
+const answerRowId = (handle: string | undefined): string => (handle && ANSWER_ROW_ID.test(handle) ? `\`${handle}\` ` : "")
+
+/** An answer with the worker's own id beside each question that has one, as the wake's writer takes it.
+ *
+ *  NEVER STORED AND NEVER ACCEPTED. `handle` is stamped by `nameQuestionAnswer` from the question's own
+ *  row at the moment a message is composed; QuestionAnswerSchema is strict and does not know the field,
+ *  so a browser cannot send one and a stored answer never carries one. */
+export interface NamedQuestionAnswer extends QuestionAnswer {
+  handle?: string
+  followUps?: NamedQuestionAnswer[]
+}
+
+/** Stamp an answer with the ids its question was asked under: the root's from its row (`handle`) or,
+ *  failing that, from the root of its stored spec — one id wherever both exist, and the spec is all a
+ *  browser has (the board's question view carries no `handle` of its own) — and each follow-up's from
+ *  the node it answers in that spec tree. A question with no handle anywhere, which is every question
+ *  `ask` registered, is named nowhere and its answer comes back as it went in.
+ *
+ *  A follow-up is found the way the card that produced the answer built it (the web's registeredAnswer):
+ *  only a pick-one opens a branch, and the answer lists the taken option's follow-ups in the option's own
+ *  order. The question TEXT has to agree as well, so an answer composed against a tree that has since
+ *  grown (a `when:` follow-up attached from a later message) can never be given a neighbour's id — a row
+ *  with no id still names its question; a row with the wrong one is an answer delivered to the wrong
+ *  question. Whatever `handle` the input carried is dropped, so the stamp is the only source of one. */
+export function nameQuestionAnswer(answer: QuestionAnswer, spec: AskedQuestion | undefined, handle: string | null | undefined): NamedQuestionAnswer {
+  const walk = (said: QuestionAnswer, node: AskedQuestion | undefined, id: string | undefined): NamedQuestionAnswer => {
+    const taken = node && node.kind !== "multi" && said.chosen.length === 1 ? node.options?.find((o) => o.label === said.chosen[0]) : undefined
+    const followUps = said.followUps?.map((child, i) => {
+      const asked = taken?.followUps?.[i]
+      const same = asked !== undefined && asked.question.trim() === child.question.trim()
+      return walk(child, same ? asked : undefined, same ? asked.handle : undefined)
+    })
+    return {
+      questionId: said.questionId,
+      question: said.question,
+      chosen: said.chosen,
+      ...(said.text !== undefined ? { text: said.text } : {}),
+      ...(followUps ? { followUps } : {}),
+      ...(id ? { handle: id } : {}),
+    }
+  }
+  return walk(answer, spec, handle || spec?.handle)
+}
+
 /** The answer as it reaches the worker — one message, composed here so the RPC, the delivery and any
  *  read-back cannot word it three ways.
  *
@@ -3182,8 +3309,11 @@ export interface QuestionDismissal {
  *  question? They used to look good. It just showed it, reiterated the question as well as my selected
  *  or typed answer", then, of the header: "Why would this show up in the UI?").
  *
+ *  EACH ROW NAMES ITS QUESTION BY THE WORKER'S OWN ID when it has one (answerRowId), ahead of the
+ *  restated text: two questions may share a text, and no two share an id.
+ *
  *  SO THE TREE IS FLATTENED — one numbered row per answered node, a follow-up marked `⤷` before its
- *  quote. Indenting a child under its parent is what the fence form does NOT support: the parser reads
+ *  id and its quote. Indenting a child under its parent is what the fence form does NOT support: the parser reads
  *  any line after a row that is not itself a row as a CONTINUATION of that row's answer, so an indented
  *  follow-up renders inside its parent's answer chip. The rows stay in tree order, so the shape is still
  *  legible; the marker is what says which is which.
@@ -3192,7 +3322,7 @@ export interface QuestionDismissal {
  *  dismissing several in a row and is sitting right there, so each × marking the row and waking the
  *  worker would be a turn per click. They are told at the next wake, in this same message — as ROWS, for
  *  the same reason the follow-ups are: a trailing paragraph is swallowed into the last answer. */
-export function questionAnswerMessage(answers: readonly QuestionAnswer[], dismissed: readonly QuestionDismissal[] = []): string {
+export function questionAnswerMessage(answers: readonly NamedQuestionAnswer[], dismissed: readonly QuestionDismissal[] = []): string {
   // NO ANSWERS AT ALL is its own message, not the answers one with an empty list. It reaches exactly one
   // thread: an AUTONOMOUS one, whose questions were cancelled wholesale when its Goal was armed and
   // which has no next steer for them to ride (scheduler.evalQuestionAnswers). Wording it as "answers"
@@ -3200,13 +3330,13 @@ export function questionAnswerMessage(answers: readonly QuestionAnswer[], dismis
   // speaking here rather than the human, so the chat draws it as a hairline — see questionsCancelledWake.
   if (answers.length === 0) return questionsCancelledWakeMessage(dismissed.length, dismissed)
   const rows: string[] = []
-  const push = (a: QuestionAnswer, followUp: boolean): void => {
+  const push = (a: NamedQuestionAnswer, followUp: boolean): void => {
     const said = answerPicksText(a.chosen, a.text)
-    rows.push(`${followUp ? `${ANSWER_FOLLOW_UP_MARKER} ` : ""}“${a.question}” → ${indentAnswerContinuation(said || "(no answer)")}`)
+    rows.push(`${followUp ? `${ANSWER_FOLLOW_UP_MARKER} ` : ""}${answerRowId(a.handle)}“${a.question}” → ${indentAnswerContinuation(said || "(no answer)")}`)
     for (const child of a.followUps ?? []) push(child, true)
   }
   for (const a of answers) push(a, false)
-  for (const d of dismissed) rows.push(`“${d.question}” → ${DISMISSED_ANSWER}`)
+  for (const d of dismissed) rows.push(`${answerRowId(d.handle)}“${d.question}” → ${DISMISSED_ANSWER}`)
   return `${BURIED_ANSWERS_HEADER}\n${rows.map((row, i) => `${i + 1}. ${row}`).join("\n")}`
 }
 
@@ -4394,17 +4524,19 @@ export const FollowUpInput = z.object({
   // newer frizz build in place (hooks are read once, at startup). Everything else that needs a fresh
   // process derives it server-side; see needsFreshProcessForLimit.
   freshProcess: z.boolean().optional(),
-  // PREEMPT the operation the worker is running right now, so this message is read at once instead of
-  // when that operation finishes. The operator's "Interrupt and send" verb, and opt-in for the same
-  // reason `freshProcess` is: it costs the in-flight tool call's result. (It no longer costs the
-  // worker's sub-agents: since 2026-09-24 the broker's SDK query declares `perTaskStopAffordance`,
-  // so the interrupt aborts only the turn and background agents run on.)
+  // SEND NOW: this message is read at once instead of when the operation the worker is running
+  // finishes. The operator's forced send (⌘⏎), and opt-in because it can cost work in flight. Since
+  // 2026-10-13 it usually does not: the runtime moves a running command or foreground sub-agent to the
+  // background and takes the message into the same turn. Only when it has nothing to move — the model
+  // is mid-answer, a wake Frizz wrote is waiting too — is the turn aborted, as it always was before,
+  // and that costs the in-flight call its result. (An abort has not cost the worker's BACKGROUND
+  // sub-agents since 2026-09-24: the broker's SDK query declares `perTaskStopAffordance`.)
   //
   // It exists because delivery is ALREADY as fast as queueing can be. Measured over 14 days of this
   // project's own transcripts, Claude Code drains its queue at the first sampling boundary that
   // exists; the wait an operator feels is the remaining time of whatever was in flight (a long `Bash`,
   // or one 73–133s reasoning+answer generation), which put mid-turn operator prose at p50 13.8s,
-  // p90 49s, p99 2.5m. Preempting is the only lever left.
+  // p90 49s, p99 2.5m. Getting that operation out of the way is the only lever left.
   //
   // Broker-backed Claude only — that is every Claude thread dispatched since the broker cutover. On
   // any other runtime the message is delivered normally and this is ignored, never refused: a send
@@ -5366,6 +5498,12 @@ export function parseThreadMessage(text: string): { slug: string; title: string;
 // Retry (the rail, the thread header, the queue card) and the limit card's "Continue now" are the
 // messages the human SENDS without typing: buttons that post one fixed sentence. It says nothing about
 // any question, so it does not count either.
+//
+// ANSWERS SENT FROM THE PROMPT BOX are the other message the human sends without typing. That Send
+// carries the staged answers as an ordinary follow-up (router followUp, `withAnswersNote`), so it has no
+// delivery token, and it used to count: answering one of two questions from the prompt box retired the
+// other, where the same answer sent from the card (the scheduler's delivery) did not. It is the human
+// typing only when they typed something BESIDE the answers, which is the note under ANSWERS_NOTE_HEADER.
 /** What Retry and "Continue now" send (web lib/retrySession.ts and ChatView's LimitPauseCard post this constant). */
 export const RETRY_FOLLOW_UP = "Continue exactly where you left off."
 
@@ -5374,7 +5512,9 @@ export function isHumanTypedMessage(text: string): boolean {
   if (!text.trim()) return false
   if (isInjectedNoise(text) || isInterruptMarker(text) || isWakeDelivery(text)) return false
   if (parseThreadMessage(text) || parseCrossSessionMessage(text) || parseAgentMessage(text)) return false
-  return stripHumanGapNote(text).trim() !== RETRY_FOLLOW_UP
+  const own = stripHumanGapNote(text).trim()
+  if (own.startsWith(`${BURIED_ANSWERS_HEADER}\n`)) return splitAnswersNote(own).note !== ""
+  return own !== RETRY_FOLLOW_UP
 }
 
 /** The human-typed messages a user RECORD carries. The runtime merges whatever was queued while the

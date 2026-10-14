@@ -34,10 +34,10 @@ export function supervisorPollMs(state: FrizzSupervisorStatus["state"] | undefin
 export const supervisorStatusQueryOptions = queryOptions({
   queryKey: SUPERVISOR_STATUS_KEY,
   // Every answer is stamped with the instant its request STARTED (pullfrog on #35, 2026-09-11): an
-  // answer is not a point in time, and App's optimistic-restart guard has to tell a poll that was
+  // answer is not a point in time, and PageFrame's optimistic-restart guard has to tell a poll that was
   // already in flight when the operator clicked from one that can actually speak for the accepted
   // transition. The stamp is client-side only — never on the wire — and it also means no two answers
-  // are structurally equal, so react-query hands App a fresh object per poll.
+  // are structurally equal, so react-query hands PageFrame a fresh object per poll.
   queryFn: async (): Promise<StampedSupervisorStatus | null> => {
     const requestedAt = Date.now()
     const status = await getFrizzSupervisorStatus()

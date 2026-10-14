@@ -29,6 +29,16 @@ export function usePhoneQuestions(): PhoneQuestions | null {
   return useContext(PhoneQuestionsContext)
 }
 
+/** THE RECOMMENDED TAG ADDS NOTHING TO ITS LABEL'S LINE. It is 11px type set inline on a larger label,
+ *  and an inline box that inherits the label's line-height at a smaller font hangs its half-leading
+ *  below the label's own: the line grew 1px, so a tagged option row stood 1px taller than its
+ *  neighbours — 47 against 46px in the answer sheet (a 22px label line against 21), 25 against 24px in
+ *  the list (21 against 20), measured in sans at 390px, 2026-10-13. With no leading of its own the tag
+ *  sits inside the label's line and every row of a question is one height. Its baseline does not move
+ *  (29.00px from the row's top before and after), and its type is the size it was. Shared by the list
+ *  below and the sheet (RegisteredAnswerSheet's OptionRow). */
+export const RECOMMENDED_TAG_LINE = "leading-none"
+
 /** Several open registered questions in ONE bordered card, a hairline between each — the mockup's
  *  shape for the questions a rest asked together. A placed card (inside a message) is a list of one. */
 export function CompactQuestionList({ questions }: { questions: readonly RegisteredQuestionView[] }) {
@@ -62,7 +72,7 @@ function CompactQuestion({ q, n }: { q: RegisteredQuestionView; n: number }) {
           <span className="w-3 shrink-0 font-bold tabular-nums">{i + 1}</span>
           <span className="min-w-0">
             <InlineLabel md={option.label} />
-            {option.recommended && <span className="ml-1 text-[11px] font-semibold text-accent">RECOMMENDED</span>}
+            {option.recommended && <span className={`ml-1 text-[11px] font-semibold ${RECOMMENDED_TAG_LINE} text-accent`}>RECOMMENDED</span>}
           </span>
         </div>
       ))}
