@@ -274,9 +274,11 @@ export function createApp(ctx: AppContext, options: AppOptions = {}) {
     return c.json({ path })
   })
 
-  // Delta SSE: the first frame is a FULL board keyframe (so a fresh client renders without a round-trip)
-  // carrying the seq it corresponds to + the boot id; every subsequent bus event is a per-thread delta
-  // (or a notify). A 10s heartbeat keeps the pipe warm.
+  // Delta SSE — the FALLBACK board transport, for a page whose server has no /ws (api/sse.ts). The /ws
+  // board channel carries deltas only and resumes from a board read over HTTP (app-socket.ts); SSE keeps
+  // its connect keyframe, since it runs only where /ws is missing. The first frame is a FULL board
+  // keyframe carrying the seq it corresponds to + the boot id; every subsequent bus event is a
+  // per-thread delta (or a notify). A 10s heartbeat keeps the pipe warm.
   //
   // Ordering guarantee: we SUBSCRIBE FIRST and buffer, capture the keyframe, then flush. A publish that
   // fires while we assemble the keyframe (e.g. a cold-start rebuild that itself publishes) is therefore
@@ -296,8 +298,11 @@ export function createApp(ctx: AppContext, options: AppOptions = {}) {
       })
 
       try {
-        const board = await ctx.board.snapshot()
-        await send({ type: "board", board, seq: ctx.board.currentSeq(), bootId: ctx.bootId })
+        // The board and its seq read together: a refresh landing between two separate reads would
+        // label the board with a seq one delta off, and the client's dup-guard would then drop a delta
+        // it needed or apply one it already had.
+        const { board, seq } = await ctx.board.snapshotState()
+        await send({ type: "board", board, seq, bootId: ctx.bootId })
       } catch {
         // board not ready — a buffered/live bus publish will deliver the first delta instead
       }

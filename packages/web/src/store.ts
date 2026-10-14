@@ -168,10 +168,10 @@ export const store = proxy({
   // cache). useTranscript reads this to DROP its 1.5s poll + subscribe instead; false before the socket
   // confirms and on SSE fallback (a pre-restart server without /ws), where polling stays exactly as today.
   socketTranscripts: false,
-  // Explicit transport downgrades reported by the multiplex server. A board overflow switches the whole
-  // board channel to SSE once; a transcript overflow/read-budget rejection pauses only that slug's live
-  // subscription while the last complete copy remains visible and manually refreshable. All reset on reload.
-  socketBoardFallback: null as SocketPayloadFallback | null,
+  // Explicit transport downgrades reported by the multiplex server: a transcript overflow/read-budget
+  // rejection pauses only that slug's live subscription while the last complete copy remains visible and
+  // manually refreshable. All reset on reload. (The board has none: it never rides the socket whole, so
+  // nothing about its size can downgrade it — see api/board-resume.ts.)
   socketTranscriptFallbacks: {} as Record<string, SocketTranscriptFallback>,
   // A `/thread/<slug>` URL whose destination is not settled yet. The router cannot decide it alone:
   // a QUEUED thread already has its full card in the main column, so the URL belongs to that card,
@@ -652,7 +652,7 @@ export function topThreadSlug(): string | null {
 // transport nobody re-pointed. See lib/projectOwnership.ts.
 //
 // Dropping is silent on purpose: the commonest way to arrive here foreign is a perfectly healthy race —
-// a keyframe or an `rpc.board()` seed already on the wire when the operator switched projects — and a
+// a board read or a keyframe already on the wire when the operator switched projects — and a
 // console warning per switch would be noise about the system working.
 
 // A THREAD IS A VALUE IN THE STORE, NEVER A PROXY. valtio turns every object assigned into the store
@@ -684,14 +684,16 @@ export function plainThreads<T extends ThreadView>(threads: T[]): T[] {
 // A full board KEYFRAME arrives from SSE (React-free) — on connect and on resync. Just store it;
 // every surface derives its own view of the thread list per render (there is no selection state to
 // reconcile — the focus machine that needed one is gone).
-export function setBoard(board: BoardSnapshot) {
+// True when the board was taken, false when the door refused it.
+export function setBoard(board: BoardSnapshot): boolean {
   // The Console's board is EVERY project's, merged by its own feed (api/consoleFeed.ts). One project's
   // board arriving through this door on the Console is a page connection that has not finished closing.
-  if (isConsolePath() || !ownedByThisPage(board.projectSlug)) return
+  if (isConsolePath() || !ownedByThisPage(board.projectSlug)) return false
   setGithubRepo(board.githubRepo)
   setLocalPathBase(board.projectDir, board.homeDir)
   plainThreads(board.threads)
   store.board = board
+  return true
 }
 
 /**
@@ -716,30 +718,11 @@ export function resetProjectState() {
   store.filePanels = []
   store.composerContext = {}
   store.routeThreadSlug = null
-  store.socketBoardFallback = null
   store.socketTranscriptFallbacks = {}
   store.showSettings = false
   store.showNewThread = false
   store.showGithubPicker = false
   store.lightbox = null
-}
-
-// STARTUP seed only (App fires an rpc.board() to paint before SSE connects). Unlike setBoard this must
-// NOT clobber a board the SSE stream has already established + advanced with deltas — a late-resolving
-// seed would otherwise revert applied deltas (the seq keeps advancing but the content rolls back). So
-// it lands only when nothing is there yet; once the SSE keyframe has set the board, the seed is a no-op.
-//
-// "Nothing is there yet" is ALSO the state a project switch leaves behind (resetProjectState nulls the
-// board), which is what made the ownership check load-bearing here rather than belt-and-braces: the
-// previous project's in-flight seed lands into the emptied store and paints its threads under the new
-// project's URL. The guard is the only thing standing between that race and the operator.
-export function seedBoard(board: BoardSnapshot) {
-  if (isConsolePath() || !ownedByThisPage(board.projectSlug)) return
-  if (store.board !== null) return
-  setGithubRepo(board.githubRepo)
-  setLocalPathBase(board.projectDir, board.homeDir)
-  plainThreads(board.threads)
-  store.board = board
 }
 
 // The slot of each thread on the live board, kept across deltas so an upsert is one lookup and not a

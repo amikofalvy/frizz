@@ -24,7 +24,7 @@ function harness(tele?: Partial<SessionTelemetry>) {
   const snapshot: BoardSnapshot = { projectDir: dir, projectName: "test", projectLabel: "test", threads: [], errors: [], warnings: [] }
   let refreshes = 0
   const board: BoardManager = {
-    snapshot: async () => snapshot, currentSeq: () => 0, rebuild: async () => snapshot,
+    snapshot: async () => snapshot, currentSeq: () => 0, deltasSince: () => null, snapshotState: async () => ({ board: ({}) as never, seq: 0 }), rebuild: async () => snapshot,
     refresh: () => { refreshes++; return snapshot }, start: async () => {}, stop: async () => {},
   }
   const tailer: Tailer = {

@@ -38,7 +38,6 @@ function render(
     ? null
     : { projectLabel: label, ...(githubRepo ? { githubRepo } : {}), threads: [] }) as unknown as BoardSnapshot
   store.connection = options.connection ?? "open"
-  store.socketBoardFallback = null
   // The home crumb is a router Link (it hard-loaded the document until 2026-09-04), and a Link outside a
   // router context throws on render — every case here failed at once when it changed. In the app the row
   // is always under RouterProvider; MemoryRouter is the same context without a DOM history.

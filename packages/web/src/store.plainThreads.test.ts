@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import { test } from "node:test"
 import { snapshot, subscribe } from "valtio"
 import type { BoardDelta, BoardSnapshot, ThreadView } from "@frizz/shared"
-import { applyDelta, boardThreadsNow, seedBoard, setBoard, store, threadSnapshotBySlug } from "./store.ts"
+import { applyDelta, boardThreadsNow, setBoard, store, threadSnapshotBySlug } from "./store.ts"
 import { resolveThreadRoute } from "./lib/threadRouteState.ts"
 
 // A thread on the board is a plain value, never a valtio proxy (store.ts plainThreads). On a board of
@@ -32,10 +32,6 @@ test("a keyframe's threads are stored as the very objects that arrived, and snap
   assert.equal(store.board!.threads[1], b)
   assert.equal(boardThreadsNow()![0], a, "the snapshot holds the same object, not a frozen copy")
   assert.equal((snapshot(store).board as unknown as BoardSnapshot).threads[1], b)
-  store.board = null
-  const c = row("c")
-  seedBoard(board(c))
-  assert.equal(store.board!.threads[0], c, "the startup seed stores its threads the same way")
 })
 
 test("a delta replaces a slot and notifies, and every lookup finds the replacement", async () => {

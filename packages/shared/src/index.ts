@@ -4214,6 +4214,19 @@ export const BoardSnapshot = z.object({
 })
 export type BoardSnapshot = z.infer<typeof BoardSnapshot>
 
+/**
+ * The board as of one point in its delta stream: the snapshot, the seq of the last delta it includes,
+ * and the boot that numbered it. What a client reads over HTTP before asking the socket for the deltas
+ * after `seq` (SocketClientMsg's board topic). Read in one synchronous step server-side, so the board can
+ * never be newer or older than the seq it names.
+ */
+export const BoardState = z.object({
+  board: BoardSnapshot,
+  seq: z.number().int().min(0),
+  bootId: z.string(),
+})
+export type BoardState = z.infer<typeof BoardState>
+
 // ---- Provider quota (subscription rate-limit windows) ----
 // A single usage window for a provider's plan — the 5-hour rolling window or the weekly window that
 // Claude/Codex subscriptions meter against. `usedPercent` is 0..100 (how much of the window is spent,
@@ -6444,11 +6457,33 @@ const SocketFileClientMsg = z.discriminatedUnion("t", [
   z.object({ t: z.literal("sub"), topic: z.literal("file"), path: SocketFilePath }).strict(),
   z.object({ t: z.literal("unsub"), topic: z.literal("file"), path: SocketFilePath }).strict(),
 ])
-export const SocketClientMsg = z.union([SocketTranscriptClientMsg, SocketFileClientMsg])
+// THE BOARD TOPIC: "I hold the board as of (bootId, seq); send me every delta after it." The socket
+// never carries a whole board. A client reads the board over HTTP (the `boardState` query, gzipped, with
+// the seq and boot it reflects), then sends this; the server replays the deltas it published since from
+// a bounded ring and streams the rest live. When it cannot (another boot, a seq older than the ring, a
+// seq it never published) it answers `board-resync` and the client reads the board over HTTP again. Sent
+// again after every reconnect and every resync, so one message both starts and resumes the stream.
+//
+// Why (2026-10-14): a page load used to download the board twice, once over HTTP and once as the socket's
+// connect keyframe, and Blink spends ~350ms of main thread receiving a 14MB socket message where the same
+// bytes over HTTP cost ~50ms. A board past ~1,400 real threads also crossed the 4 MiB frame cap and sent
+// every tab to the SSE fallback.
+const SocketBoardClientMsg = z.object({
+  t: z.literal("board"),
+  bootId: z.string().min(1).max(200),
+  seq: z.number().int().min(0),
+}).strict()
+export const SocketClientMsg = z.union([SocketTranscriptClientMsg, SocketFileClientMsg, SocketBoardClientMsg])
 export type SocketClientMsg = z.infer<typeof SocketClientMsg>
+/** Why the server could not resume a client's board from the seq it named. */
+export type BoardResyncReason = "boot" | "expired" | "ahead" | "oversized"
 
 // server -> client (hand-built by the server, parsed defensively by the client — a plain union, no zod):
-//   - {t:"event"}      wraps a ServerEvent (board keyframe / board-delta / notify)
+//   - {t:"hello"}      the connection's first frame: the server's boot id and its current board seq.
+//                      Board frames start only once the client sends {t:"board"} (see above).
+//   - {t:"board-resync"} the board could not be resumed from the seq the client named (or a delta was
+//                      too big for one frame): read the board over HTTP again and resume from its seq.
+//   - {t:"event"}      wraps a ServerEvent (board-delta / notify / …); never a whole board on /ws
 //   - {t:"transcript"} the pushed transcript for a subscribed slug (replaces the poll response)
 //   - {t:"payload-too-large"} is a stable, typed transport downgrade. A board overflow moves the client
 //     to SSE once; a transcript overflow pauses only that subscription and leaves explicit HTTP refresh.
@@ -6467,6 +6502,8 @@ export type SocketClientMsg = z.infer<typeof SocketClientMsg>
 export type TranscriptPushPage = Omit<TranscriptPage, "messages" | "editedFiles">
 
 export type SocketServerMsg =
+  | { t: "hello"; bootId: string; seq: number }
+  | { t: "board-resync"; reason: BoardResyncReason }
   | { t: "event"; event: ServerEvent }
   | { t: "transcript"; slug: ThreadSlug; messages: TranscriptMessage[]; page?: TranscriptPushPage }
   | { t: "file-changed"; path: string }

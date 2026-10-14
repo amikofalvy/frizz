@@ -1,7 +1,7 @@
 import { useEffect, useRef, type CSSProperties } from "react"
 import { useNavigate } from "react-router"
 import { useSnapshot } from "valtio"
-import { closeGithubPicker, store, seedBoard, pushDrawer, resolveRoutedThread, topDrawer, topThreadSlug, showToast } from "./store.ts"
+import { closeGithubPicker, store, pushDrawer, resolveRoutedThread, topDrawer, topThreadSlug, showToast } from "./store.ts"
 import { useBoard } from "./hooks.ts"
 import { closeDrawerAnimated } from "./lib/overlays.ts"
 import { takeScrollAfterUnlock } from "./lib/pageScrollLock.ts"
@@ -10,7 +10,6 @@ import { nextSidebarPresence, readSidebarMirror, writeSidebarMirror, type Sideba
 import { isConsolePath, projectSlug } from "./lib/base-path.ts"
 import { CONSOLE_TOP_PX, HOME_BAND_PX } from "./lib/homeView.ts"
 import { CONSOLE_SIDEBAR_COLUMN_CLASS, ConsoleSidebar } from "./components/ConsoleSidebar.tsx"
-import { rpc } from "./api/rpc.ts"
 import { SIDEBAR_COLUMN_CLASS, Sidebar } from "./components/Sidebar.tsx"
 import { MobileBoard } from "./components/MobileBoard.tsx"
 import { useIsMobile } from "./lib/mobile.ts"
@@ -37,17 +36,10 @@ function maybeShowSignInHint() {
 export function App() {
   const snap = useSnapshot(store)
   // THE CONSOLE is this same board shell over every project's threads (routes.tsx ConsoleRoute): its own
-  // sidebar, no seed (the feed's first keyframes are the board), and room at the top for the home band.
+  // sidebar, its own feed (each project's board read and merged by api/consoleFeed.ts), and room at the
+  // top for the home band. A project page's board is read by api/socket.ts as the page loads.
   const onConsole = isConsolePath()
   const sidebarPresence = useRef<SidebarPresence>({ projectDir: null, hasBeenVisible: false })
-
-  // Seed the board once at startup so the first paint doesn't wait on the SSE connect; SSE keeps it
-  // fresh afterward. seedBoard (not setBoard) so a late-resolving seed can't clobber a board the SSE
-  // stream has already established + advanced with deltas.
-  useEffect(() => {
-    if (onConsole) return
-    rpc.board().then(seedBoard).catch(() => {})
-  }, [onConsole])
 
   // STORE → URL (opening a drawer writes the address bar). The other direction is the route tree's —
   // see routes.tsx useRouteToStore. Navigation goes through the router so its history stack and its

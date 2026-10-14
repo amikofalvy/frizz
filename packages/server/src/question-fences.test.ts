@@ -272,7 +272,7 @@ function routerHarness(sightings: { current: QuestionSighting[] }) {
   const project: Project = { dir: h.dir, id: "qf", name: "test", label: "test", stateDir: h.dir, cwdSlug: "test" }
   const snapshot: BoardSnapshot = { projectDir: h.dir, projectName: "test", projectLabel: "test", threads: [], errors: [], warnings: [] }
   const board: BoardManager = {
-    snapshot: async () => snapshot, currentSeq: () => 0, rebuild: async () => snapshot,
+    snapshot: async () => snapshot, currentSeq: () => 0, deltasSince: () => null, snapshotState: async () => ({ board: ({}) as never, seq: 0 }), rebuild: async () => snapshot,
     refresh: () => snapshot, start: async () => {}, stop: async () => {},
   }
   let ticks = 0

@@ -2,6 +2,9 @@ import type { QueryClient } from "@tanstack/react-query"
 import type { SocketClientMsg, SocketServerMsg } from "@frizz/shared"
 import { store } from "../store.ts"
 import { BoardStream, refreshProjectList } from "./board-stream.ts"
+import { BoardResume } from "./board-resume.ts"
+import { noteServerBootId } from "./boot.ts"
+import { rpc } from "./rpc.ts"
 import { connectSSE, rebindSSEProject, suspendSSE } from "./sse.ts"
 import { writeTranscriptPush } from "./transcript-push.ts"
 import { invalidateInteractionQueries } from "./interaction-cache.ts"
@@ -20,9 +23,10 @@ import {
 } from "./consoleFeed.ts"
 import { localFileQueryKey } from "../lib/localFileQuery.ts"
 
-// The stage-2 multiplexed client: ONE WebSocket("/ws") carrying the board channel (keyframe + deltas +
-// notify, driven through the shared BoardStream) AND per-thread transcript push (replacing the 1.5s
-// threadTranscript poll).
+// The stage-2 multiplexed client: ONE WebSocket("/ws") carrying the board channel (deltas + notify,
+// driven through the shared BoardStream) AND per-thread transcript push (replacing the 1.5s
+// threadTranscript poll). The board itself never comes down the socket: it is read over HTTP and the
+// socket resumes from its seq (board-resume.ts has the why and the protocol).
 //
 // GRACEFUL FALLBACK: a pre-restart server has no /ws route — its upgrade handler destroys the socket, so
 // we never see `onopen`. On a close/error BEFORE the socket ever confirms, we hand the board channel back
@@ -54,21 +58,33 @@ const subs = new Map<string, number>()
 // every (re)connect. The server answers a change with `file-changed`, and the handler below
 // invalidates the reader's query so it re-reads through its own gated RPC.
 const fileSubs = new Map<string, number>()
-// How many times this session has reached a live protocol (a keyframe on /ws). The first is the
+// How many times this session has reached a live protocol (a hello on /ws). The first is the
 // initial connect; every later one is a reconnect, across which a change to an open file may have
 // gone unheard — so those re-read every open file once, and the first does not (the reader's own
 // mount read is at most seconds old).
 let liveGenerations = 0
 
-// Board seq-gap resync = reconnect the socket (mirror sse.ts): drop + immediately re-open; the connect
-// handshake re-sends a full keyframe with the current seq. Deliberately skips the backoff/failure counter.
+// A seq gap reads the board over HTTP again and resumes the SAME socket from the new seq — the socket is
+// healthy, only the board's continuity is in doubt.
 const stream = new BoardStream(
-  () => resync(),
+  () => resume.resync(),
   (event) => {
     if (qc) void invalidateInteractionQueries(qc, event)
   },
   () => refreshProjectList(qc),
+  () => resume.progressed(),
 )
+
+// The page's board: read over HTTP (from the page's own project — `rpc` resolves it per call), resumed
+// on the live socket. `send` runs only between a hello and a drop, on the socket that said hello.
+const resume = new BoardResume({
+  read: () => rpc.boardState(),
+  adopt: (state) => stream.adopt(state),
+  held: () => stream.held(),
+  send: (bootId, seq) => {
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: "board", bootId, seq } satisfies SocketClientMsg))
+  },
+})
 
 // Server pushes a 10s heartbeat; if we go quiet past this we assume the socket is dead and reconnect.
 const HEARTBEAT_TIMEOUT = 35_000
@@ -144,14 +160,15 @@ function connect(): void {
       // immediately rejects would otherwise reset this counter forever. Reset only after useful protocol
       // traffic. Typed payload downgrades deliberately return false and choose their stable fallback path.
       if (healthy) failures = 0
-      if (healthy && msg.t === "event" && msg.event.type === "board") {
+      if (healthy && msg.t === "hello") {
         protocolReady = true
         liveGenerations++
-        resubscribe() // replay subscriptions only after this generation delivered a valid base keyframe
-        // The keyframe restores the BOARD across a gap; the project list has no keyframe, so a
+        resubscribe() // replay subscriptions only once this generation has said hello
+        // The resume restores the BOARD across a gap; the project list has none, so a
         // `projects-changed` published while this tab had no socket is caught up here instead. Not on
         // the first generation: the rail's own mount read is at most seconds old.
         if (liveGenerations > 1) refreshProjectList(qc)
+        resume.hello(msg.bootId)
       }
     } catch (err) {
       console.error("bad /ws message", err)
@@ -175,6 +192,7 @@ function dropWs(): void {
   const sock = ws
   ws = null
   protocolReady = false
+  resume.dropped()
   if (!sock) return
   sock.onopen = null
   sock.onmessage = null
@@ -190,7 +208,10 @@ function dropWs(): void {
 // An UNEXPECTED close. If /ws never confirmed, the server has no /ws route (pre-restart) → fall back to
 // SSE for good. Otherwise it's a transient drop → reconnect on /ws with backoff (same robustness as SSE).
 function onDrop(): void {
-  stream.reset() // the socket is gone; the fresh keyframe re-establishes the seq
+  // The board and its seq are KEPT: the next socket's hello resumes from them, and the server replays
+  // whatever was published in between.
+  protocolReady = false
+  resume.dropped()
   if (!confirmed) {
     fallBackToSSE()
     return
@@ -211,14 +232,6 @@ function scheduleReconnect(immediate = false): void {
     reconnectTimer = null
     connect()
   }, delay)
-}
-
-// Board seq gap: drop the socket and immediately re-open for a fresh keyframe. NOT a failure (the
-// connection is healthy) so it skips the backoff/failure counter; connect()'s "open" guard avoids flicker.
-function resync(): void {
-  stream.reset()
-  dropWs()
-  connect()
 }
 
 function installHealth(): void {
@@ -245,7 +258,6 @@ function installHealth(): void {
 function forceReconnect(immediate = false): void {
   if (fellBack || isConsolePath() || feedProject === CONSOLE_FEED) return
   dropWs()
-  stream.reset()
   if (!confirmed) {
     fallBackToSSE()
     return
@@ -255,16 +267,15 @@ function forceReconnect(immediate = false): void {
   scheduleReconnect(immediate)
 }
 
-function fallBackToSSE(boardFallback?: { actualBytes: number; maxBytes: number }): void {
+// A server with no /ws route (one from before the multiplex): hand the board to SSE for the session.
+function fallBackToSSE(): void {
   if (fellBack) return
   fellBack = true
-  if (boardFallback) {
-    store.socketBoardFallback = boardFallback
-    store.socketTranscriptFallbacks = {}
-  }
-  // A typed board downgrade arrives on an OPEN socket. Detach its handlers before closing so this
-  // intentional handoff cannot enter the reconnect path; the SSE keyframe becomes the sole board source.
+  // Detach the socket's handlers before closing so this handoff cannot enter the reconnect path; the SSE
+  // keyframe becomes the sole board source.
   dropWs()
+  resume.reset()
+  stream.reset()
   store.socketTranscripts = false // useTranscript resumes its 1.5s poll (today's behavior)
   // Hand the board channel + notifications to the proven SSE path.
   connectSSE(qc ?? undefined)
@@ -272,9 +283,15 @@ function fallBackToSSE(boardFallback?: { actualBytes: number; maxBytes: number }
 
 function handle(msg: SocketServerMsg): boolean {
   switch (msg.t) {
+    case "hello":
+      noteServerBootId(msg.bootId)
+      return true
+    case "board-resync":
+      // The server could not resume from the seq named (`reason` says why); the board is read again.
+      resume.resync()
+      return true
     case "event":
       stream.handle(msg.event)
-      if (msg.event.type === "board") store.socketBoardFallback = null
       return true
     case "transcript":
       // Server truth into the SAME cache useTranscript reads — components are unchanged (transcript-push.ts).
@@ -288,13 +305,9 @@ function handle(msg: SocketServerMsg): boolean {
       return true
     case "payload-too-large":
       if (msg.channel === "board") {
-        if (!store.socketBoardFallback) {
-          console.warn("[frizz] live board payload exceeded the socket limit; using SSE", {
-            actualBytes: msg.actualBytes,
-            maxBytes: msg.maxBytes,
-          })
-        }
-        fallBackToSSE({ actualBytes: msg.actualBytes, maxBytes: msg.maxBytes })
+        // Not sent by a server that resumes the board (it answers a delta too big for a frame with
+        // `board-resync`); were it ever, the answer is the same one — read the board over HTTP.
+        resume.resync()
       } else {
         if (!store.socketTranscriptFallbacks[msg.slug]) {
           console.warn("[frizz] live transcript payload exceeded the socket limit; updates paused", {
@@ -492,6 +505,7 @@ export function rebindProject(): void {
   fileSubs.clear()
   stream.reset()
   dropWs()
+  resume.reset()
   store.connection = "connecting"
   noteFeedProject()
   // A session that fell back has no socket to re-open — its board comes down the EventSource, which is
@@ -500,7 +514,11 @@ export function rebindProject(): void {
   // without `/ws` a project switch left the board fed by the project you just left. Same bug as
   // `0fb8574`, second instance, found while auditing the first.
   if (fellBack) rebindSSEProject()
-  else connect()
+  else {
+    // Read the new project's board now rather than when its socket says hello: the read is the long pole.
+    resume.prefetch()
+    connect()
+  }
 }
 
 /**
@@ -512,6 +530,7 @@ export function bindConsole(): void {
   fileSubs.clear()
   stream.reset()
   dropWs()
+  resume.reset()
   // A session that fell back to SSE has its board coming down an EventSource bound to one project. The
   // Console has no use for it, and left open its notifications would double the Console's own.
   if (fellBack) suspendSSE()
@@ -550,6 +569,11 @@ export function connectSync(queryClient: QueryClient): void {
   // bound yet" would make a cold load tear down and re-establish the connection main.tsx had already
   // arranged. The module is committed from here, so that is what it reports.
   noteFeedProject()
+  // The board is read NOW, while the page is still loading: it is the page's one big payload, and the
+  // socket only resumes from it. This read is also the page's first paint of the board — there is no
+  // separate startup seed any more (App.tsx and StandaloneThreadPage each fetched one until 2026-10-14,
+  // which with the socket's keyframe meant every load read the board twice).
+  if (!isConsolePath()) resume.prefetch()
   const go = () => connect()
   if (document.readyState === "complete") go()
   else window.addEventListener("load", go, { once: true })

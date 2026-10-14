@@ -34,7 +34,7 @@ let repo: string | null = null
 const listeners = new Set<() => void>()
 
 /**
- * Point the autolinker at this page's project. Called from the board's own door (setBoard/seedBoard).
+ * Point the autolinker at this page's project. Called from the board's own door (setBoard).
  *
  * IT MUST NOTIFY, and that is not belt-and-braces. Setting the value from the board looks early enough
  * — the board is the payload the threads themselves come from — but it is NOT: a thread's TRANSCRIPT is

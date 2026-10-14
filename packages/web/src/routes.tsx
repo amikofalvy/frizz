@@ -110,7 +110,7 @@ function RootLayout() {
  *     the two disagree for good, and a gate waiting on that would be a blank page forever.
  *   · OWNED — the board in the store is stamped with this page's project (lib/projectOwnership.ts), on
  *     the payload's own evidence. Once bound this holds by construction (the reset nulled the board, and
- *     setBoard / seedBoard refuse a foreign one), so on a correct path it never closes the gate. It is
+ *     setBoard refuses a foreign one), so on a correct path it never closes the gate. It is
  *     here because the binding is bookkeeping, and bookkeeping is what has failed before; a closed gate
  *     re-runs the reset rather than waiting, so a bookkeeping miss costs a reconnect, not a blank page.
  *

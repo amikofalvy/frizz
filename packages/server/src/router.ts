@@ -6,6 +6,7 @@ import { z } from "zod"
 import { query, mutation } from "@frizz/rpc/server"
 import {
   BoardSnapshot,
+  BoardState,
   AdoptThreadInput,
   AdoptThreadResult,
   DispatchInput,
@@ -2111,6 +2112,18 @@ export function createRouter(ctx: AppContext) {
     board: query({
       output: BoardSnapshot,
       handler: () => ctx.board.snapshot(),
+    }),
+
+    // The board AS OF a point in its delta stream — what a page reads before asking /ws for the deltas
+    // after `seq` (app-socket.ts, the board topic). HTTP rather than the socket because the board is the
+    // one big payload: gzipped here, and received by the browser off the main thread, where the same
+    // 14MB as one socket message cost ~350ms of it (2026-10-14).
+    boardState: query({
+      output: BoardState,
+      handler: async () => {
+        const { board, seq } = await ctx.board.snapshotState()
+        return { board, seq, bootId: ctx.bootId }
+      },
     }),
 
     threadBody: query({
