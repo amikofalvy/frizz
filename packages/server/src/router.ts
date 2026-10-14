@@ -184,6 +184,7 @@ import { createGithubHovercardService } from "./github-hovercard.ts"
 import { slugify, resolveSlug, resolveLegacyThreadFile, claudeWorkerSystemPrompt, coldResumePermission } from "./dispatch.ts"
 import { readCodexModels } from "./backend/codex-models.ts"
 import { peekClaudeModels, readClaudeModels } from "./backend/claude-models.ts"
+import { deliverableInputText } from "./backend/claude-agent-sdk-protocol.ts"
 import { claudeModelStanding, claudeModelUpgradeBlock, claudeModelUpgradeDue, claudeModelUpgradeRefusal, claudeUpgradeCandidate, SERVER_STARTED_AT_MS } from "./backend/claude-model-upgrade.ts"
 import { log as frizzLog } from "./logging.ts"
 import { audited, textDigest, type AuditAction, type AuditFields } from "./audit.ts"
@@ -890,7 +891,13 @@ export function createRouter(ctx: AppContext) {
   // THE FOLLOW-UP DELIVERY, shared by the operator's `followUp` and a worker's `steerThread` (one thread
   // messaging another): both are a message into a thread's next turn, and a second copy of this path
   // would be a second set of runtime branches to keep in step.
-  function deliverFollowUp(input: z.infer<typeof FollowUpInput>, opts: { release?: boolean } = {}): Promise<void> {
+  function deliverFollowUp(sent: z.infer<typeof FollowUpInput>, opts: { release?: boolean } = {}): Promise<void> {
+    // A character no provider can be handed (a control code, half of a surrogate pair) is taken out
+    // HERE, before the ledger entry opens, and for every runtime. The Claude bridge removes it from the
+    // worker's copy regardless; the ledger then has to hold the same words, because a delivery is
+    // matched to its transcript record by text wherever no id survives, and a ledger entry that kept
+    // the character would draw a second bubble beside the delivered one.
+    const input = { ...sent, message: deliverableInputText(sent.message) }
     return keepFailedFollowUp(input, opts, async (openWriteAhead) => {
       // Every follow-up crosses a TYPED CONTROL CHANNEL now, never a terminal: a codex row goes to the
       // app-server bridge and a claude row to the session broker, each of which owns its own
@@ -1370,6 +1377,9 @@ export function createRouter(ctx: AppContext) {
         ctx.board.refresh()
       }
     }
+    // Before the emptiness check and before the hold below, which writes its own ledger entry: see
+    // deliverFollowUp for why the ledger holds the cleaned words.
+    message = deliverableInputText(message)
     // Nothing typed and every question already settled elsewhere (a second tab beat this one): the
     // answers are with the worker, and there is nothing left to say.
     if (!message.trim()) {
@@ -2303,11 +2313,14 @@ export function createRouter(ctx: AppContext) {
           if (!bridge) throw new Error("Claude session broker is unavailable; cannot steer this sub-agent")
           const deliveryId = input.deliveryId ?? randomUUID()
           const sentAtMs = Date.now()
+          // The words the child receives are the words journaled below — see deliverFollowUp.
+          const message = deliverableInputText(input.message)
+          if (!message.trim()) throw new Error("There is nothing to send")
           await bridge.steerSubAgent({
             threadSlug: input.slug,
             sessionId: target.sessionId,
             subAgentId: input.id,
-            text: input.message,
+            text: message,
             deliveryId,
           })
           // The provider deliberately does not write addressed input into the child's transcript. Frizz
@@ -2317,7 +2330,7 @@ export function createRouter(ctx: AppContext) {
             slug: input.slug,
             subAgentId: input.id,
             deliveryId,
-            message: input.message,
+            message,
             sentAtMs,
           })
           ctx.board.refresh()

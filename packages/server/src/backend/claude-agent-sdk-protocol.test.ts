@@ -4,6 +4,7 @@ import {
   CLAUDE_AGENT_SDK_MAX_INPUT_BYTES,
   ClaudeAgentSdkProtocolError,
   boundedJsonObject,
+  deliverableInputText,
   safeText,
   validateInputMessage,
 } from "./claude-agent-sdk-protocol.ts"
@@ -64,6 +65,32 @@ test("a prompt body still refuses what cannot survive the wire", () => {
   // The byte cap is unchanged, and refuses rather than truncating.
   assert.equal(validateInputMessage({ id: INPUT_ID, text: "x".repeat(CLAUDE_AGENT_SDK_MAX_INPUT_BYTES) }).text.length, CLAUDE_AGENT_SDK_MAX_INPUT_BYTES)
   assert.throws(() => validateInputMessage({ id: INPUT_ID, text: "x".repeat(CLAUDE_AGENT_SDK_MAX_INPUT_BYTES + 1) }), /exceeds/)
+})
+
+// The refusal above is the validator's. What the operator gets is this: the bridge and the router run
+// the text through `deliverableInputText` first, so a character they cannot see never costs the send.
+test("an undeliverable character is taken out of a prompt body, and only that character", () => {
+  const lone = String.fromCharCode(0xd83d) // the first half of a rocket, cut off by something upstream
+  const cases: [string, string, string][] = [
+    ["a control code goes", `a${String.fromCodePoint(0)}b${String.fromCodePoint(8)}c${String.fromCodePoint(127)}d`, "abcd"],
+    ["an escape sequence loses its ESC and keeps the rest", `${String.fromCodePoint(27)}[31mERROR${String.fromCodePoint(27)}[0m`, "[31mERROR[0m"],
+    ["a lone surrogate goes, in either half", `half${lone} an${String.fromCharCode(0xde80)} emoji`, "half an emoji"],
+    ["a surrogate PAIR beside a lone one survives", `${lone}${ROCKET}`, ROCKET],
+    ["a line break that is not LF becomes one", [0x0b, 0x0c, 0x85, 0x2028, 0x2029].map((code) => `x${String.fromCodePoint(code)}`).join(""), "x\n".repeat(5)],
+  ]
+  for (const [name, raw, expected] of cases) {
+    assert.equal(deliverableInputText(raw), expected, name)
+    assert.equal(validateInputMessage({ id: INPUT_ID, text: deliverableInputText(raw) }).text, expected, `${name}: the validator still refused it`)
+  }
+  // Everything a prompt body may carry comes back as the same string — the joiner, the BOM, tab/LF/CR.
+  for (const text of [`look at this ${WOMAN_TECHNOLOGIST}`, `${String.fromCodePoint(0xfeff)}pasted`, "line1\r\nline2\tend", ""]) {
+    assert.equal(deliverableInputText(text), text)
+  }
+  // No code unit the validator refuses survives, whatever surrounds it.
+  for (let code = 0; code <= 0xffff; code++) {
+    const cleaned = deliverableInputText(`a${String.fromCharCode(code)}b`)
+    assert.doesNotThrow(() => validateInputMessage({ id: INPUT_ID, text: cleaned }), `U+${code.toString(16).padStart(4, "0").toUpperCase()} survived`)
+  }
 })
 
 test("the display and authority validators keep the STRICT policy the prompt body relaxed", () => {
