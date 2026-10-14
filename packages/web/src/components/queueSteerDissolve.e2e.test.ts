@@ -247,3 +247,96 @@ test("a card coming back to the queue mounts once, with its reply — never over
     await browser.close()
   }
 })
+
+// A TURN THAT ENDS INSIDE THE CARD'S OWN FADE. The dismissal's exit takes ~300ms; a turn can be over
+// sooner than that (a worker that answers from cache, a refusal, a hook that ends the turn at once), and
+// then the board puts the thread back in the queue while its card is still fading out. The exit had no
+// case for that. Recorded against the scripted Claude (replythink=0 disklag=25, 3 of 3, 2026-10-13): the
+// card was cut mid-fade at +107-144ms, an invisible full-height slot stood in its place from +141-184ms
+// to +348-365ms, and then the thread had NO card at all until the dismissal's 8s guard gave it back.
+// Now the fade finishes on the snapshot it started on, and the commit that ends it mounts the card
+// again, at the queue's end, with its reply.
+//
+// Twice, because the board reports such a turn in two ways. Usually it drops the thread and puts it back
+// (`boardDrops`). But a tailer tick that sees the message and the reply together reports one row, still
+// queued, at a newer rest: nothing departs, and the card being dismissed was handed that rest mid-fade —
+// moved to the queue's end as an invisible slot, then hidden with its unread reply until the guard.
+for (const boardDrops of [true, false]) test(`a turn that ends inside the card's own fade (${boardDrops ? "the board drops the thread and puts it back" : "the board only moves it to a newer rest"}): the fade finishes, and the card comes back once with its reply`, {
+  skip: !baseUrl,
+  timeout: 60_000,
+}, async () => {
+  const { launchHeadless } = await import("../../../../scripts/lib/headless-browser.mjs")
+  const browser = await launchHeadless()
+  const errors: string[] = []
+  const STEER = "Is the export path streaming yet?"
+  const REPLY = "Yes: rows go from a server cursor straight into the response, so memory stays flat."
+  type Frame = { t: number; present: boolean; leaving: boolean; op: number | null; reply: boolean; h: number | null }
+  try {
+    const page = await browser.newPage()
+    await page.setViewport({ width: 1440, height: 1000, deviceScaleFactor: 1 })
+    page.on("console", (m) => { if (m.type() === "error" && !/404|favicon/i.test(m.text())) errors.push(m.text()) })
+    page.on("pageerror", (e) => errors.push(String(e)))
+    await page.goto(`${baseUrl}/queue-dissolve-fixture.html`, { waitUntil: "networkidle0" })
+    const composer = `[data-queue-card="${STEERED}"] textarea[placeholder*="reply" i]`
+    await page.waitForSelector(composer)
+    await page.click(composer)
+    await page.type(composer, STEER)
+    await new Promise((r) => setTimeout(r, 200))
+
+    await page.evaluate((steered: string, reply: string) => {
+      const w = window as unknown as { __fastFrames: unknown[] }
+      w.__fastFrames = []
+      const t0 = performance.now()
+      const tick = () => {
+        const slot = document.querySelector<HTMLElement>(`[data-queue-card="${steered}"]`)
+        const card = document.querySelector<HTMLElement>(`[data-queue-card-root="${steered}"]`)
+        w.__fastFrames.push({
+          t: +(performance.now() - t0).toFixed(1),
+          present: !!card,
+          leaving: slot?.dataset.queueLeaving === "true",
+          op: slot ? Math.round(Number(getComputedStyle(slot).opacity) * 100) / 100 : null,
+          reply: !!card?.innerText.includes(reply.slice(0, 40)),
+          h: card ? card.offsetHeight : null,
+        })
+        if (performance.now() - t0 < 2500) requestAnimationFrame(tick)
+      }
+      requestAnimationFrame(tick)
+    }, STEERED, REPLY)
+    if (!boardDrops) await page.evaluate((steered: string) => (window as unknown as { __lagBoard: (slug: string) => void }).__lagBoard(steered), STEERED)
+    await page.keyboard.press("Enter")
+    // The turn is over 90ms after the send: the board has the thread back at rest before the fade is done.
+    await new Promise((r) => setTimeout(r, 90))
+    await page.evaluate((steered: string, steer: string, reply: string) => {
+      ;(window as unknown as { __endTurn: (slug: string, steer: string, reply: string, readMs: number) => void }).__endTurn(steered, steer, reply, 20)
+    }, STEERED, STEER, REPLY)
+    await new Promise((r) => setTimeout(r, 2600))
+    const frames = (await page.evaluate(() => (window as unknown as { __fastFrames: unknown[] }).__fastFrames)) as Frame[]
+
+    assert.ok(frames.length > 40, `expected a full sampling window, got ${frames.length} frames`)
+    const fading = frames.filter((f) => f.present && f.leaving)
+    assert.ok(fading.length > 5, `the card must fade out: ${fading.length} leaving frames`)
+    const ended = frames.findIndex((f) => f.t >= 90)
+    assert.ok(frames.slice(ended).some((f) => f.present && f.leaving), "the turn must end while the card is still fading, or this pins nothing")
+
+    // The fade runs to its end on the card it started on: opacity only ever falls, the box never changes,
+    // and the reply is not painted into a card that is on its way out.
+    for (let i = 1; i < fading.length; i++) assert.ok(fading[i].op! <= fading[i - 1].op! + 0.011, `the fade restarted or reversed at ${fading[i].t}ms: ${fading[i - 1].op} → ${fading[i].op}`)
+    assert.ok(fading.at(-1)!.op! <= 0.1, `the card was cut mid-fade, at opacity ${fading.at(-1)!.op} (${fading.at(-1)!.t}ms)`)
+    assert.equal(new Set(fading.map((f) => f.h)).size, 1, `the fading card changed height: ${JSON.stringify([...new Set(fading.map((f) => f.h))])}`)
+    assert.deepEqual(fading.filter((f) => f.reply), [], "the reply was painted into the card while it faded")
+
+    // Then it comes back once — mounted, opaque, with its reply — and stays: no blank slot, no second exit.
+    const lastFade = frames.lastIndexOf(fading.at(-1)!)
+    const after = frames.slice(lastFade + 1)
+    const back = after.filter((f) => f.present)
+    assert.ok(back.length > 20, `the card must come back to the queue: ${back.length} frames with it mounted after the fade`)
+    assert.ok(back[0].t - fading.at(-1)!.t < 400, `the card came back late: ${fading.at(-1)!.t}ms → ${back[0].t}ms`)
+    assert.deepEqual(after.slice(after.indexOf(back[0])).filter((f) => !f.present || f.leaving), [], "the returned card left again")
+    assert.deepEqual(back.filter((f) => !f.reply || f.op !== 1), [], "the returned card painted without its reply, or less than opaque")
+    assert.equal(new Set(back.map((f) => f.h)).size, 1, `the returned card changed height after it mounted: ${JSON.stringify([...new Set(back.map((f) => f.h))])}`)
+
+    assert.deepEqual(errors, [])
+  } finally {
+    await browser.close()
+  }
+})

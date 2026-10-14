@@ -2,7 +2,7 @@
 // one off as an answerable card WITHIN the message's narrative flow (prose stays in place). Pure
 // string logic, no DOM — unit-testable.
 
-import { insideFence, QUESTION_FENCE_KEYS, questionFenceBlocks, type QuestionFenceRead } from "@frizz/shared"
+import { insideFence, mayHoldQuestionFence, QUESTION_FENCE_KEYS, questionFenceBlocks, type QuestionFenceRead } from "@frizz/shared"
 
 // The two answer MODES a ```question block can carry (the info-string picks one):
 //   question — single-select (radio feel) OR freetext; the default.
@@ -140,6 +140,13 @@ export function splitQuestionBlocks(text: string): MessageSegment[] {
 // worker wrote between 2026-09-11 and this grammar; none of them reads as an ask, and each keeps the
 // rendering it had (splitQuestionBlocks over the same bytes), so nothing already on screen changes shape.
 //
+// THE SHARED READER ALSO DECIDES WHETHER TO LOOK. Every gate in front of it here asks the shared
+// `mayHoldQuestionFence`, never a literal of its own: the reader takes a ~~~question fence and a capitalised
+// ```Question for the fence (shared code-fences.ts questionFenceOpener), and while these gates matched three
+// backticks and a lowercase word, such a fence registered on the server and drew on the page as a code block
+// labelled `question`, with its card nowhere. The legacy readers (splitQuestionBlocks, the markers) keep
+// their own literal: their grammar is that exact opener and nothing else.
+//
 // A FENCE THAT TRIED THE GRAMMAR AND FAILED IS THE CODE BLOCK IT IS. Its body opens on a key (`id:`,
 // `kind:`, …) and does not read: a missing `kind:`, an unknown key, a bad id. The server registers nothing
 // for it and corrects the worker. Left to splitQuestionBlocks it drew three ways for one mistake — three
@@ -151,7 +158,7 @@ export function splitQuestionBlocks(text: string): MessageSegment[] {
 /** A message's segments under the grammar its thread speaks. `fenceGrammar` false (a legacy thread, or a
  *  surface that has no registered rows to resolve against) is splitQuestionBlocks unchanged. */
 export function splitMessageQuestions(text: string, fenceGrammar: boolean, refused?: ReadonlySet<string>): MessageSegment[] {
-  if (!fenceGrammar || !text.includes("```question")) return splitQuestionBlocks(text)
+  if (!fenceGrammar || !mayHoldQuestionFence(text)) return splitQuestionBlocks(text)
   const blocks = questionFenceBlocks(text).filter((b) => b.read.form !== "invalid" || triesFenceGrammar(b.body))
   if (blocks.length === 0) return splitQuestionBlocks(text)
   const out: MessageSegment[] = []
@@ -204,7 +211,7 @@ function triesFenceGrammar(body: string): boolean {
  *  lives inside its parent's card and is named by the parent's fence) or a reference — and then the parents
  *  its follow-ups claim from an earlier message (followUpParentsIn). */
 export function questionFenceIdsIn(text: string, refused?: ReadonlySet<string>): string[] {
-  if (!text.includes("```question")) return []
+  if (!mayHoldQuestionFence(text)) return []
   const out: string[] = []
   for (const b of questionFenceBlocks(text)) {
     const r = b.read
@@ -224,7 +231,7 @@ export function questionFenceIdsIn(text: string, refused?: ReadonlySet<string>):
  *  own fence, or a follow-up of this message that is itself the parent) claims nothing: that fence places
  *  the card, and this one lives inside it. */
 export function followUpParentsIn(text: string, refused?: ReadonlySet<string>): string[] {
-  if (!text.includes("```question") || !text.includes("when:")) return []
+  if (!mayHoldQuestionFence(text) || !text.includes("when:")) return []
   const reads = questionFenceBlocks(text).map((b) => b.read)
   const here = new Set(reads.flatMap((r) => (r.form === "invalid" ? [] : [r.id.toLowerCase()])))
   const out: string[] = []
@@ -327,7 +334,7 @@ function takeOrphanRun(prose: string, lastId: string | null): { run: string; res
 // `refused` (lib/questionFaults) is only ever set on a thread that speaks the question fence, so with it the
 // message is read under that grammar: a fence the server refused is a code block, not an ask.
 export function hasQuestionBlock(text: string, refused?: ReadonlySet<string>): boolean {
-  if (!text.includes("```question")) return false
+  if (!mayHoldQuestionFence(text)) return false
   if (refused !== undefined && refused.size > 0) return splitMessageQuestions(text, true, refused).some((s) => s.kind === "question")
   return splitQuestionBlocks(text).some((s) => s.kind === "question") || questionFenceIdsIn(text).length > 0
 }

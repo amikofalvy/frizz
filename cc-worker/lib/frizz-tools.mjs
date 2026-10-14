@@ -1734,6 +1734,25 @@ function withoutLeadingTitle(body) {
   return lines.slice(i).join("\n").trim()
 }
 
+/**
+ * What an open question does to a sign-off as done: how many are open, each by the worker's own id with
+ * its first line, and the two ways out.
+ *
+ * A COPY, AND IT MUST STAY ONE. The same paragraph is sent by the server when a worker signs off with a
+ * ```done FENCE over an open question (scheduler SOURCE 15), built by the function of this name in
+ * `packages/shared/src/index.ts`. This file imports nothing but node, because it ships to a worker as
+ * plain .mjs, so the words live in both places; `packages/server/src/question-done.test.ts` fails when
+ * the two outputs differ. Change one, change the other.
+ * @param {{ id: string, question?: string }[]} questions @returns {string} */
+function doneOpenQuestionsRefusal(questions) {
+  const lines = questions.map((q) => `  ${q.id}  ${(q.question ?? "").split("\n")[0]}`)
+  return (
+    `${lines.length} question${lines.length === 1 ? "" : "s"} the human has not answered:\n${lines.join("\n")}\n` +
+    "Each one dies unread with a done card. Decide it yourself and withdraw it (`frizzctl unask <id>`), or leave it " +
+    "open and keep working until it is answered."
+  )
+}
+
 /** The `done` handler: declare the effort finished, or report exactly what refuses to let it.
  *
  *  A `--title` is sent INSIDE the body, in the ```done fence's own grammar (`title: …`, `---`, then the
@@ -1759,16 +1778,10 @@ async function done(args) {
   }
   // REFUSED, with everything that refuses it named by id, so the next move is a command and not a
   // guess. Reported as an ordinary result rather than thrown: this is a gate doing its job, not a fault.
-  const questions = (result?.blockingQuestions ?? []).map((q) => `  ${q.handle ?? q.id}  ${(q.question ?? "").split("\n")[0]}`)
+  const questions = (result?.blockingQuestions ?? []).map((q) => ({ id: q.handle ?? q.id, question: q.question }))
   const watches = (result?.blockingWatches ?? []).map((w) => `  ${w.id}  ${w.what}`)
   const parts = ["NOT marked done. This thread still holds work open."]
-  if (questions.length) {
-    parts.push(
-      `${questions.length} question${questions.length === 1 ? "" : "s"} the human has not answered:\n${questions.join("\n")}\n` +
-      "Each one dies unread with a done card. Decide it yourself and withdraw it (`frizzctl unask <id>`), or leave it " +
-      "open and keep working until it is answered.",
-    )
-  }
+  if (questions.length) parts.push(doneOpenQuestionsRefusal(questions))
   if (watches.length) {
     parts.push(
       `${watches.length} registration${watches.length === 1 ? "" : "s"} still armed:\n${watches.join("\n")}\n` +
@@ -2120,4 +2133,4 @@ const CLI = {
   },
 }
 
-export { TOOLS, HANDLERS, CLI, Refused }
+export { TOOLS, HANDLERS, CLI, Refused, doneOpenQuestionsRefusal }

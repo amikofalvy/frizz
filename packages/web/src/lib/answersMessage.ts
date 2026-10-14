@@ -1,4 +1,4 @@
-import { ANSWER_CONTINUATION_INDENT, ANSWER_FOLLOW_UP_MARKER, ANSWER_PICK_PREFIX, BURIED_ANSWERS_HEADER, DISMISSED_ANSWER, SECRET_ANSWER_MASK, isSecretAnswerText, splitAnswersNote } from "@frizz/shared"
+import { ANSWER_CONTINUATION_INDENT, ANSWER_FOLLOW_UP_MARKER, ANSWER_PICK_PREFIX, ANSWER_ROW_ID_PATTERN, BURIED_ANSWERS_HEADER, DISMISSED_ANSWER, SECRET_ANSWER_MASK, isSecretAnswerText, splitAnswersNote } from "@frizz/shared"
 import { splitQuestionBlocks, parseQuestionBlock, type MessageSegment } from "./questionBlocks.ts"
 
 // Detect + parse OUR OWN composed-answer format, so a user message that is a multi-block answer renders
@@ -20,9 +20,12 @@ import { splitQuestionBlocks, parseQuestionBlock, type MessageSegment } from "./
 //   Answers to earlier questions:
 //   1. “<question>” → <answer>
 //   2. <child arrow> “<follow-up question>” → <answer>
+//   3. `<the worker's id>` “<question>” → <answer>
 //
 // which carries its own questions inline and so needs no lookback pairing at all. `parseAnswersCard`
-// is the entry point that accepts either.
+// is the entry point that accepts either. A row's id (the third shape; a follow-up carries its own after
+// its arrow) is there for the WORKER, on a question it asked by fence, and is absent on every other row
+// and in every transcript written before 2026-10-13 — so it is read when present and never required.
 //
 // THAT SECOND FORM HAS A THIRD WRITER, and it is the one this file's shape now has to serve: an answer to
 // a REGISTERED question (`frizzctl ask`), composed on the SERVER by questionAnswerMessage because the
@@ -63,6 +66,11 @@ export interface PairedAnswer extends ParsedAnswer {
   // which is the only place the tree survives — the wire form is flat, because an indented child line
   // reads as a continuation of the previous answer (see questionAnswerMessage).
   followUp?: true
+  // The WORKER's own id for the question, when its row carried one (shared answerRowId). The card does
+  // not draw it: it is the worker's vocabulary, and the human reads the question restated beside it.
+  // It is kept because it is the one thing that tells two rows with the same question and the same
+  // answer apart (see answerKey).
+  handle?: string
 }
 
 const MARKER = /^(\d+)\.\s+(.*)$/
@@ -108,7 +116,13 @@ const BURIED_HEADER = BURIED_ANSWERS_HEADER
 // sits OUTSIDE the quotes deliberately: inside them it would read as part of the question the worker
 // asked. Built from the shared token rather than written out — no web source may spell either down-right
 // arrow (subAgentArrow.test.ts), and this parser must read exactly what the server wrote.
-const BURIED_ROW_START = new RegExp(`^(\\d+)\\.\\s+(${ANSWER_FOLLOW_UP_MARKER}\\s+)?[“"]`)
+//
+// THE OPTIONAL BACKTICKED TOKEN AFTER IT IS THE WORKER'S ID. It is matched only HERE, between the row's
+// number and its opening quote, in the id's own grammar — the one stretch of a row no human text reaches:
+// an answer starts after the quote-arrow, and its later lines are indented. So a row whose ANSWER reads
+// like an id and a quoted question is a row with no id, its answer everything after the first arrow, and
+// an old row is read as it always was.
+const BURIED_ROW_START = new RegExp(`^(\\d+)\\.\\s+(${ANSWER_FOLLOW_UP_MARKER}\\s+)?(?:\`(${ANSWER_ROW_ID_PATTERN})\`\\s+)?[“"]`)
 // The end of a row's quoted question: the FIRST closing quote followed by the arrow. First, so an answer
 // carrying its own arrow (`A. draft → review → merge`) keeps everything after the quote.
 const BURIED_QUESTION_CLOSE = /[”"]\s+→\s+/
@@ -143,12 +157,13 @@ export function parseBuriedAnswersMessage(text: string): PairedAnswer[] | null {
   // to frizz's notification card as a broken numbered list, the human's own reply dangling under it as a
   // paragraph of its own. So a row opens at `N. “` and its question runs to the first `” → `, wherever
   // that lands; only the ANSWER half continues line by line as before.
-  let open: { n: number; followUp: boolean; lines: string[] } | null = null
+  let open: { n: number; followUp: boolean; handle: string | undefined; lines: string[] } | null = null
   const close = (o: NonNullable<typeof open>, question: string, answer: string): void => {
     const row: PairedAnswer = { n: o.n, answer }
     const q = question.trim()
     if (q) row.question = q
     if (o.followUp) row.followUp = true
+    if (o.handle) row.handle = o.handle
     out.push(row)
   }
   for (; i < lines.length; i++) {
@@ -169,7 +184,7 @@ export function parseBuriedAnswersMessage(text: string): PairedAnswer[] | null {
     const s = line.match(BURIED_ROW_START)
     if (s) {
       const rest = line.slice(s[0].length)
-      const o = { n: Number(s[1]), followUp: Boolean(s[2]), lines: [] as string[] }
+      const o = { n: Number(s[1]), followUp: Boolean(s[2]), handle: s[3], lines: [] as string[] }
       const c = rest.match(BURIED_QUESTION_CLOSE)
       if (c) close(o, rest.slice(0, c.index), rest.slice(c.index! + c[0].length))
       else open = { ...o, lines: [rest] }
@@ -258,8 +273,13 @@ export function isAnswersMessage(m: MsgLike): boolean {
 }
 
 // One answered question, as a key: what makes two renders of it THE SAME ANSWER. The question text plus
-// the answer, because that pair is what the card draws and it is stable across both of the wire's forms.
-const answerKey = (a: PairedAnswer): string => `${a.question ?? ""} ${a.answer}`
+// the answer, because that pair is what the card draws and it is stable across both of the wire's forms
+// — and, ahead of them, the worker's id when the row carries one. Two fence-asked questions can share a
+// text ("Which path?") and an answer; by text alone the second, still in flight, read as the first one
+// already on screen, and its in-flight card stood down. Every writer of an id-carrying row stamps it
+// from the same row (nameQuestionAnswer), the prompt box's optimistic bubble included, so the two
+// renders of one answer agree on it.
+const answerKey = (a: PairedAnswer): string => `${a.handle ?? ""} ${a.question ?? ""} ${a.answer}`
 
 /** WHAT THE IN-FLIGHT ANSWER CARD STILL HAS TO SAY — the rows of `wire` that no message in the
  *  transcript is already drawing. Null when there is nothing left for it to add.

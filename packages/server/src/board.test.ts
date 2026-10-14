@@ -4,7 +4,7 @@ import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, w
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { questionAnswerMessage, questionsCancelledWakeMessage, type InteractionRequest } from "@frizz/shared"
-import { ANSWER_IN_FLIGHT_EXCUSAL_MS, DELIVERY_IN_FLIGHT_SPIN_MS, answerAwaitingDelivery, deriveDeliveryInFlight, answersInFlight, appServerTurnStalled, createBoard, deriveAwaitingBackground, deriveNeedsYou, degradeIfAwaitingAnswer, degradeIfNoTranscript, fenceWatchViews, hasDeclaredWait, hasParkedTimerWatch, hasRegisteredBackgroundPark, isBoardRelevantFrizzPath, registeredDoneFence, resolveLimitPause, resolveSessionPermission, resolveSessionProfile, resolveSessionTitle, type RegisteredWatch } from "./board.ts"
+import { ANSWER_IN_FLIGHT_EXCUSAL_MS, DELIVERY_IN_FLIGHT_SPIN_MS, answerAwaitingDelivery, deriveDeliveryInFlight, answersInFlight, wakeQuestionAnswer, appServerTurnStalled, createBoard, deriveAwaitingBackground, deriveNeedsYou, degradeIfAwaitingAnswer, degradeIfNoTranscript, fenceWatchViews, hasDeclaredWait, hasParkedTimerWatch, hasRegisteredBackgroundPark, isBoardRelevantFrizzPath, registeredDoneFence, resolveLimitPause, resolveSessionPermission, resolveSessionProfile, resolveSessionTitle, type RegisteredWatch } from "./board.ts"
 import { Bus } from "./bus.ts"
 import { createStorage, type ThreadQuestionRow } from "./storage.ts"
 import type { Project } from "./project.ts"
@@ -2286,6 +2286,66 @@ test("a dismissal RIDES an answer, and is named by its question rather than its 
     askedRow({ id: "qst_2", state: "dismissed", answer: null, spec: JSON.stringify({ question: "Name the flag?", kind: "question" }) }),
   ], undefined)
   assert.match(wire ?? "", /“Name the flag\?” → \(dismissed/)
+})
+
+// THE WAKE NAMES A FENCE-ASKED QUESTION BY THE WORKER'S OWN ID (2026-10-13), and the in-flight card is
+// that wake's bytes — so the ids are in what the board composes, read off the row and its spec tree.
+const fenceRow = (over: Partial<ThreadQuestionRow> = {}): ThreadQuestionRow => askedRow({
+  handle: "store",
+  spec: JSON.stringify({
+    handle: "store", question: "SQLite or a JSON file?", kind: "question",
+    options: [
+      { label: "SQLite", followUps: [{ handle: "sqlite-path", question: "Which path?", kind: "question" }] },
+      { label: "JSON file", followUps: [{ handle: "json-path", question: "Which path?", kind: "question" }] },
+    ],
+  }),
+  answer: JSON.stringify({
+    questionId: "qst_1", question: "SQLite or a JSON file?", chosen: ["JSON file"],
+    followUps: [{ questionId: "qst_1", question: "Which path?", chosen: [], text: "./settings.json" }],
+  }),
+  ...over,
+})
+
+test("a fence-asked question in flight is named by its id, and so is the follow-up under the option taken", () => {
+  assert.equal(
+    answersInFlight([fenceRow()], undefined),
+    "Answers to earlier questions:\n1. `store` “SQLite or a JSON file?” → JSON file\n2. ⤷ `json-path` “Which path?” → ./settings.json",
+  )
+  // The stored answer carries no id — it is the browser's request, and the id is never taken from that.
+  assert.equal(fenceRow().answer!.includes("json-path"), false)
+  // The scheduler's delivery composes from the same stamp, so the two are one message.
+  assert.equal(answersInFlight([fenceRow()], undefined), questionAnswerMessage([wakeQuestionAnswer(fenceRow())!]))
+})
+
+test("a question with no handle composes the wire it always did, byte for byte, beside one that has one", () => {
+  assert.equal(answersInFlight([askedRow()], undefined), "Answers to earlier questions:\n1. “SQLite or a JSON file?” → SQLite")
+  // A handle that is not an id in the fence's grammar (a row written by hand) is left off rather than
+  // written where it could break the row.
+  const odd = askedRow({ handle: "Not An Id", spec: JSON.stringify({ handle: "Not An Id", question: "SQLite or a JSON file?", kind: "question", options: [{ label: "SQLite" }] }) })
+  assert.equal(answersInFlight([odd], undefined), "Answers to earlier questions:\n1. “SQLite or a JSON file?” → SQLite")
+  assert.equal(
+    answersInFlight([
+      askedRow(),
+      fenceRow({ id: "qst_2" }),
+      askedRow({ id: "qst_3", state: "dismissed", answer: null, handle: "flag-name", spec: JSON.stringify({ handle: "flag-name", question: "Name the flag?", kind: "question" }) }),
+      askedRow({ id: "qst_4", state: "dismissed", answer: null, spec: JSON.stringify({ question: "Name the env var?", kind: "question" }) }),
+    ], undefined),
+    [
+      "Answers to earlier questions:",
+      "1. “SQLite or a JSON file?” → SQLite",
+      "2. `store` “SQLite or a JSON file?” → JSON file",
+      "3. ⤷ `json-path` “Which path?” → ./settings.json",
+      "4. `flag-name` “Name the flag?” → (dismissed — decide it yourself; do not re-ask)",
+      "5. “Name the env var?” → (dismissed — decide it yourself; do not re-ask)",
+    ].join("\n"),
+  )
+})
+
+test("a fence-asked row whose spec no longer parses still names its root, and never guesses a follow-up", () => {
+  assert.equal(
+    answersInFlight([fenceRow({ spec: "{not json" })], undefined),
+    "Answers to earlier questions:\n1. `store` “SQLite or a JSON file?” → JSON file\n2. ⤷ “Which path?” → ./settings.json",
+  )
 })
 
 test("one unreadable row never blanks the card the others earned", () => {

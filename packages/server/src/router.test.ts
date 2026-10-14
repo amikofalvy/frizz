@@ -2320,6 +2320,43 @@ test("answers sent with a follow-up settle their questions and travel in the sam
   h.storage.close()
 })
 
+// A FENCE-ASKED question's answer names it by the worker's own id (2026-10-13), on this path as on the
+// scheduler's: the id is read off the row and its spec tree, never off the request.
+test("answers sent with a follow-up name a fence-asked question, and its follow-up, by the worker's own ids", async () => {
+  const { h, slug, sid, sent, ledger, setTurn } = holdHarness()
+  setTurn("idle")
+  h.storage.askThreadQuestion({
+    id: "qst_fence", slug, handle: "store", askedAtMs: Date.now(),
+    spec: JSON.stringify({
+      handle: "store", question: "Which store?", kind: "question",
+      options: [{ label: "SQLite", followUps: [{ handle: "sqlite-path", question: "Which path?", kind: "question" }] }, { label: "JSON file" }],
+    }),
+  })
+  ask(h, slug, "qst_plain", "Which path?")
+  await h.router.followUp.handler({
+    input: {
+      slug, sessionId: sid, deliveryId: "d-named", message: "`store` “Which store?” → JSON file",
+      answers: [
+        { questionId: "qst_fence", question: "Which store?", chosen: ["SQLite"], followUps: [{ questionId: "qst_fence", question: "Which path?", chosen: [], text: "/tmp" }] },
+        { questionId: "qst_plain", question: "Which path?", chosen: ["SQLite"] },
+      ],
+    },
+  })
+  const wire = [
+    "Answers to earlier questions:",
+    "1. `store` “Which store?” → SQLite",
+    "2. ⤷ `sqlite-path` “Which path?” → /tmp",
+    "3. “Which path?” → SQLite",
+    "",
+    "Sent with these answers:",
+    "`store` “Which store?” → JSON file",
+  ].join("\n")
+  assert.ok(sent[0].text.startsWith(wire), sent[0].text)
+  assert.equal(ledger()[0].text, wire, "and the bubble shows the same words")
+  assert.equal(h.storage.getThreadQuestion("qst_fence")?.answer?.includes("sqlite-path"), false, "the row keeps the answer as it was sent: no id is stored")
+  h.storage.close()
+})
+
 test("answers alone are a message: an empty prompt box still sends them", async () => {
   const { h, slug, sid, sent, setTurn } = holdHarness()
   setTurn("idle")

@@ -47,7 +47,7 @@ function makeThread(id: string, title: string): ThreadViewModel {
     agents: [],
     errors: [],
     warnings: [],
-    runtime: "idle",
+    runtime: "turn-idle",
     unread: false,
     archived: false,
     hasPlan: false,
@@ -66,11 +66,17 @@ function makeThread(id: string, title: string): ThreadViewModel {
 const threads = CARDS.map((c) => makeThread(c.id, c.title))
 store.board = { projectDir: "/fixture/frizz", threads } as BoardSnapshot
 
+// When the page loaded: every card rested ten minutes before it.
+const LOADED_AT = Date.now()
+
 function transcriptFor(slug: string, title: string): { messages: TranscriptMessage[]; transcriptKey: string; hasEarlier: boolean; historyLoaded: boolean } {
   const n = CARDS.findIndex((c) => c.id === slug) + 1
   const messages: TranscriptMessage[] = [
     { sourceId: `${slug}-u1`, role: "user", text: `Please handle: ${title}.`, tools: [], parts: [] },
     { sourceId: `${slug}-a1`, role: "assistant", text: longReply(n), tools: [], parts: [{ kind: "text", text: longReply(n) }] },
+    // The boundary every rested turn ends on, as the server writes it: what tells a reader of the
+    // transcript that a message under it opens a NEW turn (lib/steering transcriptPastRest).
+    { sourceId: `${slug}-rest0`, role: "assistant", kind: "event", boundary: "rest", text: "Agent rested", tools: [], parts: [], at: new Date(LOADED_AT - 600_000).toISOString() } as TranscriptMessage,
   ]
   return { messages, transcriptKey: `${slug}-key`, hasEarlier: false, historyLoaded: false }
 }
@@ -161,6 +167,14 @@ const lagBoard = new Set<string>()
   sendEagerFollowUp(queryClient, slug, text)
 }
 
+// QA hook: the board does NOT drop this thread when its card's own send goes out. That is the real
+// sequence for a turn too short for the board to report it running: the thread never leaves the board,
+// only the steer overlay (lib/steering) takes it out of the queue, and `__endTurn` puts it back at rest
+// with newer activity, which is what makes the overlay yield.
+;(window as unknown as { __lagBoard: (slug: string) => void }).__lagBoard = (slug) => {
+  lagBoard.add(slug)
+}
+
 // …and the write that actually re-cut the card's window: the worker's own echo of that message, arriving
 // over /ws as a LANDED (un-`queued`) user record. api/transcript-live.ts publishes the push into this
 // same ["transcript", slug] cache entry, so writing it here is what the socket does.
@@ -199,8 +213,22 @@ const endedTurns = new Map<string, { readMs: number; transcript: ReturnType<type
       ],
     },
   })
-  const back = { ...makeThread(card.id, card.title), runtime: "turn-idle", lastAssistantAt: new Date(now).toISOString(), lastActivityAt: new Date(now).toISOString() } as ThreadViewModel
+  const back = { ...makeThread(card.id, card.title), runtime: "turn-idle", lastUserAt: new Date(now - 2_000).toISOString(), lastAssistantAt: new Date(now).toISOString(), lastActivityAt: new Date(now).toISOString() } as ThreadViewModel
   if (store.board) store.board = { ...store.board, threads: [...store.board.threads.filter((t) => t.id !== slug), back] } as BoardSnapshot
+}
+
+// QA hooks for the two channels a turn's edge arrives on, each moved on its own so a test can put them in
+// either order: `__patchThread` is a board delta for one row, `__pushMessages` a /ws transcript push (the
+// same cache entry api/transcript-live.ts writes).
+;(window as unknown as { __patchThread: (slug: string, patch: Partial<ThreadViewModel>) => void }).__patchThread = (slug, patch) => {
+  if (store.board) store.board = { ...store.board, threads: store.board.threads.map((t) => (t.id === slug ? ({ ...t, ...patch } as ThreadViewModel) : t)) } as BoardSnapshot
+}
+;(window as unknown as { __pushMessages: (slug: string, messages: TranscriptMessage[]) => void }).__pushMessages = (slug, messages) => {
+  queryClient.setQueryData<ReturnType<typeof transcriptFor>>(["transcript", slug], (prev) => {
+    const card = CARDS.find((c) => c.id === slug) ?? CARDS[0]
+    const base = prev ?? transcriptFor(card.id, card.title)
+    return { ...base, messages: [...base.messages, ...messages] }
+  })
 }
 
 // QA hook: prune a thread from the board WITHOUT any user action on the card — a pure board

@@ -20,8 +20,9 @@
 // The FIRST message's `[script …]` token sets the session's behaviour; every later message (a Done,
 // an answer, a steer) is replied to with the `reply…` settings. Keys, all optional:
 //
-//   ending=done|steps|needs|bare|question   how the first turn ends (default done). `question` runs
-//                                           `frizzctl ask` mid-turn, the way a real worker registers one
+//   ending=done|steps|needs|bare|question   how the first turn ends (default done). `question` ends it
+//                                           on a ```question fence (a choice of two, one recommended),
+//                                           the way a worker asks: Frizz registers it from the message
 //   paras=N        paragraphs of prose in the first turn's final message (default 3)
 //   tools=N        Bash tool calls before that message, each `toolms` long (default 0, 1500ms)
 //   thinking=1     a thinking block before the final message (a "Thought for Ns" row)
@@ -33,11 +34,46 @@
 //                  for `thinkms` (default 2000) before the first call
 //   gapms=MS       the model's pause between a tool result and its next call (default 0) — the inter-call
 //                  gap where the slot reads `Ran N tool calls. Thinking…`
-//   reply=question registers a question mid-turn in every later turn too, the way `ending=question` does
+//   reply=question ends every later turn on a question fence too, each under a new id (an id is spent
+//                  for the life of the thread), the way `ending=question` ends the first
 //   disklag=MS     event → JSONL write delay for each assistant record (default 15)
 //   resultlag=MS   final event → `result` delay (default 30). With the defaults the final record reaches
 //                  disk BEFORE the result, the order measured on real broker sessions (94c6b0ee);
 //                  `disklag=40 resultlag=10` is the other order, the result first.
+//
+// A TURN SCRIPT, for a test that has to say exactly what the worker writes and runs — a ```question
+// fence, a broken one, a reference, a ```done fence, `frizzctl done`. The knobs above generate a turn;
+// this states it:
+//
+//   file=/abs/turns.json   (an absolute path with no spaces; the knobs above may ride beside it)
+//
+//   { "think": 300,                          ms before a scripted turn's first record (default: the knobs')
+//     "turns": [
+//       { "name": "asks",                    a label, for the log below
+//         "on": "text the message contains", or "onRe": "a JavaScript regular expression"; neither = any
+//         "times": 1,                        how many messages this entry answers (default 1; 0 = every one)
+//         "think": 300,                      this turn's own delay
+//         "tools": [                         shell commands, run for real before the final message, in order,
+//           "frizzctl done --body 'x'",      each a Bash tool call whose result is the command's own output
+//           { "command": "…", "description": "…", "ms": 500, "timeout": 30000 } ],
+//         "text": "the final message, verbatim" } ],
+//     "otherwise": { "tools": [], "text": "…" } }      answers a message no entry takes
+//
+// Every incoming message that starts a turn (the dispatch prompt first, then each follow-up, wake, answer
+// or correction) is answered by the FIRST entry of `turns` that still has a use left and whose `on`/`onRe`
+// accepts the message's text; with none, by `otherwise`; with no `otherwise`, by a generated turn from the
+// `reply…` knobs, as if there were no file. So a list with no `on` at all is a plain sequence, and an entry
+// keyed on a wake's lead (`"on": "⚠️ Your ```question fence "`) answers that wake whenever it arrives.
+//
+// A tool command runs through `/bin/sh -c` in the worker's own cwd and environment — the broker daemon's,
+// with `<--plugin-dir>/bin` first on PATH as Claude Code has it — so `frizzctl` is the one beside the
+// stack's own server and reaches that server. Its result is written the way Claude Code
+// writes a Bash result: stdout then stderr, and for a non-zero exit `Exit code N` on the first line with
+// `is_error: true`. `"ms"` holds the call open that long after the command returns.
+//
+// Each choice is appended to `<file>.log` as one JSON line ({ at, turn, entry, name, message }), so a
+// verifier can say which entry answered which message. A session started again with `--resume` reads its
+// own transcript back, re-reads the file and replays those choices, so an entry is not spent twice.
 //
 // A message that arrives while a turn runs is a STEER, handled the way Claude Code 2.1.296 writes it:
 // a `queue-operation enqueue` at once; handed over at the next tool boundary (`queued_command`
@@ -47,7 +83,7 @@
 // `<bin> auth status --json` answers signed in, so the dispatch preflight passes on a sandbox HOME.
 // The protocol half (initialize, controls) follows packages/server/src/backend/claude-agent-sdk.fixtures/
 // fake-claude-cli.mjs, the stand-in the Agent SDK contract tests drive the same broker with.
-import { appendFileSync, mkdirSync } from "node:fs"
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { homedir } from "node:os"
 import { randomUUID } from "node:crypto"
@@ -93,7 +129,68 @@ function parseScript(text) {
   for (const [, key, value] of token.matchAll(/(\w+)=([\w.-]+)/g)) {
     out[key] = /^\d+$/.test(value) ? Number(value) : value
   }
+  // A path is not a knob value (`[\w.-]+` stops at the first slash), so it is read on its own.
+  const file = /(?:^|\s)file=(\/[^\s\]]+)/.exec(token)?.[1]
+  if (file) out.file = file
+  else delete out.file
   return out
+}
+
+// ---- the turn script (`file=`) ----
+// What the file said, with a use count per entry. Null when the session has no file, or it could not be
+// read — in which case every turn is a generated one and the failure is on stderr and in the first reply.
+let script = null
+let scriptFault = ""
+function loadScript(file) {
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8"))
+    const entry = (raw) => ({
+      name: typeof raw.name === "string" ? raw.name : undefined,
+      on: typeof raw.on === "string" ? raw.on : undefined,
+      onRe: typeof raw.onRe === "string" ? new RegExp(raw.onRe) : undefined,
+      times: Number.isInteger(raw.times) && raw.times >= 0 ? raw.times : 1,
+      think: Number.isFinite(raw.think) ? raw.think : undefined,
+      tools: (Array.isArray(raw.tools) ? raw.tools : []).map((t) => (typeof t === "string" ? { command: t } : t)).filter((t) => typeof t?.command === "string"),
+      text: typeof raw.text === "string" && raw.text.trim() ? raw.text : "(a scripted turn with no text)",
+      used: 0,
+    })
+    script = {
+      file,
+      think: Number.isFinite(parsed.think) ? parsed.think : undefined,
+      turns: (Array.isArray(parsed.turns) ? parsed.turns : []).map(entry),
+      otherwise: parsed.otherwise && typeof parsed.otherwise === "object" ? entry(parsed.otherwise) : undefined,
+    }
+  } catch (error) {
+    scriptFault = `scripted-claude: could not read the turn script ${file}: ${error instanceof Error ? error.message : String(error)}`
+    process.stderr.write(`${scriptFault}\n`)
+  }
+}
+/** The entry that answers `text`, counted as used — or undefined for a generated turn. */
+function takeEntry(text, { log = true } = {}) {
+  if (!script) return undefined
+  const index = script.turns.findIndex((e) => (e.times === 0 || e.used < e.times) && (e.on === undefined || text.includes(e.on)) && (e.onRe === undefined || e.onRe.test(text)))
+  const entry = index >= 0 ? script.turns[index] : script.otherwise
+  if (entry) entry.used += 1
+  if (log) {
+    try {
+      appendFileSync(`${script.file}.log`, `${JSON.stringify({ at: now(), sessionId, turn: turnNumber + 1, entry: index >= 0 ? index : entry ? "otherwise" : "generated", name: entry?.name, message: text.slice(0, 160) })}\n`)
+    } catch {}
+  }
+  return entry
+}
+// Claude Code puts an enabled plugin's `bin/` first on its Bash PATH, which is how a worker's `frizzctl`
+// is the one beside the server that dispatched it (`--plugin-dir=<repo>/cc-worker`) and not whatever a
+// `frizzctl` further down the inherited PATH happens to be: a stack booted from inside a Frizz worker
+// inherits the machine's installed one.
+const pluginDir = optionValue("--plugin-dir")
+const toolEnv = pluginDir && process.env.PATH ? { ...process.env, PATH: `${join(pluginDir, "bin")}:${process.env.PATH}` } : process.env
+function runShell(tool) {
+  return new Promise((resolve) => {
+    execFile("/bin/sh", ["-c", tool.command], { cwd, env: toolEnv, timeout: Number.isFinite(tool.timeout) ? tool.timeout : 30_000, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
+      const code = error ? (typeof error.code === "number" ? error.code : 1) : 0
+      resolve({ code, stdout: String(stdout), stderr: error && typeof error.code !== "number" ? `${stderr}${error.message}` : String(stderr) })
+    })
+  })
 }
 
 const PARAGRAPH = "Release engineering is the discipline of shipping exactly what you tested: a pipeline checks out one commit, builds it hermetically, records where every artifact came from, and publishes only after every gate it depends on has passed on that same revision."
@@ -103,8 +200,23 @@ const FENCES = {
   steps: "```awaiting\ntitle: Approve the npm sign-in so the release can publish\nsteps:\n  - Open [the npm sign-in page](https://www.npmjs.com/login) and sign in with the maintainer account.\n  - Approve the request with that account's security key or one-time code.\n---\n`npm login --auth-type=web` is waiting on that approval.\n```",
   needs: "```awaiting\nstatus: needs_input\ntitle: Two of three audits ready\nfor: 1h\n---\nTwo audits are written and can be read now; the third is still running.\n```",
   bare: "",
-  question: "",
 }
+// `ending=question` / `reply=question`. Until 2026-10-13 these ran the `ask` command mid-turn; that command
+// is retired (it exits 2 and registers nothing), and a worker asks by writing the fence. The id carries
+// the turn's number because an id is never reused on a thread, and `reply=question` asks at every turn.
+const questionFence = (turn) => [
+  "```question",
+  `id: publish-release-${turn}`,
+  "kind: choice",
+  "question: Publish the release now, or hold it for the changelog?",
+  "options:",
+  "  - label: Publish now",
+  "    description: every gate passed on this commit",
+  "    recommended: true",
+  "  - label: Hold it",
+  "    description: the changelog entry is still a draft",
+  "```",
+].join("\n")
 
 // ---- turns ----
 let turnNumber = 0
@@ -151,14 +263,18 @@ async function runTurn(kind) {
     send({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: "" }] }, parent_tool_use_id: null, uuid: resultUuid, session_id: sessionId, isSynthetic: true })
     deliverAtToolBoundary()
   }
-  if (ending === "question") await registerQuestion()
   const messageId = `msg_scripted_${turnNumber}`
   if (first && s.thinking) await assistantRecord(messageId, { type: "thinking", thinking: "", signature: "scripted" }, null, s)
-  const fence = FENCES[ending] ?? ""
-  const lead = ending === "question" ? "One decision is needed before this can go further; it is registered as a question." : undefined
+  const fence = ending === "question" ? questionFence(turnNumber) : FENCES[ending] ?? ""
+  const lead = ending === "question" ? "One decision is needed before this can go further; it is asked below." : undefined
+  await finishTurn(messageId, [prose(paras, lead), fence].filter(Boolean).join("\n\n"), s)
+}
+
+/** The turn's final message, its `result`, and whatever waited the turn out. */
+async function finishTurn(messageId, text, s) {
   // The final record and the `result` each trail the final event by their OWN lag, so either can win:
   // `resultlag < disklag` is the result reaching Frizz before the record reaches the disk.
-  const landed = assistantRecord(messageId, { type: "text", text: [prose(paras, lead), fence].filter(Boolean).join("\n\n") }, "end_turn", s)
+  const landed = assistantRecord(messageId, { type: "text", text }, "end_turn", s)
   await sleep(s.resultlag)
   send({ type: "result", subtype: "success", duration_ms: 1, duration_api_ms: 1, is_error: false, num_turns: 1, result: "", stop_reason: "end_turn", total_cost_usd: 0, usage: {}, modelUsage: {}, permission_denials: [], uuid: randomUUID(), session_id: sessionId })
   await landed
@@ -171,21 +287,39 @@ async function runTurn(kind) {
   }
 }
 
-function registerQuestion() {
-  const spec = { questions: [{ question: "Publish the release now, or hold it for the changelog?", kind: "question", options: [{ label: "Publish now", description: "every gate passed on this commit", recommended: true }, { label: "Hold it", description: "the changelog entry is still a draft" }] }] }
-  return new Promise((resolve) => {
-    const child = execFile("frizzctl", ["ask", "--input", "-"], { timeout: 15_000 }, (error, stdout, stderr) => {
-      if (error) process.stderr.write(`scripted-claude: frizzctl ask failed: ${String(stderr || error.message).slice(0, 300)}\n`)
-      resolve(stdout)
-    })
-    child.stdin?.end(JSON.stringify(spec))
-  })
+/** One entry of the turn script: its commands as real Bash tool calls, then its text. */
+async function runScriptedTurn(entry, kind) {
+  running = true
+  turnNumber += 1
+  const s = config
+  await sleep(entry.think ?? script?.think ?? (kind === "first" ? s.think : s.replythink))
+  for (let i = 0; i < entry.tools.length; i++) {
+    const tool = entry.tools[i]
+    const id = `toolu_scripted_${turnNumber}_${i}`
+    await assistantRecord(`msg_scripted_${turnNumber}_t${i}`, { type: "tool_use", id, name: "Bash", input: { command: tool.command, description: tool.description ?? `Running step ${i + 1} of ${entry.tools.length}` } }, "tool_use", s)
+    const ran = await runShell(tool)
+    if (tool.ms) await sleep(tool.ms)
+    const output = [ran.stdout, ran.stderr].filter(Boolean).join(ran.stdout.endsWith("\n") || !ran.stdout ? "" : "\n").trimEnd()
+    const failed = ran.code !== 0
+    const content = failed ? `Exit code ${ran.code}${output ? `\n${output}` : ""}` : output
+    const resultUuid = randomUUID()
+    write({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content, is_error: failed }] }, uuid: resultUuid, timestamp: now(), toolUseResult: failed ? `Error: ${content}` : { stdout: ran.stdout, stderr: ran.stderr, interrupted: false } })
+    send({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content, ...(failed ? { is_error: true } : {}) }] }, parent_tool_use_id: null, uuid: resultUuid, session_id: sessionId, isSynthetic: true })
+    deliverAtToolBoundary()
+  }
+  await finishTurn(`msg_scripted_${turnNumber}`, turnNumber === 1 && scriptFault ? `${scriptFault}\n\n${entry.text}` : entry.text, s)
+}
+
+/** Start the turn that answers `text`: the script's entry for it, or a generated one. */
+function startTurn(kind, text) {
+  const entry = takeEntry(text)
+  void (entry ? runScriptedTurn(entry, kind) : runTurn(kind))
 }
 
 function acceptInput(text, uuid) {
   write({ type: "user", message: { role: "user", content: text }, uuid: randomUUID(), timestamp: now(), promptSource: "sdk" })
   send({ type: "user", message: { role: "user", content: text }, parent_tool_use_id: null, uuid, session_id: sessionId })
-  void runTurn(config === null ? "first" : "reply")
+  startTurn("reply", text)
 }
 
 function handleUserMessage(message) {
@@ -194,9 +328,10 @@ function handleUserMessage(message) {
   const uuid = message.uuid ?? randomUUID()
   if (config === null) {
     config = parseScript(text)
+    if (config.file) loadScript(config.file)
     write({ type: "user", message: { role: "user", content: text }, uuid: randomUUID(), timestamp: now(), promptSource: "sdk" })
     send({ type: "user", message: { role: "user", content: text }, parent_tool_use_id: null, uuid, session_id: sessionId })
-    void runTurn("first")
+    startTurn("first", text)
     return
   }
   if (running) {
@@ -240,6 +375,32 @@ function handleHostControl(message) {
       return respond(message.request_id, { commands: [], agents: [], plugins: [], mcpServers: [], error_count: 0 })
     default:
       return respond(message.request_id, {})
+  }
+}
+
+// A RESUMED SESSION PICKS ITS SCRIPT UP WHERE IT LEFT IT. `--resume` starts a new process on an old
+// transcript; without this the next message would be read as the first, find no `[script …]` token and
+// be answered by a default turn. Every user record with a string body started a turn, so replaying them
+// against the file spends the same entries the first process spent. Only a session scripted from a file
+// is recovered: one driven by knobs alone behaves on resume as it always has.
+if (optionValue("--resume") && existsSync(transcript)) {
+  const started = []
+  let last = null
+  for (const line of readFileSync(transcript, "utf8").split("\n")) {
+    let record
+    try { record = JSON.parse(line) } catch { continue }
+    if (record.uuid) last = record.uuid
+    if (record.type === "user" && typeof record.message?.content === "string") started.push(record.message.content)
+  }
+  const recovered = started.length ? parseScript(started[0]) : undefined
+  if (recovered?.file) {
+    config = recovered
+    loadScript(recovered.file)
+    parentUuid = last
+    for (const text of started) {
+      takeEntry(text, { log: false })
+      turnNumber += 1
+    }
   }
 }
 

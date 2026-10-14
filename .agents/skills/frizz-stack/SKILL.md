@@ -190,13 +190,47 @@ await api.mutate("dispatch", { prompt: "[script ending=steps paras=14] …", bac
 ```
 
 The first message's `[script …]` token is the whole script: how the turn ends
-(`ending=done|steps|needs|bare|question`, the last one registering a real question through `frizzctl ask`),
+(`ending=done|steps|needs|bare|question`, the last one closing on a ` ```question ` fence that Frizz registers),
 how long it runs (`paras`, `tools`, `toolms`, `think`), and what each later turn does (`reply`,
 `replyparas`, `replytools`, `replythink`). A message that arrives mid-turn is a steer. The file's header
 lists every knob. The workers are still detached broker daemons: kill them by PID when the stack goes.
 
 `scripts/layout-timeline.mjs` records a thread page or a drawer on such a stack: every layout it paints
 around a send, an answer, a steer or a turn's end, with the event that committed each.
+
+#### Stating each turn, when the seam is DELIVERY
+
+The knobs generate a turn. To check anything Frizz SENDS a worker — a wake, a correction, an answer, a
+Goal's cancellation — a test has to say exactly what the worker writes back, so the same binary takes a
+file: `[script file=/abs/turns.json]` lists the turns, each with the shell commands it runs as real Bash
+tool calls (`frizzctl done`, `frizzctl timer set …`) and its final message verbatim (a ` ```question `
+fence, a broken one, a reference), optionally keyed to the message it answers (`"on": "…"`). Boot with the
+scheduler armed and a HOME that survives a stop:
+
+```bash
+nub scripts/adhoc-stack.mjs --port=47611 --wakers --keep --project=/abs/throwaway-repo \
+  --claude-bin=$PWD/scripts/scripted-claude.mjs > /tmp/stack.log 2>&1
+```
+
+`scripts/verify-question-fence-wakes.mjs` is the worked example, including a tool call that holds a turn
+open until the verifier releases it, and a restart of the stack by pid.
+
+- **`--wakers` arms every scheduler source**, the sign-off reminder included: a scripted rest with no
+  sign-off is reminded within a tick (10s). Script a reply for it or end the turn on a fence.
+- **Boot it from a shell with no Frizz worker variables** (`env -u FRIZZ_STATE_DIR -u FRIZZ_SERVER_LOCK
+  -u FRIZZ_PROJECT_ID -u FRIZZ_NODE -u FRIZZ_THREAD -u FRIZZ_PERM_DIR -u FRIZZ_NATIVE_ASK …`). A scripted
+  tool call puts its own `--plugin-dir`'s `bin/` first on PATH, as Claude Code does, so its `frizzctl` is
+  the checkout's own.
+- **`FRIZZ_LOG_PATH=/abs/server.log`** in the stack's environment is the only way to read the scheduler's
+  log (`waker: queued …`, `waker: sent …`): the stack's stdout carries none of it.
+- **A wake to a Claude thread is never filed `delivered` on arrival.** It is `leased` when sent and settled
+  later: `delivered` when its 60s confirmation window closes, or `superseded` once the worker's reply moves
+  the rest it was bound to (a correction, a reminder). Assert a delivery on the worker's transcript, never
+  on `wake_delivery.state`.
+- **The daemon's command line names the checkout, not the sandbox HOME**:
+  `ps -Ao pid,command | grep '<checkout>/packages/server/src/backend/claude-agent-broker.ts'`, kill each
+  by pid, and check again.
+
 
 ---
 
