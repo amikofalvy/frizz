@@ -6,6 +6,7 @@ import { useLiveAnswering, type LiveAnswering } from "../lib/answering.ts"
 import { pairAllAnswers, unrenderedAnswers, type PairedAnswer } from "../lib/answersMessage.ts"
 import { useFileDropZone, useFileIntakeHandle, type FileDropZone, type SurfaceFileDrop } from "../lib/fileDrop.ts"
 import { lastAssistantIndex } from "../lib/lastAssistant.ts"
+import { useOpsHeldForTranscript } from "../lib/opsAhead.ts"
 import { placeQuestions, registeredStandingAt, type QuestionPlacement } from "../lib/questionShadow.ts"
 import { SendScopeContext, useComposerSendHandle, useComposerSendPresent, useSendScope, type SendScope } from "../lib/sendScope.tsx"
 import { settledQuestionPositions, type SettledPlacement } from "../lib/settledQuestions.ts"
@@ -112,6 +113,10 @@ export interface ThreadTranscript {
   inFlightAnswers: PairedAnswer[] | null
   /** The fenced-question controller for the message, or undefined for an ordinary one. */
   answeringForMessage: LiveAnswering["answeringForMessage"]
+  /** The thread as the op counts over the prompt box present it: the board's sub-agents, each launch and
+   *  finish held until the transcript draws it (lib/opsAhead), so the counts and the Agent rows move in
+   *  one frame. Read through useSurfaceOpsThread. */
+  opsThread: ThreadView | undefined
 }
 
 export interface ThreadSurfaceState {
@@ -182,6 +187,15 @@ export function useThreadTranscript(): ThreadTranscript {
   return transcript
 }
 
+/** The thread the op counts over a prompt box should draw (ThreadTranscript.opsThread): inside a thread's
+ *  surface, the surface's — on the queue card, in the drawer and on the full page alike — and outside one
+ *  (a fixture, a mockup), the thread as given. */
+export function useSurfaceOpsThread(thread: ThreadView): ThreadView {
+  const transcript = useContext(ThreadTranscriptContext)
+  const held = transcript?.opsThread
+  return held && held.id === thread.id ? held : thread
+}
+
 /** One per surface, called by the component that draws the transcript. */
 export function useThreadSurface(source: ThreadSurfaceSource, options: ThreadSurfaceOptions = {}): ThreadSurfaceState {
   const { slug, thread, messages, openQuestions, settledQuestions } = source
@@ -216,6 +230,7 @@ export function useThreadSurface(source: ThreadSurfaceSource, options: ThreadSur
   const settledPlacement = useMemo(() => settledQuestionPositions(messages, settledQuestions), [messages, settledQuestions])
   const paired = useMemo(() => pairAllAnswers(messages), [messages])
   const inFlightAnswers = useMemo(() => unrenderedAnswers(messages, thread?.answersInFlight), [messages, thread?.answersInFlight])
+  const opsThread = useOpsHeldForTranscript(thread, messages)
   const transcript = useMemo<ThreadTranscript>(
     () => ({
       thread,
@@ -233,8 +248,9 @@ export function useThreadSurface(source: ThreadSurfaceSource, options: ThreadSur
       paired,
       inFlightAnswers,
       answeringForMessage,
+      opsThread,
     }),
-    [thread, running, lastAgentIdx, awaitingCut, restingShown, openQuestions, fencesLive, fenceQuestions, shadowedByMessage, placement, settledPlacement, paired, inFlightAnswers, answeringForMessage],
+    [thread, running, lastAgentIdx, awaitingCut, restingShown, openQuestions, fencesLive, fenceQuestions, shadowedByMessage, placement, settledPlacement, paired, inFlightAnswers, answeringForMessage, opsThread],
   )
 
   // The surface is the zone and its prompt box the intake (lib/fileDrop). Files given while no box is

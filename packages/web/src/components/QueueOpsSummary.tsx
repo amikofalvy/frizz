@@ -6,6 +6,7 @@ import { isRunningOperation } from "../lib/operationIndicators.ts"
 import { queueOpsCounts, type QueueOpsCount, type QueueOpsKind } from "../lib/queueOpsCounts.ts"
 import { BackgroundOpsStrip } from "./ChatView.tsx"
 import { QueueSubAgentLines } from "./QueueSubAgentLines.tsx"
+import { useSurfaceOpsThread } from "./ThreadSurface.tsx"
 import { Popover, PopoverAnchor, PopoverContent } from "./ui/Popover.tsx"
 
 // THE QUEUE CARD'S LIVE OPS, CONDENSED: one line of counts at the right, just above the docked prompt
@@ -58,7 +59,9 @@ const PANEL_LABEL: Record<QueueOpsKind, string> = {
   link: "Links saved for this thread",
 }
 
-export function QueueOpsSummary({ thread, transcriptShells = [] }: { thread: ThreadView; transcriptShells?: readonly (BgShellView & TranscriptShellRecord)[] }) {
+export function QueueOpsSummary({ thread: given, transcriptShells = [] }: { thread: ThreadView; transcriptShells?: readonly (BgShellView & TranscriptShellRecord)[] }) {
+  // The counts move with the transcript's Agent rows, not ahead of them (ThreadSurface opsThread).
+  const thread = useSurfaceOpsThread(given)
   const [openKind, setOpenKind] = useState<QueueOpsKind | null>(null)
   const closeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   useEffect(() => () => clearTimeout(closeTimer.current), [])
