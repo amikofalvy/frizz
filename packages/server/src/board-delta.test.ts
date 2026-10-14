@@ -61,6 +61,35 @@ test("differ: first snapshot upserts every thread and starts seq at 1", () => {
   assert.ok(out!.meta, "first diff carries meta")
 })
 
+test("differ: a view object it has already serialized is not serialized again", () => {
+  // The server board hands back the SAME object for an unchanged archived thread (board.ts
+  // archivedViewMemo); the differ must take that identity as "unchanged" without a stringify, and must
+  // still catch a NEW object for the same id, equal or not.
+  let serialized = 0
+  const counted = (id: string, over: Partial<ThreadView> = {}) => {
+    const t = thread(id, over)
+    Object.defineProperty(t, "toJSON", { enumerable: false, value() { serialized++; const { ...plain } = this as ThreadView; return plain } })
+    return t
+  }
+  const d = new BoardDiffer()
+  const a = counted("a")
+  const b = counted("b")
+  d.diff(board([a, b]))
+  assert.equal(serialized, 2)
+  assert.equal(d.diff(board([a, b])), null, "same objects: nothing to send")
+  assert.equal(serialized, 2, "…and nothing re-serialized")
+
+  const bEqual = counted("b")
+  assert.equal(d.diff(board([a, bEqual])), null, "a new object with the same content is still no change")
+  assert.equal(serialized, 3, "only the new object was serialized")
+  assert.equal(d.diff(board([a, bEqual])), null)
+  assert.equal(serialized, 3, "and having been compared once, it is held by identity too")
+
+  const bChanged = counted("b", { title: "renamed" })
+  const out = d.diff(board([a, bChanged]))
+  assert.deepEqual(out?.upserts.map((t) => t.title), ["renamed"])
+})
+
 test("differ: an unchanged snapshot dedupes to null (no publish, no seq bump)", () => {
   const d = new BoardDiffer()
   const snap = board([thread("a"), thread("b")])
@@ -93,6 +122,17 @@ test("differ: removed and added threads surface in removed/upserts", () => {
   assert.ok(out)
   assert.deepEqual(out!.upserts.map((t) => t.id), ["c"])
   assert.deepEqual(out!.removed, ["b"])
+})
+
+test("differ: a removal is found by the ids a diff saw, not by the snapshot's length", () => {
+  const d = new BoardDiffer()
+  const a = thread("a")
+  d.diff(board([a, thread("b")]))
+  // Two entries for one id: the length says nothing was removed, and b still was.
+  const out = d.diff(board([a, a]))
+  assert.ok(out)
+  assert.deepEqual(out!.removed, ["b"])
+  assert.equal(d.diff(board([a])), null, "and it is gone from the differ's state")
 })
 
 test("differ: a board-level (meta) change alone still emits a delta carrying meta", () => {

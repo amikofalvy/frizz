@@ -147,13 +147,26 @@ function recordListing(dir: string): ReadonlySet<string> {
  * taken once, and a session's record is read (and pid-probed, and pruned when dead) only when it
  * exists. Answers exactly what `liveBrokerRecord(claudeBrokerRecordPath(…)) !== null` answers.
  */
-export function brokerLivenessSnapshot(stateDir: string): (sessionId: string) => boolean {
+export function brokerLivenessSnapshot(stateDir: string): BrokerLivenessSnapshot {
   const dir = join(stateDir, "claude-broker")
   const names = recordListing(dir)
-  return (sessionId) => {
+  const alive = (sessionId: string) => {
     const name = claudeBrokerRecordName(sessionId)
     return names.has(name) && liveBrokerRecord(join(dir, name)) !== null
   }
+  return Object.assign(alive, {
+    listing: names,
+    listed: (sessionId: string) => names.has(claudeBrokerRecordName(sessionId)),
+  })
+}
+
+/** brokerLivenessSnapshot's reader, plus the listing it answers from. `listing` is the SAME object for as
+ *  long as the directory has not changed, so a caller that saw a session absent from it can know it is
+ *  still absent (and so still not alive) without asking again. */
+export type BrokerLivenessSnapshot = ((sessionId: string) => boolean) & {
+  readonly listing: ReadonlySet<string>
+  /** Whether the session has a record file at all — false means not alive, with nothing to read. */
+  listed(sessionId: string): boolean
 }
 
 /** Why frizz retired a daemon ON PURPOSE, while keeping the conversation. Every one of these ends a

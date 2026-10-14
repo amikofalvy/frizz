@@ -28,11 +28,21 @@ function metaOf(b: BoardSnapshot): BoardMeta {
 export type BoardDiff = { seq: number; upserts: ThreadView[]; removed: ThreadSlug[]; meta?: BoardMeta }
 
 export class BoardDiffer {
-  // id -> serialized ThreadView JSON, for the last snapshot we emitted a diff for.
-  private threads = new Map<string, string>()
+  // id -> the last-emitted serialized ThreadView JSON, plus the ThreadView OBJECT that serialization was
+  // taken from. A producer that hands back the same object for an unchanged thread (the server board
+  // memoizes archived threads' views) costs a map lookup here instead of a JSON.stringify — on a
+  // 5,000-thread board the stringify pass alone was 30ms of every refresh. This is sound only because a
+  // ThreadView is never mutated once it has been handed to the differ: the board builds a new object for
+  // any change, and nothing downstream edits a snapshot's threads. A producer that did edit one in place
+  // would have its change silently dropped.
+  //
+  // Updated in place, so an unchanged board allocates nothing per thread. `seen` is the diff that last
+  // saw the id; an entry a diff did not see was removed.
+  private threads = new Map<string, { json: string; object: ThreadView; seen: number }>()
   // serialized BoardMeta of the last snapshot (empty = never emitted).
   private meta = ""
   private seq = 0
+  private pass = 0
 
   // The seq the last emitted diff carried (= the seq a fresh connect keyframe must advertise, since the
   // keyframe reflects the same committed state). 0 before anything has been diffed.
@@ -43,16 +53,46 @@ export class BoardDiffer {
   // Compute the delta of `next` vs. the last-emitted state. Returns null when NOTHING changed — the
   // caller must then NOT publish (this is the dedupe that keeps a 1s tailer tick from streaming
   // identical frames). On a real change it COMMITS the new state, bumps seq, and returns the diff.
+  //
+  // The per-thread entries are written as they are compared. That is the same commit: when the diff is
+  // null every entry holds the string it held before (an object that serialized identically may have
+  // replaced its predecessor, which is only a cheaper key for the next comparison).
   diff(next: BoardSnapshot): BoardDiff | null {
+    const pass = ++this.pass
     const upserts: ThreadView[] = []
-    const nextThreads = new Map<string, string>()
+    // Distinct ids this diff saw. Counted, not taken from next.threads.length, so the removal sweep below
+    // stays exact whatever the snapshot holds.
+    let seen = 0
     for (const t of next.threads) {
-      const s = JSON.stringify(t)
-      nextThreads.set(t.id, s)
-      if (this.threads.get(t.id) !== s) upserts.push(t)
+      const entry = this.threads.get(t.id)
+      if (entry && entry.object === t) {
+        if (entry.seen !== pass) seen++
+        entry.seen = pass
+        continue
+      }
+      const json = JSON.stringify(t)
+      if (!entry) {
+        this.threads.set(t.id, { json, object: t, seen: pass })
+        seen++
+        upserts.push(t)
+        continue
+      }
+      if (entry.seen !== pass) seen++
+      if (entry.json !== json) {
+        entry.json = json
+        upserts.push(t)
+      }
+      entry.object = t
+      entry.seen = pass
     }
     const removed: string[] = []
-    for (const id of this.threads.keys()) if (!nextThreads.has(id)) removed.push(id)
+    if (this.threads.size > seen) {
+      for (const [id, entry] of this.threads) {
+        if (entry.seen === pass) continue
+        removed.push(id)
+        this.threads.delete(id)
+      }
+    }
 
     const meta = metaOf(next)
     const metaS = JSON.stringify(meta)
@@ -60,8 +100,6 @@ export class BoardDiffer {
 
     if (upserts.length === 0 && removed.length === 0 && !metaChanged) return null
 
-    // Commit: swap in the freshly-serialized thread map (implicitly drops removed ids) + new meta.
-    this.threads = nextThreads
     this.meta = metaS
     this.seq += 1
     return metaChanged ? { seq: this.seq, upserts, removed, meta } : { seq: this.seq, upserts, removed }

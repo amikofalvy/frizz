@@ -1630,8 +1630,8 @@ interface ThreadRegistries {
   done: ReadonlyMap<string, { readonly body: string; readonly doneAt: number }>
 }
 
-function readThreadRegistries(storage: Storage): ThreadRegistries {
-  return {
+function readThreadRegistries(storage: Storage, previous?: ThreadRegistries): ThreadRegistries {
+  const next: ThreadRegistries = {
     links: storage.threadLinksBySlug(),
     prWatches: storage.armedPrWatchesBySlug(),
     timers: storage.armedThreadTimersBySlug(),
@@ -1640,6 +1640,20 @@ function readThreadRegistries(storage: Storage): ThreadRegistries {
     watches: storage.armedThreadWatchesBySlug(),
     done: storage.threadDoneBySlug(),
   }
+  // The storage hands back the same map while its table is unchanged, so "nothing in any registry
+  // moved" is seven identity checks — and then the previous object, which the archived-view memo
+  // reads as "every bucket is as it was" (ArchivedViewInputs.confirmedIn).
+  if (
+    previous &&
+    previous.links === next.links &&
+    previous.prWatches === next.prWatches &&
+    previous.timers === next.timers &&
+    previous.commandWatches === next.commandWatches &&
+    previous.questions === next.questions &&
+    previous.watches === next.watches &&
+    previous.done === next.done
+  ) return previous
+  return next
 }
 
 function sessionThreadView(
@@ -2060,6 +2074,162 @@ function foreignThreadView(sessionId: string, tele: SessionTelemetry, backend: "
   }
 }
 
+// ---- the archived-view memo (2026-10-14) ----------------------------------------------------------------
+// Every refresh used to derive every thread's view from scratch, and a board is mostly HISTORY: on a
+// seeded 5,000-thread board (4,995 archived) one refresh after one write cost ~260ms of blocked event
+// loop, and every router mutation ends in one. An archived thread's view almost never changes, so the
+// board keeps the last one it derived, with everything it was derived from, and hands back the SAME
+// object while all of it is unchanged. Identity is the whole comparison: the storage keeps an unchanged
+// row and an unchanged registry bucket the same object (change-tracking.ts), the tailer does the same
+// for unchanged telemetry (tailer.ts telemetryMemo), and the differ skips serializing a view it has
+// already serialized (shared BoardDiffer).
+//
+// ONLY ARCHIVED THREADS, AND ONLY ONES WHOSE VIEW CANNOT MOVE WITH THE CLOCK. sessionThreadView reads
+// `nowMs` in nine places. For an archived thread six of them are dead (needs-you, delivery, wait status,
+// awaiting-background and the answer-in-flight excusal are all forced off by `archived`), and the other
+// three are excluded here outright rather than modelled: a codex app-server row (its stall grace counts
+// from the clock), a row with a snooze instant (futureSnooze compares it to now), and telemetry carrying
+// a usage-limit fault (whether its auto-resume is stale is a clock question). fenceWatchViews also falls
+// back to the wall clock for a parked fence with no instant; that row is excluded too. An open thread is
+// never memoized: the queue's rules are where time lives, and there are only a handful of them.
+//
+// Everything else the derivation reads is a key below. If sessionThreadView ever reads a new input,
+// it has to be added here or the thread excluded — the golden test in board.memo.test.ts compares a
+// warm board against a cold one over the same state and is the net for exactly that.
+interface ArchivedViewInputs {
+  row: SessionRow
+  tele: SessionTelemetry | undefined
+  legacyTerminal: boolean
+  presence: { pending: boolean; needsUser: boolean }
+  brokerAlive: boolean | undefined
+  // The broker record listing this session was ABSENT from when brokerAlive was read (so it read
+  // false with nothing to read). While the build's listing is that same object, the session is still
+  // absent and still not alive — exact, and it spares the per-thread probe. Undefined otherwise.
+  absentFrom: ReadonlySet<string> | undefined
+  links: readonly ThreadLinkRow[] | undefined
+  prWatches: readonly PrWatchRow[] | undefined
+  timers: readonly ThreadTimerRow[] | undefined
+  commandWatches: readonly CommandWatchRow[] | undefined
+  questions: readonly ThreadQuestionRow[] | undefined
+  watches: readonly ThreadWatchRow[] | undefined
+  done: { readonly body: string; readonly doneAt: number } | undefined
+  // The registries (all seven maps, by identity) the buckets above were last confirmed against. While
+  // the build's registries are that same object, no bucket can have moved, and none is looked up.
+  confirmedIn: ThreadRegistries
+  github: GithubStatusBook
+  issueBook: GithubIssueStatusBook
+  catalogue: readonly ClaudeModel[] | undefined
+  faults: readonly QuestionFenceFault[] | undefined
+}
+
+function archivedViewInputs(
+  row: SessionRow,
+  tele: SessionTelemetry | undefined,
+  legacyTerminal: boolean,
+  presence: { pending: boolean; needsUser: boolean },
+  brokerAlive: ClaudeBrokerLivenessSnapshot,
+  registries: ThreadRegistries,
+  github: GithubStatusBook,
+  issueBook: GithubIssueStatusBook,
+  catalogue: readonly ClaudeModel[] | undefined,
+  faults: readonly QuestionFenceFault[] | undefined,
+): ArchivedViewInputs | undefined {
+  if (effectiveSessionState(row, legacyTerminal) !== "archived") return undefined
+  if (row.codex_runtime === "app-server") return undefined
+  if (row.snoozed_until !== null && row.snoozed_until !== undefined) return undefined
+  if (tele?.limitFault) return undefined
+  if (tele?.lastFence?.kind === "awaiting" && !tele.lastAssistantAt) return undefined
+  const slug = row.slug
+  // The one external fact the derivation reads for a non-codex row (headlessStalled).
+  const broker = isBrokerClaudeRow(row)
+  const absent = broker && brokerAlive.listing !== undefined && brokerAlive.listed?.(row.session_id) === false
+  return {
+    row,
+    tele,
+    legacyTerminal,
+    presence,
+    brokerAlive: broker ? (absent ? false : brokerAlive(row.session_id)) : undefined,
+    absentFrom: absent ? brokerAlive.listing : undefined,
+    links: registries.links.get(slug),
+    prWatches: registries.prWatches.get(slug),
+    timers: registries.timers.get(slug),
+    commandWatches: registries.commandWatches.get(slug),
+    questions: registries.questions.get(slug),
+    watches: registries.watches.get(slug),
+    done: registries.done.get(slug),
+    confirmedIn: registries,
+    github,
+    issueBook,
+    catalogue,
+    faults,
+  }
+}
+
+// Whether a stored memo's inputs are this build's inputs, compared in place so a hit allocates nothing.
+// The two inputs not already in hand — the registry buckets and broker liveness — are only looked up
+// when the build-wide object they were confirmed against has changed; a successful look re-confirms.
+function memoStillHolds(
+  m: ArchivedViewInputs,
+  row: SessionRow,
+  tele: SessionTelemetry | undefined,
+  legacyTerminal: boolean,
+  presence: { pending: boolean; needsUser: boolean },
+  brokerAlive: ClaudeBrokerLivenessSnapshot,
+  registries: ThreadRegistries,
+  github: GithubStatusBook,
+  issueBook: GithubIssueStatusBook,
+  catalogue: readonly ClaudeModel[] | undefined,
+  faults: readonly QuestionFenceFault[] | undefined,
+): boolean {
+  if (
+    m.row !== row ||
+    m.tele !== tele ||
+    m.legacyTerminal !== legacyTerminal ||
+    m.presence !== presence ||
+    m.github !== github ||
+    m.issueBook !== issueBook ||
+    m.catalogue !== catalogue ||
+    m.faults !== faults
+  ) return false
+  if (m.confirmedIn !== registries) {
+    const slug = row.slug
+    if (
+      m.links !== registries.links.get(slug) ||
+      m.prWatches !== registries.prWatches.get(slug) ||
+      m.timers !== registries.timers.get(slug) ||
+      m.commandWatches !== registries.commandWatches.get(slug) ||
+      m.questions !== registries.questions.get(slug) ||
+      m.watches !== registries.watches.get(slug) ||
+      m.done !== registries.done.get(slug)
+    ) return false
+    m.confirmedIn = registries
+  }
+  if (m.brokerAlive === undefined) return true // not a broker row (row identity covers that it still is not)
+  if (m.absentFrom !== undefined && m.absentFrom === brokerAlive.listing) return true
+  const absent = brokerAlive.listing !== undefined && brokerAlive.listed?.(row.session_id) === false
+  const alive = absent ? false : brokerAlive(row.session_id)
+  if (alive !== m.brokerAlive) return false
+  m.absentFrom = absent ? brokerAlive.listing : undefined
+  return true
+}
+
+// A setting read once per distinct VALUE: the same stored value hands back the same parsed object.
+// `getSetting` returns freshly parsed JSON every call, so the value is keyed by its serialization —
+// a few hundred bytes for the PR books, against re-validating them and losing their identity per build.
+function parsedSetting<T>(parse: (raw: unknown) => T): { read(raw: unknown): T } {
+  let lastKey: string | undefined
+  let last: { value: T } | undefined
+  return {
+    read(raw) {
+      const key = JSON.stringify(raw) ?? ""
+      if (last && key === lastKey) return last.value
+      last = { value: parse(raw) }
+      lastKey = key
+      return last.value
+    },
+  }
+}
+
 export interface BoardManager {
   snapshot(): Promise<BoardSnapshot>
   // The seq the current snapshot corresponds to — the value a connect keyframe must advertise so the
@@ -2090,6 +2260,12 @@ export type CodexTurnLivenessReader = (
 // for a broker row (its parallel of codexTurnLiveness). Absent (tests / bridge-less server) ⇒ assume
 // alive, so a healthy broker row is never falsely carded as a crash.
 export type ClaudeBrokerLivenessReader = (sessionId: string) => boolean
+/** A whole build's liveness (claude-broker-host.ts brokerLivenessSnapshot): the reader plus the record
+ *  listing it answers from, the same object while the record directory is unchanged. */
+export type ClaudeBrokerLivenessSnapshot = ClaudeBrokerLivenessReader & {
+  readonly listing?: ReadonlySet<string>
+  listed?(sessionId: string): boolean
+}
 
 export interface BoardManagerDeps {
   subscribe?: typeof watcher.subscribe
@@ -2099,7 +2275,7 @@ export interface BoardManagerDeps {
   /** The same answer for a whole build: called once per assemble, it returns a reader backed by one
    *  snapshot of the broker's record directory (claude-broker-host.ts brokerLivenessSnapshot), so a
    *  board of history does not pay a failed file read per archived thread. Preferred when present. */
-  claudeBrokerLiveness?: () => ClaudeBrokerLivenessReader
+  claudeBrokerLiveness?: () => ClaudeBrokerLivenessSnapshot
   /** The pinned Claude runtime's resolved catalogue, read synchronously per build (peekClaudeModels). */
   claudeModels?: () => readonly ClaudeModel[] | undefined
   /** What a thread's latest question-fence sync refused (question-fences.ts QuestionFaultBook). */
@@ -2136,11 +2312,19 @@ export function createBoard(
   // responses remain journal-pending until acknowledgement, but QUEUED/SENT is no longer a human ask:
   // keep its thread card readable while dropping it from Needs You. A replacement session therefore
   // cannot inherit either signal from the prior rollout.
-  const pendingInteractionCache = new Map<string, { pending: boolean; needsUser: boolean }>()
-  const interactionKey = (slug: string, sessionId: string) => `${slug}\u0000${sessionId}`
+  //
+  // Held per SLUG, with the session it was read for: a row whose session moved is read again (the
+  // entry is replaced), which is the both-keys rule without building a composite string per thread per
+  // build.
+  const pendingInteractionCache = new Map<string, { sessionId: string; presence: { pending: boolean; needsUser: boolean } }>()
   // Per-slug "was this SESSION thread in the needs-you queue last build?" — drives the needs-decision
   // notify dedupe: we fire only on a false→true edge, and a thread leaving the queue re-arms it.
-  const needsYouPrev = new Map<string, boolean>()
+  //
+  // Only threads that WERE in the queue are held, each stamped with the build that last saw it there:
+  // absent reads as "was not", exactly as a stored false did, and a board of history no longer writes
+  // one entry per archived thread per build to say so.
+  const needsYouPrev = new Map<string, number>()
+  let needsYouBuild = 0
   // PRIME GUARD: the first assemble after boot records the baseline WITHOUT notifying, so a post-bounce
   // server doesn't fire a storm for every historical resting thread already in the queue.
   let notifyPrimed = false
@@ -2148,18 +2332,17 @@ export function createBoard(
   // Fire a needs-decision notify for every registered session that newly enters the queue.
   // Edge-triggered + deduped; primed on the first build.
   function notifyNeedsYou(sessionThreads: ThreadView[]): void {
-    const seen = new Set<string>()
+    const build = ++needsYouBuild
     for (const t of sessionThreads) {
-      seen.add(t.id)
-      const now = t.needsYou ?? false
-      const was = needsYouPrev.get(t.id) ?? false
-      if (notifyPrimed && now && !was) {
+      if (!t.needsYou) continue
+      const was = needsYouPrev.has(t.id)
+      if (notifyPrimed && !was) {
         bus.publish({ type: "notify", slug: t.id, kind: "needs-decision", title: t.aiTitle || t.title || t.id, body: capLine(t.lastAssistant) })
       }
-      needsYouPrev.set(t.id, now)
+      needsYouPrev.set(t.id, build)
     }
-    // forget threads that vanished so a reappearance re-notifies
-    for (const id of [...needsYouPrev.keys()]) if (!seen.has(id)) needsYouPrev.delete(id)
+    // Left the queue, or vanished: either way forgotten, so a return to the queue re-notifies.
+    for (const [id, seenIn] of needsYouPrev) if (seenIn !== build) needsYouPrev.delete(id)
     notifyPrimed = true
   }
 
@@ -2168,28 +2351,50 @@ export function createBoard(
   // isBoardRelevantFrizzPath). Overlay-only refreshes remain filesystem-free.
   let legacyTerminalCache = new Set<string>()
 
+  // Per-row-object slug validity (see buildSessionThreads), and the parsed GitHub books by the raw
+  // setting they were parsed from.
+  const rowValidity = new WeakMap<SessionRow, boolean>()
+  const validRow = (row: SessionRow): boolean => {
+    let valid = rowValidity.get(row)
+    if (valid === undefined) {
+      valid = ThreadSlug.safeParse(row.slug).success
+      rowValidity.set(row, valid)
+    }
+    return valid
+  }
+  let validRowsOf: { all: readonly SessionRow[] | undefined; valid: SessionRow[] } = { all: undefined, valid: [] }
+  let lastRegistries: ThreadRegistries | undefined
+  const githubBook = parsedSetting(readGithubStatusBook)
+  const issueStatusBook = parsedSetting(readGithubIssueStatusBook)
+  // The last view derived for each ARCHIVED thread, with everything it was derived from.
+  const archivedViews = new Map<string, { inputs: ArchivedViewInputs; view: ThreadView }>()
+
   // Build exactly the session-backed threads recorded by Frizz. The registry is the provenance
   // boundary: historical rows remain valid after migration/restart, and both Claude and Codex use the
   // same durable shape. Raw tailer discoveries never confer ownership.
   function buildSessionThreads(nowMs: number): ThreadView[] {
     // Old/corrupt databases predate the canonical storage guard. Keep such rows inert instead of
-    // emitting an invalid board id or allowing it to reach tailer/dispatch consumers.
-    const rows = storage.allSessions().filter((row) => ThreadSlug.safeParse(row.slug).success)
+    // emitting an invalid board id or allowing it to reach tailer/dispatch consumers. Asked once per
+    // row OBJECT: the storage hands back the same object for a row that did not change, and a schema
+    // parse per row per build was 5% of a refresh on a 5,000-thread board.
+    const all = storage.allSessions()
+    if (all !== validRowsOf.all) validRowsOf = { all, valid: all.filter(validRow) }
+    const rows = validRowsOf.valid
     // ONE READ PER BUILD, not per thread: the watched-PR book is keyed by ref and shared by every thread
-    // watching that PR, and it is parsed on the way in.
-    const github = readGithubStatusBook(storage.getSetting(GITHUB_STATUS_SETTING))
-    const issueBook = readGithubIssueStatusBook(storage.getSetting(GITHUB_ISSUE_STATUS_SETTING))
+    // watching that PR, and it is parsed on the way in — once per distinct setting value, so an unchanged
+    // book is the same object build to build (the archived-view memo keys on it).
+    const github = githubBook.read(storage.getSetting(GITHUB_STATUS_SETTING))
+    const issueBook = issueStatusBook.read(storage.getSetting(GITHUB_ISSUE_STATUS_SETTING))
     // The same rule, applied to the five per-thread registries: five statements for the whole project
     // instead of five per row. On the maintainer's 558-thread board that is 2,794 statements per
     // rebuild down to 9, all of it on the event loop — see ThreadRegistries.
-    const registries = readThreadRegistries(storage)
-    const brokerAlive = deps.claudeBrokerLiveness?.() ?? claudeBrokerDaemonAlive
-    const currentInteractionKeys = new Set<string>()
+    const registries = lastRegistries = readThreadRegistries(storage, lastRegistries)
+    const brokerAlive: ClaudeBrokerLivenessSnapshot = deps.claudeBrokerLiveness?.() ?? claudeBrokerDaemonAlive
+    const catalogue = claudeModels()
     const out: ThreadView[] = []
     for (const row of rows) {
-      const key = interactionKey(row.slug, row.session_id)
-      currentInteractionKeys.add(key)
-      let interactionPresence = pendingInteractionCache.get(key)
+      const cachedPresence = pendingInteractionCache.get(row.slug)
+      let interactionPresence = cachedPresence?.sessionId === row.session_id ? cachedPresence.presence : undefined
       if (interactionPresence === undefined) {
         try {
           const scope = {
@@ -2210,14 +2415,26 @@ export function createBoard(
           // provider authority; the queue card will surface the scoped RPC error instead.
           interactionPresence = { pending: true, needsUser: true }
         }
-        pendingInteractionCache.set(key, interactionPresence)
+        pendingInteractionCache.set(row.slug, { sessionId: row.session_id, presence: interactionPresence })
       }
-      out.push(sessionThreadView(
+      const tele = tailer.get(row.slug, row)
+      const legacyTerminal = legacyTerminalCache.has(row.slug)
+      const faults = questionFaults(row.slug)
+      // THE ARCHIVED-VIEW MEMO. See ArchivedViewInputs for what a memoized view is keyed on and why a
+      // thread outside it is always derived afresh. A memo is only ever stored for an eligible thread,
+      // so identical inputs are an eligible thread: the hit path is identity checks and nothing else.
+      const memo = archivedViews.get(row.slug)
+      if (memo && memoStillHolds(memo.inputs, row, tele, legacyTerminal, interactionPresence, brokerAlive, registries, github, issueBook, catalogue, faults)) {
+        out.push(memo.view)
+        continue
+      }
+      const inputs = archivedViewInputs(row, tele, legacyTerminal, interactionPresence, brokerAlive, registries, github, issueBook, catalogue, faults)
+      const view = sessionThreadView(
         project.dir,
         storage,
         row,
-        tailer.get(row.slug, row),
-        legacyTerminalCache.has(row.slug),
+        tele,
+        legacyTerminal,
         interactionPresence,
         nowMs,
         codexTurnLiveness,
@@ -2225,12 +2442,20 @@ export function createBoard(
         registries,
         github,
         issueBook,
-        claudeModels(),
-        questionFaults(row.slug),
-      ))
+        catalogue,
+        faults,
+      )
+      if (inputs) archivedViews.set(row.slug, { inputs, view })
+      else archivedViews.delete(row.slug)
+      out.push(view)
     }
-    for (const key of pendingInteractionCache.keys()) {
-      if (!currentInteractionKeys.has(key)) pendingInteractionCache.delete(key)
+    // Forget threads that are gone. Only a slug that left the registry can leave an entry behind (a
+    // moved session replaces its slug's entry above), so there is nothing to sweep unless a cache holds
+    // more slugs than the registry does.
+    if (pendingInteractionCache.size > rows.length || archivedViews.size > rows.length) {
+      const present = new Set(rows.map((row) => row.slug))
+      for (const slug of pendingInteractionCache.keys()) if (!present.has(slug)) pendingInteractionCache.delete(slug)
+      for (const slug of archivedViews.keys()) if (!present.has(slug)) archivedViews.delete(slug)
     }
     return out
   }
@@ -2319,7 +2544,8 @@ export function createBoard(
     if (stopped) return
     let next = Infinity
     for (const thread of threads) {
-      const at = Date.parse(thread.snoozedUntil ?? "")
+      if (!thread.snoozedUntil) continue
+      const at = Date.parse(thread.snoozedUntil)
       if (Number.isFinite(at) && at > assembledAtMs) next = Math.min(next, at)
     }
     if (!Number.isFinite(next)) return
@@ -2394,11 +2620,10 @@ export function createBoard(
 
   function interactionChanged(change: InteractionChange): void {
     if (stopped) return
-    const key = interactionKey(change.threadSlug, change.sessionId)
     // Delivery-only transitions keep lifecycle/revision unchanged, so always evict and re-read the
     // durable join. This prevents awaiting→queued→sent→acknowledged from oscillating the queue based on
     // whichever layer happened to notify last.
-    pendingInteractionCache.delete(key)
+    if (pendingInteractionCache.get(change.threadSlug)?.sessionId === change.sessionId) pendingInteractionCache.delete(change.threadSlug)
     // Store observers may fire from within a surrounding SQLite transaction or while listPending is
     // expiring records during assembly. Defer and coalesce the refresh to avoid re-entrant builds.
     if (interactionRefreshQueued) return
