@@ -190,7 +190,7 @@ await api.mutate("dispatch", { prompt: "[script ending=steps paras=14] …", bac
 ```
 
 The first message's `[script …]` token is the whole script: how the turn ends
-(`ending=done|steps|needs|bare|question`, the last one registering a real question through `frizzctl ask`),
+(`ending=done|steps|needs|bare|question`, the last one closing on a ` ```question ` fence that Frizz registers),
 how long it runs (`paras`, `tools`, `toolms`, `think`), and what each later turn does (`reply`,
 `replyparas`, `replytools`, `replythink`). A message that arrives mid-turn is a steer. The file's header
 lists every knob. The workers are still detached broker daemons: kill them by PID when the stack goes.

@@ -178,3 +178,28 @@ test("with no file the knobs generate every turn, exactly as before", async () =
   assert.equal(existsSync(`${box.file}.log`), false)
   box.done()
 })
+
+test("`ending=question` and `reply=question` ask the way a worker asks: a question fence, a new id each turn", async () => {
+  const box = sandbox()
+  mkdirSync(box.cwd, { recursive: true })
+  const id = "55555555-5555-4555-8555-555555555555"
+  const s = session(box.home, box.cwd, [`--session-id=${id}`])
+  try {
+    await s.say("[script ending=question paras=1 think=0 replythink=0 reply=question replyparas=1 disklag=0 resultlag=5] go")
+    await s.say("an answer")
+  } finally {
+    await s.stop()
+  }
+  const records = box.transcript(id)
+  assert.equal(records.some((r) => r.type === "assistant" && r.message.content.some((b) => b.type === "tool_use")), false, "no command is run to ask")
+  const said = story(records).filter((l) => l.startsWith("<"))
+  const fence = (n) => [
+    "```question", `id: publish-release-${n}`, "kind: choice", "question: Publish the release now, or hold it for the changelog?",
+    "options:", "  - label: Publish now", "    description: every gate passed on this commit", "    recommended: true",
+    "  - label: Hold it", "    description: the changelog entry is still a draft", "```",
+  ].join("\n")
+  assert.ok(said[0].endsWith(`\n\n${fence(1)}`), "the first turn closes on the fence")
+  assert.ok(said[1].endsWith(`\n\n${fence(2)}`), "and a later one on the same question under a new id")
+  assert.match(said[0], /^< One decision is needed before this can go further; it is asked below\.\n\n1\. Release engineering/)
+  box.done()
+})

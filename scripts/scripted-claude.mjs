@@ -20,8 +20,9 @@
 // The FIRST message's `[script …]` token sets the session's behaviour; every later message (a Done,
 // an answer, a steer) is replied to with the `reply…` settings. Keys, all optional:
 //
-//   ending=done|steps|needs|bare|question   how the first turn ends (default done). `question` runs
-//                                           `frizzctl ask` mid-turn, the way a real worker registers one
+//   ending=done|steps|needs|bare|question   how the first turn ends (default done). `question` ends it
+//                                           on a ```question fence (a choice of two, one recommended),
+//                                           the way a worker asks: Frizz registers it from the message
 //   paras=N        paragraphs of prose in the first turn's final message (default 3)
 //   tools=N        Bash tool calls before that message, each `toolms` long (default 0, 1500ms)
 //   thinking=1     a thinking block before the final message (a "Thought for Ns" row)
@@ -33,7 +34,8 @@
 //                  for `thinkms` (default 2000) before the first call
 //   gapms=MS       the model's pause between a tool result and its next call (default 0) — the inter-call
 //                  gap where the slot reads `Ran N tool calls. Thinking…`
-//   reply=question registers a question mid-turn in every later turn too, the way `ending=question` does
+//   reply=question ends every later turn on a question fence too, each under a new id (an id is spent
+//                  for the life of the thread), the way `ending=question` ends the first
 //   disklag=MS     event → JSONL write delay for each assistant record (default 15)
 //   resultlag=MS   final event → `result` delay (default 30). With the defaults the final record reaches
 //                  disk BEFORE the result, the order measured on real broker sessions (94c6b0ee);
@@ -198,8 +200,23 @@ const FENCES = {
   steps: "```awaiting\ntitle: Approve the npm sign-in so the release can publish\nsteps:\n  - Open [the npm sign-in page](https://www.npmjs.com/login) and sign in with the maintainer account.\n  - Approve the request with that account's security key or one-time code.\n---\n`npm login --auth-type=web` is waiting on that approval.\n```",
   needs: "```awaiting\nstatus: needs_input\ntitle: Two of three audits ready\nfor: 1h\n---\nTwo audits are written and can be read now; the third is still running.\n```",
   bare: "",
-  question: "",
 }
+// `ending=question` / `reply=question`. Until 2026-10-13 these ran the `ask` command mid-turn; that command
+// is retired (it exits 2 and registers nothing), and a worker asks by writing the fence. The id carries
+// the turn's number because an id is never reused on a thread, and `reply=question` asks at every turn.
+const questionFence = (turn) => [
+  "```question",
+  `id: publish-release-${turn}`,
+  "kind: choice",
+  "question: Publish the release now, or hold it for the changelog?",
+  "options:",
+  "  - label: Publish now",
+  "    description: every gate passed on this commit",
+  "    recommended: true",
+  "  - label: Hold it",
+  "    description: the changelog entry is still a draft",
+  "```",
+].join("\n")
 
 // ---- turns ----
 let turnNumber = 0
@@ -246,11 +263,10 @@ async function runTurn(kind) {
     send({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: "" }] }, parent_tool_use_id: null, uuid: resultUuid, session_id: sessionId, isSynthetic: true })
     deliverAtToolBoundary()
   }
-  if (ending === "question") await registerQuestion()
   const messageId = `msg_scripted_${turnNumber}`
   if (first && s.thinking) await assistantRecord(messageId, { type: "thinking", thinking: "", signature: "scripted" }, null, s)
-  const fence = FENCES[ending] ?? ""
-  const lead = ending === "question" ? "One decision is needed before this can go further; it is registered as a question." : undefined
+  const fence = ending === "question" ? questionFence(turnNumber) : FENCES[ending] ?? ""
+  const lead = ending === "question" ? "One decision is needed before this can go further; it is asked below." : undefined
   await finishTurn(messageId, [prose(paras, lead), fence].filter(Boolean).join("\n\n"), s)
 }
 
@@ -298,17 +314,6 @@ async function runScriptedTurn(entry, kind) {
 function startTurn(kind, text) {
   const entry = takeEntry(text)
   void (entry ? runScriptedTurn(entry, kind) : runTurn(kind))
-}
-
-function registerQuestion() {
-  const spec = { questions: [{ question: "Publish the release now, or hold it for the changelog?", kind: "question", options: [{ label: "Publish now", description: "every gate passed on this commit", recommended: true }, { label: "Hold it", description: "the changelog entry is still a draft" }] }] }
-  return new Promise((resolve) => {
-    const child = execFile("frizzctl", ["ask", "--input", "-"], { timeout: 15_000 }, (error, stdout, stderr) => {
-      if (error) process.stderr.write(`scripted-claude: frizzctl ask failed: ${String(stderr || error.message).slice(0, 300)}\n`)
-      resolve(stdout)
-    })
-    child.stdin?.end(JSON.stringify(spec))
-  })
 }
 
 function acceptInput(text, uuid) {
