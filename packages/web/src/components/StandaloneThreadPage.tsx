@@ -16,6 +16,7 @@ import { DrawerStack } from "./DrawerStack.tsx"
 import { FileViewerPanel } from "./FileViewerPanel.tsx"
 import { FocusRail, RAIL_WIDTH } from "./FocusRail.tsx"
 import { PageFrame } from "./PageFrame.tsx"
+import { ThreadPageZone } from "./ThreadSurface.tsx"
 import { exitFullscreen } from "./CollapseThreadLink.tsx"
 import { TooltipProvider } from "./Tooltip.tsx"
 import { useQuery } from "@tanstack/react-query"
@@ -168,7 +169,10 @@ export function StandaloneThreadPage({ slug }: { slug: string }) {
             A window NARROWER THAN THE SPLIT gets one column — the rail and the viewer need the width
             they hide under, so below SPLIT_MIN_PX the thread column takes the page under its 720 cap,
             which is exactly the drawer's width. */}
-        <div className="h-full w-full overflow-hidden">
+        {/* The page is this one thread's, so a file dropped ANYWHERE on it — the gutter, the rail, an
+            open file — goes into the thread's prompt box (ThreadPageZone). The drawer stack below is
+            outside it: a file dropped on a drawer is that drawer's. */}
+        <ThreadPageZone className="h-full w-full overflow-hidden">
           <div
             // `justify-center` is for the SINGLE-column state only: below the split the gutter and the
             // pane are both `hidden`, so without it a 720px column on a 1024px page would sit hard
@@ -205,7 +209,7 @@ export function StandaloneThreadPage({ slug }: { slug: string }) {
               ? <SidePane slug={slug} thread={thread} />
               : <div className="hidden w-[var(--full-pane)] shrink-0 split:block" aria-hidden="true" />}
           </div>
-        </div>
+        </ThreadPageZone>
         {/* The SAME drawer stack the queue mounts. Without it every drill-in this page renders — a
             sub-agent row, a background-shell row, the frizz-doc button, a `[…](/thread/<slug>)` link —
             pushed a layer onto the store that nothing displayed, so the click was simply dead. Mounted
