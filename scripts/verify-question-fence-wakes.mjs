@@ -17,11 +17,13 @@
 //      on the board, the scheduler's correction reaches the worker as a wake, the scripted reply writes
 //      the fence again and it registers at that message's instant; the thread queues on it, the board
 //      drops the fault, and two ticks later there is still exactly one correction.
-//   B. An answer is delivered. Two questions, one with a `when:` follow-up; the card's own RPC answers the
-//      first and its wake reaches the worker restating what was asked and what was picked. The worker
-//      replies WITHOUT naming the second question, which still stands and still queues the thread: an
-//      answer wake is not the human typing. The second answer signs the thread off. Each settlement is
-//      marked delivered, and neither is offered twice.
+//   B. An answer is delivered, naming each question by the worker's own id. Three questions, two with
+//      `when:` follow-ups that all share one question text; the card's own RPC answers two of them and
+//      one wake reaches the worker, a row `1.` naming `db-engine` ahead of its text, and under it the follow-up's row with
+//      its OWN id after the `⤷`, which is all that tells two of the rows apart. The worker replies WITHOUT
+//      naming the third question, which still stands and still queues the thread: an answer wake is not
+//      the human typing. The last answer signs the thread off. Each settlement is marked delivered, and
+//      neither send is offered twice.
 //   C. A question stands across a Frizz wake and fades when the human types. The worker asks and arms a
 //      timer; the timer's wake and a reply that says nothing of the question leave it `standing`. The
 //      human types (`followUp`, the prompt box's call) and the worker replies past it: `standing: false`,
@@ -36,6 +38,24 @@
 //   G. A second broken fence in a row. The correction of the fence the worker got wrong AGAIN follows a
 //      wake Frizz handed the thread seconds earlier, and still arrives within a tick: a correction answers
 //      the worker's own rest, so the outbox's five-minute quiet window (wake-store.ts) must not hold it.
+//   H. A done fence over an open question (scheduler SOURCE 15). Asked, woken by a timer, signed off done:
+//      `frizzctl done` refuses, and the ```done fence the worker writes anyway draws ONE correction, whose
+//      middle paragraph is the paragraph the command printed, byte for byte. The board does not move. Way
+//      out one: `frizzctl unask` and a second done fence, which stands. Way out two (a second thread, with
+//      the question and the done fence in one message): the reply ends on the reference and the thread
+//      queues on the question, with nothing sent after it.
+//   J. Answers sent from the prompt box (`followUp` carrying `answers`). With nothing typed the worker gets
+//      the answers message with no delivery token, and the other questions still stand; with a typed note
+//      it gets both in one message, and the question the reply went past reads `standing: false` while
+//      staying open and answerable.
+//   K. The two other openers, `~~~question` and a capitalised ```Question: both register, both queue.
+//   L. The cap. A worker that answers every correction with the same broken fence draws three, each within
+//      a tick or two of its rest, then nothing — no fourth, no sign-off reminder — until the human types,
+//      which earns the next broken fence one more.
+//   M. The cross-over hint. A broken question fence in a message that closes on a done fence, nothing else
+//      open: one correction, carrying the paragraph that says the fixed message carries no done fence.
+//   N. The scripted worker's own `ending=question` knob (scripted-claude.mjs), which other recordings use:
+//      it asks with a fence, the question registers, and `answerQuestions` wakes its `reply=` turn.
 //   F. A restart mid-wait. One question open and standing, a second fence broken, and the server stopped
 //      after that rest reached the transcript and before the scheduler's next tick could correct it. Booted
 //      again on the same HOME it adopts the broker daemon it did not fork, delivers the correction once,
@@ -52,8 +72,8 @@
 // condition under a deadline sized from those, and "no second one" is read two ticks after the thread's
 // outbox has gone quiet.
 //
-// ADDING A CASE: one entry in CASES. `t.worker(name, turns)` dispatches a scripted thread; `on` keys a
-// turn to the message it answers; `t.hold(flag)` is a tool call that keeps a turn open until
+// ADDING A CASE: one entry in CASES. `t.worker(name, turns)` dispatches a scripted thread (`t.dispatch`
+// one whose turns the worker generates from its knobs); `on` keys a turn to the message it answers; `t.hold(flag)` is a tool call that keeps a turn open until
 // `w.release(flag)`, which is how a state that lasts milliseconds is held still long enough to read.
 //
 // Boot a stack with the scripted worker and the scheduler armed (`--keep`, or case F cannot restart it),
@@ -72,7 +92,7 @@ import { execFileSync, spawn } from "node:child_process"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { createRpcClient } from "./lib/rpc-client.mjs"
-import { BURIED_ANSWERS_HEADER, QUESTION_FENCE_CORRECTION_LEAD, SIGNOFF_NUDGE_MARKER } from "../packages/shared/src/index.ts"
+import { ANSWERS_NOTE_HEADER, BURIED_ANSWERS_HEADER, DONE_FENCE_CORRECTION_LEAD, QUESTION_FENCE_CORRECTION_LEAD, SIGNOFF_NUDGE_MARKER } from "../packages/shared/src/index.ts"
 
 const USAGE = "usage: nub scripts/verify-question-fence-wakes.mjs --home=/abs/temp-home --port=NNNN [--log=/abs/server.log] [--only=A,B] [--skip=F] [--serial] [--run=N] [--cwd=/abs/project]"
 const flags = Object.fromEntries(process.argv.slice(2).filter((a) => a.startsWith("--")).map((a) => a.replace(/^--/, "").split("=")))
@@ -118,6 +138,8 @@ const GOAL_TRAILER = "(Goal — sent each time you come to rest"
 const CANCELLED = "CANCELLED without an answer"
 const TIMER_TRAILER = "(One-off timer, set for"
 const TIMER_S = 10 // the shortest `frizzctl timer set --in-seconds` accepts
+const UNDER_DONE_HINT = "This rest also closed on a" // question-fences.ts QUESTION_FENCE_UNDER_DONE_HINT
+const PARK_BUMP_MAX = 3 // scheduler.ts: corrections of one kind between two messages the human typed
 
 async function until(what, probe, timeoutMs) {
   const deadline = Date.now() + timeoutMs
@@ -151,7 +173,7 @@ function caseContext(key) {
     note: (text) => lines.push(`      ${text}`),
     /** A tool call that holds its turn open until `w.release(flag)`. */
     hold: (flag) => ({ command: `while [ ! -e ${quote(join(scratch, `${key}-${run}.${flag}.flag`))} ]; do sleep 0.1; done`, description: `Waiting for the verifier (${flag})`, timeout: 300_000 }),
-    /** Dispatch one scripted thread through the real `dispatch` RPC. */
+    /** Dispatch one scripted thread through the real `dispatch` RPC, its turns stated one by one. */
     async worker(name, turns) {
       const slug = `wk-${key.toLowerCase()}-${name}${run === "1" ? "" : `-${run}`}`
       const file = join(scratch, `${slug}.turns.json`)
@@ -161,8 +183,13 @@ function caseContext(key) {
         // Anything nothing was scripted for is answered, so the thread cannot hang, and counted as a failure.
         otherwise: { name: "unscripted", text: "Nothing was scripted for that message." },
       }, null, 1))
+      return t.dispatch(name, `[script file=${file}] ${name}`, file)
+    },
+    /** Dispatch a thread whose turns the scripted worker GENERATES from the knobs in `prompt`. */
+    async dispatch(name, prompt, file) {
+      const slug = `wk-${key.toLowerCase()}-${name}${run === "1" ? "" : `-${run}`}`
       const sentAt = Date.now()
-      const { sessionId } = await api.mutate("dispatch", { prompt: `[script file=${file}] ${name}`, backend: "claude", slug, title: `Question wakes ${key}: ${name}` })
+      const { sessionId } = await api.mutate("dispatch", { prompt, backend: "claude", slug, title: `Question wakes ${key}: ${name}` })
       const w = workerHandle(t, slug, sessionId, file, sentAt)
       workers.push(w)
       return w
@@ -216,6 +243,8 @@ function workerHandle(t, slug, sessionId, file, sentAt) {
     tool: (needle) => w.tools().find((c) => c.command.includes(needle)),
     release: (flag) => writeFileSync(join(scratch, `${t.key}-${run}.${flag}.flag`), ""),
     count: (needle) => starts().filter((s) => s.text.includes(needle)).length,
+    /** Every message Frizz or the human sent after transcript line `after`. */
+    since: (after) => starts().filter((s) => s.index > after),
     questions: () => sql(`SELECT id, handle, state, asked_at, settled_at, delivered, delivery_id, spec, answer FROM thread_question WHERE thread_slug = ${quote(slug)} ORDER BY asked_at, rowid`),
     deliveries: () => sql(`SELECT id, fence_id, reason, state, attempts, last_error, created_at, next_attempt_at, sent_at, delivered_at, terminal_at FROM wake_delivery WHERE thread_slug = ${quote(slug)} ORDER BY created_at, rowid`),
     /** Wait until nothing for this thread is pending or leased, then two more ticks: time enough for
@@ -225,7 +254,7 @@ function workerHandle(t, slug, sessionId, file, sentAt) {
       await sleep(2 * TICK_MS + 1_000)
     },
     /** Which script entry answered which message (scripted-claude's own log). */
-    choices: () => (existsSync(`${file}.log`) ? readFileSync(`${file}.log`, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []),
+    choices: () => (file && existsSync(`${file}.log`) ? readFileSync(`${file}.log`, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []),
     digest() {
       return records().flatMap((r) => {
         const c = r.message?.content
@@ -304,56 +333,68 @@ const CASES = [
 
   {
     key: "B",
-    title: "an answer is delivered, and does not reply past the other question",
+    title: "an answer is delivered by the worker's own ids, and does not reply past the other question",
     async run(t) {
       const engineQ = "Should the settings store use SQLite or Postgres?"
-      const pathQ = "Where should the SQLite file live?"
+      const cacheQ = "Should rendered pages be cached on disk or in memory?"
+      const dirQ = "Which directory should hold it?" // the SAME text on three follow-ups: only an id tells them apart
       const channelQ = "Which release channel should the first build ship on?"
       const w = await t.worker("answers", [
         {
-          name: "asks two questions, one with a follow-up", on: FIRST,
+          name: "asks three questions, two with follow-ups that share one text", on: FIRST,
           text: [
-            "Two calls are open before the settings layer can be finished.",
+            "Three calls are open before the settings layer can be finished.",
             choice("db-engine", engineQ, ["SQLite", "Postgres"]),
-            choice("db-path", pathQ, ["Beside the sessions database", "Its own file"], ["when: db-engine = SQLite"]),
+            fence("id: sqlite-dir", "kind: text", "when: db-engine = SQLite", `question: ${dirQ}`),
+            fence("id: postgres-dir", "kind: text", "when: db-engine = Postgres", `question: ${dirQ}`),
+            choice("page-cache", cacheQ, ["On disk", "In memory"]),
+            fence("id: cache-dir", "kind: text", "when: page-cache = On disk", `question: ${dirQ}`),
             choice("release-channel", channelQ, ["Beta", "Stable"]),
           ].join("\n\n"),
         },
-        { name: "hears the first answer and carries on", on: BURIED_ANSWERS_HEADER, text: "Recorded: SQLite, beside the sessions database. The schema work carries on from here." },
-        { name: "hears the second answer and signs off", on: BURIED_ANSWERS_HEADER, text: "Beta it is.\n\n```done\n- **Settings store wired to SQLite** beside the sessions database, shipping on the beta channel.\n```" },
+        { name: "hears the first answers and carries on", on: BURIED_ANSWERS_HEADER, text: "Recorded: SQLite and an on-disk cache, both under /var/lib/app. The schema work carries on from here." },
+        { name: "hears the last answer and signs off", on: BURIED_ANSWERS_HEADER, text: "Beta it is.\n\n```done\n- **Settings store wired to SQLite** with an on-disk page cache, shipping on the beta channel.\n```" },
       ])
       const rest1 = await w.restAfter(await w.start(FIRST))
-      const asked = await until("both questions on the board", async () => {
+      const asked = await until("the three questions on the board", async () => {
         const thread = await w.board()
-        return thread?.questions?.length === 2 ? thread : undefined
+        return thread?.questions?.length === 3 ? thread : undefined
       }, BOARD_MS)
       const engine = asked.questions.find((q) => q.spec.handle === "db-engine")
+      const cache = asked.questions.find((q) => q.spec.handle === "page-cache")
       const channel = asked.questions.find((q) => q.spec.handle === "release-channel")
-      t.note(`both registered ${secs(Date.now() - Date.parse(rest1.at))} after the rest`)
-      t.check("two questions registered; the `when:` follow-up rides its parent", engine?.spec.options?.[0].followUps?.[0]?.handle === "db-path" && channel !== undefined)
-      t.check("both stand and the thread queues", engine?.standing === true && channel?.standing === true && asked.needsYou === true)
+      t.note(`all three registered ${secs(Date.now() - Date.parse(rest1.at))} after the rest`)
+      t.check("three questions registered; each `when:` follow-up rides its parent's option", engine?.spec.options?.[0].followUps?.[0]?.handle === "sqlite-dir" && engine?.spec.options?.[1].followUps?.[0]?.handle === "postgres-dir" && cache?.spec.options?.[0].followUps?.[0]?.handle === "cache-dir" && channel !== undefined)
+      t.check("all stand and the thread queues", asked.questions.every((q) => q.standing === true) && asked.needsYou === true)
       const channelRow = w.questions().find((r) => r.handle === "release-channel")
 
-      // The first answer, through the card's own RPC.
+      // Two answers in one send, through the card's own RPC. The follow-up answers carry no id of their own:
+      // the server names each row from the question's stored tree.
       const answeredAt = Date.now()
       const first = await api.mutate("answerQuestions", {
         slug: w.slug,
-        answers: [{ questionId: engine.id, question: engineQ, chosen: ["SQLite"], followUps: [{ questionId: "db-path", question: pathQ, chosen: ["Beside the sessions database"] }] }],
+        answers: [
+          { questionId: engine.id, question: engineQ, chosen: ["SQLite"], followUps: [{ questionId: "follow-up", question: dirQ, chosen: [], text: "/var/lib/app" }] },
+          { questionId: cache.id, question: cacheQ, chosen: ["On disk"], followUps: [{ questionId: "follow-up", question: dirQ, chosen: [], text: "/var/lib/app" }] },
+        ],
       })
-      t.check("the card's answer settles the first question only", first.answered.length === 1 && first.answered[0] === engine.id && first.open.length === 1)
-      const wake1 = await w.start(BURIED_ANSWERS_HEADER, { after: rest1.index, timeoutMs: KICK_MS, what: "the answer" })
-      t.note(`answer reached the worker ${secs(Date.parse(wake1.at) - answeredAt)} after the RPC (the sweep is kicked, not ticked)`)
-      t.check("the answer arrives as a wake", wake1.wake && wake1.text.startsWith(BURIED_ANSWERS_HEADER))
-      t.check("…naming what was asked and what was picked", wake1.text.includes(engineQ) && wake1.text.includes("SQLite"), wake1.text.split("\n")[1])
-      t.check("…with the follow-up's answer under it", wake1.text.includes(pathQ) && wake1.text.includes("Beside the sessions database"), wake1.text.split("\n")[2])
-      t.check("…and nothing about the question still open", !wake1.text.includes(channelQ))
-      t.note(`the wake names the question by ${wake1.text.includes("`db-engine`") ? "the worker's id and its text" : "its text only (no worker id)"}`)
+      t.check("the card's send settles those two questions only", first.answered.length === 2 && first.open.length === 1)
+      const wake1 = await w.start(BURIED_ANSWERS_HEADER, { after: rest1.index, timeoutMs: KICK_MS, what: "the answers" })
+      t.note(`answers reached the worker ${secs(Date.parse(wake1.at) - answeredAt)} after the RPC (the sweep is kicked, not ticked)`)
+      t.check("the answers arrive as one wake", wake1.wake && wake1.text.startsWith(BURIED_ANSWERS_HEADER))
+      const rows = wake1.text.split("\n").filter((l) => /^\d+\. /.test(l))
+      for (const row of rows) t.note(row)
+      // I. Each row names its question by the worker's own id, ahead of the restated text.
+      t.check("each question's row names it by the worker's id, then its text and the pick", rows[0] === `1. \`db-engine\` “${engineQ}” → SQLite` && rows[2] === `3. \`page-cache\` “${cacheQ}” → On disk`, `${rows[0]} | ${rows[2]}`)
+      t.check("a follow-up's row carries its OWN id after the ⤷", rows[1] === `2. ⤷ \`sqlite-dir\` “${dirQ}” → /var/lib/app` && rows[3] === `4. ⤷ \`cache-dir\` “${dirQ}” → /var/lib/app`, `${rows[1]} | ${rows[3]}`)
+      t.check("…which is all that tells rows 2 and 4 apart, and the branch not taken from the one that was", rows[1]?.replace("`sqlite-dir`", "") === rows[3]?.replace("`cache-dir`", "").replace(/^4\./, "2.") && !wake1.text.includes("postgres-dir"))
+      t.check("four rows, and nothing about the question still open", rows.length === 4 && !wake1.text.includes(channelQ) && !wake1.text.includes("release-channel"))
 
       const rest2 = await w.restAfter(wake1)
       const between = await w.settled(rest2)
       const still = between.questions.find((q) => q.spec.handle === "release-channel")
-      t.check("after a reply that never mentions it, the second question is the one open", between.questions.length === 1 && still !== undefined)
-      t.check("…and still STANDS: the answer's delivery did not move its boundary", still?.standing === true, `standing ${still?.standing}`)
+      t.check("after a reply that never mentions it, the third question is the one open", between.questions.length === 1 && still !== undefined)
+      t.check("…and still STANDS: the answers' delivery did not move its boundary", still?.standing === true, `standing ${still?.standing}`)
       t.check("…so the thread still queues on it", between.needsYou === true)
       const channelNow = w.questions().find((r) => r.handle === "release-channel")
       t.check("…its row untouched", JSON.stringify(channelNow) === JSON.stringify(channelRow))
@@ -363,21 +404,20 @@ const CASES = [
 
       const answered2At = Date.now()
       await api.mutate("answerQuestions", { slug: w.slug, answers: [{ questionId: channel.id, question: channelQ, chosen: ["Beta"] }] })
-      const wake2 = await w.start(BURIED_ANSWERS_HEADER, { after: rest2.index, timeoutMs: KICK_MS, what: "the second answer" })
-      t.note(`second answer reached the worker ${secs(Date.parse(wake2.at) - answered2At)} after the RPC`)
-      t.check("the second answer names its own question and not the first", wake2.text.includes(channelQ) && wake2.text.includes("Beta") && !wake2.text.includes(engineQ))
+      const wake2 = await w.start(BURIED_ANSWERS_HEADER, { after: rest2.index, timeoutMs: KICK_MS, what: "the last answer" })
+      t.note(`last answer reached the worker ${secs(Date.parse(wake2.at) - answered2At)} after the RPC`)
+      t.check("the last answer is one row, naming its own question by id", wake2.text.split("\n")[1] === `1. \`release-channel\` “${channelQ}” → Beta` && !wake2.text.includes(engineQ), wake2.text.split("\n")[1])
       const rest3 = await w.restAfter(wake2)
       const done = await w.settled(rest3)
       t.check("the board shows no open question", done.questions.length === 0 && done.pendingQuestion === false)
       t.check("…and the thread has signed off rather than waiting on an answer", done.lastFence?.kind === "done" && done.answersInFlight === undefined, `lastFence ${done.lastFence?.kind}`)
 
       const deliveredAt = Date.now()
-      await until("both settlements marked delivered", () => w.questions().every((r) => r.state === "answered" && r.delivered === 1), CONFIRM_GRACE_MS + 3 * TICK_MS)
-      t.note(`both rows read delivered ${secs(Date.now() - answeredAt)} after the first answer (a sent wake is confirmed after ${secs(CONFIRM_GRACE_MS)}; waited ${secs(Date.now() - deliveredAt)} more for it)`)
+      await until("every settlement marked delivered", () => w.questions().every((r) => r.state === "answered" && r.delivered === 1), CONFIRM_GRACE_MS + 3 * TICK_MS)
+      t.note(`every row read delivered ${secs(Date.now() - answeredAt)} after the first send (a sent wake is confirmed after ${secs(CONFIRM_GRACE_MS)}; waited ${secs(Date.now() - deliveredAt)} more for it)`)
       await w.quiet()
-      t.check("each answer was delivered once", w.count(BURIED_ANSWERS_HEADER) === 2, `${w.count(BURIED_ANSWERS_HEADER)} answer wakes in the transcript`)
-      const carriers = w.deliveries().filter((d) => d.fence_id.startsWith("question-answer") || /answer/.test(d.reason))
-      t.check("…by two outbox rows, both delivered", carriers.length === 2 && carriers.every((d) => d.state === "delivered"), carriers.map((d) => `${d.reason}: ${d.state}`).join("; "))
+      t.check("each send was delivered once", w.count(BURIED_ANSWERS_HEADER) === 2, `${w.count(BURIED_ANSWERS_HEADER)} answer wakes in the transcript`)
+      t.check("…and a done over nothing open draws no correction", w.count(DONE_FENCE_CORRECTION_LEAD) === 0)
     },
   },
 
@@ -596,6 +636,288 @@ const CASES = [
       await w.quiet()
       t.check("two corrections in all, one per broken rest", w.count(QUESTION_FENCE_CORRECTION_LEAD) === 2, `${w.count(QUESTION_FENCE_CORRECTION_LEAD)} in the transcript`)
       t.check("the allowance came back when the fence registered", sql(`SELECT park_bumps b FROM session WHERE slug = ${quote(w.slug)}`)[0]?.b === 0)
+    },
+  },
+
+  {
+    key: "H",
+    title: "a done fence over an open question is corrected once, in the command's own words, with both ways out",
+    async run(t) {
+      const question = "Should the importer write to SQLite or a JSON file?"
+      const body = "- **Import finished**: 4,212 rows copied, none skipped."
+      const doneFence = `\`\`\`done\n${body}\n\`\`\``
+      const ask = choice("store", question, ["SQLite", "A JSON file"])
+      const refusal = (text) => (text ?? "").split("\n\n").find((p) => p.startsWith("1 question the human has not answered:"))
+      // Way out one: asked, woken by a timer, finished the work, signed off done — by command, which
+      // refuses, and then by fence, which cannot be refused. The correction's reply withdraws the question.
+      const w = await t.worker("unask", [
+        { name: "asks and arms a timer", on: FIRST, tools: [{ command: `frizzctl timer set --in-seconds ${TIMER_S} --prompt 'Check whether the import finished'`, description: "Set a timer" }], text: `The store is the open call; the import runs meanwhile.\n\n${ask}` },
+        { name: "woken by its timer, tries the command, then signs off done by fence", on: TIMER_TRAILER, tools: [{ command: `frizzctl done --body ${quote(body)}`, description: "Sign off with the question open" }], text: `The import finished while the question sat open.\n\n${doneFence}` },
+        { name: "withdraws the question and signs off done again", on: DONE_FENCE_CORRECTION_LEAD, tools: [t.hold("out"), { command: "frizzctl unask store", description: "Withdraw the question" }], text: `SQLite it is: the importer already writes there, so the question is withdrawn.\n\n${doneFence}` },
+      ])
+      // Way out two, on the other shape of the same mistake: the question and the done fence in ONE
+      // message, the done fence closing it. The correction's reply drops the done and ends on the reference.
+      const v = await t.worker("keep", [
+        { name: "asks and signs off done in one message", on: FIRST, text: `The import is finished, bar one call.\n\n${ask}\n\nEverything else is in place.\n\n${doneFence}` },
+        { name: "drops the done and ends on the reference", on: DONE_FENCE_CORRECTION_LEAD, text: `The answer is still needed before this is finished.\n\n${fence("id: store")}` },
+      ])
+
+      const rest1 = await w.restAfter(await w.start(FIRST))
+      const asked = await until("the question on the board", async () => ((await w.board())?.questions?.length === 1 ? w.board() : undefined), BOARD_MS)
+      const row = w.questions()[0]
+      t.check("asked: one question, standing", asked.questions[0].spec.handle === "store" && asked.questions[0].standing === true)
+      const timer = await w.start(TIMER_TRAILER, { after: rest1.index, timeoutMs: TIMER_S * 1000 + WAKE_MS, what: "the timer" })
+      const rest2 = await w.restAfter(timer)
+      // Read at the rest, when the board gets there before the correction does (it opens a turn, and a
+      // thread mid-turn queues on nothing).
+      const atRest = await w.settled(rest2, 4_000).catch(() => undefined)
+      const refused = w.tool("frizzctl done")
+      t.check("`frizzctl done` over the open question is refused: exit 2", refused?.exitCode === 2, `exit ${refused?.exitCode}`)
+      t.check("the rest closes on a done fence all the same", rest2.text.trimEnd().endsWith(doneFence))
+
+      const correction = await w.start(DONE_FENCE_CORRECTION_LEAD, { after: rest2.index, timeoutMs: WAKE_MS, what: "the done-fence correction" })
+      t.note(`correction reached the worker ${secs(Date.parse(correction.at) - Date.parse(rest2.at))} after the rest its done fence closed`)
+      t.check("the correction arrives as a wake and opens on the done-fence lead", correction.wake && correction.text.startsWith(DONE_FENCE_CORRECTION_LEAD))
+      t.check("…naming the question by the worker's id with its first line", correction.text.includes(`\n  store  ${question}\n`), correction.text.split("\n").find((l) => l.includes("store")))
+      t.check("the paragraph the command printed is the correction's middle paragraph, byte for byte", refusal(refused?.output) !== undefined && refusal(refused?.output) === refusal(correction.text), JSON.stringify(refusal(refused?.output)?.slice(0, 90)))
+      t.note(refusal(correction.text)?.replace(/\n/g, " ⏎ "))
+      t.check("…and it gives both ways out", correction.text.includes("- You withdrew it: sign off done again, and it stands.") && correction.text.includes("- You still need the answer: write no ```done fence."))
+      // The reply is held open, so the board is read with the correction delivered and nothing else moved.
+      const during = await w.board()
+      const open = during.questions.find((q) => q.spec.handle === "store")
+      t.check("the correction changes nothing on the board: the question is still open and still standing", open?.standing === true && during.questions.length === 1, `standing ${open?.standing}`)
+      t.check("…its row byte-identical", JSON.stringify(w.questions()[0]) === JSON.stringify(row))
+      if (atRest) t.check("…and at that rest the thread queued on it, done fence or not", atRest.needsYou === true && atRest.questions[0]?.standing === true, `needsYou ${atRest.needsYou}`)
+      else t.note("(the correction opened its turn before the board showed that rest, so needsYou was not read there; the other thread reads it)")
+
+      w.release("out")
+      const rest3 = await w.restAfter(correction)
+      const done = await w.settled(rest3)
+      const unask = w.tool("frizzctl unask store")
+      t.check("way out one: `frizzctl unask store` withdraws it", unask?.exitCode === 0 && /withdrawn/.test(unask.output), unask?.output.split("\n")[0])
+      t.check("…and the second done fence stands: no open question, the thread reads done", done.questions.length === 0 && done.lastFence?.kind === "done" && done.closedQuestions?.some((c) => c.handle === "store" && c.state === "withdrawn") === true, `lastFence ${done.lastFence?.kind}, ${done.questions.length} open`)
+      await w.quiet()
+      t.check("one done-fence correction in all, and nothing after the second sign-off", w.count(DONE_FENCE_CORRECTION_LEAD) === 1 && w.since(rest3.index).length === 0, `${w.count(DONE_FENCE_CORRECTION_LEAD)} corrections; ${w.since(rest3.index).length} message(s) after the sign-off`)
+      t.check("…no question-fence correction, no sign-off reminder", w.count(QUESTION_FENCE_CORRECTION_LEAD) === 0 && w.count(SIGNOFF_NUDGE_MARKER) === 0)
+
+      // The other thread.
+      const vRest1 = await v.restAfter(await v.start(FIRST))
+      const vCorrection = await v.start(DONE_FENCE_CORRECTION_LEAD, { after: vRest1.index, timeoutMs: WAKE_MS, what: "the done-fence correction" })
+      t.note(`one message carrying both: its correction reached the worker ${secs(Date.parse(vCorrection.at) - Date.parse(vRest1.at))} after the rest`)
+      t.check("a question and a done fence in one message draw the same correction", vCorrection.wake && vCorrection.text.startsWith(DONE_FENCE_CORRECTION_LEAD) && refusal(vCorrection.text) === refusal(correction.text))
+      const vRest2 = await v.restAfter(vCorrection)
+      const kept = await v.settled(vRest2)
+      const vq = kept.questions.find((q) => q.spec.handle === "store")
+      t.check("way out two: the reply ends on the reference, and the thread queues on the question", vq?.standing === true && kept.needsYou === true && kept.lastFence?.kind !== "done", `standing ${vq?.standing}, needsYou ${kept.needsYou}, lastFence ${kept.lastFence?.kind}`)
+      t.check("…the same row, asked when it was", v.questions().length === 1 && v.questions()[0].state === "open" && vq?.askedAt === vRest1.at)
+      await v.quiet()
+      t.check("…with no further correction and no sign-off reminder", v.count(DONE_FENCE_CORRECTION_LEAD) === 1 && v.count(QUESTION_FENCE_CORRECTION_LEAD) === 0 && v.count(SIGNOFF_NUDGE_MARKER) === 0 && v.since(vRest2.index).length === 0, `${v.since(vRest2.index).length} message(s) after the reference`)
+    },
+  },
+
+  {
+    key: "J",
+    title: "answers sent from the prompt box: alone they are not the human typing, with a note they are",
+    async run(t) {
+      const ttlQ = "How long should a cached page live?"
+      const formatQ = "Should the server log as JSON or as plain text?"
+      const capQ = "How many times should a failed upload be retried?"
+      const rolloutQ = "Should the change roll out to every region at once or one at a time?"
+      const note = "Keep the log line under 200 characters either way."
+      const w = await t.worker("box", [
+        { name: "asks three questions", on: FIRST, text: ["Three calls are open.", choice("cache-ttl", ttlQ, ["5m", "1h"]), choice("log-format", formatQ, ["JSON", "Plain text"]), choice("retry-cap", capQ, ["3", "10"])].join("\n\n") },
+        { name: "hears the first answer, sent alone", on: BURIED_ANSWERS_HEADER, text: "Recorded: cached pages live 5m." },
+        // The reply to the note asks something new, so the rest is signed by a standing question: no
+        // sign-off reminder interleaves, and the faded third question can be answered at a rest.
+        { name: "hears the second answer and the note, and asks something new", on: BURIED_ANSWERS_HEADER, text: `JSON, with every line under 200 characters.\n\n${choice("rollout", rolloutQ, ["One region at a time", "Every region at once"])}` },
+        { name: "hears the third answer", on: BURIED_ANSWERS_HEADER, text: `Three retries.\n\n${fence("id: rollout")}` },
+        { name: "hears the last answer and signs off", on: BURIED_ANSWERS_HEADER, text: "One region at a time.\n\n```done\n- **Cache, logging and retries settled**; rolling out one region at a time.\n```" },
+      ])
+      const rest1 = await w.restAfter(await w.start(FIRST))
+      const asked = await until("the three questions on the board", async () => ((await w.board())?.questions?.length === 3 ? w.board() : undefined), BOARD_MS)
+      const idOf = (thread, handle) => thread.questions.find((q) => q.spec.handle === handle)?.id
+      const standing = (thread, handle) => thread.questions.find((q) => q.spec.handle === handle)?.standing
+
+      // 1. The staged answer and NOTHING typed: the prompt box's Send with an empty box.
+      const sent1 = Date.now()
+      await api.mutate("followUp", { slug: w.slug, sessionId: w.sessionId, message: "", answers: [{ questionId: idOf(asked, "cache-ttl"), question: ttlQ, chosen: ["5m"] }] })
+      const first = await w.start(BURIED_ANSWERS_HEADER, { after: rest1.index, timeoutMs: KICK_MS, what: "the answer, sent from the prompt box" })
+      t.note(`answer reached the worker ${secs(Date.parse(first.at) - sent1)} after the prompt box's send`)
+      t.check("answers with nothing typed arrive as the answers message itself", first.text === `${BURIED_ANSWERS_HEADER}\n1. \`cache-ttl\` “${ttlQ}” → 5m`, JSON.stringify(first.text.slice(0, 160)))
+      t.check("…with no delivery token: the human sent it, not the scheduler", !first.wake && !first.text.includes("frizz-wake"))
+      const rest2 = await w.restAfter(first)
+      const afterAlone = await w.settled(rest2)
+      t.check("the other two still STAND: answers alone are not the human typing", standing(afterAlone, "log-format") === true && standing(afterAlone, "retry-cap") === true && afterAlone.questions.length === 2, `log-format ${standing(afterAlone, "log-format")}, retry-cap ${standing(afterAlone, "retry-cap")}`)
+      t.check("…and the thread queues on them", afterAlone.needsYou === true)
+      await sleep(TICK_MS + TAILER_MS)
+      t.check("…with no second delivery of that answer and no sign-off reminder", w.count(BURIED_ANSWERS_HEADER) === 1 && w.count(SIGNOFF_NUDGE_MARKER) === 0 && w.questions().find((r) => r.handle === "cache-ttl")?.delivered === 1)
+
+      // 2. An answer AND a typed note, in one send.
+      const sent2 = Date.now()
+      await api.mutate("followUp", { slug: w.slug, sessionId: w.sessionId, message: note, answers: [{ questionId: idOf(asked, "log-format"), question: formatQ, chosen: ["JSON"] }] })
+      const second = await w.start(ANSWERS_NOTE_HEADER, { after: rest2.index, timeoutMs: KICK_MS, what: "the answer with its note" })
+      t.note(`answer and note reached the worker ${secs(Date.parse(second.at) - sent2)} after the send`)
+      t.check("an answer and a typed note arrive as ONE message: the rows, then the note under its header", second.text === `${BURIED_ANSWERS_HEADER}\n1. \`log-format\` “${formatQ}” → JSON\n\n${ANSWERS_NOTE_HEADER}\n${note}` && !second.wake, JSON.stringify(second.text.slice(0, 220)))
+      const rest3 = await w.restAfter(second)
+      const afterNote = await w.settled(rest3)
+      const cap = afterNote.questions.find((q) => q.spec.handle === "retry-cap")
+      t.check("the human typed, and the reply went past the third question: it no longer stands", cap?.standing === false, `standing ${cap?.standing}`)
+      t.check("…while staying open, on the board, its row untouched", cap !== undefined && w.questions().find((r) => r.handle === "retry-cap")?.state === "open" && cap.askedAt === rest1.at)
+      t.check("the question asked in that reply stands, and is what the thread queues on", standing(afterNote, "rollout") === true && afterNote.needsYou === true)
+
+      // 3. Faded is not closed: it is answered like any other.
+      const sent3 = Date.now()
+      const answer = await api.mutate("answerQuestions", { slug: w.slug, answers: [{ questionId: cap.id, question: capQ, chosen: ["3"] }] })
+      t.check("…and answerable: the card's send settles it while it reads `standing: false`", answer.answered.includes(cap.id))
+      const third = await w.start(BURIED_ANSWERS_HEADER, { after: rest3.index, timeoutMs: KICK_MS, what: "the third answer" })
+      t.note(`the faded question's answer reached the worker ${secs(Date.parse(third.at) - sent3)} after the RPC`)
+      t.check("its answer is delivered as a wake naming it by id", third.wake && third.text.split("\n")[1] === `1. \`retry-cap\` “${capQ}” → 3`, third.text.split("\n")[1])
+      const rest4 = await w.restAfter(third)
+      const last = await w.settled(rest4)
+      await api.mutate("answerQuestions", { slug: w.slug, answers: [{ questionId: idOf(last, "rollout"), question: rolloutQ, chosen: ["One region at a time"] }] })
+      const fourth = await w.start(BURIED_ANSWERS_HEADER, { after: rest4.index, timeoutMs: KICK_MS, what: "the last answer" })
+      const done = await w.settled(await w.restAfter(fourth))
+      t.check("every question answered, the thread signs off", done.questions.length === 0 && done.lastFence?.kind === "done")
+      await w.quiet()
+      t.check("four answer messages in all, one per send; no reminder, no correction", w.count(BURIED_ANSWERS_HEADER) === 4 && w.count(SIGNOFF_NUDGE_MARKER) === 0 && w.count(QUESTION_FENCE_CORRECTION_LEAD) === 0 && w.count(DONE_FENCE_CORRECTION_LEAD) === 0, `${w.count(BURIED_ANSWERS_HEADER)} answer messages, ${w.count(SIGNOFF_NUDGE_MARKER)} reminders`)
+    },
+  },
+
+  {
+    key: "K",
+    title: "the two other openers: a tilde fence and a capitalised info string both ask",
+    async run(t) {
+      const options = ["options:", "  - label: Nightly", "    recommended: true", "  - label: Weekly"]
+      const shapes = [
+        { name: "tilde", opener: "~~~question", closer: "~~~", id: "backup-cadence", question: "Should backups run nightly or weekly?" },
+        { name: "capital", opener: "```Question", closer: "```", id: "report-cadence", question: "Should the usage report go out nightly or weekly?" },
+      ]
+      for (const shape of shapes) {
+        shape.w = await t.worker(shape.name, [
+          { name: `asks with ${shape.opener}`, on: FIRST, text: `One call is open.\n\n${[shape.opener, `id: ${shape.id}`, "kind: choice", `question: ${shape.question}`, ...options, shape.closer].join("\n")}` },
+        ])
+      }
+      for (const { w, opener, id, question } of shapes) {
+        const rest = await w.restAfter(await w.start(FIRST))
+        t.check(`the worker's message asks with a ${opener} fence`, rest.text.includes(`${opener}\nid: ${id}\n`))
+        const board = await until(`${w.slug}: its question on the board`, async () => ((await w.board())?.questions?.length === 1 ? w.board() : undefined), BOARD_MS).catch(() => w.board())
+        const q = board.questions?.find((x) => x.spec.handle === id)
+        t.note(`${opener}: registered ${secs(Date.now() - Date.parse(rest.at))} after the rest`)
+        t.check(`${opener} registers under the worker's id, asked at that message`, q !== undefined && q.spec.question === question && q.askedAt === rest.at, JSON.stringify(board.questionFaults ?? board.questions?.map((x) => x.spec.handle)))
+        t.check(`…and the thread queues on it, standing`, q?.standing === true && (await w.settled(rest)).needsYou === true)
+      }
+      for (const { w, opener } of shapes) {
+        await w.quiet()
+        t.check(`${opener}: nothing was sent about it — no correction, no sign-off reminder`, w.since(-1).length === 1 && !(await w.board()).questionFaults?.length, `${w.since(-1).length - 1} message(s) after the dispatch`)
+        t.check(`…one row, open`, w.questions().length === 1 && w.questions()[0].state === "open")
+      }
+    },
+  },
+
+  {
+    key: "L",
+    title: "the cap: three corrections for a fence the worker keeps getting wrong, and three more only once the human types",
+    async run(t) {
+      const question = "Which compression should the archive use?"
+      const typed = "Still there? The archive format has to be decided today."
+      const broken = `The compression is the open call.\n\n${fence("id: archive-compression", `question: ${question}`, "options:", "  - label: zstd", "  - label: gzip")}`
+      const w = await t.worker("stuck", [
+        { name: "asks with a fence that has no kind", on: FIRST, text: broken },
+        { name: "writes the same broken fence again", on: QUESTION_FENCE_CORRECTION_LEAD, times: PARK_BUMP_MAX, text: broken },
+        { name: "answers the human with the same broken fence", on: typed, text: broken },
+        { name: "writes it corrected at last", on: QUESTION_FENCE_CORRECTION_LEAD, text: `With its kind.\n\n${choice("archive-compression", question, ["zstd", "gzip"])}` },
+      ])
+      let rest = await w.restAfter(await w.start(FIRST))
+      const latencies = []
+      for (let n = 1; n <= PARK_BUMP_MAX; n++) {
+        const correction = await w.start(QUESTION_FENCE_CORRECTION_LEAD, { after: rest.index, timeoutMs: WAKE_MS, what: `correction ${n}` }).catch(() => undefined)
+        if (!t.check(`correction ${n} of ${PARK_BUMP_MAX} reaches the worker within a tick or two of its rest`, correction !== undefined, correction ? undefined : `none ${secs(Date.now() - Date.parse(rest.at))} after the rest; outbox: ${w.deliveries().filter((d) => d.fence_id.endsWith(rest.at)).map((d) => `${d.state}, due ${secs(d.next_attempt_at - d.created_at)} after it was queued`).join("; ") || "nothing queued"}`)) return
+        latencies.push(secs(Date.parse(correction.at) - Date.parse(rest.at)))
+        rest = await w.restAfter(correction)
+      }
+      t.note(`the three corrections arrived ${latencies.join(", ")} after their rests (none held behind the one before it)`)
+      // The fourth identical rest. Three ticks and the fold: time for a correction or a reminder to come.
+      const capped = rest
+      await sleep(3 * TICK_MS + TAILER_MS)
+      const silent = w.since(capped.index)
+      t.check("after the third, the same mistake draws nothing more: no fourth correction", !silent.some((m) => m.text.includes(QUESTION_FENCE_CORRECTION_LEAD)), silent.map((m) => m.text.slice(0, 60)).join(" | "))
+      t.check("…and no sign-off reminder for a rest whose fence is the fault", !silent.some((m) => m.text.includes(SIGNOFF_NUDGE_MARKER)) && silent.length === 0, `${silent.length} message(s) in ${secs(3 * TICK_MS + TAILER_MS)}`)
+      const stuck = await w.board()
+      t.check("the board still lists the fault, and no question", stuck.questionFaults?.some((f) => f.id === "archive-compression") === true && stuck.questions.length === 0, JSON.stringify(stuck.questionFaults))
+      t.note(`the thread at that rest: needsYou ${stuck.needsYou}, runtime ${stuck.runtime}; park_bumps ${sql(`SELECT park_bumps b FROM session WHERE slug = ${quote(w.slug)}`)[0]?.b}`)
+
+      // The human types. The budget is per message of theirs: they have seen the thread.
+      await api.mutate("followUp", { slug: w.slug, sessionId: w.sessionId, message: typed })
+      const human = await w.start(typed, { after: capped.index })
+      const rest5 = await w.restAfter(human)
+      const again = await w.start(QUESTION_FENCE_CORRECTION_LEAD, { after: rest5.index, timeoutMs: WAKE_MS, what: "the correction after the human typed" }).catch(() => undefined)
+      const state = sql(`SELECT park_bumps b, park_bump_anchor a FROM session WHERE slug = ${quote(w.slug)}`)[0]
+      if (!t.check("once the human has typed, the same broken fence is corrected again", again !== undefined, again ? undefined : `none ${secs(Date.now() - Date.parse(rest5.at))} after the rest of ${rest5.at}; the session row reads park_bumps ${state?.b}, anchored at ${state?.a}; outbox for that rest: ${w.deliveries().filter((d) => d.fence_id.endsWith(rest5.at)).map((d) => `${d.fence_id} ${d.state}`).join("; ") || "nothing queued"}`)) return
+      t.note(`that correction reached the worker ${secs(Date.parse(again.at) - Date.parse(rest5.at))} after its rest`)
+      const fixed = await w.settled(await w.restAfter(again))
+      t.check("…and the fix registers: the thread queues on the question, the fault gone", fixed.questions.length === 1 && fixed.questions[0].spec.handle === "archive-compression" && fixed.needsYou === true && !fixed.questionFaults?.length)
+      await w.quiet()
+      t.check("four corrections in all: three, then one after the human's message", w.count(QUESTION_FENCE_CORRECTION_LEAD) === PARK_BUMP_MAX + 1 && w.count(SIGNOFF_NUDGE_MARKER) === 0, `${w.count(QUESTION_FENCE_CORRECTION_LEAD)} corrections, ${w.count(SIGNOFF_NUDGE_MARKER)} reminders`)
+    },
+  },
+
+  {
+    key: "M",
+    title: "a broken question fence under a done fence: one correction, which says the done cannot stay",
+    async run(t) {
+      const question = "Should the old export endpoint be removed or kept behind a flag?"
+      const doneFence = "```done\n- **Export rewritten**; the old endpoint is untouched.\n```"
+      const w = await t.worker("crossed", [
+        { name: "asks with a broken fence and signs off done under it", on: FIRST, text: `The rewrite is finished, bar one call.\n\n${fence("id: old-endpoint", `question: ${question}`, "options:", "  - label: Remove it", "  - label: Keep it behind a flag")}\n\n${doneFence}` },
+        { name: "writes the fence corrected, with no done fence", on: QUESTION_FENCE_CORRECTION_LEAD, text: `The fence was missing its kind, and the sign-off waits for the answer.\n\n${choice("old-endpoint", question, ["Remove it", "Keep it behind a flag"])}` },
+      ])
+      const rest1 = await w.restAfter(await w.start(FIRST))
+      const correction = await w.start(QUESTION_FENCE_CORRECTION_LEAD, { after: rest1.index, timeoutMs: WAKE_MS, what: "the correction" })
+      t.note(`correction reached the worker ${secs(Date.parse(correction.at) - Date.parse(rest1.at))} after its rest`)
+      const paragraphs = correction.text.split("\n\n")
+      const hint = paragraphs.find((p) => p.startsWith(UNDER_DONE_HINT))
+      t.check("the correction is the question fence's, naming the fault", correction.wake && correction.text.startsWith(QUESTION_FENCE_CORRECTION_LEAD) && correction.text.includes("`old-endpoint`") && correction.text.includes("no `kind:`"))
+      t.check("…and carries the extra paragraph about the done fence it closed on", hint !== undefined, paragraphs.slice(-3).map((p) => p.slice(0, 50)).join(" | "))
+      if (hint) t.note(hint)
+      t.check("…as its last paragraph before the clock, not as the done-fence correction (nothing is open to sign off over)", paragraphs[paragraphs.indexOf(hint) + 1]?.startsWith("⏱") === true && !correction.text.includes("Separately, your ```done fence") && !correction.text.includes("the human has not answered"), paragraphs[paragraphs.indexOf(hint) + 1]?.slice(0, 40))
+      // What was queued for that rest, read as a count of messages and never as a delivery state.
+      const forRest = w.deliveries().filter((d) => d.fence_id.endsWith(rest1.at))
+      t.check("one message was queued for that rest, and it is this one", forRest.length === 1 && forRest[0].fence_id === `park:question-fence:${rest1.at}`, forRest.map((d) => d.fence_id).join(", "))
+      const rest2 = await w.restAfter(correction)
+      t.check("the reply carries the fixed fence and no done fence", !rest2.text.includes("```done"))
+      const after = await w.settled(rest2)
+      t.check("the fix registers and the thread queues on it, not signed off", after.questions.length === 1 && after.questions[0].spec.handle === "old-endpoint" && after.needsYou === true && after.lastFence?.kind !== "done" && !after.questionFaults?.length, `lastFence ${after.lastFence?.kind}`)
+      await w.quiet()
+      const sent = w.since(rest1.index)
+      t.check("no second message followed for that rest: one correction, no done-fence correction, no reminder", sent.length === 1 && w.count(DONE_FENCE_CORRECTION_LEAD) === 0 && w.count(SIGNOFF_NUDGE_MARKER) === 0, `${sent.length} message(s) from Frizz in all`)
+    },
+  },
+
+  {
+    key: "N",
+    title: "the scripted worker's own `ending=question` knob asks with a fence Frizz registers",
+    async run(t) {
+      const prompt = "[script ending=question reply=done paras=1 replyparas=1 think=200 replythink=200] the question knob"
+      const w = await t.dispatch("knob", prompt)
+      const rest1 = await w.restAfter(await w.start("[script ending=question"))
+      t.check("the generated turn closes on a question fence, with no tool call", rest1.text.trimEnd().endsWith("```") && rest1.text.includes("```question\nid: publish-release-1\nkind: choice\n") && w.tools().length === 0, `${w.tools().length} tool call(s)`)
+      const asked = await until("the knob's question on the board", async () => ((await w.board())?.questions?.length === 1 ? w.board() : undefined), BOARD_MS).catch(() => w.board())
+      const q = asked.questions?.[0]
+      t.note(`registered ${secs(Date.now() - Date.parse(rest1.at))} after the rest`)
+      t.check("the board shows it registered under its id, with both options and the recommended one", q?.spec.handle === "publish-release-1" && q.spec.options?.length === 2 && q.spec.options[0].recommended === true && /^qst_/.test(q.id), JSON.stringify(asked.questionFaults ?? q?.spec).slice(0, 200))
+      const queued = await w.settled(rest1)
+      t.check("the thread queues on it, standing", queued.needsYou === true && queued.questions[0]?.standing === true, `needsYou ${queued.needsYou}`)
+      const answeredAt = Date.now()
+      const answer = await api.mutate("answerQuestions", { slug: w.slug, answers: [{ questionId: q.id, question: q.spec.question, chosen: ["Publish now"] }] })
+      t.check("`answerQuestions` settles it", answer.answered.includes(q.id) && answer.open.length === 0)
+      const wake = await w.start(BURIED_ANSWERS_HEADER, { after: rest1.index, timeoutMs: KICK_MS, what: "the answer" })
+      t.note(`answer reached the worker ${secs(Date.parse(wake.at) - answeredAt)} after the RPC`)
+      t.check("the answer wakes the worker, naming the question by its id", wake.wake && wake.text.split("\n")[1] === `1. \`publish-release-1\` “${q.spec.question}” → Publish now`, wake.text.split("\n")[1])
+      const rest2 = await w.restAfter(wake)
+      const done = await w.settled(rest2)
+      t.check("…into its `reply=done` turn: the thread signs off with nothing open", rest2.text.includes("```done") && done.questions.length === 0 && done.lastFence?.kind === "done", `lastFence ${done.lastFence?.kind}`)
+      await w.quiet()
+      t.check("nothing else was sent: no correction, no reminder", w.since(rest1.index).length === 1, `${w.since(rest1.index).length} message(s) after the question`)
     },
   },
 
