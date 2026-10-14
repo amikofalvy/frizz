@@ -366,6 +366,22 @@ test("a task that itself contains a TASK: line is never truncated at it", () => 
   assert.equal(frizzDispatchDisplayText(composed), task)
 })
 
+// A sub-agent's own transcript opens on the worker's prompt PLUS the epilogue the dispatch hook appended
+// (agent-dispatch-hook.test.ts drives the real hook through this). Children dispatched under the
+// pre-rename `fray` hook carry a differently-worded header and must project the same way.
+test("the dispatch hook's orchestration epilogue is projected out of a sub-agent's first bubble", () => {
+  const task = "Survey the dev server readouts.\n\nReport each one."
+  for (const hook of ["frizz", "fray"]) {
+    const sent = `${task}\n\n---\n[ORCHESTRATION EPILOGUE — auto-appended by the ${hook} worker dispatch hook] You are a helper sub-agent.\nNOTHING CAN WAKE YOU.`
+    const [first] = parseTranscript(JSON.stringify({ type: "user", timestamp: "2026-07-01T00:00:00.000Z", message: { content: sent } }))
+    assert.equal(first.displayText, task, hook)
+    assert.equal(first.text, sent, "the raw record keeps the prompt the child actually received")
+  }
+  // Naming the epilogue is the worker's own prose, not the hook's header.
+  const quoting = "Report whether the ORCHESTRATION EPILOGUE reached you."
+  assert.equal(parseTranscript(JSON.stringify({ type: "user", message: { content: quoting } }))[0].displayText, undefined)
+})
+
 test("GitHub display boundary is inert without the complete generated envelope", () => {
   const ordinary = `Example HTML comment:\n\n${GITHUB_DISPATCH_UI_BOUNDARY}\n\nkeep this visible`
   assert.equal(githubDispatchDisplayText(ordinary), undefined)
