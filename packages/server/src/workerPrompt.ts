@@ -1525,6 +1525,37 @@ this one ends — nothing can interrupt you mid-turn except a stop. So rest prom
 done rather than idling inside it, and read the newest human message first when a turn opens.`,
 }
 
+// A TOOL CALL CUT OFF BY "SEND NOW". Claude only: the SDK interrupt is the one transport that ends a turn
+// to deliver a message (⌘⏎, and the ↑ beside a queued bubble) — a Codex steer is read at the next step
+// and an ACP follow-up queues. Claude Code answers the call that was running with the stock paragraph it
+// also uses for a real rejection: "The user doesn't want to proceed with this tool use. The tool use was
+// rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are
+// doing and wait for the user to tell you how to proceed.", then a note inviting a memory. That text is
+// written inside the CLI, so Frizz cannot change it, and a worker believes it: the call "was rejected
+// before it ran" (it ran for seconds and was killed), so it stops and asks what to do.
+//
+// MEASURED 2026-10-13 on real broker sessions (backend/_live_broker_interrupt_cut_call.mts — Opus; a 45s
+// build cut 6s in by "fyi the build is pretty slow on this machine today"). Under this contract without
+// the section, 4 of 24 workers stopped and asked the human how to re-run the build, each saying the
+// call was declined "before it started"; with no contract at all, 3 of 3 did. With the section, none of
+// 19 did. The stall is intermittent — three of those four fell inside one minute, and the twenty runs
+// after it produced one — so read the rate loosely.
+//
+// A standing rule rather than a note on the message, because the message is usually sent first: all 6
+// such results in this machine's transcripts were a Bash call, the interrupt receipt, then the message,
+// and 5 of the 6 messages had sat in the queue for 3-47s before they were pushed through.
+//
+// Claude Code 2.1.296 does carry the right text — "[Tool call did not complete: the turn was ended to
+// deliver the message that follows. Nothing refused it; re-run it if still needed.]" — but only for an
+// abort a plugin's hooks module raises (`$.turn.abort`), never for the SDK's `interrupt`.
+const CLAUDE_INTERRUPTED_CALL = `## When a message cuts a tool call short
+
+A tool result reading "The user doesn't want to proceed with this tool use … STOP what you are doing"
+is the runtime's stock text for a call that was RUNNING when a message was pushed through to you:
+Frizz ends your turn to deliver it. Nothing rejected the call — it was cut off part-way — and it is no
+correction. The message that follows is the whole signal: act on it, carry on with the work, and
+re-run the call if it is still needed.`
+
 // Backend-neutral: every backend's shell runs the ONE `frizzctl`, so the command and its usage are
 // identical. Kept as one shared section (not a per-kind record) — there is nothing backend-specific to
 // say about it. What differs per backend is only how the shell's ENVIRONMENT learns which thread is
@@ -1686,6 +1717,7 @@ export function buildWorkerPrompt(kind: BackendKind = "claude", opts: { monitors
     SCRATCHPAD[kind],
     kind === "claude" ? `${WORKTREES}\n${WORKTREES_HARNESS}` : WORKTREES,
     BACKEND[kind],
+    kind === "claude" ? CLAUDE_INTERRUPTED_CALL : null,
     THREAD_NAME,
     SPAWN_THREAD,
     STEER_THREADS,

@@ -15,6 +15,23 @@ test("both worker backends receive the gerund activity-caption contract", () => 
   }
 })
 
+// "SEND NOW" ENDS A CLAUDE TURN TO DELIVER A MESSAGE, and the runtime answers the tool call it cut off
+// with its stock rejection: "The user doesn't want to proceed with this tool use … STOP what you are
+// doing and wait". Frizz cannot change that text, so the contract says what it is. Measured on real
+// broker sessions (see CLAUDE_INTERRUPTED_CALL): without the section 4 of 24 workers stopped to ask the
+// human how to re-run the call a remark had interrupted, and with it none of 19 did.
+test("only Claude's contract explains the tool result an interrupting message leaves behind", () => {
+  const claude = buildWorkerPrompt("claude")
+  assert.match(claude, /^## When a message cuts a tool call short$/m)
+  // The rule is recalled by the text it is about, so it has to quote the runtime's own opening words.
+  assert.match(claude, /"The user doesn't want to proceed with this tool use … STOP what you are doing"/)
+  assert.match(claude, /Nothing rejected the call — it was cut off part-way — and it is no\s+correction/)
+  assert.match(claude, /The message that follows is the whole signal/)
+  assert.match(claude, /re-run the call if it is still needed/)
+  // No other transport ends a turn for a message: a Codex steer is read at the next step, an ACP one queues.
+  for (const backend of ["codex", "acp"] as const) assert.doesNotMatch(buildWorkerPrompt(backend), /cuts a tool call short/)
+})
+
 // ONE PLACE FOR WORKTREES. The contract named none until 2026-10-11, and four projects on one machine
 // had four conventions, two of them outside the project. The path is also known to the server: the
 // board's `.frizz` watcher prunes `worktrees` (board.test.ts pins that list) and repo-files.ts reads a

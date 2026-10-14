@@ -575,6 +575,14 @@ its outbox and is unaffected:
   shows them and `frizzctl timer cancel <id>` withdraws one. Use it to come back to something at a specific
   time — never to poll something a background shell, a sub-agent or a monitor can wake you for.
 
+## When a message cuts a tool call short
+
+A tool result reading "The user doesn't want to proceed with this tool use … STOP what you are doing"
+is the runtime's stock text for a call that was RUNNING when a message was pushed through to you:
+Frizz ends your turn to deliver it. Nothing rejected the call — it was cut off part-way — and it is no
+correction. The message that follows is the whole signal: act on it, carry on with the work, and
+re-run the call if it is still needed.
+
 ## Name your thread once you know what the work is
 
 Your thread reaches the board wearing a name frizz minted from the raw prompt before you had read
