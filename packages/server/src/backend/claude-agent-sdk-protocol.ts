@@ -41,20 +41,56 @@ const DELIVERABLE_CONTROL_CODES = new Set([9, 10, 13])
  * through untouched, so the broker path was silently stricter than the provider itself for the same
  * prompt.
  *
- * What stays refused is what is genuinely undeliverable: LONE surrogates (not encodable as UTF-8 on
- * the wire) and the C0/C1 control ranges. Iterating by code point is load-bearing — a valid surrogate
- * PAIR is one astral code point and must pass, which is what makes emoji work at all.
+ * What stays undeliverable is what genuinely is: LONE surrogates (not encodable as UTF-8 on the wire)
+ * and the C0/C1 control ranges. Iterating by code point is load-bearing — a valid surrogate PAIR is
+ * one astral code point and must pass, which is what makes emoji work at all. `deliverableInputText`
+ * below removes exactly this class, so in practice the validator's refusal is a backstop.
  */
 export function hasUndeliverableInputText(value: string): boolean {
   for (const character of value) {
-    const code = character.codePointAt(0)!
-    if (code >= 0xd800 && code <= 0xdfff) return true // lone surrogate
-    if (code === 0x2028 || code === 0x2029) return true // line/paragraph separator (Zl/Zp)
-    if (code <= 0x1f || (code >= 0x7f && code <= 0x9f)) {
-      if (!DELIVERABLE_CONTROL_CODES.has(code)) return true
-    }
+    if (isUndeliverableInputCode(character.codePointAt(0)!)) return true
   }
   return false
+}
+
+function isUndeliverableInputCode(code: number): boolean {
+  if (code >= 0xd800 && code <= 0xdfff) return true // lone surrogate
+  if (code === 0x2028 || code === 0x2029) return true // line/paragraph separator (Zl/Zp)
+  if (code <= 0x1f || (code >= 0x7f && code <= 0x9f)) return !DELIVERABLE_CONTROL_CODES.has(code)
+  return false
+}
+
+// The undeliverable code points that ARE a line break: vertical tab, form feed, NEL, and the line and
+// paragraph separators. A soft return copied out of a slide or a document arrives as one of these.
+const UNDELIVERABLE_LINE_BREAK_CODES = new Set([0x0b, 0x0c, 0x85, 0x2028, 0x2029])
+
+/**
+ * The same prompt body with what `hasUndeliverableInputText` names taken out, so a stray character
+ * costs the operator nothing instead of their whole send.
+ *
+ * Until 2026-10-13 the bridge REFUSED such a message ("This message holds a control or incomplete
+ * character frizz can't send. Edit and resend."), which asked a human to find a character they cannot
+ * see in text they pasted (maintainer: *"wtf why not strip this?"*). None of these code points carries
+ * anything the worker can read, so removing them loses nothing the refusal was protecting.
+ *
+ * Exactly those code points go and nothing around them: an escape sequence loses its ESC and keeps
+ * its `[31m`, because the visible remainder is still what was pasted. A line break that is not LF or
+ * CR becomes a newline rather than disappearing, or the two lines it separated would be glued into
+ * one word. Text with nothing to remove comes back as the SAME string.
+ *
+ * Callers apply this where they first hold the text (the router's follow-up, the bridge's
+ * `validatedInput`), never inside `validateInputMessage`: a daemon forked by an older build keeps its
+ * own refusing validator for hours after an upgrade, so the text has to be clean before the frame.
+ */
+export function deliverableInputText(value: string): string {
+  if (!hasUndeliverableInputText(value)) return value
+  let text = ""
+  for (const character of value) {
+    const code = character.codePointAt(0)!
+    if (!isUndeliverableInputCode(code)) text += character
+    else if (UNDELIVERABLE_LINE_BREAK_CODES.has(code)) text += "\n"
+  }
+  return text
 }
 
 export type ClaudeJsonScalar = string | number | boolean | null
@@ -505,9 +541,11 @@ export function validateInputMessage(value: ClaudeInputMessage): ClaudeInputMess
     throw new ClaudeAgentSdkProtocolError(`input.text exceeds ${CLAUDE_AGENT_SDK_MAX_INPUT_BYTES} bytes`)
   }
   // User input is an authority-bearing provider instruction, not presentation metadata. Never
-  // silently replace controls or truncate: the accepted bytes must be exactly the bytes the caller
-  // supplied, so this REFUSES rather than sanitizing — and the refusal has to reach the operator,
-  // which is why the bridge validates before `sendInput` and the daemon reports what it drops.
+  // silently replace controls or truncate HERE: the accepted bytes must be exactly the bytes the
+  // caller supplied, so this REFUSES rather than sanitizing — and the refusal has to reach the
+  // operator, which is why the bridge validates before `sendInput` and the daemon reports what it
+  // drops. Taking the undeliverable characters out is the CALLER's act, on text it still owns
+  // (`deliverableInputText`), so what reaches this line has nothing left to refuse.
   //
   // The class is `hasUndeliverableInputText`, NOT the display-grade `UNSAFE_TEXT`: see its doc for why
   // a prompt body must be allowed to carry the zero-width joiner that every multi-part emoji is built
