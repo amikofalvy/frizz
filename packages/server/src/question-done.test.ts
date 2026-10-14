@@ -11,7 +11,7 @@ import assert from "node:assert/strict"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { DONE_FENCE_CORRECTION_LEAD, doneOpenQuestionsRefusal, doneOverOpenQuestionsBody, isParkCorrection, needsAction, QUESTION_FENCE_CORRECTION_LEAD, restPromptMessage, shellDoneMessage, wakeDeliveryToken } from "@frizz/shared"
+import { DONE_FENCE_CORRECTION_LEAD, doneOpenQuestionsRefusal, doneOverOpenQuestionsBody, isParkCorrection, needsAction, QUESTION_FENCE_CORRECTION_LEAD, questionAnswerMessage, restPromptMessage, RETRY_FOLLOW_UP, shellDoneMessage, timerPromptMessage, wakeDeliveryToken } from "@frizz/shared"
 // @ts-expect-error — the worker plugin is plain .mjs shipped loose beside the server; it has no types.
 import { doneOpenQuestionsRefusal as cliDoneOpenQuestionsRefusal } from "../../../cc-worker/lib/frizz-tools.mjs"
 import { Bus } from "./bus.ts"
@@ -60,17 +60,20 @@ function world(over: Partial<SessionRow> = {}, opts: { quietWindowMs?: number } 
     forget: () => {}, start: () => {}, stop: () => {}, tick: () => {},
   } as unknown as Tailer
   const sent: string[] = []
+  const logs: string[] = []
   let clock = Date.parse(at(0))
   const questionFaults = createQuestionFaultBook()
   const scheduler = createScheduler({
     wakeQuietWindowMs: opts.quietWindowMs ?? 0, storage, fetchPr: async () => undefined, fetchGithubReview: async () => [], questionFaults,
-    tailer, resume: async (_slug: string, message: string, deliveryId: string) => { sent.push(`${message}\n\n${wakeDeliveryToken(deliveryId)}`) }, log: () => {}, now: () => clock,
+    tailer, resume: async (_slug: string, message: string, deliveryId: string) => { sent.push(`${message}\n\n${wakeDeliveryToken(deliveryId)}`) }, log: (line: string) => { logs.push(line) }, now: () => clock,
   } as never)
   const project: Project = { dir, id: "p", name: "fixture", label: "fixture", stateDir: dir, cwdSlug: "fixture" }
   const board = createBoard(project, storage, new Bus(), tailer, "question-done", { claudeBrokerDaemonAlive: () => true, questionFaults: (x) => questionFaults.of(x) })
   return {
     /** Every delivery the scheduler sent, as it lands in the transcript: the message and its token. */
     storage, scheduler, board, sent, extra, fold: s,
+    /** Every line the scheduler logged: a pass that threw says so here, and nowhere else. */
+    logs,
     tick: async (minute: number) => { clock = Date.parse(at(minute)); await scheduler.tick() },
     /** A user record: the human's message, or a delivery of Frizz's (pass what `sent` holds, or `wake(…)`). */
     user: (minute: number, text: string) => applyRecord(s, { type: "user", timestamp: at(minute), message: { role: "user", content: text } } as never),
@@ -744,5 +747,108 @@ test("control: the Goal thread harness does deliver a rest prompt when nothing e
     await w.tick(2)
     assert.equal(w.sent.length, 1)
     assert.ok(w.sent[0].startsWith(restPromptMessage("Keep going until the release is out.").split("\n")[0]))
+  } finally { w.close() }
+})
+
+// ── The human typing hands the corrective allowance back ─────────────────────────────────────────────
+
+// Driven through a real broker first (verify-question-fence-wakes, case L): a worker that answers every
+// correction with the same fence gets three, then silence, as intended — and stayed silenced for the life
+// of the thread, whatever the human then said to it. The count came back only for an honoured park or a
+// question that registered. A message the human types is the third thing Frizz cannot cause by correcting.
+type World = ReturnType<typeof world>
+/** The worker rests on `message`; whatever Frizz sends for that rest lands as the next user record. */
+async function restOn(w: World, minute: number, message: string): Promise<boolean> {
+  const before = w.sent.length
+  w.say(minute, message)
+  await w.tick(minute + 0.25)
+  if (w.sent.length === before) return false
+  w.user(minute + 0.5, w.sent[w.sent.length - 1])
+  return true
+}
+
+const CAPPED_SHAPES: { name: string; cause: string; setup?: (w: World) => Promise<void>; message: string }[] = [
+  { name: "a question fence that cannot register", cause: "park:question-fence:", message: `Need a call.\n\n${fence("question", "id: scope\nquestion: Which npm scope?")}` },
+  {
+    name: "a done fence over an open question", cause: "park:done-open-question:", message: `Everything is in.\n\n${done}`,
+    setup: async (w) => { w.say(0.5, `One call to make first.\n\n${choice("store")}`); await w.tick(0.75) },
+  },
+  { name: "a park naming a dead shell", cause: "park:dead:", message: fence("awaiting", "status: working\nshells: [bghost]\nfor: 1h") },
+]
+
+test("a worker that has used up its corrections is corrected again once the human has typed, and the count runs to three again", async () => {
+  for (const shape of CAPPED_SHAPES) {
+    const w = world()
+    try {
+      w.user(0, "publish the packages")
+      await shape.setup?.(w)
+      // Three rests, three corrections; each correction is itself a user record, and hands nothing back.
+      for (const minute of [1, 2, 3]) assert.equal(await restOn(w, minute, shape.message), true, `${shape.name}: rest ${minute} is corrected`)
+      assert.equal(w.bumps(), 3)
+      // The fourth identical rest is the silence the cap is for…
+      assert.equal(await restOn(w, 4, shape.message), false, `${shape.name}: the fourth rest draws nothing`)
+      // …and nothing that is not the human typing ends it: a wake, Retry's fixed sentence, answers sent
+      // from the prompt box with nothing typed beside them.
+      const notTheHuman: [string, string][] = [
+        ["a timer wake", wake(timerPromptMessage("check the registry", at(5)), "tmr")],
+        ["Retry", RETRY_FOLLOW_UP],
+        ["answers sent with nothing typed", questionAnswerMessage([{ questionId: "qst_aaaaaaaaaaaa", question: "Which registry?", chosen: ["npm"] }])],
+      ]
+      for (const [i, [what, text]] of notTheHuman.entries()) {
+        w.user(5 + i, text)
+        assert.equal(await restOn(w, 5.5 + i, shape.message), false, `${shape.name}: ${what} hands nothing back`)
+        assert.equal(w.bumps(), 3, `${shape.name}: ${what} leaves the count where it was`)
+      }
+      assert.equal(w.deliveries().filter((id) => id.startsWith(shape.cause)).length, 3)
+      // The human types. They have seen the thread: what the worker does next is a new attempt.
+      w.user(10, "any progress on this?")
+      assert.equal(await restOn(w, 11, shape.message), true, `${shape.name}: the same mistake after the human typed is corrected`)
+      assert.equal(w.bumps(), 1, `${shape.name}: counted from zero`)
+      assert.equal(await restOn(w, 12, shape.message), true)
+      assert.equal(await restOn(w, 13, shape.message), true)
+      assert.equal(await restOn(w, 14, shape.message), false, `${shape.name}: and three more is the cap again`)
+      assert.equal(w.deliveries().filter((id) => id.startsWith(shape.cause)).length, 6)
+      assert.equal(w.bumps(), 3)
+      assert.deepEqual(w.deliveries().filter((id) => !id.startsWith(shape.cause)), [], `${shape.name}: nothing else was sent in its place`)
+    } finally { w.close() }
+  }
+})
+
+// A count written before 2026-10-13 is anchored on the correction's fence id, `park:<cause>:<rest>`, not
+// on the rest. The rest is read out of it, so a thread already stuck at the cap comes back too. Anything
+// else an anchor might hold never matches and breaks nothing.
+test("an anchor written by the older code hands the allowance back too; one that is no instant never does", async () => {
+  const park = fence("awaiting", "status: working\nshells: [bghost]\nfor: 1h")
+  for (const [anchor, comesBack] of [[`park:dead:${at(0.5)}`, true], ["d1", false], [`park:dead:not-an-instant`, false]] as const) {
+    const w = world()
+    try {
+      w.user(0, "publish the packages")
+      w.storage.db.prepare("UPDATE session SET park_bumps = 3, park_bump_anchor = ? WHERE slug = 't'").run(anchor)
+      assert.equal(await restOn(w, 1, park), false, `${anchor}: capped, and the human has not typed since`)
+      w.user(2, "any progress on this?")
+      assert.equal(await restOn(w, 3, park), comesBack, anchor)
+      assert.equal(w.bumps(), comesBack ? 1 : 3)
+      assert.deepEqual(w.logs.filter((line) => /pass failed/.test(line)), [], `${anchor}: no pass threw`)
+    } finally { w.close() }
+  }
+})
+
+// THE SIGN-OFF REMINDER'S OWN CAP IS A DIFFERENT COUNT WITH A RECORDED DECISION BEHIND IT (scheduler
+// SOURCE 9, "ONLY A FENCE GIVES THE ALLOWANCE BACK"), and the change above deliberately leaves it alone.
+// Pinned here beside the corrective cap so the two are not made to match by accident.
+test("the sign-off reminder's cap still comes back only on a sign-off, not when the human types", async () => {
+  const w = world()
+  try {
+    w.user(0, "publish the packages")
+    assert.equal(await restOn(w, 1, "Reading the publish script."), true)
+    assert.equal(await restOn(w, 2, "Still reading."), true)
+    assert.equal(await restOn(w, 3, "Nearly there."), false, "two reminders, then none")
+    w.user(10, "any progress on this?")
+    assert.equal(await restOn(w, 11, "Some."), false, "the human typing does not hand the reminder back")
+    assert.equal(w.storage.getSession("t")?.signoff_nudges, 2)
+    // A sign-off does.
+    w.user(12, "go on")
+    assert.equal(await restOn(w, 13, `Published.\n\n${done}`), false)
+    assert.equal(w.storage.getSession("t")?.signoff_nudges, 0)
   } finally { w.close() }
 })

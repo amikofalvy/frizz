@@ -874,7 +874,8 @@ export interface Storage {
   resetSignoffNudges(slug: string): void
   // The same pair for the fence corrections' bumps (scheduler SOURCES 12, 14 and 15). `anchor` is the REST
   // being corrected, and counting the same one twice is a no-op: one rest spends one bump. The allowance
-  // comes back when the thread rests on a park Frizz can honour, or a ```question fence registers.
+  // comes back when the thread rests on a park Frizz can honour, when a ```question fence registers, or
+  // when the human types to the thread after the anchored rest (scheduler evalParkBumpRelease).
   countParkBump(slug: string, anchor: string | null): void
   resetParkBumps(slug: string): void
   // Stamp a delivered ON REST prompt, guarded on the generation so one settling after an edit cannot
