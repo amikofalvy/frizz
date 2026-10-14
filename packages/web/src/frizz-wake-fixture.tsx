@@ -1,6 +1,6 @@
 import { createRoot } from "react-dom/client"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { formatGithubWakeSteer, limitModelSwitchSteer, limitResumeSteer, mergedWakeMessage, ownWatchExpiredWakeMessage, parkExpiredWakeMessage, parkFinishedWakeMessage, PR_WATCH_ARMED_TRAILER, prWatchExpiredWakeMessage, prWatchWakeMessage, questionsCancelledWakeMessage, restPromptMessage, shellDoneMessage, timerPromptMessage } from "@frizz/shared"
+import { COMMAND_WATCH_FALLBACK, commandWatchCancelledWakeMessage, commandWatchExpiredWakeMessage, commandWatchPassedWakeMessage, formatGithubWakeSteer, interruptEndedSubAgentsMessage, limitModelSwitchSteer, limitResumeSteer, mergedWakeMessage, ownWatchExpiredWakeMessage, parkExpiredWakeMessage, parkFinishedWakeMessage, PR_WATCH_ARMED_TRAILER, prWatchExpiredWakeMessage, prWatchWakeMessage, questionsCancelledWakeMessage, restPromptMessage, shellDoneMessage, timerPromptMessage } from "@frizz/shared"
 import type { ChatMessage } from "./hooks.ts"
 import { Message } from "./components/ChatView.tsx"
 import "./styles.css"
@@ -144,6 +144,17 @@ const messages: ChatMessage[] = [
   // sub-agent. It had no parser and was the other wake still drawing the verbatim card on 2026-10-11.
   wake("w19b", ownWatchExpiredWakeMessage("shell", "bzvtnt3ig")),
   wake("w19c", ownWatchExpiredWakeMessage("agent", "a01b2d20b32feab11")),
+  // A COMMAND WATCH SETTLING, all three ways. It had no parser and drew the fallback card — its closing
+  // instructions to the worker included — until 2026-10-14. Named by its command with the paths cut, as
+  // the board's row names it; click one for the whole command and what its check printed.
+  wake("w22", commandWatchPassedWakeMessage({ id: "cmw_3d480448ae89", command: "/Users/colin/.local/share/nub/node/26.11.1/bin/node /Users/colin/Documents/frizz/.frizz/threads/a74bbfc8/screen-unlocked.mjs", output: "newest: keywardd: screen unlocked", runs: 49, armedMs: 8_040_000 })),
+  wake("w23", commandWatchExpiredWakeMessage({ id: "cmw_6197f27a1cb0", command: "npm view frizz-server@0.13.14 version", lastRun: { outcome: "exit", exitCode: 1, output: "npm error code E404\nnpm error 404 No match found for version 0.13.14" } })),
+  wake("w24", commandWatchCancelledWakeMessage({ id: "cmw_a1b2c3d4e5f6", command: "gh run view 18273645 --exit-status", reason: `this thread runs in \`default\` permission mode. ${COMMAND_WATCH_FALLBACK}` })),
+  // SUB-AGENTS AN INTERRUPT TOOK WITH IT — "Interrupt and send" ends every background child with the
+  // turn. The same fallback card until 2026-10-14, telling the operator to re-dispatch them. One
+  // hairline per child, the way each child's own completion is drawn.
+  wake("w25", interruptEndedSubAgentsMessage([{ taskId: "abc9b9b5f0da4c677", label: "Audit the auth flow" }])),
+  wake("w26", interruptEndedSubAgentsMessage([{ taskId: "a1", label: "Survey the dev server readouts" }, { taskId: "a2", label: "Fix the cache collision" }, { label: "Review the diff" }])),
   // THE PR ITSELF MOVING — a conflict, a label, a reviewer requested. Same watcher and the same class of
   // event as the two hairlines above, and the clauses of one poll stay on ONE line: a label edit must
   // not be given the weight of a red build.
@@ -185,7 +196,7 @@ function Fixture() {
       <section className="mx-auto flex max-w-[760px] flex-col border border-border bg-panel px-5 py-4 shadow-xl shadow-black/30 sm:px-7">
         <header className="border-b border-border pb-3">
           <h1 className="text-[16px] font-semibold text-fg">Frizz wakes — every shape frizz speaks in</h1>
-          <p className="mt-0.5 text-[12px] text-muted">Several wakes held and sent as one delivery, review activity, a finished PR, a CI verdict, both at once, the PR&rsquo;s own state moving, a background shell, a usage window, a fired timer, a park that ran out or finished, a lapsed watcher or watch — and the unparsed fallback, with and without frizz&rsquo;s agent-facing trailer.</p>
+          <p className="mt-0.5 text-[12px] text-muted">Several wakes held and sent as one delivery, review activity, a finished PR, a CI verdict, both at once, the PR&rsquo;s own state moving, a background shell, a usage window, a fired timer, a park that ran out or finished, a lapsed watcher or watch, a command watch settling, sub-agents an interrupt stopped — and the unparsed fallback, with and without frizz&rsquo;s agent-facing trailer.</p>
         </header>
         <div className="flex flex-1 flex-col gap-3.5 py-5">
           {messages.map((message) => <Message key={message.sourceId} m={message} dense={new URLSearchParams(location.search).has("dense")} />)}

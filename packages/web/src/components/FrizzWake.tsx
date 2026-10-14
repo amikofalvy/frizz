@@ -30,8 +30,9 @@
 // shell has a body; and three marks on one row that all looked clickable (an underlined title, an
 // accent ref, the corner glyph) with no hierarchy between them.
 import { Fragment, useId, useRef, useState, type ReactNode } from "react"
-import { AlarmClock, Bell, Bot, Github, Hourglass, MessageCircleOff, TerminalSquare } from "lucide-react"
-import { isGithubWakeBacklog, isInjectedNoise, isParkCorrection, parseGithubWakeSteer, parseLimitModelSwitchWake, parseLimitResumeWake, parseMergedWake, parseOwnWatchExpiredWake, parseParkWake, parsePrWatchExpiredWake, parsePrWatchStateWake, parsePrWatchWake, parseQuestionsCancelledWake, parseRecurringPrompt, parseShellDoneWake, parseTimerWake, stripWakeTrailer, type GithubWakeSteer, type LimitWindow, type MergedWakePart, type ParkWake, type PrWatchStateWake, type PrWatchWake, type ShellDoneWake, type TimerWake } from "@frizz/shared"
+import { AlarmClock, Bell, Bot, Github, Hourglass, MessageCircleOff, RefreshCw, TerminalSquare } from "lucide-react"
+import { isGithubWakeBacklog, isInjectedNoise, isParkCorrection, parseCommandWatchWake, parseGithubWakeSteer, parseInterruptEndedWake, parseLimitModelSwitchWake, parseLimitResumeWake, parseMergedWake, parseOwnWatchExpiredWake, parseParkWake, parsePrWatchExpiredWake, parsePrWatchStateWake, parsePrWatchWake, parseQuestionsCancelledWake, parseRecurringPrompt, parseShellDoneWake, parseTimerWake, stripWakeTrailer, type CommandWatchWake, type GithubWakeSteer, type InterruptEndedSubAgent, type LimitWindow, type MergedWakePart, type ParkWake, type PrWatchStateWake, type PrWatchWake, type ShellDoneWake, type TimerWake } from "@frizz/shared"
+import { commandWatchName } from "./AwaitingBackgroundCard.tsx"
 import { useMermaidIslands } from "./CodexRichOutput.tsx"
 import { QUEUE_WRAP, TranscriptCard } from "./TranscriptCard.tsx"
 import { RecurringPromptLine } from "./RecurringPromptLine.tsx"
@@ -99,6 +100,10 @@ export function FrizzWake({ steer: served, text, sourceId, at, wrap }: { steer?:
   if (lapsed) return <PrWatchExpiredDivider watchRef={lapsed.ref} sourceId={sourceId} at={at} />
   const ownLapsed = parseOwnWatchExpiredWake(text)
   if (ownLapsed) return <OwnWatchExpiredDivider kind={ownLapsed.kind} sourceId={sourceId} at={at} />
+  const command = parseCommandWatchWake(text)
+  if (command) return <CommandWatchDivider wake={command} sourceId={sourceId} at={at} />
+  const interrupted = parseInterruptEndedWake(text)
+  if (interrupted) return <InterruptEndedDivider agents={interrupted.agents} sourceId={sourceId} at={at} />
   // The ONE wake on the registered-question path frizz writes in its own voice. Its sibling — the human's
   // ANSWER — never reaches this component at all: it is written in the answers wire form, which Message
   // recognizes and draws as the human's own card before it ever asks whether frizz delivered the turn.
@@ -430,6 +435,81 @@ function OwnWatchExpiredDivider({ kind, sourceId, at }: { kind: "shell" | "agent
         <span className={WAKE_DIVIDER_WIDE_ONLY}>{what}</span>
       </span>
     </WakeDivider>
+  )
+}
+
+// ---- THE COMMAND-WATCH HAIRLINE ------------------------------------------------------------------
+// A `frizzctl watch-command` settling: a check exited 0, its `for` ran out, or Frizz stopped running it.
+// The same class of event as a shell finishing, named the way the board's row names the watch — its
+// command, paths cut (commandWatchName) — under the glyph that row wears. Until 2026-10-14 it had no
+// parser and arrived as the raw-prose card, printing its closing instructions to the worker ("Carry on
+// with whatever you were waiting on it for", "register it again with `frizzctl watch-command add`") at
+// the operator. What the reader IS owed — the whole command, when it passed, what its check printed, why
+// Frizz stopped it — is the disclosure, the way the park divider keeps its item list.
+function CommandWatchDivider({ wake, sourceId, at }: { wake: CommandWatchWake; sourceId?: string; at?: string }) {
+  const [open, setOpen] = useState(false)
+  const bodyId = useId()
+  // "stopped" rather than "cancelled": it is the word a narrow row has room for, and the one the
+  // sub-agent and shell dividers already use for a run something else ended.
+  const outcome = wake.kind === "cancelled" ? "stopped" : wake.kind
+  return (
+    <div data-frizz-msg={sourceId} className="flex flex-col">
+      <WakeDivider
+        icon={RefreshCw}
+        marker="event"
+        at={at}
+        onClick={() => setOpen((v) => !v)}
+        ariaExpanded={open}
+        ariaControls={bodyId}
+        ariaLabel={`${open ? "Collapse" : "Expand"} how this command watch ended`}
+      >
+        {/* Narrow, the outcome alone — `Passed · expand · 3h ago`. Between two 50px rules on a 390px
+            column the label keeps about 56px for its news once the hint and the age are drawn, which
+            squeezed the command's name to an empty «»; the glyph says what kind of thing passed, and
+            the command is the disclosure's first line. */}
+        <span className={`min-w-0 truncate ${WAKE_DIVIDER_NARROW_ONLY}`}>{`${outcome.charAt(0).toUpperCase()}${outcome.slice(1)}`}</span>
+        <span className={`flex min-w-0 items-center gap-1 ${WAKE_DIVIDER_WIDE_ONLY}`}>
+          <DividerQuotedTitle lead="Watch" title={commandWatchName(wake.command)} tail={wake.kind === "cancelled" ? "stopped by Frizz" : outcome} />
+        </span>
+        <DividerHint open={open} />
+      </WakeDivider>
+      {open && (
+        // The same ruled aside as the timer's and the park's, and plain text like theirs: the command
+        // and what it printed in the mono they were written in, the sentence between them in prose.
+        <div id={bodyId} className="mt-1.5 flex flex-col gap-1.5 border-l border-border/70 pl-3 text-[13px] text-muted [overflow-wrap:anywhere]">
+          <div className="whitespace-pre-wrap font-mono text-[12px]">{wake.command}</div>
+          <div>{wake.summary}</div>
+          {wake.output !== undefined && <div className="whitespace-pre-wrap font-mono text-[12px]">{wake.output}</div>}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ---- THE INTERRUPT HAIRLINES ---------------------------------------------------------------------
+// "Interrupt and send" ends every background sub-agent with the turn it preempts, and the runtime says
+// nothing about it, so Frizz tells the worker which ones died. The reader's half of that is the names:
+// the note's lead and its closing paragraph ("check what each left behind … re-dispatch it") are
+// addressed to the worker and are not drawn.
+//
+// ONE HAIRLINE PER CHILD, the way each child's own completion is drawn, and in its words: "stopped" is
+// what the sub-agent completion divider says of a killed child. A count with the names behind a
+// disclosure was the first draft, and it could not be read on a phone: between two 50px rules at 390px
+// the hint and the age leave the news about 50px, which cut "3 sub-agents stopped" to "3 STO…". One line
+// per child keeps its name, the one part that says WHICH, at every width.
+function InterruptEndedDivider({ agents, sourceId, at }: { agents: InterruptEndedSubAgent[]; sourceId?: string; at?: string }) {
+  return (
+    <div data-frizz-msg={sourceId} className="flex flex-col">
+      {agents.map((agent, i) => (
+        <Fragment key={i}>
+          {i > 0 && <VSpace />}
+          <WakeDivider icon={Bot} marker="event" ariaLabel={`Sub-agent ${agent.label} stopped by the interrupt`} at={at}>
+            {/* "by the interrupt" is the explanation, and the first thing a narrow row gives up. */}
+            <DividerQuotedTitle lead="Sub-agent" title={agent.label} tail="stopped" note="by the interrupt" />
+          </WakeDivider>
+        </Fragment>
+      ))}
+    </div>
   )
 }
 

@@ -32,7 +32,7 @@ import { execFileSync, spawn } from "node:child_process"
 import { existsSync, readFileSync } from "node:fs"
 import { homedir, userInfo } from "node:os"
 import { join } from "node:path"
-import { COMMAND_WATCH_OUTPUT_MAX_BYTES, COMMAND_WATCH_RUN_TIMEOUT_MS } from "@frizz/shared"
+import { COMMAND_WATCH_FALLBACK, COMMAND_WATCH_OUTPUT_MAX_BYTES, COMMAND_WATCH_RUN_TIMEOUT_MS } from "@frizz/shared"
 import type { SessionRow } from "./storage.ts"
 
 /** How a check ended. `exit` is the only outcome with an exit status; exit 0 is the only pass. */
@@ -316,9 +316,6 @@ export function claudeSandboxRefusal(where: ClaudeSettingsLocations): string | u
 }
 
 // ---- THE GATE -----------------------------------------------------------------------------------
-
-/** Appended to every refusal: the one thing the worker should do instead. */
-export const COMMAND_WATCH_FALLBACK = "Run the check in a background shell instead."
 
 export interface CommandWatchGateOptions {
   /** The thread's working directory (the project root). */

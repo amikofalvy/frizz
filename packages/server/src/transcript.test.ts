@@ -3298,3 +3298,100 @@ test("readThreadTranscript + the paged reader: an ACP row renders the frizz-writ
     rmSync(stateDir, { recursive: true, force: true })
   }
 })
+
+// An ACP thread's follow-ups are recorded verbatim by the bridge, `synthetic: false` every one, and a
+// follow-up is very often FRIZZ speaking — a scheduler wake with its delivery token, a fence correction,
+// or the human's words with the gap note Frizz appended for the worker. The ACP projector pushed every
+// one raw, so each rendered as the operator's own bubble, worker instructions and literal
+// `<!-- frizz-wake:… -->` included. These drive BOTH readers, because each called the projector itself.
+function renderAcp(records: object[], ledger?: (store: ReturnType<typeof createStorage>) => void): TranscriptMessage[] {
+  const h = txHarness()
+  const stateDir = mkdtempSync(join(tmpdir(), "frizz-tx-acp-"))
+  try {
+    h.store.upsertSession(txRow({ session_id: "frizz-uuid" }))
+    h.store.setBackend("t", "acp")
+    mkdirSync(join(stateDir, "acp"), { recursive: true })
+    writeFileSync(acpTranscriptPath(stateDir, "frizz-uuid"), records.map((r) => JSON.stringify(r) + "\n").join(""))
+    ledger?.(h.store)
+    const acpBackend = createAcpBackend({ stateDir })
+    const backendFor = (kind?: string) => kind === "acp" ? acpBackend : createCodexBackend({ codexHome: stateDir })
+    const pushed = readThreadTranscript(h.project, h.store, "t", backendFor)
+    const paged = readLatestThreadTranscriptPage(h.project, h.store, "t", backendFor).messages
+    const shape = (m: TranscriptMessage) => [m.sourceId, m.role, m.text, m.displayText, m.wake, m.fenceRefused]
+    // The page carries no ledger bubbles of its own here, so the two agree message for message.
+    if (!ledger) assert.deepEqual(paged.map(shape), pushed.map(shape), "the push and the page project user records alike")
+    return pushed
+  } finally {
+    h.cleanup()
+    rmSync(stateDir, { recursive: true, force: true })
+  }
+}
+const ACP_T = (s: number) => `2026-09-16T05:53:${String(s).padStart(2, "0")}.000Z`
+const acpOpening = (fence = "on it") => [
+  { kind: "acp-session", at: ACP_T(0), agent: { id: "opencode" }, acpSessionId: "ses_agent", cwd: "/x" },
+  { kind: "user-message", at: ACP_T(1), text: "the original task", synthetic: false },
+  { kind: "turn-start", at: ACP_T(1) },
+  { kind: "assistant-text", at: ACP_T(2), text: fence, final: true, messageId: "m1" },
+  { kind: "turn-end", at: ACP_T(2), finalText: fence, successful: true },
+]
+const acpUser = (s: number, text: string) => ({ kind: "user-message", at: ACP_T(s), text, synthetic: false })
+
+test("ACP: a scheduler wake renders as Frizz's wake, token and worker trailer out of the bubble", () => {
+  const shell = shellDoneMessage({ taskId: "b1", label: "build", status: "completed" })
+  const delivered = `${shell}\n\n${wakeDeliveryToken("w1")}`
+  const msgs = renderAcp([...acpOpening(), acpUser(10, delivered)])
+  const wake = msgs.at(-1)!
+  assert.equal(wake.role, "user")
+  assert.equal(wake.wake, true, "Frizz wrote this turn, not the human")
+  assert.equal(wake.text, delivered, "the stored text keeps every byte")
+  assert.doesNotMatch(wake.displayText ?? wake.text, /frizz-wake/, "the delivery token reached the bubble")
+  assert.equal(wake.displayText, stripWakeTrailer(shell))
+  assert.equal(wake.at, ACP_T(10))
+  assert.equal(msgs[0]!.wake, undefined, "the dispatch prompt is still the human's")
+})
+
+test("ACP: Frizz's gap note stays out of the human's own follow-up, and the ledger still dedupes it", () => {
+  const note = humanGapNote(Date.parse("2026-09-17T07:17:00.000Z"), ACP_T(2))!
+  const words = "can we make these invisible?"
+  const delivered = `${words}\n\n${note}`
+  const msgs = renderAcp([...acpOpening(), acpUser(30, delivered)])
+  const follow = msgs.at(-1)!
+  assert.equal(follow.text, delivered)
+  assert.equal(follow.displayText, words)
+  assert.equal(follow.wake, undefined, "the human wrote this — hiding Frizz's line must not make it Frizz's card")
+  // The delivery ledger records the human's words WITHOUT the note, and matches the rendered bubble on
+  // the raw text with the riders shed. A delivered send must resolve to this bubble, not a second one.
+  const withLedger = renderAcp([...acpOpening(), acpUser(30, delivered)], (store) => {
+    beginDelivery(store, "t", { id: "d-gap", text: words, now: Date.parse(ACP_T(30)) })
+  })
+  const users = withLedger.filter((m) => m.role === "user" && (m.displayText ?? m.text) === words)
+  assert.equal(users.length, 1, "the ledger item adopted the transcript's bubble instead of projecting its own")
+})
+
+test("ACP: a fence correction never renders, and the fence it refused stops drawing", () => {
+  const correction = `${PARK_CORRECTION_NAMES_LEAD}something that is not running, so it is not a park and your thread stayed in the queue.\n\n- \`agent: toolu_theWrongId\` — NOT RUNNING`
+  const msgs = renderAcp([...acpOpening(refusedFence), acpUser(10, `${correction}\n\n${wakeDeliveryToken("w2")}`)])
+  assert.equal(msgs.filter((m) => m.role === "user").length, 1, "only the dispatch — the correction never becomes a message")
+  assert.equal(msgs.at(-1)!.text, refusedFence)
+  assert.equal(msgs.at(-1)!.fenceRefused, true)
+})
+
+test("ACP: a merged wake renders as Claude's does — one wake, an envelope the chat can cut, its correction refusing the fence", () => {
+  const correction = `${PARK_CORRECTION_NAMES_LEAD}something that is not running, so it is not a park and your thread stayed in the queue.\n\n- \`agent: toolu_theWrongId\` — NOT RUNNING`
+  const shell = shellDoneMessage({ taskId: "b1", label: "the churn suite", status: "completed" })
+  const merged = mergedWakeMessage([{ reason: "awaiting park named 1 dead item(s)", message: correction }, { reason: "background shell finished (b1)", message: shell }], Date.parse(ACP_T(9)))
+  const msgs = renderAcp([...acpOpening(refusedFence), acpUser(10, `${merged}\n\n${wakeDeliveryToken("w3")}`)])
+  assert.equal(msgs.find((m) => m.text === refusedFence)?.fenceRefused, true)
+  const wake = msgs.at(-1)!
+  assert.equal(wake.wake, true)
+  assert.deepEqual(parseMergedWake(wake.displayText ?? wake.text)?.map((part) => part.body), [correction, stripWakeTrailer(shell)])
+  // And the same delivery as Claude projects it, field for field.
+  const claude = correctionTranscript(merged).at(-1)!
+  assert.equal(wake.displayText, claude.displayText)
+})
+
+test("ACP: a record the transcript marks synthetic stays a wake through the shared projection", () => {
+  const msgs = renderAcp([...acpOpening(), { kind: "user-message", at: ACP_T(10), text: "Goal: keep going", synthetic: true }])
+  assert.equal(msgs.at(-1)!.wake, true)
+  assert.equal(msgs.at(-1)!.text, "Goal: keep going")
+})

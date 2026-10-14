@@ -172,9 +172,26 @@ function upgradeToolTarget(call: TranscriptToolCall, acp: AcpToolMeta | undefine
   else if (input && Object.keys(input).length && !call.input) call.input = clip(JSON.stringify(input, null, 2), TOOL_TEXT_MAX)
 }
 
+/**
+ * How a `user-message` record becomes the message(s) the chat draws. transcript.ts supplies it, built
+ * around the SAME `pushUserRecord` the Claude and Codex projectors use; it cannot be imported from here,
+ * because transcript.ts imports this file.
+ *
+ * It is not optional in practice. The bridge records every follow-up verbatim, and a follow-up is very
+ * often FRIZZ speaking: a scheduler wake (a shell finished, a timer, a PR watch, a sign-off nudge) with
+ * its `<!-- frizz-wake:… -->` delivery token, a fence correction, or a human's own words with the
+ * gap note Frizz appended for the worker. Pushed raw, every one of those rendered as the operator's own
+ * bubble, worker-facing instructions and literal token included (the bridge writes `synthetic: false`
+ * for all of them — it cannot tell a wake from a human). The factory takes the projection's `out` so
+ * its per-fold state (the correction sink, which marks the fence a correction refused) walks the
+ * messages this projection already built. Absent, a record is pushed raw, as it was before.
+ */
+export type AcpUserRecordProjector = (out: TranscriptMessage[]) => (sourceId: string, text: string, at: string | undefined) => void
+
 /** The drawer's messages from the raw file. `identityPrefix` seeds `sourceId`s the client keys on. */
-export function projectAcpTranscript(raw: string, identityPrefix = "acp"): TranscriptMessage[] {
+export function projectAcpTranscript(raw: string, identityPrefix = "acp", userProjector?: AcpUserRecordProjector): TranscriptMessage[] {
   const out: TranscriptMessage[] = []
+  const pushUser = userProjector?.(out)
   let current: TranscriptMessage | undefined // the open assistant message
   let currentMessageId: string | undefined
   const openTools = new Map<string, TranscriptToolCall>()
@@ -217,7 +234,21 @@ export function projectAcpTranscript(raw: string, identityPrefix = "acp"): Trans
       case "user-message": {
         close()
         const text = rec.text ?? ""
-        out.push({ sourceId: `${identityPrefix}:${i}`, role: "user", text, tools: [], parts: [], ...(rec.at ? { at: rec.at } : {}), ...(rec.synthetic ? { wake: true } : {}) })
+        if (!pushUser) {
+          out.push({ sourceId: `${identityPrefix}:${i}`, role: "user", text, tools: [], parts: [], ...(rec.at ? { at: rec.at } : {}), ...(rec.synthetic ? { wake: true } : {}) })
+          break
+        }
+        // The projector may push nothing (a correction, relay plumbing) or several messages (coalesced
+        // deliveries), so everything it pushed is what this record became. A record the transcript
+        // itself calls synthetic is Frizz's whatever its text says, so each of them is a wake.
+        const from = out.length
+        pushUser(`${identityPrefix}:${i}`, text, rec.at)
+        for (let j = from; j < out.length; j++) {
+          const m = out[j]!
+          if (rec.synthetic) m.wake = true
+          // The shared push always writes the `at` key; every other ACP message omits it when unknown.
+          if (m.at === undefined) delete m.at
+        }
         break
       }
       case "turn-start":
@@ -272,6 +303,6 @@ export function projectAcpTranscript(raw: string, identityPrefix = "acp"): Trans
   return out
 }
 
-export function readAcpTranscriptFile(absPath: string, nativeId = absPath): TranscriptMessage[] {
-  try { return projectAcpTranscript(readFileSync(absPath, "utf8"), `acp:${nativeId}`) } catch { return [] }
+export function readAcpTranscriptFile(absPath: string, nativeId = absPath, userProjector?: AcpUserRecordProjector): TranscriptMessage[] {
+  try { return projectAcpTranscript(readFileSync(absPath, "utf8"), `acp:${nativeId}`, userProjector) } catch { return [] }
 }
