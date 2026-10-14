@@ -1540,7 +1540,9 @@ done rather than idling inside it, and read the newest human message first when 
 // … it was not interrupted"), so no call is cut and the paragraph above is never written. A worker
 // still reads it when that request ends the turn instead: a message Frizz wrote itself is waiting
 // beside the person's, or the CLI or the thread's daemon predates send-now
-// (backend/_live_broker_send_now.mts measures both arms). The section stays for those.
+// (backend/_live_broker_send_now.mts measures both arms). So does a call the runtime has no way to
+// move: it backgrounds a foreground shell or sub-agent and aborts the turn for anything else, an MCP
+// or web call included (read out of Claude Code 2.1.296, not measured). The section stays for those.
 //
 // MEASURED 2026-10-13 on real broker sessions (backend/_live_broker_interrupt_cut_call.mts — Opus; a 45s
 // build cut 6s in by "fyi the build is pretty slow on this machine today"). Under this contract without
