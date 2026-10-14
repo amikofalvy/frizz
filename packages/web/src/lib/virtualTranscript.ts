@@ -34,6 +34,14 @@ export interface TailFollowInput {
   clientHeight: number
   /** The scroll height observed at the previous reconciliation (-1 before the first one). */
   previousScrollHeight: number
+  /**
+   * The scroller's own height at the previous reconciliation (-1, or absent, before the first one). The
+   * VIEWPORT moving is the tail moving as surely as the content growing: a line of op counts arriving
+   * over the prompt box takes its height out of the scroller, and with only the scroll height compared
+   * that read as the reader having scrolled up 20px — detached under "Jump to latest" for the rest of
+   * the turn (the drawer and the 820px page, the moment a worker launched a sub-agent; 2026-10-14).
+   */
+  previousClientHeight?: number
   /** Whether the reader was attached to the tail as of that previous reconciliation. */
   following: boolean
   /** The reader is actively driving the scroller (a wheel/touch/key gesture is in flight). */
@@ -56,6 +64,13 @@ export interface TailFollow {
 // attachment carries over; a resize may only ADD attachment, and only by bringing the true bottom back
 // to exactly where they already sit (a shrink, e.g. the Working… row retiring).
 //
+// The PANE resizing is the same case from the other side: the footer under the transcript grows (an
+// ops line arrives, the composer gains a row) and the scroller loses those pixels while the content
+// keeps its height, so the tail slides under the footer by exactly the amount it grew. Read on scroll
+// height alone that frame is a reader scrolling up, and a reader at the tail was detached and handed
+// "Jump to latest" by a 20px footer (layout sweep, 2026-10-14). So `previousClientHeight` counts as a
+// resize too.
+//
 // This is deliberately not "recompute on scroll, follow on render": those two callbacks interleave in
 // an order nothing here controls (the virtualizer's own scroll listener re-renders through React
 // before our listener runs), and a follow that read a stale attachment yanked a reader who had just
@@ -64,6 +79,7 @@ export function nextTailFollow(input: TailFollowInput): TailFollow {
   const max = Math.max(input.scrollHeight - input.clientHeight, 0)
   const distance = max - input.scrollTop
   const resized = input.scrollHeight !== input.previousScrollHeight
+    || (input.previousClientHeight !== undefined && input.previousClientHeight >= 0 && input.clientHeight !== input.previousClientHeight)
   const following = resized && !input.readerMoved
     ? input.following || distance <= 1
     : distance <= TAIL_FOLLOW_PX

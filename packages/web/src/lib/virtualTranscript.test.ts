@@ -153,3 +153,17 @@ test("earlier-page loading fires once at the top until the reader leaves or expl
     true,
   )
 })
+
+test("a pane that shrinks under a reader at the tail re-pins them, though the content did not grow", () => {
+  // The footer under the transcript grew (the ops line arrived): the pane lost 20px, the content is the
+  // same height, and the bottom of the transcript slid under the footer. Only the pane's height changed.
+  assert.deepEqual(
+    nextTailFollow({ ...view(2000, 20), clientHeight: 680, scrollTop: 1300, previousClientHeight: 700 }),
+    { following: true, scrollTop: 1320 },
+  )
+  // Without the pane's previous height the same frame reads as the reader scrolling 20px up.
+  assert.deepEqual(
+    nextTailFollow({ ...view(2000, 20), clientHeight: 680, scrollTop: 1300 }),
+    { following: false, scrollTop: null },
+  )
+})

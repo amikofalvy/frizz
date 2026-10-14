@@ -1117,6 +1117,7 @@ function VirtualizedThreadTranscript({
   // must read CURRENT values, not ones closed over from the render that scheduled them.
   const followingTailRef = useRef(true)
   const tailHeightRef = useRef(-1)
+  const tailViewportRef = useRef(-1)
   const readerScrollUntilRef = useRef(0)
   // The virtualizer's total-size box. Its height IS getTotalSize(), so observing it catches every way
   // the transcript can grow: a row inserted at its estimate, and each later measurement correction.
@@ -1381,12 +1382,14 @@ function VirtualizedThreadTranscript({
       scrollHeight: scroller.scrollHeight,
       clientHeight: scroller.clientHeight,
       previousScrollHeight: tailHeightRef.current,
+      previousClientHeight: tailViewportRef.current,
       following: followingTailRef.current,
       readerMoved: performance.now() < readerScrollUntilRef.current,
     })
     followingTailRef.current = next.following
     if (next.scrollTop !== null) scroller.scrollTop = next.scrollTop
     tailHeightRef.current = scroller.scrollHeight
+    tailViewportRef.current = scroller.clientHeight
     // "Jump to latest" is exactly the negation of attachment, so the affordance can never disagree
     // with the behavior — and it no longer flickers for one frame while a message lands.
     setAtEnd((current) => current === next.following ? current : next.following)
@@ -1509,8 +1512,12 @@ function VirtualizedThreadTranscript({
     if (!content) return
     const observer = new ResizeObserver(syncTailFollow)
     observer.observe(content)
+    // …and the scroller's own box: the footer under it grows and shrinks (the op counts over the prompt
+    // box, a question card's answer bar), and that moves the tail without the content changing at all.
+    const scroller = transcriptRef.current
+    if (scroller) observer.observe(scroller)
     return () => observer.disconnect()
-  }, [syncTailFollow])
+  }, [syncTailFollow, transcriptRef])
 
   useEffect(() => {
     const scroller = transcriptRef.current
