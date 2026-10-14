@@ -175,6 +175,7 @@ import {
   readCodexTranscriptFile,
   projectTranscriptPageAgentLifecycles,
 } from "./transcript.ts"
+import { readSubAgentContextUsage, readSubAgentLastActivityAt } from "./subagent-facts.ts"
 import { openExternalUrl } from "./open-external.ts"
 import { openLocalFile, readLocalMarkdown, resolveOpenableFile, readLocalTextFile } from "./local-file.ts"
 import { openableFileRoots } from "./project.ts"
@@ -2271,10 +2272,24 @@ export function createRouter(ctx: AppContext) {
         steerNote: z.string().nullable(),
         stoppable: z.boolean(),
         stopNote: z.string().nullable(),
+        // THE DRAWER HEADER'S FACTS, the child's own counterparts of a thread header's "Last active ·
+        // ◔ 74% context" line (subagent-facts.ts). Each is absent when it is not known, and the header
+        // then draws nothing for it — the same no-fabricated-reading rule as ThreadView.context.
+        lastActivityAt: z.string().optional(),
+        context: z.object({ tokens: z.number(), window: z.number() }).optional(),
+        // How a SETTLED child ended, from the provider's terminal notification; the header states it
+        // where a running child's stop control stands. Absent for a descendant, whose sidecar carries
+        // no terminal row, so the header claims nothing it does not know.
+        outcome: z.enum(["completed", "failed", "killed"]).optional(),
+        startedAt: z.string().optional(),
+        finishedAt: z.string().optional(),
       }),
       handler: async ({ input }) => {
         const info = ctx.tailer.subAgent(input.slug, input.id)
         if (!info) return { messages: [], state: "gone" as const, steerable: false, steerNote: null, stoppable: false, stopNote: null }
+        const usage = info.outputFile ? readSubAgentContextUsage(info.outputFile, info.outputFormat) : undefined
+        const window = usage?.window ?? (usage?.model ? ctx.tailer.subAgentContextWindow?.(input.slug, usage.model) : undefined)
+        const lastActivityAt = info.outputFile ? readSubAgentLastActivityAt(info.outputFile) : undefined
         // A CODEX sub-agent is itself a codex thread, so its "output file" is a rollout in codex's own
         // schema — parse it with the codex reader or the drawer renders empty.
         const read = info.outputFormat === "codex" ? readCodexTranscriptFile : readTranscriptFile
@@ -2291,6 +2306,11 @@ export function createRouter(ctx: AppContext) {
           steerNote: steer.sessionId === null ? steer.note : null,
           stoppable: stop.sessionId !== null,
           stopNote: stop.sessionId === null ? stop.note : null,
+          ...(lastActivityAt ? { lastActivityAt } : {}),
+          ...(usage && window !== undefined && window > 0 ? { context: { tokens: usage.tokens, window } } : {}),
+          ...(info.state === "done" && info.outcome ? { outcome: info.outcome } : {}),
+          ...(info.startedAt ? { startedAt: info.startedAt } : {}),
+          ...(info.state === "done" && info.finishedAt ? { finishedAt: info.finishedAt } : {}),
         }
       },
     }),

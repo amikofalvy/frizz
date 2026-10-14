@@ -161,6 +161,19 @@ export interface ClaudeRuntimeIngest {
    */
   contextWindow(sessionId: string): number | undefined
   /**
+   * The window a SUB-AGENT of this session runs in, for the child's own drawer: the row of the
+   * session's `modelUsage` table billed under the child's model. A child is named by the model its
+   * transcript records (`claude-sonnet-5-5`), never by an alias, so a row matches when its alias is
+   * that model with or without the `[1m]` suffix — and when two matching rows disagree (the bare and
+   * the 1M alias on a subscription where they differ), nothing is reported, for the reason `pickWindow`
+   * refuses a multi-row guess. The session's ceiling lowers it the same way: one daemon, one setting.
+   *
+   * Only for a child on a DIFFERENT model from its thread. One on the same model shares the thread's
+   * own reading, which the tailer has latched durably; this table lives in memory and refills at the
+   * session's next `result`.
+   */
+  modelContextWindow(sessionId: string, model: string): number | undefined
+  /**
    * The auto-compact ceiling this session's daemon was forked with (CLAUDE_CODE_AUTO_COMPACT_WINDOW,
    * from Settings.autoCompactWindow). Reported by the bridge at every attach, off the daemon's own
    * record, so a reattach after a frizz restart re-learns the value that daemon is really running under
@@ -243,6 +256,9 @@ export function createClaudeRuntimeIngest(deps: ClaudeRuntimeIngestDeps): Claude
   // bridge at attach; see `noteCompactionWindow` for why it lowers the window rather than sitting
   // beside it. Per-SESSION and not per-model: it is a property of one daemon's environment.
   const compactionWindows = new Map<string, number>()
+  // Every row of `modelUsage` each session has billed, merged across its results (a background child
+  // bills in whichever turn it happened to run). What `modelContextWindow` reads a child's window from.
+  const billedWindows = new Map<string, Map<string, number>>()
 
   // Which row of `modelUsage` describes the MAIN thread. The alias `init` named, when the result
   // carries it. Otherwise: a single-row table is unambiguous (no sub-agent billed anything), and a
@@ -374,6 +390,9 @@ export function createClaudeRuntimeIngest(deps: ClaudeRuntimeIngestDeps): Claude
       // does not change, and losing it would blank a readout the operator is already reading.
       if (item.event.kind === "init") sessionModel.set(item.sessionId, item.event.model)
       if (item.event.kind === "result" && item.event.modelContextWindows) {
+        let billed = billedWindows.get(item.sessionId)
+        if (!billed) { billed = new Map(); billedWindows.set(item.sessionId, billed) }
+        for (const [alias, window] of Object.entries(item.event.modelContextWindows)) billed.set(alias, window)
         const window = pickWindow(item.sessionId, item.event.modelContextWindows)
         if (window !== undefined && window > 0) {
           contextWindows.set(item.sessionId, window)
@@ -411,6 +430,16 @@ export function createClaudeRuntimeIngest(deps: ClaudeRuntimeIngestDeps): Claude
       const ceiling = compactionWindows.get(sessionId)
       return ceiling === undefined ? measured : Math.min(measured, ceiling)
     },
+    modelContextWindow: (sessionId, model) => {
+      const matches = new Set<number>()
+      for (const [alias, window] of billedWindows.get(sessionId) ?? []) {
+        if (alias === model || alias === `${model}[1m]`) matches.add(window)
+      }
+      if (matches.size !== 1) return undefined
+      const [measured] = matches
+      const ceiling = compactionWindows.get(sessionId)
+      return ceiling === undefined ? measured : Math.min(measured, ceiling)
+    },
     noteCompactionWindow(sessionId, window) {
       // Absent is a real answer, not "leave it": a daemon re-forked with the setting turned off runs on
       // the whole window again, and a stale ceiling would keep shrinking a reading that has grown.
@@ -423,10 +452,11 @@ export function createClaudeRuntimeIngest(deps: ClaudeRuntimeIngestDeps): Claude
       sessionModel.delete(sessionId)
       contextWindows.delete(sessionId)
       compactionWindows.delete(sessionId)
+      billedWindows.delete(sessionId)
       deps.receipts?.publish({ type: "claude.runtime.session.released", sessionId })
     },
     drain: () => worker.drain(),
-    close() { worker.close(); live.clear(); tasks.clear(); sessionModel.clear(); contextWindows.clear(); modelWindows.clear(); compactionWindows.clear() },
+    close() { worker.close(); live.clear(); tasks.clear(); sessionModel.clear(); contextWindows.clear(); modelWindows.clear(); compactionWindows.clear(); billedWindows.clear() },
   }
 }
 

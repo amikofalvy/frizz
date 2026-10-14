@@ -2964,6 +2964,12 @@ export interface Tailer {
   // `taskId` is the provider's session-wide background-task handle. Unlike `direct`, which controls
   // steer safety, it is available for descendants too and is what the SDK's stopTask accepts.
   subAgent(slug: string, id: string): SubAgentLookup | undefined
+  // The context window a Claude sub-agent of this thread runs in, named by the model its own transcript
+  // records — the denominator of the child drawer's context reading. A child on the thread's own model
+  // shares the thread's latched window (one daemon: the same alias and the same compaction ceiling);
+  // one on another model reads that model's row of the session's billed usage. Undefined when neither
+  // is known: the drawer then shows no reading, never a guessed one. Optional like its neighbours.
+  subAgentContextWindow?(slug: string, model: string): number | undefined
   // Resolve a child by its RUNTIME agent id — the identity an upward report names its sender with. The
   // paged transcript RPC folds a bounded window and therefore cannot always translate that id itself;
   // this answers for as long as the tailer tracks the child. Optional so a narrow test stub may omit it
@@ -3143,6 +3149,9 @@ export interface TailerDeps {
   // a bridge-less server) ⇒ the fold keeps whatever window it already has, and a Claude row that never
   // gets one renders no reading rather than a guessed one.
   runtimeContextWindow?: (sessionId: string) => number | undefined
+  // The same SDK report's row for ANOTHER model the session billed — a sub-agent's — for the child's
+  // own drawer (ClaudeRuntimeIngest.modelContextWindow). Absent ⇒ such a child shows no reading.
+  runtimeModelContextWindow?: (sessionId: string, model: string) => number | undefined
 }
 
 // The durable permission-request marker written by the worker's PermissionRequest hook
@@ -4188,6 +4197,15 @@ export function createTailer(deps: TailerDeps): Tailer {
       // to the root thread.
       taskId: descendant.agentId,
     }
+  }
+
+  function subAgentContextWindow(slug: string, model: string): number | undefined {
+    const state = states.get(slug)
+    const row = state ? currentRowFor(state) : undefined
+    if (!state || !row || !model) return undefined
+    if (state.model === model && state.contextWindow !== undefined && state.contextWindow > 0) return state.contextWindow
+    if (!deps.runtimeModelContextWindow || !isBrokerClaudeRow(row)) return undefined
+    return deps.runtimeModelContextWindow(row.session_id, model)
   }
 
   // Resolve a child by its RUNTIME agent id (Claude's `agentId`) rather than by its dispatch tool_use
@@ -6184,6 +6202,7 @@ export function createTailer(deps: TailerDeps): Tailer {
     foreignIds: () => foreignFresh.map((f) => f.id),
     foreignBackend: (id) => foreignFresh.find((f) => f.id === id)?.backend,
     subAgent: subAgentLookup,
+    subAgentContextWindow,
     subAgentByTaskId,
     subAgentDescendantTasks,
     backgroundShell: backgroundShellLookup,

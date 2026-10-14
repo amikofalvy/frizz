@@ -48,7 +48,7 @@ export function dismissChildOp(slug: string, id: string, kind: "AGENT" | "SHELL"
 //  1. NO ID / A DESCENDANT. Retiring acts on a tracked op BY ITS DISPATCH ID, and a descendant's
 //     dispatch lives in an ANCESTOR's transcript — this thread never tracked it, so the call would be
 //     a silent no-op. (`stopTask` alone could reach a descendant, but the row would then not clear,
-//     which is the same lie in the other direction. The drawer's "Stop sub-agent" covers those.)
+//     which is the same lie in the other direction. The drawer's stop check covers those.)
 //  2. RUNNING, BUT NOT STOPPABLE. The row is live work frizz has no channel to end: any op on a
 //     codex thread, or one whose provider task handle frizz never captured. `stoppable` is the
 //     SERVER's answer and is never re-derived here — the policy depends on the thread's TRANSPORT,

@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { BoardSnapshot, Settings } from "@frizz/shared"
@@ -49,6 +49,8 @@ function harness(subAgent: (slug: string, id: string) => SubAgentInfo, opts: {
   // The PARENT's own folded turn state. Default absent — an unknown turn must not block a steer, or
   // every test stub (and every thread the fold has no reading for) would refuse.
   turn?: "in-flight" | "idle"
+  // The tailer's answer for a Claude child's context window, by the model its transcript names.
+  contextWindow?: (slug: string, model: string) => number | undefined
 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "frizz-subagent-steer-"))
   const project: Project = { dir, id: "steer", name: "test", label: "test", stateDir: dir, cwdSlug: "test" }
@@ -82,6 +84,7 @@ function harness(subAgent: (slug: string, id: string) => SubAgentInfo, opts: {
     },
     ...(opts.backgroundShell ? { backgroundShell: opts.backgroundShell } : {}),
     ...(opts.descendantTasks ? { subAgentDescendantTasks: () => [...opts.descendantTasks!] } : {}),
+    ...(opts.contextWindow ? { subAgentContextWindow: opts.contextWindow } : {}),
   }
   const steers: { threadSlug: string; sessionId: string; subAgentId: string; text: string; deliveryId?: string }[] = []
   const stops: { threadSlug: string; sessionId: string; taskId: string }[] = []
@@ -731,6 +734,47 @@ test("subAgentTranscript reports steerability + the reason the drawer shows in p
     assert.deepEqual(missing, { messages: [], state: "gone", steerable: false, steerNote: null, stoppable: false, stopNote: null })
   } finally {
     gone.cleanup()
+  }
+})
+
+// THE DRAWER HEADER'S FACTS — "Last active · ◔ context", and how a settled child ended — read off the
+// child's own transcript file. The window comes from the tailer for a Claude child (the parent session
+// names it) and off the rollout itself for a codex one; with no window there is no reading at all.
+test("subAgentTranscript carries the child's last activity, context reading and outcome", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "frizz-subagent-facts-rpc-"))
+  const file = join(dir, "agent-a1.jsonl")
+  writeFileSync(file, [
+    JSON.stringify({ type: "user", isSidechain: true, timestamp: "2026-10-14T20:19:10.000Z", message: { role: "user", content: "Sweep the call sites." } }),
+    JSON.stringify({ type: "assistant", isSidechain: true, timestamp: "2026-10-14T20:19:22.756Z", uuid: "u1", message: { model: "claude-sonnet-5-5", role: "assistant", content: [{ type: "text", text: "Done." }], usage: { input_tokens: 2, cache_creation_input_tokens: 3_026, cache_read_input_tokens: 68_705, output_tokens: 40 } } }),
+    "",
+  ].join("\n"))
+  const asked: string[] = []
+  const live = harness(() => ({ ...RUNNING_DIRECT, outputFile: file, startedAt: "2026-10-14T20:19:09.000Z" }), {
+    contextWindow: (_slug, model) => { asked.push(model); return 1_000_000 },
+  })
+  try {
+    seed(live.storage, "t")
+    const out = await live.router.subAgentTranscript.handler({ input: { slug: "t", id: "toolu_child" } })
+    assert.deepEqual(out.context, { tokens: 71_733, window: 1_000_000 })
+    assert.deepEqual(asked, ["claude-sonnet-5-5"], "the window is asked for by the model the child ran on")
+    assert.equal(out.lastActivityAt, statSync(file).mtime.toISOString())
+    assert.equal(out.startedAt, "2026-10-14T20:19:09.000Z")
+    assert.equal(out.outcome, undefined, "a running child has no outcome to state")
+  } finally {
+    live.cleanup()
+  }
+
+  const settled = harness(() => ({ outputFile: file, state: "done", direct: false, startedAt: "2026-10-14T20:19:09.000Z", finishedAt: "2026-10-14T20:23:30.000Z", outcome: "killed" }))
+  try {
+    seed(settled.storage, "t")
+    const out = await settled.router.subAgentTranscript.handler({ input: { slug: "t", id: "toolu_child" } })
+    assert.equal(out.outcome, "killed")
+    assert.equal(out.finishedAt, "2026-10-14T20:23:30.000Z")
+    assert.equal(out.context, undefined, "no window known ⇒ no reading, never a guessed one")
+    assert.ok(out.lastActivityAt, "the last write is still known")
+  } finally {
+    settled.cleanup()
+    rmSync(dir, { recursive: true, force: true })
   }
 })
 

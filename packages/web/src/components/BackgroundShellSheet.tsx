@@ -10,6 +10,7 @@ import { Sheet } from "./ui/Sheet.tsx"
 import { SheetHeader } from "./ui/SheetHeader.tsx"
 import { BLOCK_RADIUS } from "./TranscriptCard.tsx"
 import { CodeBody } from "./CodeBody.tsx"
+import { DrawerStopCheck } from "./DrawerStopCheck.tsx"
 
 // Shared by the command block and its no-command fallback so the two cannot drift apart.
 const commandBlockClass = `font-mono-keep overflow-x-auto whitespace-pre-wrap break-words ${BLOCK_RADIUS} border border-border bg-bg/75 px-4 py-2.5 text-[12px] leading-relaxed text-fg/85`
@@ -94,6 +95,12 @@ export function BackgroundShellSheet({
             title={label}
             icon={<TerminalSquare aria-hidden size={14} className="shrink-0 text-muted-60" />}
             meta={stateLabel ? <span className="shrink-0 whitespace-nowrap text-[11.5px] text-muted-60">{stateLabel}</span> : undefined}
+            // The stop, as the sub-agent drawer's: the header's far-right check (DrawerStopCheck), only
+            // for a shell frizz can really end. `-mr-1` puts its ink 21px from the edge, where the thread
+            // header's sits — this header's `px-4` is 4px wider than that one's `px-3`.
+            actions={!unavailable && query.data?.stoppable
+              ? <span className="-mr-1 flex shrink-0"><DrawerStopCheck data-stop-background-shell="" label="Stop shell" stopping={stopping} onStop={stop} /></span>
+              : undefined}
             onClose={close}
           />
 
@@ -143,28 +150,9 @@ export function BackgroundShellSheet({
             )}
           </div>
 
-          {/* The lifecycle footer, mirroring SubAgentSheet's exactly — same chrome, same danger-hover,
-              same disabled-while-in-flight. It renders only for a shell frizz can really end; a RUNNING
-              shell it cannot reach states why instead, because "no control and no explanation" is what
-              sent the maintainer looking for this button in the first place. A finished shell carries
-              neither (its state readout already says "finished") and keeps the bare bottom edge. */}
-          {!unavailable && query.data?.stoppable && (
-            <footer
-              aria-label="Background shell lifecycle actions"
-              data-background-shell-lifecycle-footer
-              className="flex min-h-10 w-full shrink-0 items-center justify-end gap-1.5 border-t border-border/70 bg-panel/95 px-3 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] text-[12px] backdrop-blur-sm"
-            >
-              <button
-                type="button"
-                data-stop-background-shell
-                disabled={stopping}
-                onClick={stop}
-                className="rounded-md border border-border-strong bg-panel-2/60 px-2.5 py-1 text-[12px] text-fg/80 transition-colors hover:border-danger/40 hover:bg-danger/10 hover:text-danger-soft disabled:opacity-50"
-              >
-                {stopping ? "Stopping…" : "Stop shell"}
-              </button>
-            </footer>
-          )}
+          {/* A RUNNING shell frizz cannot reach states why where nothing offers to stop it, because "no
+              control and no explanation" is what sent the maintainer looking for a stop in the first
+              place. A finished shell needs neither (its state readout already says "finished"). */}
           {!unavailable && !query.data?.stoppable && state === "running" && query.data?.stopNote && (
             <footer
               data-background-shell-stop-note

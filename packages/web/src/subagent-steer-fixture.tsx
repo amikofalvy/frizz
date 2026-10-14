@@ -3,6 +3,7 @@ import { useSnapshot } from "valtio"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import type { BoardSnapshot, ThreadView } from "@frizz/shared"
 import { SubAgentSheet } from "./components/SubAgentSheet.tsx"
+import { TooltipProvider } from "./components/Tooltip.tsx"
 import { pushSubAgentDrawer, store } from "./store.ts"
 import "./styles.css"
 
@@ -13,7 +14,7 @@ import "./styles.css"
 // only by what the SERVER answered are driven here, off the same mocked RPC shape the real drawer
 // consumes, and the one state the stack CAN reach is verified against the stack itself.
 //
-// ?state=steerable | rich | note-codex | note-tmux | note-nested | settled | stale
+// ?state=steerable | rich | note-codex | note-tmux | note-nested | settled | stopped | failed | stale
 
 const SLUG = "steer-fixture"
 const STATE = new URLSearchParams(location.search).get("state") ?? "rich"
@@ -66,18 +67,42 @@ const RESPONSES: Record<string, { state: string; steerable: boolean; steerNote: 
     stopNote: null,
   },
   // Settled and stale both get NO footer at all: the transcript already reads as finished, and a
-  // banner on every drawer opened to review completed work would be pure noise.
+  // banner on every drawer opened to review completed work would be pure noise. A settled child's
+  // header states how it ended where the stop check stood.
   settled: { state: "done", steerable: false, steerNote: null, stoppable: false, stopNote: null },
+  stopped: { state: "done", steerable: false, steerNote: null, stoppable: false, stopNote: null },
+  failed: { state: "done", steerable: false, steerNote: null, stoppable: false, stopNote: null },
   stale: { state: "stale", steerable: false, steerNote: null, stoppable: false, stopNote: null },
+}
+
+// THE HEADER'S FACTS, as the router derives them from the child's own transcript (subagent-facts.ts):
+// when it last wrote, how full its context is, and — once settled — how and when its run ended.
+const STARTED_AT = new Date(Date.now() - 437_000).toISOString()
+const FINISHED_AT = new Date(Date.now() - 125_000).toISOString()
+const OUTCOMES: Record<string, "completed" | "killed" | "failed"> = { settled: "completed", stopped: "killed", failed: "failed" }
+// A stop the drawer sent settles the child the way the provider's terminal event would.
+let stoppedHere = false
+function headerFacts(state: string) {
+  const outcome = stoppedHere ? "killed" : OUTCOMES[state]
+  return {
+    startedAt: STARTED_AT,
+    lastActivityAt: outcome ? FINISHED_AT : new Date(Date.now() - 9_000).toISOString(),
+    context: { tokens: 71_733, window: 500_000 },
+    ...(outcome ? { outcome, finishedAt: FINISHED_AT } : {}),
+  }
 }
 
 window.fetch = async (input, init) => {
   const url = new URL(typeof input === "string" ? input : input.toString(), window.location.origin)
   if (url.pathname === "/_frizz/rpc/subAgentTranscript") {
-    return rpcResult({ messages: childMessages, ...(RESPONSES[STATE] ?? RESPONSES.rich) })
+    const settledByStop = stoppedHere ? { state: "done", steerable: false, steerNote: null, stoppable: false, stopNote: null } : {}
+    return rpcResult({ messages: childMessages, ...(RESPONSES[STATE] ?? RESPONSES.rich), ...settledByStop, ...headerFacts(STATE) })
   }
   if (url.pathname === "/_frizz/rpc/subAgentSteer") return rpcResult({ delivered: true })
-  if (url.pathname === "/_frizz/rpc/subAgentStop") return rpcResult({ stopped: true, descendantsStopped: 0, note: null })
+  if (url.pathname === "/_frizz/rpc/subAgentStop") {
+    stoppedHere = true
+    return rpcResult({ stopped: true, descendantsStopped: 0, note: null })
+  }
   return nativeFetch(input, init)
 }
 
@@ -107,7 +132,7 @@ const thread: ThreadView = {
   subAgents: [{
     id: CHILD_ID,
     label: "Sweep the renamed projection helper's call sites",
-    startedAt: new Date(Date.now() - 437_000).toISOString(),
+    startedAt: STARTED_AT,
     state: STATE === "stale" ? "stale" : "running",
     subagentType: "frizz:opus-high",
     lastActivityAt: new Date(Date.now() - 9_000).toISOString(),
@@ -144,6 +169,7 @@ function Drawers() {
 const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 createRoot(document.getElementById("root")!).render(
   <QueryClientProvider client={qc}>
+    <TooltipProvider>
     <main className="min-h-screen bg-bg p-8 text-fg">
       <h1 className="text-[13px] font-medium">Sub-agent drawer — regular transcript tail + controls</h1>
       <p className="mt-1 text-[11.5px] text-muted-70">
@@ -159,5 +185,6 @@ createRoot(document.getElementById("root")!).render(
       </button>
     </main>
     <Drawers />
+    </TooltipProvider>
   </QueryClientProvider>,
 )

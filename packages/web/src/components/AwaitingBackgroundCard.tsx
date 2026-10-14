@@ -746,8 +746,8 @@ function ShellWatchRow({ watch, thread, slug, now }: {
  *  meanings and words. Whether there is a × at all is the caller's `childOpDismisser`, as on the strip.
  *
  *  A RUNNING row that OPENS carries none (maintainer 2026-10-08: "it's fine if you need to open the
- *  subagent to close it"): its drawer has the same stop — "Stop sub-agent" in SubAgentSheet, "Stop
- *  shell" in BackgroundShellSheet — and the × cost a wrapped title its width on every live row. The
+ *  subagent to close it"): its drawer has the same stop — the check in the header of SubAgentSheet and
+ *  of BackgroundShellSheet (DrawerStopCheck) — and the × cost a wrapped title its width on every live row. The
  *  × stays where nothing else on /full can do its job: CLEAR on a settled row, which no drawer offers,
  *  and STOP on a running row with no drawer to open. */
 function railDismiss(onDismiss: (() => void) | undefined, running: boolean, openable: boolean, kind: "AGENT" | "SHELL", label: string) {

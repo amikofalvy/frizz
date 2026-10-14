@@ -496,6 +496,42 @@ test("context window: latched — a later result that omits the row does not bla
   ingest.close()
 })
 
+// ---- a SUB-AGENT's window --------------------------------------------------------------------------
+// The child's drawer reads its own context, and its denominator is the row the parent session billed
+// under the CHILD's model — named the way the child's transcript names it, with no alias suffix.
+
+test("sub-agent window: the row billed under the child's model, across results, under the session's ceiling", async () => {
+  const ingest = createClaudeRuntimeIngest({ nudge: () => {} })
+  ingest.onEvent("t", sessionId, initAs("claude-opus-5[1m]"))
+  ingest.onEvent("t", sessionId, resultBilling({ "claude-opus-5[1m]": 1_000_000 }))
+  await ingest.drain()
+  assert.equal(ingest.modelContextWindow(sessionId, "claude-haiku-4-5-20251001"), undefined, "nothing billed under it yet")
+  // A background child bills in whichever later turn it ran.
+  ingest.onEvent("t", sessionId, resultBilling({ "claude-opus-5[1m]": 1_000_000, "claude-haiku-4-5-20251001": 200_000 }))
+  await ingest.drain()
+  assert.equal(ingest.modelContextWindow(sessionId, "claude-haiku-4-5-20251001"), 200_000)
+  // The `[1m]` alias is the same model as its transcript names it.
+  assert.equal(ingest.modelContextWindow(sessionId, "claude-opus-5"), 1_000_000)
+  // A result that omits a row keeps what an earlier one billed.
+  ingest.onEvent("t", sessionId, resultBilling({ "claude-opus-5[1m]": 1_000_000 }))
+  await ingest.drain()
+  assert.equal(ingest.modelContextWindow(sessionId, "claude-haiku-4-5-20251001"), 200_000)
+  ingest.noteCompactionWindow(sessionId, 500_000)
+  assert.equal(ingest.modelContextWindow(sessionId, "claude-opus-5"), 500_000, "one daemon, one ceiling")
+  assert.equal(ingest.modelContextWindow(sessionId, "claude-haiku-4-5-20251001"), 200_000, "a ceiling only ever lowers")
+  ingest.release(sessionId)
+  assert.equal(ingest.modelContextWindow(sessionId, "claude-haiku-4-5-20251001"), undefined)
+  ingest.close()
+})
+
+test("sub-agent window: a bare and a 1M row that disagree report nothing", async () => {
+  const ingest = createClaudeRuntimeIngest({ nudge: () => {} })
+  ingest.onEvent("t", sessionId, resultBilling({ "claude-sonnet-5": 200_000, "claude-sonnet-5[1m]": 1_000_000 }))
+  await ingest.drain()
+  assert.equal(ingest.modelContextWindow(sessionId, "claude-sonnet-5"), undefined)
+  ingest.close()
+})
+
 // ---- the auto-compact ceiling ---------------------------------------------------------------------
 // Frizz dispatches at the 1M window and then hands the worker a 500K CLAUDE_CODE_AUTO_COMPACT_WINDOW,
 // and Claude Code's effective window is the `min` of the two — its own /config help says so. The dial

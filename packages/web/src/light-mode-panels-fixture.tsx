@@ -32,7 +32,7 @@ window.fetch = async (input, init) => {
   const method = url.pathname.split("/").at(-1)
   if (method === "localMarkdown") return json({ path: "/fixture/review.md", markdown, truncated: false })
   if (method === "localFile") return json({ path: "/fixture/theme.ts", text: "// Browser-local appearance\nexport const palette = {\n  canvas: '#f7f7f7',\n  question: '#ffffff',\n  outline: '#dcdcdc',\n}\n", truncated: false })
-  if (method === "backgroundShellOutput") return json({ state: "running", command: "nub run test", output: "✔ Theme preferences\n✔ Settings migration\n✔ Question selection\n\nChecking browser rendering…\n" })
+  if (method === "backgroundShellOutput") return json({ state: "running", command: "nub run test", output: "✔ Theme preferences\n✔ Settings migration\n✔ Question selection\n\nChecking browser rendering…\n", stoppable: true, stopNote: null })
   if (method === "authStatus") return json({ claude: "signed-out", codex: "signed-out", emails: {} })
   return json({})
 }
