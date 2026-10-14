@@ -25,6 +25,8 @@
 //                                           the way a worker asks: Frizz registers it from the message
 //   paras=N        paragraphs of prose in the first turn's final message (default 3)
 //   tools=N        Bash tool calls before that message, each `toolms` long (default 0, 1500ms)
+//   narrate=1      a paragraph of prose before each of those calls — a long transcript, quickly, for
+//                  paging history (`tools=200 toolms=1 narrate=1 disklag=0` writes 400+ messages)
 //   thinking=1     a thinking block before the final message (a "Thought for Ns" row)
 //   think=MS       how long the model "thinks" before its first record (default 1500)
 //   reply=done|steps|needs|bare   how every later turn ends (default done)
@@ -36,6 +38,21 @@
 //                  gap where the slot reads `Ran N tool calls. Thinking…`
 //   reply=question ends every later turn on a question fence too, each under a new id (an id is spent
 //                  for the life of the thread), the way `ending=question` ends the first
+//   agents=N       BACKGROUND SUB-AGENTS the first turn dispatches before its Bash calls (default 0): an
+//                  `Agent` tool_use with run_in_background, its "Async agent launched successfully" ack, its
+//                  own sidechain transcript (`<session>/subagents/agent-<id>.jsonl` + `.meta.json`) that it
+//                  writes `agentsteps` tool calls into over `agentms` (defaults 2, 4000; `agenttext=0` drops
+//                  the line of prose it writes before each), the SDK's
+//                  task_started / task_progress / task_notification / background_tasks_changed frames, and at
+//                  the end the `<task-notification>` Claude Code 2.1.296 writes — handed over at the next tool
+//                  boundary of a running turn, or starting a turn of its own when the worker rests
+//   shells=N       BACKGROUND SHELLS the same way: a `Bash` with run_in_background, its "Command running in
+//                  background with ID" ack, an output file it appends a line to every 500ms for `shellms`
+//                  (default 4000), and its completion notification
+//   replyagents=N  replyshells=N   the same for every later turn
+//   notifyparas=N  notify=done|steps|needs|bare|question   the turn a finished op starts while the worker
+//                  rests (defaults 1, the `reply` ending): the shape of a worker woken by its child
+//   notifythink=MS how long that turn thinks first (default 1000)
 //   disklag=MS     event → JSONL write delay for each assistant record (default 15)
 //   resultlag=MS   final event → `result` delay (default 30). With the defaults the final record reaches
 //                  disk BEFORE the result, the order measured on real broker sessions (94c6b0ee);
@@ -56,6 +73,8 @@
 //         "tools": [                         shell commands, run for real before the final message, in order,
 //           "frizzctl done --body 'x'",      each a Bash tool call whose result is the command's own output
 //           { "command": "…", "description": "…", "ms": 500, "timeout": 30000 } ],
+//         "agents": [{ "description": "…", "ms": 4000, "steps": 2, "result": "…" }],   background sub-agents
+//         "shells": [{ "description": "…", "ms": 4000 }],                            and shells, launched first
 //         "text": "the final message, verbatim" } ],
 //     "otherwise": { "tools": [], "text": "…" } }      answers a message no entry takes
 //
@@ -83,10 +102,10 @@
 // `<bin> auth status --json` answers signed in, so the dispatch preflight passes on a sandbox HOME.
 // The protocol half (initialize, controls) follows packages/server/src/backend/claude-agent-sdk.fixtures/
 // fake-claude-cli.mjs, the stand-in the Agent SDK contract tests drive the same broker with.
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs"
-import { join } from "node:path"
+import { appendFileSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs"
+import { dirname, join } from "node:path"
 import { homedir } from "node:os"
-import { randomUUID } from "node:crypto"
+import { randomBytes, randomUUID } from "node:crypto"
 import { execFile } from "node:child_process"
 import { createInterface } from "node:readline"
 
@@ -121,7 +140,7 @@ function write(record) {
 const now = () => new Date().toISOString()
 
 // ---- the script ----
-const defaults = { ending: "done", paras: 3, tools: 0, toolms: 1500, thinking: 0, think: 1500, thinkms: 2000, replythinking: 0, gapms: 0, reply: "done", replyparas: 2, replytools: 0, replythink: 1500, disklag: 15, resultlag: 30 }
+const defaults = { agents: 0, shells: 0, replyagents: 0, replyshells: 0, agentms: 4000, agentsteps: 2, agenttext: 1, narrate: 0, shellms: 4000, notifyparas: 1, notifythink: 1000, ending: "done", paras: 3, tools: 0, toolms: 1500, thinking: 0, think: 1500, thinkms: 2000, replythinking: 0, gapms: 0, reply: "done", replyparas: 2, replytools: 0, replythink: 1500, disklag: 15, resultlag: 30 }
 let config = null
 function parseScript(text) {
   const token = /\[script([^\]]*)\]/.exec(text)?.[1] ?? ""
@@ -152,6 +171,8 @@ function loadScript(file) {
       think: Number.isFinite(raw.think) ? raw.think : undefined,
       tools: (Array.isArray(raw.tools) ? raw.tools : []).map((t) => (typeof t === "string" ? { command: t } : t)).filter((t) => typeof t?.command === "string"),
       text: typeof raw.text === "string" && raw.text.trim() ? raw.text : "(a scripted turn with no text)",
+      agents: Array.isArray(raw.agents) ? raw.agents.filter((a) => a && typeof a === "object") : [],
+      shells: Array.isArray(raw.shells) ? raw.shells.filter((a) => a && typeof a === "object") : [],
       used: 0,
     })
     script = {
@@ -233,11 +254,124 @@ async function assistantRecord(messageId, block, stopReason, s) {
 function deliverAtToolBoundary() {
   // Claude Code hands a queued message over WITH the tool result: the attachment, then the removal.
   while (queued.length) {
-    const { text, uuid } = queued.shift()
+    const { text, uuid, notification } = queued.shift()
+    if (notification) {
+      write({ type: "attachment", attachment: { type: "queued_command", prompt: text, commandMode: "task-notification", origin: { kind: "task-notification", producer: "session-task" }, timestamp: now() }, uuid: randomUUID(), timestamp: now() })
+      appendFileSync(transcript, `${JSON.stringify({ type: "queue-operation", operation: "remove", timestamp: now(), sessionId, content: text })}\n`)
+      continue
+    }
     write({ type: "attachment", attachment: { type: "queued_command", prompt: text, source_uuid: uuid, commandMode: "prompt", timestamp: now() }, uuid: randomUUID(), timestamp: now() })
     appendFileSync(transcript, `${JSON.stringify({ type: "queue-operation", operation: "remove", timestamp: now(), sessionId, content: text })}\n`)
     send({ type: "user", message: { role: "user", content: text }, parent_tool_use_id: null, uuid, session_id: sessionId })
   }
+}
+
+
+// ---- background ops: sub-agents and shells ----
+// Every op the session launched and has not yet reported finished, for `background_tasks_changed`
+// (REPLACE semantics: the whole live set every time it changes).
+const liveOps = new Map() // taskId → { taskType, description }
+const sendLevel = () => send({ type: "system", subtype: "background_tasks_changed", tasks: [...liveOps].map(([task_id, o]) => ({ task_id, task_type: o.taskType, description: o.description })), uuid: randomUUID(), session_id: sessionId })
+const sessionDir = join(dirname(transcript), sessionId)
+const tasksDir = join(homedir(), ".scripted-claude-tasks", sessionId, "tasks")
+
+/** One background sub-agent: dispatch, ack, its own transcript over `ms`, then its notification. */
+async function launchAgent(turn, index, spec, s) {
+  const toolUseId = `toolu_scripted_${turn}_a${index}`
+  const agentId = `a${randomBytes(8).toString("hex")}`
+  const description = typeof spec.description === "string" ? spec.description : `Auditing part ${index + 1} of the pipeline`
+  const ms = Number.isFinite(spec.ms) ? spec.ms : s.agentms
+  const steps = Number.isFinite(spec.steps) ? spec.steps : s.agentsteps
+  const result = typeof spec.result === "string" ? spec.result : `Part ${index + 1} checks out: every gate ran on the commit that was published.`
+  const prompt = `Audit part ${index + 1} of the release pipeline and report what you find.`
+  await assistantRecord(`msg_scripted_${turn}_a${index}`, { type: "tool_use", id: toolUseId, name: "Agent", input: { description, subagent_type: "frizz:low", run_in_background: true, prompt } }, "tool_use", s)
+  // The child's own transcript, as Claude Code writes it: a meta file, then the prompt as its first record.
+  mkdirSync(join(sessionDir, "subagents"), { recursive: true })
+  const sidechain = join(sessionDir, "subagents", `agent-${agentId}.jsonl`)
+  writeFileSync(join(sessionDir, "subagents", `agent-${agentId}.meta.json`), JSON.stringify({ agentType: "frizz:low", description, toolUseId, spawnDepth: 1, requestShape: "background", requestNonInteractive: true }))
+  let childParent = null
+  const child = (record) => {
+    const uuid = randomUUID()
+    appendFileSync(sidechain, `${JSON.stringify({ parentUuid: childParent, isSidechain: true, agentId, userType: "external", cwd, sessionId, version: "2.1.296", ...record, uuid, timestamp: now() })}\n`)
+    childParent = uuid
+  }
+  child({ type: "user", message: { role: "user", content: prompt } })
+  // Claude Code's output file for an agent IS its transcript: a symlink to the sidechain JSONL.
+  mkdirSync(tasksDir, { recursive: true })
+  const outputFile = join(tasksDir, `${agentId}.output`)
+  try { symlinkSync(sidechain, outputFile) } catch {}
+  liveOps.set(agentId, { taskType: "local_agent", description })
+  send({ type: "system", subtype: "task_started", task_id: agentId, tool_use_id: toolUseId, description, subagent_type: "frizz:low", is_backgrounded: true, spawn_depth: 1, task_type: "local_agent", uuid: randomUUID(), session_id: sessionId })
+  sendLevel()
+  const ack = `Async agent launched successfully. (This tool result is internal metadata — never quote or paste any part of it, including the agentId below, into a user-facing reply.)\nagentId: ${agentId} (internal ID - do not mention to user. Use SendMessage with to: '${agentId}', summary: '<5-10 word recap>' to continue this agent.)\nThe agent is working in the background. You will be notified automatically when it completes.\noutput_file: ${outputFile}`
+  toolResult(toolUseId, ack, { isAsync: true, status: "async_launched", agentId, description, prompt })
+  const started = Date.now()
+  void (async () => {
+    for (let k = 0; k < steps; k++) {
+      await sleep(ms / (steps + 1))
+      const id = `toolu_child_${agentId}_${k}`
+      // A line of prose before each call, as a real child narrates its work — and what makes its
+      // drawer tall enough to scroll.
+      if (s.agenttext) child({ type: "assistant", message: { model: "claude-haiku-5-5", id: `msg_child_${agentId}_${k}_t`, type: "message", role: "assistant", content: [{ type: "text", text: `Gate ${k + 1}: ${PARAGRAPH}` }], stop_reason: null, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } } })
+      child({ type: "assistant", message: { model: "claude-haiku-5-5", id: `msg_child_${agentId}_${k}`, type: "message", role: "assistant", content: [{ type: "tool_use", id, name: "Bash", input: { command: `sleep 1`, description: `Checking gate ${k + 1}` } }], stop_reason: "tool_use", stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } } })
+      child({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: "", is_error: false }] }, toolUseResult: { stdout: "", stderr: "", interrupted: false } })
+      send({ type: "system", subtype: "task_progress", task_id: agentId, tool_use_id: toolUseId, description: `Running Checking gate ${k + 1}`, subagent_type: "frizz:low", usage: { total_tokens: 100 * (k + 1), tool_uses: k + 1, duration_ms: Date.now() - started }, last_tool_name: "Bash", uuid: randomUUID(), session_id: sessionId })
+    }
+    await sleep(ms / (steps + 1))
+    child({ type: "assistant", message: { model: "claude-haiku-5-5", id: `msg_child_${agentId}_end`, type: "message", role: "assistant", content: [{ type: "text", text: result }], stop_reason: "end_turn", stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } } })
+    finishOp(agentId, toolUseId, outputFile, `Agent "${description}" finished`, `<note>A task-notification fires each time this agent stops with no live background children of its own.</note>\n<result>${result}</result>\n`, { total_tokens: 100 * (steps + 1), tool_uses: steps, duration_ms: Date.now() - started })
+  })()
+}
+
+/** One background shell: the Bash call, its ack, an output file that grows for `ms`, its notification. */
+async function launchShell(turn, index, spec, s) {
+  const toolUseId = `toolu_scripted_${turn}_s${index}`
+  const taskId = `b${randomBytes(6).toString("base64url").replace(/[^a-z0-9]/gi, "x").toLowerCase().slice(0, 8)}`
+  const description = typeof spec.description === "string" ? spec.description : `Watching build ${index + 1}`
+  const ms = Number.isFinite(spec.ms) ? spec.ms : s.shellms
+  const command = `for i in $(seq ${Math.max(1, Math.round(ms / 500))}); do echo "build step $i"; sleep 0.5; done`
+  await assistantRecord(`msg_scripted_${turn}_s${index}`, { type: "tool_use", id: toolUseId, name: "Bash", input: { command, description, run_in_background: true } }, "tool_use", s)
+  mkdirSync(tasksDir, { recursive: true })
+  const outputFile = join(tasksDir, `${taskId}.output`)
+  writeFileSync(outputFile, "")
+  liveOps.set(taskId, { taskType: "local_bash", description })
+  send({ type: "system", subtype: "task_started", task_id: taskId, tool_use_id: toolUseId, description, is_backgrounded: true, task_type: "local_bash", uuid: randomUUID(), session_id: sessionId })
+  sendLevel()
+  toolResult(toolUseId, `Command running in background with ID: ${taskId}. Output is being written to: ${outputFile}. You will be notified when it completes. To check interim output, use Read on that file path.`, { stdout: "", stderr: "", interrupted: false, isImage: false, noOutputExpected: false, backgroundTaskId: taskId })
+  void (async () => {
+    const lines = Math.max(1, Math.round(ms / 500))
+    for (let k = 1; k <= lines; k++) {
+      await sleep(ms / lines)
+      appendFileSync(outputFile, `build step ${k}\n`)
+    }
+    finishOp(taskId, toolUseId, outputFile, `Background command "${description}" completed (exit code 0)`, "", undefined)
+  })()
+}
+
+function toolResult(toolUseId, content, toolUseResult) {
+  const uuid = randomUUID()
+  write({ type: "user", message: { role: "user", content: [{ tool_use_id: toolUseId, type: "tool_result", content, is_error: false }] }, uuid, timestamp: now(), toolUseResult })
+  send({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: toolUseId, content }] }, parent_tool_use_id: null, uuid, session_id: sessionId, isSynthetic: true })
+}
+
+/** An op ended: the SDK's frames, then the `<task-notification>` — handed over in a running turn, or a turn of its own. */
+function finishOp(taskId, toolUseId, outputFile, summary, tail, usage) {
+  liveOps.delete(taskId)
+  send({ type: "system", subtype: "task_notification", task_id: taskId, tool_use_id: toolUseId, status: "completed", output_file: outputFile, summary, ...(usage ? { usage } : {}), uuid: randomUUID(), session_id: sessionId })
+  sendLevel()
+  const text = `<task-notification>\n<task-id>${taskId}</task-id>\n<tool-use-id>${toolUseId}</tool-use-id>\n<output-file>${outputFile}</output-file>\n<status>completed</status>\n<summary>${summary}</summary>\n${tail}</task-notification>`
+  appendFileSync(transcript, `${JSON.stringify({ type: "queue-operation", operation: "enqueue", timestamp: now(), sessionId, content: text })}\n`)
+  if (running) {
+    queued.push({ text, uuid: randomUUID(), notification: true })
+    return
+  }
+  appendFileSync(transcript, `${JSON.stringify({ type: "queue-operation", operation: "dequeue", timestamp: now(), sessionId })}\n`)
+  startNotificationTurn(text)
+}
+
+function startNotificationTurn(text) {
+  write({ type: "user", message: { role: "user", content: text }, uuid: randomUUID(), timestamp: now(), origin: { kind: "task-notification", producer: "session-task" }, promptSource: "system", turnOrigin: "task_notification" })
+  void runTurn("notify")
 }
 
 async function runTurn(kind) {
@@ -245,17 +379,23 @@ async function runTurn(kind) {
   turnNumber += 1
   const s = config
   const first = kind === "first"
-  const ending = first ? s.ending : s.reply
-  const tools = first ? s.tools : s.replytools
-  const paras = first ? s.paras : s.replyparas
-  await sleep(first ? s.think : s.replythink)
-  if (!first && s.replythinking) {
+  const notify = kind === "notify"
+  const ending = first ? s.ending : notify ? (s.notify ?? s.reply) : s.reply
+  const tools = first ? s.tools : notify ? 0 : s.replytools
+  const paras = first ? s.paras : notify ? s.notifyparas : s.replyparas
+  await sleep(first ? s.think : notify ? s.notifythink : s.replythink)
+  const agents = first ? s.agents : notify ? 0 : s.replyagents
+  const shells = first ? s.shells : notify ? 0 : s.replyshells
+  for (let i = 0; i < agents; i++) await launchAgent(turnNumber, i, {}, s)
+  for (let i = 0; i < shells; i++) await launchShell(turnNumber, i, {}, s)
+  if (!first && !notify && s.replythinking) {
     await assistantRecord(tools ? `msg_scripted_${turnNumber}_t0` : `msg_scripted_${turnNumber}`, { type: "thinking", thinking: "", signature: "scripted" }, null, s)
     await sleep(s.thinkms)
   }
   for (let i = 0; i < tools; i++) {
     if (i > 0 && s.gapms) await sleep(s.gapms)
     const id = `toolu_scripted_${turnNumber}_${i}`
+    if (s.narrate) await assistantRecord(`msg_scripted_${turnNumber}_n${i}`, { type: "text", text: `Step ${i + 1}. ${PARAGRAPH}` }, null, s)
     await assistantRecord(`msg_scripted_${turnNumber}_t${i}`, { type: "tool_use", id, name: "Bash", input: { command: `sleep ${Math.round(s.toolms / 1000)}`, description: `Running step ${i + 1} of ${tools}` } }, "tool_use", s)
     await sleep(s.toolms)
     const resultUuid = randomUUID()
@@ -281,9 +421,10 @@ async function finishTurn(messageId, text, s) {
   running = false
   // A message that waited out the turn is handed over now and starts the next one.
   if (queued.length) {
-    const { text, uuid } = queued.shift()
+    const { text, uuid, notification } = queued.shift()
     appendFileSync(transcript, `${JSON.stringify({ type: "queue-operation", operation: "dequeue", timestamp: now(), sessionId })}\n`)
-    acceptInput(text, uuid)
+    if (notification) startNotificationTurn(text)
+    else acceptInput(text, uuid)
   }
 }
 
@@ -293,6 +434,8 @@ async function runScriptedTurn(entry, kind) {
   turnNumber += 1
   const s = config
   await sleep(entry.think ?? script?.think ?? (kind === "first" ? s.think : s.replythink))
+  for (const [i, spec] of entry.agents.entries()) await launchAgent(turnNumber, i, spec, s)
+  for (const [i, spec] of entry.shells.entries()) await launchShell(turnNumber, i, spec, s)
   for (let i = 0; i < entry.tools.length; i++) {
     const tool = entry.tools[i]
     const id = `toolu_scripted_${turnNumber}_${i}`
