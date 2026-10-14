@@ -260,6 +260,17 @@ test("a ghost waiting on a turn whose end the transcript has not reached ends no
     assert.equal(transcriptBehindRest(rested(T(9)), [human(T(5)), said(T(9))]), false)
   })
 
+  test("a turn a sub-agent's completion opened is behind until its reply lands, though no human opened it", () => {
+    // The worker rested at T(1); its child finished at T(5) and woke it — the completion's own row is the
+    // turn's opener, and the board's rest names the reply at T(9). The rest boundary at T(1) is the
+    // previous rest, not this one.
+    const finished = { role: "assistant" as const, at: T(5) }
+    assert.equal(transcriptBehindRest(rested(T(9)), [said(T(0)), restAt(T(1)), finished]), true)
+    assert.equal(transcriptBehindRest(rested(T(9)), [said(T(0)), restAt(T(1)), finished, said(T(9)), restAt(T(9))]), false)
+    // A coalesced reply with an earlier instant is caught up by its own rest boundary.
+    assert.equal(transcriptBehindRest(rested(T(9)), [said(T(0)), restAt(T(1)), finished, said(T(8)), restAt(T(8))]), false)
+  })
+
   test("a ghost says nothing about how far the transcript has got", () => {
     // Typed in the turn's last 50ms: newer than the worker's final record, and the reply is still not there.
     assert.equal(transcriptBehindRest(rested(T(9)), [said(T(0)), restAt(T(1)), human(T(5)), { role: "user" as const, at: T(10), queued: true }]), true)

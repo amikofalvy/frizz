@@ -213,11 +213,19 @@ export function transcriptBehindRest(t: ThreadView | undefined, messages: readon
   // Asked of what has LANDED. A ghost carries the instant it was typed, or none, and says nothing about how
   // far the transcript has got: one typed in a turn's last 50ms is newer than that turn's final record.
   for (const m of messages) if (!m.queued && Date.parse(m.at ?? "") >= said) return false
+  // A rest boundary is THIS rest only when nothing has landed after it. A turn the human opened finds its
+  // opening message first, and stops there. But a turn a sub-agent's or a shell's completion opened has no
+  // human message: its opener is the completion's own row, and walking back past it found the PREVIOUS
+  // rest's boundary and took the transcript for caught up. The Working row then went on the board's word
+  // and the reply landed 20ms later, a second state (a sub-agent waking its resting worker: 3 of 3,
+  // 2026-10-14).
+  let landedAfter = false
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]
     if (m.queued) continue
-    if (m.kind === "event" && m.boundary === "rest") return false
+    if (m.kind === "event" && m.boundary === "rest") return landedAfter
     if (m.role === "user") break
+    landedAfter = true
   }
   return true
 }
