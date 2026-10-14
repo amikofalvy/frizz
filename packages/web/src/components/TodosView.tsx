@@ -21,7 +21,7 @@ import { prefersReducedMotion } from "../lib/sheet.ts"
 import { REST_CATCH_UP_MS } from "../lib/steering.ts"
 import { useTranscriptHeldForBoard } from "../lib/restAhead.ts"
 import { useTurnAheadOfBoard } from "../lib/queueTurnAhead.ts"
-import { returningHolds } from "../lib/queueReturn.ts"
+import { returningHolds, type Departure } from "../lib/queueReturn.ts"
 import { questionsByAnchor } from "../lib/questionAnchor.ts"
 import { allFencesShadowed, placedFrom, placedRestEnds } from "../lib/questionShadow.ts"
 import { carryTimeBreak, timeBreaks, type TimeBreak } from "../lib/timeBreaks.ts"
@@ -200,14 +200,24 @@ export function TodosView() {
   const queryClient = useQueryClient()
   const knownRef = useRef<{ project: string | undefined; ids: Set<string> } | null>(null)
   const holdsRef = useRef<Map<string, number>>(new Map())
+  // What each card's transcript cache held when it LEFT the queue (lib/queueReturn cacheUnmovedSinceDeparture).
+  const departuresRef = useRef<Map<string, Departure>>(new Map())
+  const shownItemsRef = useRef<readonly ThreadView[]>([])
   const [holdTick, bumpHolds] = useState(0)
   const settleHold = useCallback(() => bumpHolds((n) => n + 1), [])
   const heldBefore = holdsRef.current
   if (board) {
     const project = board.projectDir
     const known = knownRef.current && knownRef.current.project === project ? knownRef.current.ids : null
-    holdsRef.current = returningHolds(holdsRef.current, known, items, (slug) => queryClient.getQueryData<TranscriptData>(["transcript", slug])?.messages, Date.now())
-    knownRef.current = { project, ids: new Set(items.map((i) => i.id)) }
+    const cached = (slug: string) => queryClient.getQueryData<TranscriptData>(["transcript", slug])?.messages
+    const present = new Set(items.map((i) => i.id))
+    const departures = departuresRef.current
+    if (known) for (const t of shownItemsRef.current) if (!present.has(t.id)) departures.set(t.id, { messages: cached(t.id), said: t.lastAssistantAt })
+    holdsRef.current = returningHolds(holdsRef.current, known, items, cached, Date.now(), departures)
+    // A card on the page again — mounted, or held for its reply — has no departure left to compare with.
+    for (const slug of [...departures.keys()]) if (present.has(slug) && !holdsRef.current.has(slug)) departures.delete(slug)
+    knownRef.current = { project, ids: present }
+    shownItemsRef.current = items
   }
   const holds = holdsRef.current
   const holdKey = [...holds.keys()].join(",")

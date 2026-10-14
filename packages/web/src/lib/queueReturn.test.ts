@@ -85,3 +85,15 @@ test("…but not a rest no human message opened, a message nobody answered, or a
   assert.equal(cacheEndsBeforeTurn(back, [said(T(0)), restAt(T(1)), human(T(5))]), false)
   assert.equal(cacheEndsBeforeTurn({ ...back, runtime: "running" } as unknown as ThreadView, STOPPED_EARLY), false)
 })
+
+test("a card a sub-agent's completion took out of the queue is held while its cache is the copy it left with", () => {
+  // The worker rested at T(1) with a child running; the child finished and woke it, and the turn ended
+  // at T(9). Nobody typed, so the cache the card left with still ends on the T(1) boundary.
+  const left = [said(T(0)), restAt(T(1))]
+  const departures = new Map([["back", { messages: left, said: T(0) }]])
+  assert.deepEqual([...returningHolds(new Map(), new Set(), [rested("back", T(9))], () => left, NOW, departures)], [["back", NOW]])
+  // A refetch is a new copy, and releases it.
+  assert.equal(returningHolds(new Map([["back", NOW]]), new Set(["back"]), [rested("back", T(9))], () => [...left, said(T(9)), restAt(T(9))], NOW + 30, departures).size, 0)
+  // A card back from a snooze, whose worker has said nothing since, is not held: there is no reply to wait for.
+  assert.equal(returningHolds(new Map(), new Set(), [rested("back", T(0))], () => left, NOW, departures).size, 0)
+})

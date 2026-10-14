@@ -53,6 +53,25 @@ export function cacheEndsBeforeTurn(t: ThreadView, messages: readonly RestEviden
   return false
 }
 
+// …AND A CACHE THAT HAS NOT MOVED SINCE THE CARD LEFT IS BEHIND, whatever it ends on. The two tests above
+// read the cache's own shape, and a turn nobody typed into defeats both: a sub-agent or a background
+// shell finishing wakes the resting worker, the card leaves, and the turn's opener is the completion's
+// own row — no human message, so no `lastUserAt` to date the boundary by, and a cache from before the
+// turn still ends on that turn's rest boundary, which reads as caught up. The card came back over its
+// old transcript and grew by the reply 24ms later (a sub-agent waking its worker, 3 of 3, 2026-10-14).
+// What the queue does know is what the cache held when the card left: if it is the same copy, and the
+// board's worker has spoken since, the turn happened with nobody watching and the reply is not in it.
+export interface Departure {
+  /** The cached messages, by identity, when the card left the queue. */
+  messages: readonly RestEvidence[] | undefined
+  /** The board's lastAssistantAt for the thread then. */
+  said: string | undefined
+}
+
+export function cacheUnmovedSinceDeparture(t: ThreadView, cached: readonly RestEvidence[] | undefined, departure: Departure | undefined): boolean {
+  return departure !== undefined && cached !== undefined && cached === departure.messages && (t.lastAssistantAt ?? "") !== (departure.said ?? "")
+}
+
 /** slug → when the hold began. */
 export type ReturnHolds = ReadonlyMap<string, number>
 
@@ -62,13 +81,14 @@ export function returningHolds(
   items: readonly ThreadView[],
   cachedMessages: (slug: string) => readonly RestEvidence[] | undefined,
   now: number,
+  departures: ReadonlyMap<string, Departure> = new Map(),
 ): Map<string, number> {
   const held = new Map<string, number>()
   for (const t of items) {
     const since = prior.get(t.id) ?? (known !== null && !known.has(t.id) ? now : undefined)
     if (since === undefined || now - since >= REST_CATCH_UP_MS) continue
     const cached = cachedMessages(t.id) ?? []
-    if (!transcriptBehindRest(t, cached) && !cacheEndsBeforeTurn(t, cached)) continue
+    if (!transcriptBehindRest(t, cached) && !cacheEndsBeforeTurn(t, cached) && !cacheUnmovedSinceDeparture(t, cachedMessages(t.id), departures.get(t.id))) continue
     held.set(t.id, since)
   }
   return held
