@@ -164,7 +164,7 @@ try {
   }
   if (action === "answer") {
     await click(await page.evaluateHandle((wanted) => {
-      const options = [...window.__pane().querySelectorAll("[data-registered-questions] [data-question-grid] > *")]
+      const options = [...window.__pane().querySelectorAll("[data-question-grid] [data-question-option]")]
       return (wanted ? options.find((e) => (e.textContent ?? "").includes(wanted)) : options[0]) ?? null
     }, flags.option ?? ""), "question option")
     await sleep(300)
