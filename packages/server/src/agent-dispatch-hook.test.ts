@@ -1,8 +1,11 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
+import { readTranscriptFile } from "./transcript.ts"
 
 const here = dirname(fileURLToPath(import.meta.url))
 const hook = join(here, "../../../cc-worker/hooks/agent-dispatch.mjs")
@@ -51,6 +54,23 @@ test("Agent dispatch hook appends the orchestration epilogue exactly once", () =
   assert.equal(output({ ...dispatch, prompt: once }).updatedInput.prompt, once)
   const quoting = output({ ...dispatch, prompt: "Report whether the ORCHESTRATION EPILOGUE reached you." })
   assert.equal((quoting.updatedInput.prompt as string).match(/ORCHESTRATION EPILOGUE/g)?.length, 2)
+})
+
+// The epilogue is for the child, not the reader: the sub-agent drawer renders the child's own
+// transcript, which opens on the rewritten prompt, and it must show only what the worker wrote. Driven
+// with the hook's real output so a change to the epilogue's header cannot silently re-expose it.
+test("the sub-agent drawer shows the dispatch prompt without the epilogue", () => {
+  const sent = output(dispatch).updatedInput.prompt as string
+  const dir = mkdtempSync(join(tmpdir(), "frizz-epilogue-"))
+  try {
+    const file = join(dir, "agent-a0c0b1b7f25b20076.jsonl")
+    writeFileSync(file, JSON.stringify({ type: "user", timestamp: "2026-10-14T00:00:00.000Z", message: { role: "user", content: sent } }) + "\n")
+    const [first] = readTranscriptFile(file)
+    assert.equal(first.displayText, dispatch.prompt)
+    assert.equal(first.text, sent)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 // The regression this hook's nested-dispatch paragraph exists for: a depth-1 helper backgrounded its

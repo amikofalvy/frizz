@@ -187,11 +187,29 @@ export function frizzDispatchDisplayText(text: string): string | undefined {
   return below.trim()
 }
 
+// The header cc-worker/hooks/agent-dispatch.mjs writes above the ORCHESTRATION EPILOGUE it appends to
+// every Agent prompt a worker sends. The worker's tool_use is recorded BEFORE the hook rewrites it, so
+// the dispatch card already shows the prompt as the worker wrote it — but the CHILD's own transcript
+// opens on the rewritten one, and its drawer printed the whole helper contract under the worker's words.
+// Matched on the header rather than the epilogue's text so a child dispatched under any earlier wording
+// (including the pre-rename `fray` hook) projects the same; the leading `---` rule is part of the match,
+// so a prompt that merely names the epilogue keeps every word.
+const DISPATCH_EPILOGUE_HEADER = /\n\n---\n\[ORCHESTRATION EPILOGUE — auto-appended by the (?:frizz|fray) worker dispatch hook\]/g
+
+// Display-only projection for a sub-agent's FIRST user turn: the worker's prompt without the epilogue.
+// The hook appends once, at the end, so the cut is at the LAST header.
+export function dispatchEpilogueDisplayText(text: string): string | undefined {
+  let cut = -1
+  for (const m of text.matchAll(DISPATCH_EPILOGUE_HEADER)) cut = m.index
+  return cut === -1 ? undefined : text.slice(0, cut).trimEnd()
+}
+
 // The display projection for ONE user turn — undefined when the stored text is already what to show.
-// Three independent reasons a user record can carry machine-facing text, composed in order:
+// Independent reasons a user record can carry machine-facing text, composed in order:
 //   • frizz's own dispatch envelope (FIRST turn only — orientation + instructions above the banner);
 //   • a generated GitHub dispatch (FIRST turn only — the envelope is what opens the thread). It sits
 //     BELOW frizz's banner, so it is peeled from the remainder, not from the raw record;
+//   • the worker dispatch hook's orchestration epilogue (FIRST turn of a sub-agent's own transcript);
 //   • the scheduler's wake-delivery token, which rides ANY turn a wake lands on. That's the case the
 //     old `out.length === 0` gate missed entirely: a wake is by definition a later turn, so its token
 //     reached the pre-wrap user bubble and rendered as literal `<!-- frizz-wake:… -->`;
@@ -206,6 +224,7 @@ function userDisplayText(text: string, first: boolean): string | undefined {
   if (first) {
     projected = frizzDispatchDisplayText(projected) ?? projected
     projected = githubDispatchDisplayText(projected) ?? projected
+    projected = dispatchEpilogueDisplayText(projected) ?? projected
   }
   projected = stripWakeDeliveryToken(projected)
   // The token comes off FIRST and the clock second, because that is the order they were appended in
