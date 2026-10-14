@@ -1596,16 +1596,10 @@ function VirtualizedThreadTranscript({
               </div>
             ) : row.kind === "message" ? (
               // A time break heads the row it dates, INSIDE it, so the virtualizer measures the two as
-              // one and nothing can ever be drawn over the message below. It replaces the row's gap:
-              // TIME_BREAK_ABOVE is the air above the reading (none at the very top of the transcript,
-              // where the row already starts flush), and TIME_BREAK_BELOW ties it to its own message.
-              <div className="relative flex flex-col px-6" style={{ paddingTop: row.timeBreak && row.timeBreakAt ? (row.gap === 0 ? 0 : TIME_BREAK_ABOVE) : row.gap }}>
-                {row.timeBreak && row.timeBreakAt ? (
-                  <>
-                    <TimeBreakLine at={row.timeBreakAt} kind={row.timeBreak} />
-                    <VSpace h={TIME_BREAK_BELOW} />
-                  </>
-                ) : null}
+              // one and nothing can ever be drawn over the message below. It replaces the row's gap
+              // (TimeBreakHead brings its own air; none above it at the very top of the transcript).
+              <div className="relative flex flex-col px-6" style={{ paddingTop: row.timeBreak && row.timeBreakAt ? 0 : row.gap }}>
+                {row.timeBreak && row.timeBreakAt ? <TimeBreakHead at={row.timeBreakAt} kind={row.timeBreak} flush={row.gap === 0} /> : null}
                 <ThreadMessage m={row.message} index={row.messageIndex} showSendButton />
               </div>
             ) : row.kind === "runtime-status" ? (
@@ -1829,10 +1823,23 @@ export function messageHeadIsPicture(m: ChatMessage): boolean {
 function TimeBreakLine({ at, kind }: { at: string; kind: TimeBreak }) {
   const { day, time } = timeBreakLabel(at, kind)
   return (
-    <time dateTime={at} className="block select-none text-center text-[11px] leading-4 [font-variant-numeric:tabular-nums] text-muted-45">
+    <time dateTime={at} data-time-break={kind} className="block select-none text-center text-[11px] leading-4 [font-variant-numeric:tabular-nums] text-muted-45">
       {day ? <span className="font-medium text-muted-60">{day} </span> : null}
       {time}
     </time>
+  )
+}
+// THE READING WITH ITS AIR, which together take the place of the gap above the message they date:
+// TIME_BREAK_ABOVE over the reading (none when `flush`, at the very top of what a surface draws, where
+// the row already starts flush) and TIME_BREAK_BELOW tying it to its own message. Both surfaces that
+// draw a transcript draw a break through this, so the two cannot space it differently.
+export function TimeBreakHead({ at, kind, flush = false }: { at: string; kind: TimeBreak; flush?: boolean }) {
+  return (
+    <>
+      {flush ? null : <VSpace h={TIME_BREAK_ABOVE} />}
+      <TimeBreakLine at={at} kind={kind} />
+      <VSpace h={TIME_BREAK_BELOW} />
+    </>
   )
 }
 

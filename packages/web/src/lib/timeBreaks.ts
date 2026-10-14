@@ -10,6 +10,11 @@
 // A burst shares one reading on purpose. A frizz thread is read in bursts separated by long parks —
 // a worker can sit on a PR watcher for days — so what a reader needs is where the stretches begin, not
 // the minute of every line.
+//
+// EVERY SURFACE THAT DRAWS A TRANSCRIPT DRAWS THEM. The hover reading was on every message wherever one
+// was drawn; its replacement was built into the virtualized transcript alone, so from 2026-10-09 to
+// 2026-10-13 a queue card had no reading of when anything on it was said. The rule (timeBreaks) and the
+// drawing (ChatView's TimeBreakHead) are shared; the queue card, which hides rows, adds carryTimeBreak.
 
 /** A pause at least this long between two messages draws a break before the second. */
 export const TIME_BREAK_GAP_MS = 20 * 60_000
@@ -48,6 +53,16 @@ export function timeBreaks<T>(rows: readonly T[], startAt: (row: T) => string | 
     previousEnd = Math.max(previousEnd ?? 0, end ?? start)
     return brk
   })
+}
+
+/**
+ * For a surface that draws only SOME of the rows it dates. The queue card folds a run's middle behind a
+ * divider, so the row a break belongs to is often not drawn at all — the wake after a two-hour park, the
+ * first call past midnight. That break is not lost: it is carried to the next row the card does draw,
+ * which is then dated at its own instant. `day` outranks `time`, so a carried day is still named.
+ */
+export function carryTimeBreak(pending: TimeBreak | null, next: TimeBreak | null): TimeBreak | null {
+  return pending === "day" || next === "day" ? "day" : (pending ?? next)
 }
 
 /**

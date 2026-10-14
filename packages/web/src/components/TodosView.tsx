@@ -24,7 +24,8 @@ import { useTurnAheadOfBoard } from "../lib/queueTurnAhead.ts"
 import { returningHolds } from "../lib/queueReturn.ts"
 import { questionsByAnchor } from "../lib/questionAnchor.ts"
 import { allFencesShadowed, placedFrom, placedRestEnds } from "../lib/questionShadow.ts"
-import { Message, ThreadMessage, PermPolicyDenialCard, TranscriptSyncFallbackBanner, transcriptBackgroundShells, withoutLiveTranscriptBackgroundTools, runtimeStatusGapFor, RuntimeStatusLadder, VSpace, STEP, PICTURE_STEP, runtimeStatusRung, type RuntimeStatusState, messageGap, messageHeadIsPicture, messageRendersNothing, messageHasRenderableText } from "./ChatView.tsx"
+import { carryTimeBreak, timeBreaks, type TimeBreak } from "../lib/timeBreaks.ts"
+import { Message, ThreadMessage, TimeBreakHead, PermPolicyDenialCard, TranscriptSyncFallbackBanner, transcriptBackgroundShells, withoutLiveTranscriptBackgroundTools, runtimeStatusGapFor, RuntimeStatusLadder, VSpace, STEP, PICTURE_STEP, runtimeStatusRung, type RuntimeStatusState, messageGap, messageHeadIsPicture, messageRendersNothing, messageHasRenderableText } from "./ChatView.tsx"
 import { BLOCK_RADIUS, BLOCK_RADIUS_TOP, BLOCK_RADIUS_INNER_BOTTOM } from "./TranscriptCard.tsx"
 import { agentCompletionCall } from "../lib/subAgentCompletion.ts"
 import { coalesceToolActivityMessages, historicalToolActivityMessages, liveRuntimeStartedAt, liveToolActivityRun, liveToolActivityTail, toolActivityLabel } from "../lib/toolActivity.ts"
@@ -1253,6 +1254,20 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
     () => (running ? historicalToolActivityMessages(coalescedVisible) : coalescedVisible),
     [coalescedVisible, running],
   )
+  // WHEN each row of the window was said: the thread view's rule (lib/timeBreaks) over the same entries,
+  // by their place in `activityVisible`. A coalesced tool run started at `runStartedAt` and last moved at
+  // its walked-forward `at`, so a long run does not read as a pause. The first dated row names the day,
+  // so the top of the card says when it is from. A queued bubble is the human's unsent words and is
+  // dated by nothing. The loop below draws each break — on the row it belongs to, or, where this card
+  // hides that row, on the next one it draws.
+  const windowBreaks = useMemo(
+    () => timeBreaks(
+      activityVisible,
+      (entry) => (entry.message.queued ? undefined : (entry.runStartedAt ?? entry.message.at)),
+      (entry) => (entry.message.queued ? undefined : entry.message.at),
+    ),
+    [activityVisible],
+  )
   const liveToolRun = running ? liveToolActivityRun(coalescedVisible) : undefined
   const liveToolActivity = running ? liveToolActivityTail(coalescedVisible) : undefined
   const liveActivityLabel = liveToolActivity ? toolActivityLabel(liveToolActivity, projectDir) : undefined
@@ -1656,6 +1671,17 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
               // so the next gap is a full STEP), and `undefined` before anything is drawn.
               let prev: ChatMessage | null | undefined = undefined
               const gapBefore = (next: ChatMessage) => (prev ? messageGap(prev, next) : messageHeadIsPicture(next) ? PICTURE_STEP : STEP)
+              // A TIME BREAK takes the place of the gap above the row it dates, exactly as in the thread
+              // view (TimeBreakHead). This card hides rows, so a break can belong to one it does not
+              // draw — the wake after a long park, folded into a run's middle. It waits here and heads
+              // the next row that IS drawn, dated at that row's own instant (carryTimeBreak).
+              let pendingBreak: TimeBreak | null = null
+              const leadIn = (i: number, next: ChatMessage, at: string | undefined) => {
+                if (pendingBreak && at) {
+                  out.push(<TimeBreakHead key={`tb${i}`} at={at} kind={pendingBreak} flush={prev === undefined} />)
+                  pendingBreak = null
+                } else if (prev !== undefined) out.push(<VSpace key={`s${i}`} h={gapBefore(next)} />)
+              }
               // A REGISTERED question renders at the rest it was ASKED at, not at the card's tail — the
               // same rule the thread view follows (lib/questionAnchor): after the last DRAWN row at or
               // before its anchor. So a group flushes right after its anchor row draws, and otherwise just
@@ -1698,7 +1724,8 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
               // against the work it caused. The pinned ask and loaded-earlier history render in full.
               const barEmitted = new Set<number>()
               let middleEmitted = false
-              activityVisible.forEach(({ message: m, messageIndex: globalIdx }, i) => {
+              activityVisible.forEach(({ message: m, messageIndex: globalIdx, runStartedAt }, i) => {
+                pendingBreak = carryTimeBreak(pendingBreak, windowBreaks[i])
                 if (m.queued) return
                 if (messageRendersNothing(m, ...hidesAwaiting(globalIdx))) return
                 // "Agent rested" is the queue card's own PREMISE, not news: every card here is a rested
@@ -1772,7 +1799,7 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
                   // The SAME pitch the ordinary path charges, spelled the same way: a waker is a wake
                   // hairline like any other, and a second spelling here is how the rhythm drifts.
                   flushQuestions(globalIdx - 1)
-                  if (prev !== undefined) out.push(<VSpace key={`s${i}`} h={gapBefore(m)} />)
+                  leadIn(i, m, runStartedAt ?? m.at)
                   const wakerKey = m.sourceId ?? `legacy-${globalIdx}`
                   out.push(
                     <div key={wakerKey} data-transcript-source-id={wakerKey} className="flex flex-col">
@@ -1830,7 +1857,7 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
                   if (!messageHasRenderableText(m, ...hidesAwaiting(globalIdx))) return
                   flushQuestions(globalIdx - 1)
                   const prose = proseOnly(m)
-                  if (prev !== undefined) out.push(<VSpace key={`s${i}`} h={gapBefore(prose)} />)
+                  leadIn(i, prose, runStartedAt ?? m.at)
                   const textKey = m.sourceId ?? `legacy-${globalIdx}`
                   out.push(
                     <div key={textKey} data-transcript-source-id={textKey} className="flex flex-col">
@@ -1844,7 +1871,7 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
                   return
                 }
                 flushQuestions(globalIdx - 1)
-                if (prev !== undefined) out.push(<VSpace key={`s${i}`} h={gapBefore(m)} />)
+                leadIn(i, m, runStartedAt ?? m.at)
                 const sourceKey = m.sourceId ?? `legacy-${globalIdx}`
                 out.push(
                   <div key={sourceKey} data-transcript-source-id={sourceKey} className="flex flex-col">
