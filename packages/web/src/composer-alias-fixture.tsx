@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client"
 import type { BoardSnapshot, ThreadView as ThreadViewModel, TranscriptMessage } from "@frizz/shared"
 import { QueueOpsSummary } from "./components/QueueOpsSummary.tsx"
 import { ThreadActionBar } from "./components/ThreadActionBar.tsx"
+import { ThreadSurface, useThreadSurface } from "./components/ThreadSurface.tsx"
 import { TodosView } from "./components/TodosView.tsx"
 import { TooltipProvider } from "./components/Tooltip.tsx"
 import { store } from "./store.ts"
@@ -129,10 +130,12 @@ function QueueSurface() {
 }
 
 // The drawer's real footer arrangement (ChatView renders exactly this pair): the chat footer frame,
-// with ThreadActionBar inside it and the line of op counts passed as its `above`.
+// with ThreadActionBar inside it and the line of op counts passed as its `above`. Inside the thread's
+// surface, as in ChatView: the prompt box does not mount outside one.
 function DrawerSurface() {
+  const surface = useThreadSurface(SLUG, messages)
   return (
-    <div data-fixture-drawer className="my-5 flex h-[420px] w-[560px] max-w-full min-w-0 flex-col rounded-lg border border-border bg-panel">
+    <ThreadSurface surface={surface} thread={thread} data-fixture-drawer className="my-5 flex h-[420px] w-[560px] max-w-full min-w-0 flex-col rounded-lg border border-border bg-panel">
       <div className="min-h-0 flex-1 overflow-y-auto p-4 text-[13px] leading-relaxed text-muted">
         {messages.map((m) => (
           <p key={m.sourceId} className="mb-3 whitespace-pre-wrap">
@@ -144,7 +147,7 @@ function DrawerSurface() {
       <div data-thread-chat-footer className="z-10 shrink-0 border-t border-border/60 bg-panel">
         <ThreadActionBar slug={SLUG} above={<QueueOpsSummary thread={thread} />} />
       </div>
-    </div>
+    </ThreadSurface>
   )
 }
 

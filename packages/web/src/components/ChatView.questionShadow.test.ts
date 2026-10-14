@@ -58,8 +58,12 @@ test("every Message site hands the message its placed questions, and the stack a
 test("a placed question leaves its anchor group on both surfaces, and each surface mounts ONE answering provider", () => {
   assert.match(chat, /filter\(\(q\) => !placement\.placedIds\.has\(q\.id\)\)/)
   assert.match(queue, /filter\(\(q\) => !placement\.placedIds\.has\(q\.id\)\)/)
-  assert.equal((chat.match(/<RegisteredAnsweringProvider thread=\{thread\}>/g) ?? []).length, 1)
-  assert.equal((queue.match(/<RegisteredAnsweringProvider thread=\{thread\}>/g) ?? []).length, 1)
+  // The provider is the thread surface's (ThreadSurface), which each of the two mounts exactly once —
+  // ThreadSurface.guard.test.ts pins that, and that neither mounts a provider of its own.
+  const shell = readFileSync(new URL("./ThreadSurface.tsx", import.meta.url), "utf8")
+  assert.equal((shell.match(/<RegisteredAnsweringProvider thread=\{thread\}>/g) ?? []).length, 1)
+  assert.equal((chat.match(/<ThreadSurface surface=\{surface\} thread=\{thread\}/g) ?? []).length, 1)
+  assert.match(queue, /<ThreadSurface\n\s+surface=\{surface\}\n\s+thread=\{thread\}/)
 })
 
 test("a free-form fence in a post-retirement thread gets no answering controller on any site", () => {

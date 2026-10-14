@@ -9,8 +9,7 @@ import { pageScrollY } from "../lib/pageScrollLock.ts"
 import { rpc } from "../api/rpc.ts"
 import { useBoard, asThreads, useProjectDir, useTranscript } from "../hooks.ts"
 import { orderQueue, queued } from "../groups.ts"
-import { tailAskIdx, useLiveAnswering } from "../lib/answering.ts"
-import { SendScopeContext, useComposerSendHandle, useComposerSendPresent, useSendScope } from "../lib/sendScope.tsx"
+import { tailAskIdx } from "../lib/answering.ts"
 import { shouldSubmitStagedEnter } from "../lib/composerKeyboard.ts"
 import { hasQuestionBlock } from "../lib/questionBlocks.ts"
 import { showsRegisteredDoneCard } from "../lib/registeredDone.ts"
@@ -33,13 +32,12 @@ import { agentCompletionCall } from "../lib/subAgentCompletion.ts"
 import { coalesceToolActivityMessages, historicalToolActivityMessages, liveRuntimeStartedAt, liveToolActivityRun, liveToolActivityTail, toolActivityLabel } from "../lib/toolActivity.ts"
 import { prefs } from "../lib/prefs.ts"
 import { ThreadComposerBox } from "./ThreadComposerBox.tsx"
-import { ThreadSlugContext, QueueDismissContext } from "./ChatView.tsx"
+import { ThreadSurface, useThreadSurface } from "./ThreadSurface.tsx"
 import { HeaderActions } from "./HeaderActions.tsx"
 import { ThreadLifecycleActions } from "./ThreadLifecycle.tsx"
 import { ThreadHeaderFacts } from "./ThreadHeaderFacts.tsx"
 import { QueueOpsSummary } from "./QueueOpsSummary.tsx"
 import { trackQueueDock } from "../lib/queueDockInset.ts"
-import { useFileDropZone, useFileIntakeHandle } from "../lib/fileDrop.ts"
 import { ThreadTitle } from "./ThreadTitle.tsx"
 import { DispatchForm } from "./NewThreadModal.tsx"
 import { StatusRow } from "./StatusRow.tsx"
@@ -49,7 +47,7 @@ import { consoleCardOrder, useConsoleGroup } from "../lib/consoleBoard.ts"
 import { useConsoleProjectList } from "../lib/consoleProjects.ts"
 import { ProjectScope } from "../lib/projectScope.tsx"
 import { keyProject } from "../lib/threadKey.ts"
-import { RegisteredAnsweringProvider, RegisteredQuestionStack, SettledQuestionStack, openQuestionsOf, useArrivedQuestions, useFenceQuestions, useRefusedFences, useSettledQuestions } from "./RegisteredQuestionCards.tsx"
+import { RegisteredQuestionStack, SettledQuestionStack, openQuestionsOf, useArrivedQuestions, useFenceQuestions, useRefusedFences, useSettledQuestions } from "./RegisteredQuestionCards.tsx"
 import { DividerHint, WAKE_DIVIDER_WIDE_ONLY, WakeDivider } from "./WakeDivider.tsx"
 import {
   captureTranscriptViewportAnchor,
@@ -1384,23 +1382,26 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
   // THE PROMPT BOX SENDS THE ANSWERS (lib/sendScope, maintainer 2026-10-11): the card's one send is the
   // box's Send button, which carries every staged answer and whatever is typed in it as one turn. The
   // handle is what the card-level Enter below and each question block's own Enter send through.
-  const composerSend = useComposerSendHandle()
-  const promptBoxSends = useComposerSendPresent(composerSend)
-  // A FILE DROPPED ANYWHERE ON THE CARD goes into its prompt box, exactly as one dropped on the box does
-  // (maintainer 2026-10-12: "drag a file anywhere onto a card in the queue in order to drop it into the
-  // chat"). The card is the zone and the box the intake (lib/fileDrop). A collapsed card has no box, so
-  // the drop opens it and the box takes the file as it mounts.
-  const fileIntake = useFileIntakeHandle()
-  const fileDropZone = useFileDropZone((files) => {
-    fileIntake.give(files)
-    setCollapsed(false)
+  //
+  // Dismiss THIS card through the same user-initiated auto-scroll exit the footer/header/answer paths
+  // use, exposed to the in-transcript fence buttons (done Mark-as-done, awaiting park) by the surface so
+  // EVERY card-dismissing control lands the next card at the viewport top — not just the ones that can
+  // reach onResolve directly. `cancel` reinstates it when an optimistic Mark-as-done is declined by the
+  // server. Stable identity (onResolve/onUnresolve are []-useCallbacks, thread.id is fixed per card) so
+  // the surface's context value never churns and its consumers don't re-render each frame.
+  const dismissThisCard = useCallback(() => onResolve(thread.id), [onResolve, thread.id])
+  const cancelThisCard = useCallback(() => onUnresolve(thread.id), [onUnresolve, thread.id])
+  // THE SURFACE (ThreadSurface) owns that controller, the send scope, the drop zone and every context
+  // the transcript reads; this card tells it only what is the card's own: that it leaves the queue when
+  // its thread is handed back, and that a COLLAPSED card has no prompt box — a file dropped on one opens
+  // it, and the box takes the file as it mounts (maintainer 2026-10-12: "drag a file anywhere onto a card
+  // in the queue in order to drop it into the chat").
+  const surface = useThreadSurface(thread.id, messages, {
+    exit: { dismiss: dismissThisCard, cancel: cancelThisCard },
+    onFilesDropped: () => setCollapsed(false),
   })
-  const composerFileDrop = useMemo(() => ({ over: fileDropZone.over, intake: fileIntake }), [fileDropZone.over, fileIntake])
-  const { answeringForMessage, answerable, anyAnswered, sendAnswers, sendMessage, stagedCount, takeAnswers } = useLiveAnswering(thread.id, messages, () => {
-    ;(document.activeElement as HTMLElement | null)?.blur()
-    onResolve(thread.id)
-  }, { onSendFailed: () => onUnresolve(thread.id), composer: composerSend })
-  const sendScope = useSendScope(composerSend, { stagedCount, takeAnswers })
+  const { answeringForMessage, answerable, anyAnswered, sendAnswers, sendMessage } = surface.answering
+  const promptBoxSends = surface.promptBoxSends
   // The card-level "Send answers" action is the FALLBACK for a card with no prompt box mounted (a
   // collapsed one): there it shows for the standing ask OR the moment the human touches an OLDER
   // question's chips — an answer you can stage but not send would be a dead end.
@@ -1412,14 +1413,6 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
   }, [messages, shadowedByMessage])
   const showSendAnswers = !promptBoxSends && fencesLive && ((answerable && !tailAskShadowed) || anyAnswered)
 
-  // Dismiss THIS card through the same user-initiated auto-scroll exit the footer/header/answer paths
-  // use, exposed to the in-transcript fence buttons (done Mark-as-done, awaiting park) via context so
-  // EVERY card-dismissing control lands the next card at the viewport top — not just the ones that can
-  // reach onResolve directly. `cancel` reinstates it when an optimistic Mark-as-done is declined by the
-  // server. Stable identity (onResolve/onUnresolve are []-useCallbacks, thread.id is fixed per card) so
-  // the memoized value below never churns and context consumers don't re-render each frame.
-  const dismissThisCard = useCallback(() => onResolve(thread.id), [onResolve, thread.id])
-  const cancelThisCard = useCallback(() => onUnresolve(thread.id), [onUnresolve, thread.id])
   // What the drawer's runtime-status ladder needs to pick this card's tail (ChatView runtimeStatusRung),
   // Working… rung included. `errorVisible` reads the window this card draws, where a provider-error row
   // survives the fold (lib/queueCollapse), so the card and that row never double up.
@@ -1437,19 +1430,16 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
   const queueRung = runtimeStatusRung(queueStatus)
   // The human's most recent landed ask — the provider-fault card's Retry resends it, as in the drawer.
   const lastAskIdx = useMemo(() => lastAskIndex(messages), [messages])
-  const queueDismiss = useMemo(() => ({ dismiss: dismissThisCard, cancel: cancelThisCard }), [dismissThisCard, cancelThisCard])
 
   return (
-    // Provide the thread slug so this card's transcript matches the thread view: sub-agent blocks go
-    // live (spinner + drill-in) and a done/awaiting fence card resolves its thread to show the confirm button.
-    <ThreadSlugContext.Provider value={thread.id}>
-    <QueueDismissContext.Provider value={queueDismiss}>
-    <SendScopeContext.Provider value={sendScope}>
-    <RegisteredAnsweringProvider thread={thread}>
-    {/* NO overflow-hidden: it would clip the sticky header out of stickiness. The header carries
-        rounded-t so the card's top corners still look clipped; the root's BLOCK_RADIUS handles the bottom.
-        (The exit pin above clips for the fade's duration with `overflow: clip`, which keeps stickiness.) */}
-    <div
+    // The card's root is its thread surface (ThreadSurface): the file drop zone, and everything this
+    // card's transcript and prompt box read from context.
+    // NO overflow-hidden: it would clip the sticky header out of stickiness. The header carries
+    // rounded-t so the card's top corners still look clipped; the root's BLOCK_RADIUS handles the bottom.
+    // (The exit pin above clips for the fade's duration with `overflow: clip`, which keeps stickiness.)
+    <ThreadSurface
+      surface={surface}
+      thread={thread}
       ref={cardRootRef}
       data-queue-card-root={thread.id}
       data-queue-leaving={leaving}
@@ -1489,10 +1479,9 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
       // element on the way to /full (see ExpandThreadLink) — the card is what morphs into the page's
       // thread column.
       data-vt-chat
-      {...fileDropZone.handlers}
       // The accent border while a file is over the card says WHICH card takes it; its prompt box says
       // where in it, with the same dashed "Drop file to attach" a drop on the box itself shows.
-      className={`flex flex-col min-w-0 max-w-full ${BLOCK_RADIUS} border ${fileDropZone.over ? "border-accent" : "border-border-strong"} bg-panel shadow-lg shadow-shadow-ink/25 transition-opacity ${resolving ? "opacity-40" : ""}`}
+      className={`flex flex-col min-w-0 max-w-full ${BLOCK_RADIUS} border ${surface.fileOver ? "border-accent" : "border-border-strong"} bg-panel shadow-lg shadow-shadow-ink/25 transition-opacity ${resolving ? "opacity-40" : ""}`}
     >
       {/* Sticky-header CONTAINING BLOCK, deliberately EXCLUDING the docked prompt box: position:sticky is
           clamped to its containing block, so wrapping only the header + body here stops the header at
@@ -1954,17 +1943,12 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
         // box is the way AROUND the question ("Or skip the questions and reply…") rather than a second
         // way to answer it.
         submitOverride={sendMessage}
-        fileDrop={composerFileDrop}
         // The shells read off the transcript, as the drawer passes them: a Codex thread's background
         // execs live there and nowhere on the board, so without them the two lines counted differently.
         above={<QueueOpsSummary thread={thread} transcriptShells={liveTranscriptShells} />}
       />
       )}
-    </div>
-    </RegisteredAnsweringProvider>
-    </SendScopeContext.Provider>
-    </QueueDismissContext.Provider>
-    </ThreadSlugContext.Provider>
+    </ThreadSurface>
   )
 }, queueCardPropsEqual)
 

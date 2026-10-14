@@ -34,7 +34,7 @@ import type { PairedAnswer } from "../lib/answersMessage.ts"
 import { ROOT_PATH, liveQuestionNodes, nodeAnswered, registeredAnswer, settledQuestionNodes, toParsedQuestion } from "../lib/registeredQuestion.ts"
 import { decodeQuestionPick, encodeQuestionPick, questionSpecAt } from "../lib/registeredPicks.ts"
 import { AnswersCard } from "./AnswersCard.tsx"
-import { QueueDismissContext } from "./ChatView.tsx"
+import { QueueDismissContext } from "../lib/threadContexts.ts"
 import { QuestionBlockCard } from "./QuestionBlockCard.tsx"
 import { CompactQuestionList, usePhoneQuestions } from "./PhoneQuestionCards.tsx"
 
@@ -479,8 +479,8 @@ export function ClosedQuestionCard({ spec, state, wrap }: { spec: AskedQuestion;
 }
 const NOT_ANSWERED = { chosenIdxs: [] }
 
-/** Mount ONCE per surface that draws registered cards in more than one place. Must sit INSIDE the
- *  surface's QueueDismissContext, which the send reads. */
+/** Mounted ONCE per thread surface, by the surface's shell (ThreadSurface) — INSIDE its
+ *  QueueDismissContext, which the send reads. */
 export function RegisteredAnsweringProvider({ thread, children }: { thread: ThreadView | undefined; children: ReactNode }) {
   const answering = useRegisteredAnswering(thread)
   return <RegisteredAnsweringContext.Provider value={answering}>{children}</RegisteredAnsweringContext.Provider>

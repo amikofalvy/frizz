@@ -23,7 +23,7 @@ import { RegisteredAnsweringContext } from "./RegisteredQuestionCards.tsx"
 import { SendScopeContext } from "../lib/sendScope.tsx"
 import { useStepsAnswer, withStepsDone } from "../lib/stepsAnswer.ts"
 import { sendPlaceholder, setSendMode, useSendMode } from "../lib/sendMode.ts"
-import type { SurfaceFileDrop } from "../lib/fileDrop.ts"
+import { useThreadSurfaceBox } from "./ThreadSurface.tsx"
 
 // THE prompt box for a registered thread — the single block every "steer this thread" surface renders.
 // The <Composer> leaf was already shared; the ~14 lines AROUND it were not, and the queue card's copy had
@@ -68,7 +68,6 @@ export function ThreadComposerBox({
   submitOverride,
   phoneBarOverride,
   phoneChrome,
-  fileDrop,
 }: {
   slug: string
   // Pure data- tag forwarded to the textarea. Also the two surfaces' only behavioral fork inside
@@ -100,10 +99,11 @@ export function ThreadComposerBox({
   // does, and /full never does — it keeps the desktop header at every width. Absent, the breakpoint
   // alone decides, as it did before the caller could say.
   phoneChrome?: boolean
-  // The surface's file drop zone, when the SURFACE takes a dropped file rather than the box alone — the
-  // queue card, anywhere on it. Desktop box only; see Composer's `fileDrop`.
-  fileDrop?: SurfaceFileDrop
 }): ReactElement {
+  // THE SURFACE this box sits in (ThreadSurface) — a required parent, not an optional one. It is the
+  // file drop zone: a file dropped anywhere on the queue card, the drawer or the full-screen page comes
+  // to this box, which draws the drop hint and owns the intake (see Composer's `fileDrop`).
+  const { fileDrop } = useThreadSurfaceBox()
   const snap = useSnapshot(store)
   const thread = snap.board?.threads.find((candidate) => candidate.id === slug)
   // THE ONE SEND (lib/sendScope). Everything staged on the surface's question cards leaves through
@@ -273,6 +273,7 @@ export function ThreadComposerBox({
           // is the thread's state: steering a turn in flight, or replying to one at rest.
           placeholder={thread?.foreign ? placeholder : turnRunning ? "Steer…" : "Reply…"}
           busy={controls.busy}
+          fileDrop={fileDrop}
           phone={{
             layout: "bar",
             tools: controls.phoneTools,

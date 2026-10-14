@@ -35,8 +35,10 @@ import { LinkifiedText } from "./LinkifiedText.tsx"
 import { parseSentContext, splitProseByTokens, tokenLabel, type SentContextItem } from "../lib/composerContext.ts"
 import { AnswersCard } from "./AnswersCard.tsx"
 import { DividerQuotedTitle, WAKE_DIVIDER_WIDE_ONLY, WakeDivider } from "./WakeDivider.tsx"
-import { useLiveAnswering, type LiveAnswering } from "../lib/answering.ts"
-import { SendScopeContext, useComposerSendHandle, usePromptBoxSends, useSendScope } from "../lib/sendScope.tsx"
+import type { LiveAnswering } from "../lib/answering.ts"
+import { usePromptBoxSends } from "../lib/sendScope.tsx"
+import { QueueDismissContext, ThreadSlugContext } from "../lib/threadContexts.ts"
+import { ThreadSurface, useThreadSurface } from "./ThreadSurface.tsx"
 import { useIsMobile } from "../lib/mobile.ts"
 import { MobileAnswerSheet } from "./MobileAnswerSheet.tsx"
 import { PhoneAnswerBar, PhoneQuestionsContext, type PhoneQuestions } from "./PhoneQuestionCards.tsx"
@@ -85,7 +87,7 @@ import { ChildOpRow } from "./ChildOpRow.tsx"
 import { ThreadLinks } from "./ThreadLinks.tsx"
 import { TRANSCRIPT_META_LABEL_CLASS, transcriptMetaChevronClass } from "../lib/transcriptMetaLabels.ts"
 import { InteractionStack } from "./InteractionCards.tsx"
-import { ClosedQuestionCard, RegisteredAnsweringProvider, RegisteredQuestionCard, RegisteredQuestionStack, SettledQuestionCard, SettledQuestionStack, UnregisteredQuestionCard, openQuestionsOf, useArrivedQuestions, useFenceQuestions, useRefusedFences, useSettledQuestions, type FenceQuestionRow, type SettledQuestion } from "./RegisteredQuestionCards.tsx"
+import { ClosedQuestionCard, RegisteredQuestionCard, RegisteredQuestionStack, SettledQuestionCard, SettledQuestionStack, UnregisteredQuestionCard, openQuestionsOf, useArrivedQuestions, useFenceQuestions, useRefusedFences, useSettledQuestions, type FenceQuestionRow, type SettledQuestion } from "./RegisteredQuestionCards.tsx"
 // The shared card chrome and THE question card both live in their own modules now, so every
 // surface can render them without importing the thread view. QuestionBlockCard in particular is
 // shared with the native-AskUserQuestion path, which reaches it through InteractionCards.tsx —
@@ -120,13 +122,9 @@ import { META_CARD_STEP, PICTURE_STEP, STEP, TIME_BREAK_ABOVE, TIME_BREAK_BELOW,
 // answering controller). Re-exported here so existing importers keep working.
 export type { BlockAnswer, MessageAnswering }
 
-// The thread slug the current message tree belongs to — set by ChatView so a nested AgentBlock can
-// resolve its live tracked sub-agent (for the "running Nm" header + drill-in drawer) without threading
-// the slug through every intermediate. Null in surfaces that don't provide it (the queue card, a
-// sub-agent's own transcript) → AgentBlocks there render as plain (non-live) prompt cards. The QUEUE
-// card also provides this now (maintainer 2026-07-15): its sub-agent blocks go live (spinner +
-// drill-in) AND its done/awaiting fence cards resolve their thread to show the confirm button.
-export const ThreadSlugContext = createContext<string | null>(null)
+// ThreadSlugContext and QueueDismissContext are the thread surface's (components/ThreadSurface.tsx
+// provides both). Re-exported here so existing importers keep working.
+export { ThreadSlugContext, QueueDismissContext }
 
 // The slug a rendered SUB-AGENT REFERENCE resolves its drill-in against, for message trees that are
 // NOT the thread's own transcript. Only the sub-agent drawer sets it (with the PARENT thread's slug),
@@ -147,15 +145,6 @@ function useChildDrillSlug(): string | null {
   const drillSlug = useContext(ChildDrillSlugContext)
   return threadSlug ?? drillSlug
 }
-
-// A QUEUE card provides this so any in-transcript dismissal control — the ```done fence's Mark-as-done
-// button, the ```awaiting fence's park button — routes its OWN card through the queue's user-initiated
-// exit (fade → auto-scroll the next card to the viewport top) instead of the passive board-departure
-// "hold a neighbour in place" path. `dismiss` is exactly the card's `onResolve(slug)`; `cancel` reinstates
-// an OPTIMISTICALLY dismissed card (its `onUnresolve(slug)`) when the completion RPC declines — reached
-// without threading either through the fence renderer. Null off the queue (the thread drawer), where there
-// is no queue to scroll — there the fence buttons behave as before (archive/snooze, no scroll).
-export const QueueDismissContext = createContext<{ dismiss: () => void; cancel: () => void } | null>(null)
 
 function isLiveTranscriptBackgroundTool(tool: TranscriptToolCall): boolean {
   return tool.status === "pending" && tool.backgroundState === "background"
@@ -233,19 +222,24 @@ export function ThreadView({ slug, onStatusApplied, onClose, virtualized = false
   // the page sets it off the same SPLIT_MIN_PX the `split:` variant shows the pane at. A thread opened
   // in a drawer over /full is not the rail's thread, so it keeps its own ops strip.
   const { splitFileViewer } = useSnapshot(store)
+  // The header is handed to ChatView, which owns the thread's surface (ThreadSurface): the surface is
+  // the whole thread, header included, as the queue card's is.
   return (
-    <div className="flex-1 min-h-0 flex flex-col">
-      {phone ? (
+    <ChatView
+      slug={slug}
+      virtualized={virtualized}
+      phone={phone}
+      railBeside={showReturnToQueue && splitFileViewer}
+      header={phone ? (
         <MobileThreadHeader slug={slug} onClose={onClose} />
       ) : (
         <ThreadHeader slug={slug} onStatusApplied={onStatusApplied} onClose={onClose} showReturnToQueue={showReturnToQueue} />
       )}
-      <ChatView slug={slug} virtualized={virtualized} phone={phone} railBeside={showReturnToQueue && splitFileViewer} />
-    </div>
+    />
   )
 }
 
-function ChatView({ slug, virtualized, phone = false, railBeside = false }: { slug: string; virtualized: boolean; phone?: boolean; railBeside?: boolean }) {
+function ChatView({ slug, virtualized, phone = false, railBeside = false, header }: { slug: string; virtualized: boolean; phone?: boolean; railBeside?: boolean; header: ReactNode }) {
   const board = useBoard()
   const boardThread = threadBySlug(board, slug)
   // ANSWERED registered questions stay in the transcript, greyed, where their open card stood (see
@@ -370,9 +364,10 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
   // that message's blocks). The queue card runs the identical scope through the same controller.
   // THE PROMPT BOX SENDS THEM (lib/sendScope): with the thread's prompt box mounted under this
   // transcript, Enter in a block is that box's send, and no message draws a Send answers of its own.
-  const composerSend = useComposerSendHandle()
-  const { answeringForMessage, stagedCount, takeAnswers } = useLiveAnswering(slug, messages, undefined, { composer: composerSend })
-  const sendScope = useSendScope(composerSend, { stagedCount, takeAnswers })
+  // THE SURFACE (ThreadSurface) owns that controller, the send scope, the drop zone and every context
+  // the transcript reads. This component decides only how the drawer and the full-screen page lay out.
+  const surface = useThreadSurface(slug, messages)
+  const { answeringForMessage } = surface.answering
   // The registered questions standing at each message — its rest and every later one — so a fence
   // restating or naming one folds into its card.
   const shadowedByMessage = useMemo(() => registeredStandingAt(messages, openQuestions), [messages, openQuestions])
@@ -443,10 +438,9 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
   }, [q, queryClient, slug])
 
   return (
-    <ThreadSlugContext.Provider value={slug}>
-    <SendScopeContext.Provider value={sendScope}>
-    <RegisteredAnsweringProvider thread={thread}>
+    <ThreadSurface surface={surface} thread={thread} className="flex-1 min-h-0 flex flex-col">
     <PhoneQuestionsContext.Provider value={phoneQuestions}>
+    {header}
     <div
       data-drawer-scroll-ready={q.isPending ? "false" : "true"}
       className="flex-1 min-h-0 flex flex-col overflow-hidden outline-none"
@@ -685,9 +679,7 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
       {phone && answerSheetOpen && <RegisteredAnswerSheet questions={openQuestions} onClose={() => setAnswerSheetOpen(false)} />}
     </div>
     </PhoneQuestionsContext.Provider>
-    </RegisteredAnsweringProvider>
-    </SendScopeContext.Provider>
-    </ThreadSlugContext.Provider>
+    </ThreadSurface>
   )
 }
 
