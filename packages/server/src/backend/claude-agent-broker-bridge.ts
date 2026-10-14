@@ -5,7 +5,7 @@
 // auto-allow, honoring the thread's permission mode — matching the retired argv path's
 // `--permission-mode auto`), and sends follow-up turns.
 import { randomUUID } from "node:crypto"
-import { adoptOrForkBroker, killBroker, lastKnownBrokerDaemon, liveBrokerRecord, liveBrokerRecords, claudeBrokerRecordPath, resolveClaudeExecutableAbsolute, takeBrokerRetirement, type BrokerRetirementMark, type BrokerRetirementReason } from "./claude-broker-host.ts"
+import { adoptOrForkBroker, brokerLivenessSnapshot, killBroker, lastKnownBrokerDaemon, liveBrokerRecord, liveBrokerRecords, claudeBrokerRecordPath, resolveClaudeExecutableAbsolute, takeBrokerRetirement, type BrokerRetirementMark, type BrokerRetirementReason } from "./claude-broker-host.ts"
 import { connectClaudeBroker, type ClaudeBrokerClient } from "./claude-broker-client.ts"
 import { describeClaudeBrokerExit, readClaudeBrokerExit, type ClaudeBrokerExitRecord } from "./claude-broker-diagnostics.ts"
 import type { ClaudeDiagnostic, ClaudePermissionDecision, ClaudePermissionRequest, ClaudeQueryEvent, ClaudeSkillInfo } from "./claude-agent-sdk-protocol.ts"
@@ -289,6 +289,9 @@ export interface ClaudeAgentBrokerBridge {
    *  signal for a headless broker row (the parallel of codex's turnLiveness), independent of whether
    *  THIS frizz process currently holds a live socket to it. */
   isDaemonAlive(sessionId: string): boolean
+  /** `isDaemonAlive` for many sessions at once — one directory listing, then a record read only for a
+   *  session that has one (claude-broker-host.ts brokerLivenessSnapshot). The board's per-build reader. */
+  daemonLiveness?(): (sessionId: string) => boolean
   /** What the daemon for this session recorded on its way out, when one is not running now. The
    *  attribution behind a headless stall: `isDaemonAlive` says the thread is dead, this says why
    *  (idle-timeout / signal-SIGTERM / self-collected-record-reassigned / …). `null` means it left no
@@ -930,6 +933,10 @@ export function createClaudeAgentBrokerBridge(deps: ClaudeBrokerBridgeDeps): Cla
 
     isDaemonAlive(sessionId) {
       return liveBrokerRecord(claudeBrokerRecordPath(deps.stateDir, sessionId)) !== null
+    },
+
+    daemonLiveness() {
+      return brokerLivenessSnapshot(deps.stateDir)
     },
 
     daemonExit(sessionId) {

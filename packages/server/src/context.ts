@@ -1006,6 +1006,7 @@ function createContextUnchecked(opts: ContextOptions, resources: PartialContextR
     // Headless-stall signal for a broker row: the ownerless daemon's record. Absent bridge ⇒ default
     // "alive" so a bridge-less server never falsely crash-cards a broker row (there are none anyway).
     claudeBrokerDaemonAlive: claudeBroker ? (sessionId) => claudeBroker.isDaemonAlive(sessionId) : undefined,
+    claudeBrokerLiveness: claudeBroker?.daemonLiveness ? () => claudeBroker.daemonLiveness!() : undefined,
     claudeModels: peekClaudeModels,
   })
   resources.board = board

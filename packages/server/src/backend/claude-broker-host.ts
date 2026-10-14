@@ -3,7 +3,7 @@
 // codex-app-server-host.ts (fork/record/adopt), keyed per Claude session id (one broker per thread).
 import { spawn } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
-import { accessSync, constants as fsConstants, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs"
+import { accessSync, constants as fsConstants, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs"
 import { delimiter, dirname, isAbsolute, join } from "node:path"
 import { resolveDetachedDaemonEntry } from "../detached-daemons.ts"
 import type { BrokerRecord, ClaudeBrokerConfig } from "./claude-agent-broker.ts"
@@ -90,8 +90,70 @@ export function claudeBrokerSocketPath(stateDir: string, sessionId: string): str
 
 /** The discovery record lives under the project state dir (long paths are fine here). */
 export function claudeBrokerRecordPath(stateDir: string, sessionId: string): string {
-  const key = createHash("sha256").update(sessionId).digest("hex").slice(0, 16)
-  return join(stateDir, "claude-broker", `${key}.json`)
+  return join(stateDir, "claude-broker", claudeBrokerRecordName(sessionId))
+}
+
+// The record's FILE NAME for a session: a hash of its id, so it is the same for the life of the process
+// and worth computing once. The board asks it for every Claude row on every build — 5,000 sha256s per
+// refresh on a 5,000-thread board, 4% of the refresh on its own in a CPU profile.
+const recordNames = new Map<string, string>()
+function claudeBrokerRecordName(sessionId: string): string {
+  let name = recordNames.get(sessionId)
+  if (name === undefined) {
+    name = `${createHash("sha256").update(sessionId).digest("hex").slice(0, 16)}.json`
+    recordNames.set(sessionId, name)
+  }
+  return name
+}
+
+// ---- which records EXIST, read once per board build -----------------------------------------------
+// `isDaemonAlive` reads one record file per session, and on a board of history almost every one of
+// those reads fails: a dead daemon's record is unlinked the first time anyone notices (liveBrokerRecord),
+// so an archived thread's record is simply not there. A failed read is a THROWN ENOENT — measured on a
+// 5,000-thread board as 22% of a ~260ms board refresh, one throwing syscall per archived thread, every
+// refresh, to learn the same "absent" again.
+//
+// So the board takes the directory's listing once per build (brokerLivenessSnapshot) and reads a record
+// only when its name is in it — which is exactly the set of reads that can return anything: an absent
+// file is `null` from liveBrokerRecord with no side effect, so skipping it changes no answer.
+//
+// The listing itself is kept until the directory changes, which a creation or removal of an entry always
+// records in the directory's own mtime. A daemon rewriting its record IN PLACE does not move it, and
+// needs not to: that name is already listed, so its file is read. One trap, the classic racy-timestamp
+// one: a filesystem stamps mtimes at its own granularity (1s on HFS+, 2s on FAT), so an entry created
+// within the same tick as the listing could leave the mtime unchanged. A listing is therefore only
+// trusted once the directory's mtime is at least RACY_LISTING_MS older than the moment it was taken;
+// until then it is taken again on the next build.
+const RACY_LISTING_MS = 2_000
+const listings = new Map<string, { mtimeMs: number; ino: number; names: ReadonlySet<string>; trusted: boolean }>()
+function recordListing(dir: string): ReadonlySet<string> {
+  let stat
+  try { stat = statSync(dir, { throwIfNoEntry: false }) } catch { stat = undefined }
+  if (!stat) {
+    listings.delete(dir)
+    return new Set()
+  }
+  const cached = listings.get(dir)
+  if (cached && cached.trusted && cached.mtimeMs === stat.mtimeMs && cached.ino === stat.ino) return cached.names
+  const listedAt = Date.now()
+  let names: ReadonlySet<string>
+  try { names = new Set(readdirSync(dir)) } catch { names = new Set() }
+  listings.set(dir, { mtimeMs: stat.mtimeMs, ino: stat.ino, names, trusted: stat.mtimeMs <= listedAt - RACY_LISTING_MS })
+  return names
+}
+
+/**
+ * Liveness of every broker daemon under this state dir, as one snapshot: the directory listing is
+ * taken once, and a session's record is read (and pid-probed, and pruned when dead) only when it
+ * exists. Answers exactly what `liveBrokerRecord(claudeBrokerRecordPath(…)) !== null` answers.
+ */
+export function brokerLivenessSnapshot(stateDir: string): (sessionId: string) => boolean {
+  const dir = join(stateDir, "claude-broker")
+  const names = recordListing(dir)
+  return (sessionId) => {
+    const name = claudeBrokerRecordName(sessionId)
+    return names.has(name) && liveBrokerRecord(join(dir, name)) !== null
+  }
 }
 
 /** Why frizz retired a daemon ON PURPOSE, while keeping the conversation. Every one of these ends a

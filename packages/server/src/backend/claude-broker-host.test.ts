@@ -1,9 +1,9 @@
 import assert from "node:assert/strict"
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { delimiter, join } from "node:path"
 import { test } from "node:test"
-import { claudeBrokerRecordPath, forkBroker, killBroker, resolveClaudeExecutableAbsolute } from "./claude-broker-host.ts"
+import { brokerLivenessSnapshot, claudeBrokerRecordPath, forkBroker, killBroker, liveBrokerRecord, resolveClaudeExecutableAbsolute } from "./claude-broker-host.ts"
 
 // The npm `.cmd` stub, verbatim from a real `npm i -g @anthropic-ai/claude-code` on Windows Server
 // 2022 (claude 2.1.220). Its whole job is to call the native exe that ships inside the package.
@@ -213,4 +213,57 @@ test("killBroker: win32 routes through taskkill /T /F and drops the record; posi
   assert.equal(killBroker(dir, sessionId, undefined, { ...deps, platform: "win32" }), false)
   assert.equal(spawns.length, 1)
   assert.equal(kills.length, 1)
+})
+
+// --- brokerLivenessSnapshot: the board's per-build liveness, one listing instead of a read per row ------
+
+test("brokerLivenessSnapshot answers exactly what liveBrokerRecord answers, row for row", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "frizz-liveness-"))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const record = (sessionId: string, daemonPid: number) => {
+    const path = claudeBrokerRecordPath(dir, sessionId)
+    mkdirSync(join(path, ".."), { recursive: true })
+    writeFileSync(path, JSON.stringify({ daemonPid, socketPath: join(dir, "s"), sessionId, generation: "g1", createdAt: new Date().toISOString() }))
+    return path
+  }
+  const live = "aaaaaaaa-0000-4000-8000-000000000001"
+  const dead = "aaaaaaaa-0000-4000-8000-000000000002"
+  const absent = "aaaaaaaa-0000-4000-8000-000000000003"
+  assert.equal(brokerLivenessSnapshot(dir)(live), false, "no record directory at all: nothing is alive")
+
+  record(live, process.pid) // this process stands in for a running daemon
+  const deadPath = record(dead, 2 ** 22 + 12345) // no such pid
+  const alive = brokerLivenessSnapshot(dir)
+  assert.equal(alive(live), true)
+  assert.equal(alive(dead), false)
+  assert.equal(existsSync(deadPath), false, "a dead daemon's record is pruned, exactly as liveBrokerRecord prunes it")
+  assert.equal(alive(absent), false)
+  for (const id of [live, dead, absent]) assert.equal(alive(id), liveBrokerRecord(claudeBrokerRecordPath(dir, id)) !== null, id)
+})
+
+test("brokerLivenessSnapshot sees a record created after its listing was cached", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "frizz-liveness-"))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const records = join(dir, "claude-broker")
+  mkdirSync(records, { recursive: true })
+  // An old directory: the listing taken now is TRUSTED and kept across builds.
+  const old = new Date(Date.now() - 60_000)
+  utimesSync(records, old, old)
+  const sessionId = "bbbbbbbb-0000-4000-8000-000000000001"
+  assert.equal(brokerLivenessSnapshot(dir)(sessionId), false)
+  assert.equal(brokerLivenessSnapshot(dir)(sessionId), false, "served from the cached listing")
+
+  // A daemon starts and writes its record: creating an entry moves the directory's mtime, which is what
+  // retires the cached listing.
+  writeFileSync(claudeBrokerRecordPath(dir, sessionId), JSON.stringify({ daemonPid: process.pid, socketPath: join(dir, "s"), sessionId, generation: "g1", createdAt: new Date().toISOString() }))
+  assert.equal(brokerLivenessSnapshot(dir)(sessionId), true, "the new record is seen on the very next build")
+
+  // NEGATIVE CONTROL: the same creation with the directory's mtime forced back to the cached value is
+  // invisible — proof the listing really is cached, so the assertion above tested the invalidation.
+  const other = "bbbbbbbb-0000-4000-8000-000000000002"
+  utimesSync(records, old, old)
+  assert.equal(brokerLivenessSnapshot(dir)(other), false) // re-list and trust at the old mtime
+  writeFileSync(claudeBrokerRecordPath(dir, other), JSON.stringify({ daemonPid: process.pid, socketPath: join(dir, "s"), sessionId: other, generation: "g1", createdAt: new Date().toISOString() }))
+  utimesSync(records, old, old)
+  assert.equal(brokerLivenessSnapshot(dir)(other), false, "an unchanged mtime serves the cached listing")
 })

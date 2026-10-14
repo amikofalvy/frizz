@@ -2096,6 +2096,10 @@ export interface BoardManagerDeps {
   now?: () => number
   codexTurnLiveness?: CodexTurnLivenessReader
   claudeBrokerDaemonAlive?: ClaudeBrokerLivenessReader
+  /** The same answer for a whole build: called once per assemble, it returns a reader backed by one
+   *  snapshot of the broker's record directory (claude-broker-host.ts brokerLivenessSnapshot), so a
+   *  board of history does not pay a failed file read per archived thread. Preferred when present. */
+  claudeBrokerLiveness?: () => ClaudeBrokerLivenessReader
   /** The pinned Claude runtime's resolved catalogue, read synchronously per build (peekClaudeModels). */
   claudeModels?: () => readonly ClaudeModel[] | undefined
   /** What a thread's latest question-fence sync refused (question-fences.ts QuestionFaultBook). */
@@ -2179,6 +2183,7 @@ export function createBoard(
     // instead of five per row. On the maintainer's 558-thread board that is 2,794 statements per
     // rebuild down to 9, all of it on the event loop — see ThreadRegistries.
     const registries = readThreadRegistries(storage)
+    const brokerAlive = deps.claudeBrokerLiveness?.() ?? claudeBrokerDaemonAlive
     const currentInteractionKeys = new Set<string>()
     const out: ThreadView[] = []
     for (const row of rows) {
@@ -2216,7 +2221,7 @@ export function createBoard(
         interactionPresence,
         nowMs,
         codexTurnLiveness,
-        claudeBrokerDaemonAlive,
+        brokerAlive,
         registries,
         github,
         issueBook,
