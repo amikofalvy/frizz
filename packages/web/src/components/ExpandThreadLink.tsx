@@ -1,5 +1,7 @@
-import type { MouseEvent } from "react"
+import { useRef, type MouseEvent } from "react"
+import { useQueryClient } from "@tanstack/react-query"
 import { Maximize2 } from "lucide-react"
+import { warmTranscript } from "../hooks.ts"
 import { captureFullscreenEnterAnchor, rememberFullscreenOrigin } from "../lib/fullscreenHandoff.ts"
 import { armFullscreenMorph } from "../lib/fullscreenMorph.ts"
 import { spaNavigate } from "../lib/router.ts"
@@ -24,6 +26,8 @@ import { Tooltip } from "./Tooltip.tsx"
 // AFTER this click, so a click-time clear removed the very sheet the transition slides.
 export function ExpandThreadLink({ slug, size = 14, className, label = "Open fullscreen" }: { slug: string; size?: number; className?: string; label?: string }) {
   const href = standaloneThreadHref(slug)
+  const queryClient = useQueryClient()
+  const warming = useRef(false)
   function onClick(event: MouseEvent<HTMLAnchorElement>) {
     // Never let the click reach the row/card underneath: the sidebar row would ALSO open its drawer.
     event.stopPropagation()
@@ -40,6 +44,19 @@ export function ExpandThreadLink({ slug, size = 14, className, label = "Open ful
     // And the address they are at, so the way OUT of /full leads back to this same surface rather than
     // to the board root — which for a drawer-read thread mounts nothing to morph back into.
     if (typeof location !== "undefined") rememberFullscreenOrigin(slug, location.pathname)
+    // A door on a surface already showing the thread has its transcript cached and goes at once. A
+    // sidebar row's door usually does not: the page would mount on "Loading…", and the view transition
+    // would cross-fade that frame in and then cut to the transcript. So it waits for the transcript, a
+    // few hundred ms at most (hooks.ts warmTranscript), and a second click meanwhile is the same one.
+    if (queryClient.getQueryData(["transcript", slug]) !== undefined) return go(surface, animate)
+    if (warming.current) return
+    warming.current = true
+    void warmTranscript(queryClient, slug).then(() => {
+      warming.current = false
+      go(surface, animate)
+    })
+  }
+  function go(surface: HTMLElement | null, animate: boolean) {
     if (animate && surface) {
       // Tag it as the transition's shared element — imperatively, so exactly ONE element ever carries
       // the name (a queue card and an open drawer can both be on screen; `view-transition-name` must be

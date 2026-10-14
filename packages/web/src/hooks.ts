@@ -258,6 +258,39 @@ export function latestConfirmation(dataUpdatedAt: number | undefined, newestRend
   return new Date(at).toISOString()
 }
 
+// The transcript query's read, shared by the hook and by warmTranscript below so a warmed cache entry is
+// exactly the one the hook would have written.
+// Preserve optimistic sends across a poll refetch too (not just the socket push) — see mergeOptimistic.
+async function fetchTranscript(qc: QueryClient, slug: string): Promise<TranscriptData> {
+  const res = await rpc.threadTranscript({ slug })
+  const prev = qc.getQueryData<TranscriptData>(["transcript", slug])
+  const reconciled = reconcileLatestPage(prev as PaginatedTranscriptData | undefined, res)
+  return {
+    ...reconciled,
+    // preserveMessageIdentity: unchanged messages keep their previous object so memoized rows
+    // bail out of re-render — a refetch repaints only what actually changed.
+    messages: preserveMessageIdentity(
+      prev?.messages,
+      mergeOptimistic(prev?.messages, reconciled.messages as ChatMessage[]),
+    ),
+  }
+}
+
+/** How long a navigation waits for a thread's transcript before it goes ahead without it. */
+export const WARM_TRANSCRIPT_MS = 300
+
+// WARM A THREAD'S TRANSCRIPT BEFORE A SURFACE MOUNTS ON IT. A navigation that mounts a thread whose
+// transcript is not cached paints "Loading…" first and the transcript a beat later; under the fullscreen
+// door's view transition that first frame is the one the browser snapshots and cross-fades in, so the
+// page arrived as a spinner and then cut to its content (a sidebar row's door, 2 states where 1 says it,
+// 2026-10-14). Resolves when the cache has the transcript, or after `capMs` regardless, so a slow read
+// costs the click at most that long and the surface's own query takes over from there.
+export function warmTranscript(qc: QueryClient, slug: string, capMs = WARM_TRANSCRIPT_MS): Promise<void> {
+  if (qc.getQueryData(["transcript", slug]) !== undefined) return Promise.resolve()
+  const read = qc.prefetchQuery({ queryKey: ["transcript", slug], queryFn: () => fetchTranscript(qc, slug), gcTime: REVISIT_GC_MS })
+  return Promise.race([read, new Promise<void>((resolve) => setTimeout(resolve, capMs))])
+}
+
 export function useTranscript(slug: string, opts: { poll: boolean }) {
   const qc = useQueryClient()
   const snap = useSnapshot(store)
@@ -271,21 +304,7 @@ export function useTranscript(slug: string, opts: { poll: boolean }) {
 
   const query = useQuery({
     queryKey: ["transcript", slug],
-    // Preserve optimistic sends across a poll refetch too (not just the socket push) — see mergeOptimistic.
-    queryFn: async () => {
-      const res = await rpc.threadTranscript({ slug })
-      const prev = qc.getQueryData<TranscriptData>(["transcript", slug])
-      const reconciled = reconcileLatestPage(prev as PaginatedTranscriptData | undefined, res)
-      return {
-        ...reconciled,
-        // preserveMessageIdentity: unchanged messages keep their previous object so memoized rows
-        // bail out of re-render — a refetch repaints only what actually changed.
-        messages: preserveMessageIdentity(
-          prev?.messages,
-          mergeOptimistic(prev?.messages, reconciled.messages as ChatMessage[]),
-        ),
-      }
-    },
+    queryFn: () => fetchTranscript(qc, slug),
     // A typed per-subscription transport rejection (logical overflow or aggregate read budget) never
     // interval-polls: keep the last complete copy visible and let the banner offer explicit one-shot
     // refresh/retry actions. An overflowed slug is still kept fresh — one paged HTTP pull per activity
