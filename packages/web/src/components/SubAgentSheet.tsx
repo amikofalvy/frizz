@@ -3,13 +3,20 @@ import { useQueryClient } from "@tanstack/react-query"
 import { useProjectDir, useSubAgentTranscript } from "../hooks.ts"
 import { rpc } from "../api/rpc.ts"
 import { showToast } from "../store.ts"
+import { formatFixedDuration } from "../lib/durationLabels.ts"
+import { PANE_HEADER_HEIGHT_CLASS } from "../lib/paneHeaderHeight.ts"
 import { PROMPT_CONTROL_TYPOGRAPHY_CLASS } from "../lib/promptControlTypography.ts"
+import { AGENT_OUTCOME_VERB } from "../lib/subAgentCompletion.ts"
 import { subAgentProfileLabel } from "../lib/subAgentProfile.ts"
 import { coalesceToolActivityMessages, historicalToolActivityMessages, liveRuntimeStartedAt, liveToolActivityRun, liveToolActivityTail, toolActivityLabel } from "../lib/toolActivity.ts"
 import { BackgroundOpsStrip, ChildDrillSlugContext, Message, VSpace, WorkingIndicator, transcriptBackgroundShells, withMessageSpacers, withoutLiveTranscriptBackgroundTools, workingIndicatorGap } from "./ChatView.tsx"
 import { Composer } from "./Composer.tsx"
+import { ContextReading } from "./ContextMeter.tsx"
+import { DrawerStopCheck } from "./DrawerStopCheck.tsx"
+import { HeaderFacts } from "./ThreadHeaderFacts.tsx"
+import { LifecycleReadout } from "./ThreadLifecycle.tsx"
 import { Sheet } from "./ui/Sheet.tsx"
-import { SheetHeader } from "./ui/SheetHeader.tsx"
+import { SheetClose } from "./ui/SheetHeader.tsx"
 
 // One SUB-AGENT layer of the side-drawer stack: a right sheet (same slide/backdrop family as the
 // thread sheet — via the shared <Sheet>) showing a live/stale sub-agent's OWN transcript. It overlays
@@ -42,6 +49,17 @@ import { SheetHeader } from "./ui/SheetHeader.tsx"
 //    broker thread. This is deliberately separate from the × on a child row: × retires stale tracking;
 //    Stop sub-agent terminates real work and waits for the daemon/provider to confirm the request.
 //
+// THE HEADER IS A THREAD HEADER (2026-10-14). It was a bare title — "runtime/profile details live on
+// the dispatch row that opens this drawer" — with the stop as a labelled button in a footer of its own,
+// which made the one drawer that overlays a thread the one agent panel that did not read like one
+// (maintainer: "why is the Stop Subagent button at the bottom instead of there being another checkmark
+// icon in the upper right, as with the other agent panels? Why not include things like the context and
+// the last active stuff in the header"). So it takes the thread header's layout and its split of the
+// two edges (ThreadLifecycle.tsx): the TOP manages the agent — its name, "Last active · ◔ context" read
+// off the child's own transcript, and at the far right the check that ends it, in the slot and glyph of
+// the thread's Mark as done, which ends a live thread's run the same way; once it has ended the slot
+// states how (Finished / Stopped / Failed), as a done thread's says Done. The BOTTOM steers the run.
+//
 // INSTANT OPEN: the frame + header + spinner mount and paint IMMEDIATELY; the heavy transcript body is
 // deferred one frame (bodyReady) so the click→sheet-visible latency isn't gated on parsing/rendering a
 // large transcript. The spinner covers the gap.
@@ -67,6 +85,8 @@ export function SubAgentSheet({
   // Deferred heavy body — mount the shell first, render the transcript one frame later (see header).
   const [bodyReady, setBodyReady] = useState(false)
   const scrollerRef = useRef<HTMLDivElement>(null)
+  const [stopping, setStopping] = useState(false)
+  const qc = useQueryClient()
 
   const q = useSubAgentTranscript(slug, subId)
   const projectDir = useProjectDir()
@@ -131,13 +151,60 @@ export function SubAgentSheet({
     }
   }, [bodyReady])
 
+  function stop() {
+    if (stopping) return
+    setStopping(true)
+    rpc.subAgentStop({ slug, id: subId })
+      .then(({ descendantsStopped, note: subtree }) => {
+        // The subtree is the part the drawer cannot show: this sheet renders ONE child's transcript,
+        // so its own fan-out ending is only ever visible here. A descendant frizz could not stop is
+        // live work and gets the longer toast.
+        if (subtree) showToast(`Sub-agent stopped. ${subtree}`, { duration: 7000 })
+        else showToast(descendantsStopped > 0 ? `Sub-agent and ${descendantsStopped} descendant${descendantsStopped === 1 ? "" : "s"} stopped` : "Sub-agent stopped")
+        void qc.invalidateQueries({ queryKey: ["subAgentTranscript", slug, subId] })
+      })
+      .catch((error: unknown) => {
+        showToast(error instanceof Error ? error.message : "Could not stop this sub-agent")
+      })
+      .finally(() => setStopping(false))
+  }
+
+  const lifecycle = q.data?.stoppable
+    ? <DrawerStopCheck data-stop-subagent="" label="Stop sub-agent" stopping={stopping} onStop={stop} />
+    : q.data?.outcome
+      ? <SubAgentOutcome outcome={q.data.outcome} startedAt={q.data.startedAt ?? startedAt} finishedAt={q.data.finishedAt} />
+      : null
+
   return (
     <Sheet id={id} depth={depth} widthDepth={widthDepth}>
       {(close) => (
         <>
-          {/* Header shell paints immediately (part of the instant-open shell). Runtime/profile details
-              live on the dispatch row that opens this drawer; the drawer header only names the work. */}
-          <SheetHeader title={label} onClose={close} />
+          {/* Header shell paints immediately (part of the instant-open shell); its facts and its
+              lifecycle slot fill in when the transcript query lands. The thread header's geometry —
+              height, `px-3`, the title group's `pl-1` — WITHOUT its narrow-width wrap: that rule gives
+              a strip of icons a row of its own below 640px, and one check alone there sat on an empty
+              line under the close button. The title truncates instead. */}
+          <header data-subagent-header className={`flex ${PANE_HEADER_HEIGHT_CLASS} min-w-0 shrink-0 items-center gap-2.5 border-b border-border bg-panel px-3`}>
+            <div className="flex min-w-0 flex-1 items-center gap-2.5 pl-1">
+              <SheetClose onClose={close} />
+              <div className="min-w-0 flex-1 leading-tight">
+                {/* ThreadTitle's read-only shape: a sub-agent's name is its dispatch description,
+                    which nothing here can rename. */}
+                <div className="flex min-w-0 items-center">
+                  <div className="min-w-0 max-w-full shrink truncate px-0.5 -mx-0.5 font-semibold text-[15px]" title={label}>
+                    {label}
+                  </div>
+                </div>
+                <HeaderFacts
+                  data-subagent-header-facts=""
+                  lastActiveAt={q.data?.lastActivityAt}
+                  fallbackAt={q.data?.startedAt ?? startedAt}
+                  reading={q.data?.context ? <ContextReading context={q.data.context} /> : null}
+                />
+              </div>
+            </div>
+            {lifecycle && <div className="flex shrink-0 items-center">{lifecycle}</div>}
+          </header>
 
           <div ref={scrollerRef} className="flex-1 min-h-0 overflow-y-auto">
             {unavailable ? (
@@ -185,6 +252,7 @@ export function SubAgentSheet({
             note={q.data?.steerNote ?? null}
             stoppable={q.data?.stoppable === true}
             stopNote={q.data?.stopNote ?? null}
+            stopping={stopping}
             // The ops strip, scoped to THIS child's own subtree, as rows under its box — the thread's
             // drawer counts its ops on one line instead (QueueOpsSummary), but a scoped reading has no
             // counts of its own, and a child's subtree is short. Without it a sub-agent that fanned out read as idle in its own drawer while its
@@ -199,12 +267,11 @@ export function SubAgentSheet({
   )
 }
 
-// The drawer's bottom edge follows the full-thread composition exactly:
-//   transcript | prompt panel | lifecycle footer.
-// Each boundary is a DIRECT full-width strip, so the rules do not stop at the prompt panel's inset.
-// The child profile belongs in the prompt box's normal footer slot, but it is a readout rather than a
-// selector: changing the parent thread profile cannot mutate an already-running child's model.
-// The stop action owns the separate lifecycle footer below it, never the prompt panel itself.
+// The drawer's bottom edge follows the full-thread composition exactly: transcript | prompt panel, the
+// boundary a DIRECT full-width strip so its rule does not stop at the prompt panel's inset. The child
+// profile belongs in the prompt box's normal footer slot, but it is a readout rather than a selector:
+// changing the parent thread profile cannot mutate an already-running child's model. The stop is the
+// header's (DrawerStopCheck); it had a lifecycle footer of its own under this panel until 2026-10-14.
 function SubAgentSteerFooter({
   slug,
   subId,
@@ -213,6 +280,7 @@ function SubAgentSteerFooter({
   note,
   stoppable,
   stopNote,
+  stopping,
   ops,
 }: {
   slug: string
@@ -222,6 +290,9 @@ function SubAgentSteerFooter({
   note: string | null
   stoppable: boolean
   stopNote: string | null
+  // The header's stop is in flight: the box holds what it has rather than sending into a child that
+  // is being ended.
+  stopping: boolean
   // Rows for the work running UNDER this sub-agent. A RENDER PROP rather than a node, because this
   // footer has two shapes and the strip needs different chrome in each: inside the prompt panel it is
   // just padding under the box (the same composition ThreadComposerBox uses), and where there is no
@@ -236,7 +307,6 @@ function SubAgentSteerFooter({
 }) {
   const [message, setMessage] = useState("")
   const [busy, setBusy] = useState(false)
-  const [stopping, setStopping] = useState(false)
   const qc = useQueryClient()
 
   function send() {
@@ -262,29 +332,13 @@ function SubAgentSteerFooter({
       .finally(() => setBusy(false))
   }
 
-  function stop() {
-    if (stopping) return
-    setStopping(true)
-    rpc.subAgentStop({ slug, id: subId })
-      .then(({ descendantsStopped, note: subtree }) => {
-        // The subtree is the part the drawer cannot show: this sheet renders ONE child's transcript,
-        // so its own fan-out ending is only ever visible here. A descendant frizz could not stop is
-        // live work and gets the longer toast.
-        if (subtree) showToast(`Sub-agent stopped. ${subtree}`, { duration: 7000 })
-        else showToast(descendantsStopped > 0 ? `Sub-agent and ${descendantsStopped} descendant${descendantsStopped === 1 ? "" : "s"} stopped` : "Sub-agent stopped")
-        void qc.invalidateQueries({ queryKey: ["subAgentTranscript", slug, subId] })
-      })
-      .catch((error: unknown) => {
-        showToast(error instanceof Error ? error.message : "Could not stop this sub-agent")
-      })
-      .finally(() => setStopping(false))
-  }
-
-  if (!steerable && !stoppable) {
-    const unavailableNote = note ?? stopNote
-    // Nothing to steer, nothing to stop, nothing to explain — the strip is the whole footer, so it
-    // carries the panel's chrome. It still renders NOTHING when no work hangs off this child, so a
-    // settled drawer keeps its bare bottom edge rather than gaining an empty bordered band.
+  if (!steerable) {
+    // A child the header can stop needs no word about stopping; one it cannot gets the reason here,
+    // under the steer note when there is one.
+    const unavailableNote = note ?? (stoppable ? null : stopNote)
+    // Nothing to steer and nothing to explain — the strip is the whole footer, so it carries the
+    // panel's chrome. It still renders NOTHING when no work hangs off this child, so a settled drawer
+    // keeps its bare bottom edge rather than gaining an empty bordered band.
     if (!unavailableNote) return <>{ops?.("w-full shrink-0 border-t border-border bg-panel px-4 pb-2 pt-3")}</>
     return (
       <div data-subagent-steer-note className="w-full shrink-0 border-t border-border bg-panel px-3 py-3">
@@ -301,52 +355,24 @@ function SubAgentSteerFooter({
   }
 
   return (
-    <>
-      <div data-subagent-steer className="w-full shrink-0 border-t border-border bg-panel px-3 py-3">
-        {steerable ? (
-          <Composer
-            value={message}
-            onChange={setMessage}
-            onSubmit={send}
-            surface="subAgentComposer"
-            placeholder="Steer this sub-agent…"
-            busy={busy || stopping}
-            footer={<SubAgentProfileReadout subagentType={subagentType} />}
-          />
-        ) : note ? (
-          <>
-            <div className="px-1 pb-2 text-[11.5px] text-muted-70">{note}</div>
-            <div className="pl-1.5">
-              <SubAgentProfileReadout subagentType={subagentType} />
-            </div>
-          </>
-        ) : null}
-        {steerable && !stoppable && stopNote && (
-          <div className="mt-2 px-1 text-[11.5px] text-muted-70">{stopNote}</div>
-        )}
-        {/* Same optical bottom inset ThreadComposerBox gives the thread-level prompt box (styles.css).
-            No `empty:hidden` wrapper needed — the strip itself renders nothing when it has no rows, so
-            the class comes and goes with them. */}
-        {ops?.("px-1 pt-1.5 ops-column-optical-inset")}
-      </div>
-      {stoppable && (
-        <footer
-          aria-label="Sub-agent lifecycle actions"
-          data-subagent-lifecycle-footer
-          className="flex min-h-10 w-full shrink-0 items-center justify-end gap-1.5 border-t border-border/70 bg-panel/95 px-3 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] text-[12px] backdrop-blur-sm"
-        >
-          <button
-            type="button"
-            data-stop-subagent
-            disabled={stopping}
-            onClick={stop}
-            className="rounded-md border border-border-strong bg-panel-2/60 px-2.5 py-1 text-[12px] text-fg/80 transition-colors hover:border-danger/40 hover:bg-danger/10 hover:text-danger-soft disabled:opacity-50"
-          >
-            {stopping ? "Stopping…" : "Stop sub-agent"}
-          </button>
-        </footer>
+    <div data-subagent-steer className="w-full shrink-0 border-t border-border bg-panel px-3 py-3">
+      <Composer
+        value={message}
+        onChange={setMessage}
+        onSubmit={send}
+        surface="subAgentComposer"
+        placeholder="Steer this sub-agent…"
+        busy={busy || stopping}
+        footer={<SubAgentProfileReadout subagentType={subagentType} />}
+      />
+      {!stoppable && stopNote && (
+        <div className="mt-2 px-1 text-[11.5px] text-muted-70">{stopNote}</div>
       )}
-    </>
+      {/* Same optical bottom inset ThreadComposerBox gives the thread-level prompt box (styles.css).
+          No `empty:hidden` wrapper needed — the strip itself renders nothing when it has no rows, so
+          the class comes and goes with them. */}
+      {ops?.("px-1 pt-1.5 ops-column-optical-inset")}
+    </div>
   )
 }
 
@@ -361,5 +387,20 @@ function SubAgentProfileReadout({ subagentType }: { subagentType?: string }) {
     >
       <span className="profile-grid-value relative -top-px min-w-0 truncate">{label}</span>
     </span>
+  )
+}
+
+// A settled child states how its run ended where the check stood, in the words every other surface
+// reports a finished child with (AGENT_OUTCOME_VERB), with the thread's Done check on a clean finish
+// only — a stop or a failure is not a success to tick. How long it ran is one hover away.
+function SubAgentOutcome({ outcome, startedAt, finishedAt }: { outcome: "completed" | "failed" | "killed"; startedAt?: string; finishedAt?: string }) {
+  const verb = AGENT_OUTCOME_VERB[outcome]
+  const word = `${verb[0].toUpperCase()}${verb.slice(1)}`
+  const ranMs = startedAt && finishedAt ? Date.parse(finishedAt) - Date.parse(startedAt) : Number.NaN
+  const tooltip = Number.isFinite(ranMs) && ranMs >= 0 ? `${word} after ${formatFixedDuration(ranMs)}` : word
+  return (
+    <LifecycleReadout data-subagent-outcome={outcome} check={outcome === "completed"} tooltip={tooltip}>
+      {word}
+    </LifecycleReadout>
   )
 }

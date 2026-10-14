@@ -37,7 +37,7 @@ test("a descendant row still refuses the × after the indent is re-based", () =>
   for (const row of childOpSubtree(FOREST, "a")) {
     assert.equal(childOpDismisser("t", { ...row, stoppable: true }), undefined, `${row.id} is not a direct child`)
   }
-  // The control the drawer DOES offer for these is its own "Stop sub-agent" button, not this ×.
+  // The control the drawer DOES offer for these is its own stop check, not this ×.
 })
 
 test("a self-parented row terminates instead of spinning", () => {

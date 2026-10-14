@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useRef, useState, type ReactNode } from "react"
 import { Loader2 } from "lucide-react"
 import { threadCanCompact, type ThreadView } from "@frizz/shared"
 import { rpc } from "../api/rpc.ts"
@@ -78,6 +78,23 @@ export function hasContextReading(thread: Pick<ThreadView, "context">): boolean 
 }
 
 export function ContextMeter({ thread }: { thread: ThreadView }) {
+  const context = thread.context
+  // Absent ⇒ nothing. Also guards a window of 0, which would make the fraction meaningless rather
+  // than merely unknown.
+  if (!context || !hasContextReading(thread)) return null
+  const compacting = compactionPending(thread, context.tokens)
+  return (
+    <ContextReading
+      context={context}
+      action={threadCanCompact(thread) ? (close) => <CompactNowButton thread={thread} compacting={compacting} onRequested={close} /> : undefined}
+    />
+  )
+}
+
+// THE DIAL AND ITS PANEL, for any context reading — a thread's (ContextMeter, above) or a sub-agent's
+// own (SubAgentSheet's header, which reads the child's transcript). Only a thread's panel carries an
+// action: a sub-agent has no compaction of its own to request.
+export function ContextReading({ context, action }: { context: { tokens: number; window: number }; action?: (close: () => void) => ReactNode }) {
   // A HOVER PANEL, not a tooltip: the reading used to sit in a Radix tooltip, which cannot hold a
   // control (the app's provider sets `disableHoverableContent`). "Compact now" needed one (maintainer
   // 2026-09-26: "when you hover over the context pie chart … you should also see a button there that
@@ -88,10 +105,7 @@ export function ContextMeter({ thread }: { thread: ThreadView }) {
   const dial = useRef<HTMLButtonElement>(null)
   const panel = useRef<HTMLDivElement>(null)
   useEffect(() => () => clearTimeout(closeTimer.current), [])
-  const context = thread.context
-  // Absent ⇒ nothing. Also guards a window of 0, which would make the fraction meaningless rather
-  // than merely unknown.
-  if (!context || !hasContextReading(thread)) return null
+  if (!(context.window > 0)) return null
   const openNow = () => {
     clearTimeout(closeTimer.current)
     setOpen(true)
@@ -105,7 +119,6 @@ export function ContextMeter({ thread }: { thread: ThreadView }) {
   const keepDialInteractions = (event: { target: EventTarget | null; preventDefault: () => void }) => {
     if (dial.current?.contains(event.target as Node)) event.preventDefault()
   }
-  const compacting = compactionPending(thread, context.tokens)
   const percent = displayPercent(context.tokens, context.window)
   // The arc's own fraction is NOT the floored percent: a 0.4%-full context should still show a hairline
   // of arc rather than a bare ring, and clamping keeps a reading that overshoots its window (a provider
@@ -194,7 +207,7 @@ export function ContextMeter({ thread }: { thread: ThreadView }) {
           <span>{headline}</span>
           <span className="text-muted">{detail}</span>
         </div>
-        {threadCanCompact(thread) && <CompactNowButton thread={thread} compacting={compacting} onRequested={() => setOpen(false)} />}
+        {action?.(() => setOpen(false))}
       </PopoverContent>
     </Popover>
   )

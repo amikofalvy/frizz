@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useState, type ReactNode } from "react"
 import { Check, Loader2 } from "lucide-react"
 import type { CompletionHold, ThreadView } from "@frizz/shared"
 import { rpc } from "../api/rpc.ts"
@@ -78,16 +78,30 @@ export function ThreadLifecycleActions({
 // vocabulary covers all three surfaces. It takes the header icons' 28px height so completing a thread in
 // place swaps the verbs for the readout without moving the header's line.
 function DoneReadout() {
-  const label = "Marked done — send a message to reopen it"
+  return <LifecycleReadout data-thread-done="" check tooltip="Marked done — send a message to reopen it">Done</LifecycleReadout>
+}
+
+// The readout's chrome, shared with a settled sub-agent's (SubAgentSheet), which states how its run
+// ended in the slot its stop check stood in, as a thread states Done where its verbs were.
+export function LifecycleReadout({
+  check = false,
+  tooltip,
+  children,
+  ...data
+}: {
+  check?: boolean
+  tooltip: string
+  children: ReactNode
+} & { [attribute: `data-${string}`]: string | undefined }) {
   return (
-    <Tooltip label={label}>
+    <Tooltip label={tooltip}>
       <span
-        data-thread-done
-        aria-label={label}
+        {...data}
+        aria-label={tooltip}
         className="flex h-7 items-center gap-1 rounded-md px-2 text-[12px] font-medium text-muted"
       >
-        <Check size={12} />
-        Done
+        {check && <Check size={12} />}
+        {children}
       </span>
     </Tooltip>
   )
