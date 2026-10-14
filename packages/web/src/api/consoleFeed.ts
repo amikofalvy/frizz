@@ -1,7 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query"
 import type { BoardSnapshot, ServerEvent, SocketClientMsg, SocketServerMsg, ThreadView } from "@frizz/shared"
 import { applyBoardDelta, deltaAction } from "@frizz/shared"
-import { store, openThread, setBoardPendingCheck } from "../store.ts"
+import { store, openThread, plainThreads, setBoardPendingCheck } from "../store.ts"
 import { isConsolePath, projectApiBase, projectHref } from "../lib/base-path.ts"
 import { localFileQueryKey } from "../lib/localFileQuery.ts"
 import { splitThreadKey, threadKey } from "../lib/threadKey.ts"
@@ -65,8 +65,9 @@ function emptyUnion(): BoardSnapshot {
 }
 
 /** A project's thread under its key. `dependsOn` names threads of the same project, so it is keyed too. */
+// A plain value on the merged board, like every thread on a project's (store.ts plainThreads).
 export function keyThread(project: string, t: ThreadView): ThreadView {
-  return { ...t, id: threadKey(project, t.id), dependsOn: t.dependsOn.map((slug) => threadKey(project, slug)) }
+  return plainThreads([{ ...t, id: threadKey(project, t.id), dependsOn: t.dependsOn.map((slug) => threadKey(project, slug)) }])[0]
 }
 
 /** Replace ONE project's threads on the merged board with this keyframe's. */

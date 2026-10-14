@@ -1,4 +1,4 @@
-import { proxy, snapshot } from "valtio"
+import { proxy, ref, snapshot } from "valtio"
 import type { BoardSnapshot, ThreadView, BoardDelta } from "@frizz/shared"
 import { applyBoardDelta } from "@frizz/shared"
 import type { ComposerContextItem } from "./lib/composerContext.ts"
@@ -389,7 +389,7 @@ export function resolveRoutedThread(): void {
     if (typeof location !== "undefined") location.replace(`/thread/${encodeURIComponent(routed)}/full`)
     return
   }
-  const route = resolveThreadRoute(store.board, slug)
+  const route = resolveThreadRoute(store.board, slug, threadBySlug)
   // A slug THIS project does not have. Since one server started serving every project that is usually
   // a thread another project has — and `/thread/<slug>` is the exact shape every pre-singleton
   // bookmark and every agent-written cross-reference uses, so it is not a rare typo. Pushing the
@@ -443,7 +443,7 @@ export function primeFullscreenReturn(routedSlug: string | undefined): void {
   // The same painted-open push resolveRoutedThread would make — just in the commit the snapshot
   // actually reads; applyPath then finds the layer already present and leaves it be.
   if (routedSlug !== slug || !store.board) return
-  const route = resolveThreadRoute(store.board, slug)
+  const route = resolveThreadRoute(store.board, slug, threadBySlug)
   if (route.kind !== "found" || route.thread.needsYou) return
   if (store.drawers.some((d) => d.kind === "thread" && d.slug === slug && !d.closing)) return
   pushDrawer("thread", slug, { routed: true })
@@ -655,6 +655,32 @@ export function topThreadSlug(): string | null {
 // a keyframe or an `rpc.board()` seed already on the wire when the operator switched projects — and a
 // console warning per switch would be noise about the system working.
 
+// A THREAD IS A VALUE IN THE STORE, NEVER A PROXY. valtio turns every object assigned into the store
+// into a proxy, recursively, and every snapshot of the store into a frozen copy of each one. A thread
+// is never edited in place — the server sends a whole new ThreadView for any change (delta.ts), and
+// the doors below swap it in by slot — so tracking its fields bought nothing, and paid for every thread
+// the project has ever finished: the startup seed and the keyframe each proxied every thread (182ms and
+// 200ms of a CPU profile at 5,000), the first snapshot copied each one, and a delta's slot lookup walked
+// them all. Measured with a seeded board, production bundle, three runs each (2026-10-14):
+//
+//                                          1,000 threads          5,000 threads
+//   page load, keyframe task                125-127 → 61-64ms      540-558 → 285-308ms
+//   page load, main thread                  453-477 → 329-339ms    1,274-1,324 → 740-797ms
+//   heap after load                         31 → 19MB              113 → 52MB
+//   streaming turn, task per board delta    6.6-8.5 → 3.3-3.7ms    18.4-19.9 → 6.3-7.4ms
+//
+// `ref` marks the object so valtio leaves it as it is: the threads ARRAY stays reactive (a slot
+// replaced, a thread added or removed notifies as before), a thread is read as the plain object the
+// server sent, and a snapshot holds that same object. What changes for a reader: a component that
+// reads one field of a thread through useSnapshot re-renders when that thread is replaced, not only
+// when the field it read differs. A thread is replaced only when the server says it changed.
+//
+// So NOTHING MAY WRITE INTO A THREAD ON THE BOARD. A write would reach no subscriber. Replace the slot.
+export function plainThreads<T extends ThreadView>(threads: T[]): T[] {
+  for (const t of threads) ref(t)
+  return threads
+}
+
 // A full board KEYFRAME arrives from SSE (React-free) — on connect and on resync. Just store it;
 // every surface derives its own view of the thread list per render (there is no selection state to
 // reconcile — the focus machine that needed one is gone).
@@ -664,6 +690,7 @@ export function setBoard(board: BoardSnapshot) {
   if (isConsolePath() || !ownedByThisPage(board.projectSlug)) return
   setGithubRepo(board.githubRepo)
   setLocalPathBase(board.projectDir, board.homeDir)
+  plainThreads(board.threads)
   store.board = board
 }
 
@@ -711,7 +738,18 @@ export function seedBoard(board: BoardSnapshot) {
   if (store.board !== null) return
   setGithubRepo(board.githubRepo)
   setLocalPathBase(board.projectDir, board.homeDir)
+  plainThreads(board.threads)
   store.board = board
+}
+
+// The slot of each thread on the live board, kept across deltas so an upsert is one lookup and not a
+// walk of every thread (applyBoardDelta checks every entry it uses). Keyed on the threads array itself:
+// a new board brings a new array, and with it an empty table that the first delta fills.
+const boardPositions = new WeakMap<object, Map<string, number>>()
+function positionsFor(threads: ThreadView[]): Map<string, number> {
+  let positions = boardPositions.get(threads)
+  if (!positions) boardPositions.set(threads, (positions = new Map()))
+  return positions
 }
 
 // Apply a per-thread delta IN PLACE (upsert/remove threads, patch board-level meta) — valtio's
@@ -721,7 +759,8 @@ export function applyDelta(delta: BoardDelta): boolean {
   // Consumed, not applied: the Console's merged board takes deltas only from its own feed, keyed.
   if (isConsolePath()) return true
   if (store.board === null) return false
-  applyBoardDelta(store.board, delta)
+  plainThreads(delta.upserts)
+  applyBoardDelta(store.board, delta, positionsFor(store.board.threads))
   return true
 }
 
@@ -729,14 +768,34 @@ export function applyDelta(delta: BoardDelta): boolean {
 // has ever finished. Keyed on the threads array of valtio's SNAPSHOT, which is immutable and replaced
 // exactly when a thread changes, so a table can never describe a board that has moved on; a WeakMap, so
 // it goes with the snapshot it describes.
+//
+// A new snapshot whose every slot holds the same id as the last one indexed shares that table rather
+// than building its own. That is every delta that only replaces threads, which is nearly all of them:
+// a delta rebuilds the snapshot of the threads array, and building 5,000 map entries for it was ~1ms of
+// every delta (CPU profile, a streaming turn on a 5,000-thread board). Comparing the ids is a read per
+// slot and no allocation; a slot added, removed or moved builds a table of its own.
 const slugIndexes = new WeakMap<object, Map<string, number>>()
+let lastIndexed: { threads: readonly ThreadView[]; index: Map<string, number> } | undefined
 function slugIndex(threads: readonly ThreadView[]): Map<string, number> {
   let index = slugIndexes.get(threads)
+  if (index) return index
+  const last = lastIndexed?.threads
+  if (last && last.length === threads.length) {
+    let same = true
+    for (let i = 0; i < threads.length; i++) {
+      if (threads[i] !== last[i] && threads[i].id !== last[i].id) {
+        same = false
+        break
+      }
+    }
+    if (same) index = lastIndexed!.index
+  }
   if (!index) {
     index = new Map()
     for (let i = 0; i < threads.length; i++) index.set(threads[i].id, i)
-    slugIndexes.set(threads, index)
   }
+  slugIndexes.set(threads, index)
+  lastIndexed = { threads, index }
   return index
 }
 

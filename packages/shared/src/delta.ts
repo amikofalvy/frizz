@@ -111,19 +111,50 @@ export class BoardDiffer {
 // valtio proxy (the store): the in-place ops trigger valtio's fine-grained reactivity, which is the
 // audit's S2 fix (no wholesale replace → no full-list re-render churn). Render ORDER is unaffected —
 // the client re-sorts every render (sortThreads/listedThreads), so array position is immaterial.
-export function applyBoardDelta(board: BoardSnapshot, delta: Pick<BoardDelta, "upserts" | "removed" | "meta">): void {
+//
+// `positions`, when given, is a table of id → index that the CALLER keeps for this board's threads
+// across deltas, so an upsert costs one lookup rather than a walk of every thread on the board (the
+// store's board holds every thread the project ever finished; at 5,000 the walk, through valtio's
+// proxy, was ~4ms of every delta). It is trusted only as far as it checks out: a slot whose id is not
+// the one the table names, or an id it does not name at all, sends the table back to a full rebuild,
+// so a table that drifted (another writer, a different board) costs a walk, never a wrong slot or a
+// duplicate. Upserts keep it current; a removal shifts every later slot, so it is rebuilt after one.
+export function applyBoardDelta(
+  board: BoardSnapshot,
+  delta: Pick<BoardDelta, "upserts" | "removed" | "meta">,
+  positions?: Map<string, number>,
+): void {
   if (delta.upserts.length) {
-    const pos = new Map<string, number>()
-    board.threads.forEach((t, i) => pos.set(t.id, i))
+    const pos = positions ?? new Map<string, number>()
+    const rebuild = () => {
+      pos.clear()
+      for (let i = 0; i < board.threads.length; i++) pos.set(board.threads[i].id, i)
+    }
+    let fresh = !positions || pos.size !== board.threads.length
+    if (fresh) rebuild()
     for (const t of delta.upserts) {
-      const i = pos.get(t.id)
-      if (i === undefined) board.threads.push(t)
-      else board.threads[i] = t
+      let i = pos.get(t.id)
+      // A miss is checked as hard as a mismatch: a table describing some other board could lack an id
+      // this one holds, and trusting the miss would push a second copy. A new thread is rare (a
+      // dispatch), so the walk it costs is too.
+      if (!fresh && (i === undefined || board.threads[i]?.id !== t.id)) {
+        rebuild()
+        fresh = true
+        i = pos.get(t.id)
+      }
+      if (i === undefined) {
+        pos.set(t.id, board.threads.length)
+        board.threads.push(t)
+      } else board.threads[i] = t
     }
   }
   if (delta.removed.length) {
     const rm = new Set(delta.removed)
     for (let i = board.threads.length - 1; i >= 0; i--) if (rm.has(board.threads[i].id)) board.threads.splice(i, 1)
+    if (positions) {
+      positions.clear()
+      for (let i = 0; i < board.threads.length; i++) positions.set(board.threads[i].id, i)
+    }
   }
   if (delta.meta) {
     board.projectDir = delta.meta.projectDir

@@ -194,6 +194,47 @@ test("applyBoardDelta: re-applying the same delta is idempotent (buffered-duplic
   assertBoardEquiv(client, once)
 })
 
+test("applyBoardDelta: a kept position table is used, kept current, and never trusted past what checks out", () => {
+  const ids = (b: BoardSnapshot) => b.threads.map((t) => `${t.id}:${t.status}`)
+  const client = board([thread("a"), thread("b"), thread("c")])
+  const positions = new Map<string, number>()
+  applyBoardDelta(client, { upserts: [thread("b", { status: "blocked" })], removed: [] }, positions)
+  assert.deepEqual([...positions], [["a", 0], ["b", 1], ["c", 2]], "the first delta fills an empty table")
+  applyBoardDelta(client, { upserts: [thread("d")], removed: [] }, positions)
+  assert.equal(positions.get("d"), 3, "an added thread is entered where it was pushed")
+  applyBoardDelta(client, { upserts: [], removed: ["a"] }, positions)
+  assert.deepEqual([...positions], [["b", 0], ["c", 1], ["d", 2]], "a removal rebuilds it")
+  // A table that DRIFTED from the board (the same size, the wrong slots): it must cost a walk, not
+  // land the upsert on another thread's slot.
+  positions.set("c", 0).set("b", 1)
+  applyBoardDelta(client, { upserts: [thread("c", { status: "blocked" })], removed: [] }, positions)
+  assert.deepEqual(ids(client), ["b:blocked", "c:blocked", "d:active"])
+  // A table describing ANOTHER board of the same size, lacking an id this one holds: trusting the
+  // miss would push a second "d".
+  positions.clear()
+  positions.set("x", 0).set("y", 1).set("z", 2)
+  applyBoardDelta(client, { upserts: [thread("d", { status: "blocked" })], removed: [] }, positions)
+  assert.deepEqual(ids(client), ["b:blocked", "c:blocked", "d:blocked"])
+  assert.deepEqual([...positions], [["b", 0], ["c", 1], ["d", 2]])
+})
+
+test("applyBoardDelta: with a kept table, a replace reads ONE slot of a long board", () => {
+  const client = board(Array.from({ length: 1000 }, (_, i) => thread(`done-${i}`)))
+  const positions = new Map<string, number>()
+  applyBoardDelta(client, { upserts: [thread("done-999", { status: "blocked" })], removed: [] }, positions)
+  let reads = 0
+  const raw = client.threads
+  client.threads = new Proxy(raw, {
+    get(target, key, receiver) {
+      if (typeof key === "string" && /^\d+$/.test(key)) reads++
+      return Reflect.get(target, key, receiver)
+    },
+  })
+  applyBoardDelta(client, { upserts: [thread("done-500", { status: "blocked" })], removed: [] }, positions)
+  assert.equal(raw[500].status, "blocked")
+  assert.equal(reads, 1, "without the table every one of the 1,000 slots is read")
+})
+
 // ---- deltaAction (client seq-gap decision) ----
 
 test("deltaAction: ignore ≤ current, apply exactly next, resync on gap or no-keyframe", () => {
