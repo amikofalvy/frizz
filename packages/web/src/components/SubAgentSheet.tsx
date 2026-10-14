@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { useQueryClient } from "@tanstack/react-query"
 import { useProjectDir, useSubAgentTranscript } from "../hooks.ts"
 import { rpc } from "../api/rpc.ts"
@@ -131,25 +131,47 @@ export function SubAgentSheet({
 
   // Open at the BOTTOM (the child's latest activity) and stick there as new content streams in while
   // the user is already near the bottom — scoped to the sheet's OWN scroller (never the page).
-  useEffect(() => {
+  //
+  // KEYED ON THE COLUMN ITSELF, and run before paint. This was an effect on `bodyReady` that observed
+  // whatever children the scroller had at that moment — and when the transcript query had not answered
+  // yet, that was the spinner. The column that replaced it was never observed, so a drawer opened on a
+  // running child stayed wherever the browser put it: at the TOP of a transcript taller than the pane,
+  // and still there as the child wrote more (sheet open: st 0 of 289 and growing, 2026-10-14). And as a
+  // passive effect, when it did run it painted one frame at the top before scrolling down. A callback
+  // ref hands the column over the moment it mounts, the layout effect lands the tail before that frame
+  // paints, and the observer watches the column (its content) and the scroller (the steer box under it
+  // coming and going).
+  //
+  // And on EVERY COMMIT as well, while pinned: a child's new step arrives as a render, and the observer
+  // answers it only at the next frame's layout, so the frame the commit lands in had the content grown
+  // under a scroller that had not moved (+120px for 29ms, recorded). The ChatView transcript follows in
+  // a layout effect on every commit for the same reason.
+  const [column, setColumn] = useState<HTMLDivElement | null>(null)
+  const pinnedRef = useRef(true)
+  useLayoutEffect(() => {
     const el = scrollerRef.current
-    if (!el || !bodyReady) return
-    let pin = true
+    if (el && column && pinnedRef.current && el.scrollHeight - el.scrollTop - el.clientHeight > 0.5) el.scrollTop = el.scrollHeight
+  })
+  useLayoutEffect(() => {
+    const el = scrollerRef.current
+    if (!el || !column) return
+    pinnedRef.current = true
     const toBottom = () => {
-      if (pin) el.scrollTop = el.scrollHeight
+      if (pinnedRef.current) el.scrollTop = el.scrollHeight
     }
     const onScroll = () => {
-      pin = el.scrollHeight - el.scrollTop - el.clientHeight < 160
+      pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 160
     }
     el.addEventListener("scroll", onScroll, { passive: true })
     const ro = new ResizeObserver(toBottom)
-    for (const child of el.children) ro.observe(child)
+    ro.observe(column)
+    ro.observe(el)
     toBottom()
     return () => {
       el.removeEventListener("scroll", onScroll)
       ro.disconnect()
     }
-  }, [bodyReady])
+  }, [column])
 
   function stop() {
     if (stopping) return
@@ -228,7 +250,7 @@ export function SubAgentSheet({
                     14px between two successive tool-only turns while a batch inside ONE turn stayed at
                     6px — and a child's transcript is nearly all tool calls, so the chunking the tailer
                     happens to have chosen was the most visible thing on the surface. */}
-                <div data-transcript-column className="flex flex-col px-6 py-5">
+                <div ref={setColumn} data-transcript-column className="flex flex-col px-6 py-5">
                   {withMessageSpacers(activityMessages.map((entry) => entry.message), (m, i) => <Message key={i} m={m} />)}
                   {/* Exactly the regular transcript's tail treatment: the status follows the latest
                       message inside the scroller, rather than occupying a special fixed strip above
