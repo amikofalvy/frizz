@@ -51,7 +51,7 @@
 //   K. The two other openers, `~~~question` and a capitalised ```Question: both register, both queue.
 //   L. The cap. A worker that answers every correction with the same broken fence draws three, each within
 //      a tick or two of its rest, then nothing — no fourth, no sign-off reminder — until the human types,
-//      which earns the next broken fence one more.
+//      which hands the allowance back: three more, and then nothing again.
 //   M. The cross-over hint. A broken question fence in a message that closes on a done fence, nothing else
 //      open: one correction, carrying the paragraph that says the fixed message carries no done fence.
 //   N. The scripted worker's own `ending=question` knob (scripted-claude.mjs), which other recordings use:
@@ -820,44 +820,57 @@ const CASES = [
     async run(t) {
       const question = "Which compression should the archive use?"
       const typed = "Still there? The archive format has to be decided today."
+      const told = "The fence needs a kind line: make it a choice."
       const broken = `The compression is the open call.\n\n${fence("id: archive-compression", `question: ${question}`, "options:", "  - label: zstd", "  - label: gzip")}`
       const w = await t.worker("stuck", [
         { name: "asks with a fence that has no kind", on: FIRST, text: broken },
         { name: "writes the same broken fence again", on: QUESTION_FENCE_CORRECTION_LEAD, times: PARK_BUMP_MAX, text: broken },
         { name: "answers the human with the same broken fence", on: typed, text: broken },
-        { name: "writes it corrected at last", on: QUESTION_FENCE_CORRECTION_LEAD, text: `With its kind.\n\n${choice("archive-compression", question, ["zstd", "gzip"])}` },
+        { name: "writes the same broken fence again, after the human typed", on: QUESTION_FENCE_CORRECTION_LEAD, times: PARK_BUMP_MAX, text: broken },
+        { name: "writes it corrected once the human says how", on: told, text: `With its kind.\n\n${choice("archive-compression", question, ["zstd", "gzip"])}` },
       ])
-      let rest = await w.restAfter(await w.start(FIRST))
-      const latencies = []
-      for (let n = 1; n <= PARK_BUMP_MAX; n++) {
-        const correction = await w.start(QUESTION_FENCE_CORRECTION_LEAD, { after: rest.index, timeoutMs: WAKE_MS, what: `correction ${n}` }).catch(() => undefined)
-        if (!t.check(`correction ${n} of ${PARK_BUMP_MAX} reaches the worker within a tick or two of its rest`, correction !== undefined, correction ? undefined : `none ${secs(Date.now() - Date.parse(rest.at))} after the rest; outbox: ${w.deliveries().filter((d) => d.fence_id.endsWith(rest.at)).map((d) => `${d.state}, due ${secs(d.next_attempt_at - d.created_at)} after it was queued`).join("; ") || "nothing queued"}`)) return
-        latencies.push(secs(Date.parse(correction.at) - Date.parse(rest.at)))
-        rest = await w.restAfter(correction)
+      const bumps = () => sql(`SELECT park_bumps b, park_bump_anchor a FROM session WHERE slug = ${quote(w.slug)}`)[0]
+      const SILENCE_MS = 3 * TICK_MS + TAILER_MS // three ticks and the fold: time for a correction or a reminder to come
+      /** `PARK_BUMP_MAX` corrections, each answered with the same broken fence, then a rest that draws nothing. */
+      async function lap(rest, label) {
+        const latencies = []
+        for (let n = 1; n <= PARK_BUMP_MAX; n++) {
+          const correction = await w.start(QUESTION_FENCE_CORRECTION_LEAD, { after: rest.index, timeoutMs: WAKE_MS, what: `correction ${n} ${label}` }).catch(() => undefined)
+          const state = bumps()
+          if (!t.check(`${label}: correction ${n} of ${PARK_BUMP_MAX} reaches the worker within a tick or two of its rest`, correction !== undefined, correction ? undefined : `none ${secs(Date.now() - Date.parse(rest.at))} after the rest of ${rest.at}; the session row reads park_bumps ${state?.b}, anchored at ${state?.a}; outbox for that rest: ${w.deliveries().filter((d) => d.fence_id.endsWith(rest.at)).map((d) => `${d.fence_id} ${d.state}, due ${secs(d.next_attempt_at - d.created_at)} after it was queued`).join("; ") || "nothing queued"}`)) return undefined
+          latencies.push(secs(Date.parse(correction.at) - Date.parse(rest.at)))
+          rest = await w.restAfter(correction)
+        }
+        t.note(`${label}: the three corrections arrived ${latencies.join(", ")} after their rests (none held behind the one before it)`)
+        await sleep(SILENCE_MS)
+        const silent = w.since(rest.index)
+        t.check(`${label}: after the third, the same mistake draws nothing more — no fourth correction`, !silent.some((m) => m.text.includes(QUESTION_FENCE_CORRECTION_LEAD)), silent.map((m) => m.text.slice(0, 60)).join(" | "))
+        t.check(`…and no sign-off reminder for a rest whose fence is the fault`, silent.length === 0, `${silent.length} message(s) in ${secs(SILENCE_MS)}`)
+        const stuck = await w.board()
+        t.check(`…the board still lists the fault and no question, and the thread sits in the queue`, stuck.questionFaults?.some((f) => f.id === "archive-compression") === true && stuck.questions.length === 0 && stuck.needsYou === true, `needsYou ${stuck.needsYou}, ${stuck.questionFaults?.length} fault(s)`)
+        t.note(`${label}: at the silent rest the session row reads park_bumps ${bumps()?.b}`)
+        return rest
       }
-      t.note(`the three corrections arrived ${latencies.join(", ")} after their rests (none held behind the one before it)`)
-      // The fourth identical rest. Three ticks and the fold: time for a correction or a reminder to come.
-      const capped = rest
-      await sleep(3 * TICK_MS + TAILER_MS)
-      const silent = w.since(capped.index)
-      t.check("after the third, the same mistake draws nothing more: no fourth correction", !silent.some((m) => m.text.includes(QUESTION_FENCE_CORRECTION_LEAD)), silent.map((m) => m.text.slice(0, 60)).join(" | "))
-      t.check("…and no sign-off reminder for a rest whose fence is the fault", !silent.some((m) => m.text.includes(SIGNOFF_NUDGE_MARKER)) && silent.length === 0, `${silent.length} message(s) in ${secs(3 * TICK_MS + TAILER_MS)}`)
-      const stuck = await w.board()
-      t.check("the board still lists the fault, and no question", stuck.questionFaults?.some((f) => f.id === "archive-compression") === true && stuck.questions.length === 0, JSON.stringify(stuck.questionFaults))
-      t.note(`the thread at that rest: needsYou ${stuck.needsYou}, runtime ${stuck.runtime}; park_bumps ${sql(`SELECT park_bumps b FROM session WHERE slug = ${quote(w.slug)}`)[0]?.b}`)
 
-      // The human types. The budget is per message of theirs: they have seen the thread.
+      const capped = await lap(await w.restAfter(await w.start(FIRST)), "before the human types")
+      if (!capped) return
+
+      // The human types, and it hands the allowance back: they have seen the thread, and what the worker
+      // does next is a new attempt in front of them.
       await api.mutate("followUp", { slug: w.slug, sessionId: w.sessionId, message: typed })
       const human = await w.start(typed, { after: capped.index })
-      const rest5 = await w.restAfter(human)
-      const again = await w.start(QUESTION_FENCE_CORRECTION_LEAD, { after: rest5.index, timeoutMs: WAKE_MS, what: "the correction after the human typed" }).catch(() => undefined)
-      const state = sql(`SELECT park_bumps b, park_bump_anchor a FROM session WHERE slug = ${quote(w.slug)}`)[0]
-      if (!t.check("once the human has typed, the same broken fence is corrected again", again !== undefined, again ? undefined : `none ${secs(Date.now() - Date.parse(rest5.at))} after the rest of ${rest5.at}; the session row reads park_bumps ${state?.b}, anchored at ${state?.a}; outbox for that rest: ${w.deliveries().filter((d) => d.fence_id.endsWith(rest5.at)).map((d) => `${d.fence_id} ${d.state}`).join("; ") || "nothing queued"}`)) return
-      t.note(`that correction reached the worker ${secs(Date.parse(again.at) - Date.parse(rest5.at))} after its rest`)
-      const fixed = await w.settled(await w.restAfter(again))
-      t.check("…and the fix registers: the thread queues on the question, the fault gone", fixed.questions.length === 1 && fixed.questions[0].spec.handle === "archive-compression" && fixed.needsYou === true && !fixed.questionFaults?.length)
+      t.check("the human's message reaches the worker as typed, not as a wake", !human.wake)
+      const capped2 = await lap(await w.restAfter(human), "after the human typed")
+      if (!capped2) return
+      t.check("six corrections so far: three, and three more for the human's one message", w.count(QUESTION_FENCE_CORRECTION_LEAD) === 2 * PARK_BUMP_MAX, `${w.count(QUESTION_FENCE_CORRECTION_LEAD)} in the transcript`)
+
+      // Told how by the human, the worker gets it right, and the fence registering clears the count.
+      await api.mutate("followUp", { slug: w.slug, sessionId: w.sessionId, message: told })
+      const fixed = await w.settled(await w.restAfter(await w.start(told, { after: capped2.index })))
+      t.check("the fence written right at last registers: the thread queues on the question, the fault gone", fixed.questions.length === 1 && fixed.questions[0].spec.handle === "archive-compression" && fixed.needsYou === true && !fixed.questionFaults?.length)
       await w.quiet()
-      t.check("four corrections in all: three, then one after the human's message", w.count(QUESTION_FENCE_CORRECTION_LEAD) === PARK_BUMP_MAX + 1 && w.count(SIGNOFF_NUDGE_MARKER) === 0, `${w.count(QUESTION_FENCE_CORRECTION_LEAD)} corrections, ${w.count(SIGNOFF_NUDGE_MARKER)} reminders`)
+      t.check("…and nothing more is sent: six corrections in all, no reminder", w.count(QUESTION_FENCE_CORRECTION_LEAD) === 2 * PARK_BUMP_MAX && w.count(SIGNOFF_NUDGE_MARKER) === 0, `${w.count(QUESTION_FENCE_CORRECTION_LEAD)} corrections, ${w.count(SIGNOFF_NUDGE_MARKER)} reminders`)
+      t.check("…with the count back at zero", bumps()?.b === 0, `park_bumps ${bumps()?.b}`)
     },
   },
 
