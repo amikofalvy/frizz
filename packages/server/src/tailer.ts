@@ -785,6 +785,15 @@ export interface SessionTelemetry extends NormalizedTail {
 // correlation key present BOTH on the Agent tool_use block AND in the completion <task-notification>'s
 // <tool-use-id>). Registered on the background dispatch, enriched with `outputFile` from the launch
 // tool_result, and removed on a terminal completion notification.
+/** A foreground `Bash` or `Agent` call held until its result says whether it went to the background
+ *  (TailState.pendingShells). `agent` marks the Agent, and carries the cell its row would show. */
+interface ParkedForegroundLaunch {
+  label: string
+  command?: string
+  startedAt: string
+  agent?: { subagentType?: string }
+}
+
 interface SubAgentEntry {
   kind: "agent" | "shell" // an Agent sub-agent vs a background Bash/Monitor shell
   toolUseId: string
@@ -1065,7 +1074,11 @@ export interface TailState extends FoldState {
   // it), but Claude Code AUTO-BACKGROUNDS one that outlives its `timeout` — and it announces that in the
   // RESULT, which carries no command text. Without this the promoted row would have nothing to be
   // labelled with. Bounded; consumed on use. See AUTO_BACKGROUND_ACK_RE.
-  pendingShells?: Map<string, { label: string; command?: string; startedAt: string }>
+  //
+  // A FOREGROUND `Agent` (run_in_background:false) is parked here too, marked `agent`, since
+  // 2026-10-13: "send now" has the runtime move one to the background mid-flight, and again only the
+  // result says so. The name predates that; the job is the same.
+  pendingShells?: Map<string, ParkedForegroundLaunch>
   // Every tool call the main thread has issued and not yet had a result for, keyed by tool_use id in
   // issue order — the newest is what a board row names as the live line ("Running the focused tests").
   // `pendingShells` above is the same idea narrowed to foreground Bash for a different job, and it is not
@@ -1521,6 +1534,16 @@ function shellSummary(command: unknown): string {
 // Re-seeing the same id preserves any outputFile already resolved from its launch result.
 // A `SendMessage` registers NOTHING here — it addresses a child that already exists — but its recap is
 // parked for `trackResumes`, the one path where such a call restarts a stopped child.
+function parkForegroundLaunch(state: TailState, id: string, parked: ParkedForegroundLaunch): void {
+  const pending = (state.pendingShells ??= new Map())
+  pending.set(id, parked)
+  while (pending.size > PENDING_SHELLS_MAX) {
+    const oldest = pending.keys().next().value
+    if (oldest === undefined) break
+    pending.delete(oldest)
+  }
+}
+
 function trackDispatches(state: TailState, rec: Record): void {
   const content = rec.message?.content
   if (!Array.isArray(content)) return
@@ -1550,11 +1573,16 @@ function trackDispatches(state: TailState, rec: Record): void {
     const outputFile = previous?.outputFile
     const desc = typeof input.description === "string" && input.description.trim() ? input.description.trim() : undefined
     if (b.name === "Agent") {
-      if (input.run_in_background === false) continue // foreground (blocking) — visible via the spinner
       // The worker-profile cell (model+effort). Resolved rather than taken verbatim: an effort-only
       // profile (`frizz:high`) carries no model, and the model it inherits is the one THIS record ran
       // at — see subagent-profile.ts, which composes both halves into the one form every surface reads.
       const subagentType = dispatchProfileCell({ subagentType: input.subagent_type, model: input.model, turnModel: rec.message?.model, turnEffort: rec.effort })
+      if (input.run_in_background === false) {
+        // Foreground (blocking): the spinner covers it, so it is not a row. Parked rather than dropped,
+        // because "send now" can turn it into a background child and only its result says so.
+        parkForegroundLaunch(state, id, { label: desc ?? "sub-agent", startedAt, agent: { subagentType } })
+        continue
+      }
       state.subAgents.set(id, { kind: "agent", toolUseId: id, label: desc ?? "sub-agent", startedAt, subagentType, outputFile })
     } else if ((b.name === "Bash" && input.run_in_background === true) || b.name === "Monitor") {
       const command = typeof input.command === "string" ? input.command : previous?.command
@@ -1564,13 +1592,7 @@ function trackDispatches(state: TailState, rec: Record): void {
       // Code auto-backgrounds one that outlives its `timeout`, and only the RESULT says so, so park the
       // label/command here for trackLaunchResults to promote from. Dropped by the same result when the
       // command simply finished, which is the overwhelmingly common case.
-      const pending = (state.pendingShells ??= new Map())
-      pending.set(id, { label: desc ?? shellSummary(input.command), command: typeof input.command === "string" ? input.command : undefined, startedAt })
-      while (pending.size > PENDING_SHELLS_MAX) {
-        const oldest = pending.keys().next().value
-        if (oldest === undefined) break
-        pending.delete(oldest)
-      }
+      parkForegroundLaunch(state, id, { label: desc ?? shellSummary(input.command), command: typeof input.command === "string" ? input.command : undefined, startedAt })
     } else if (b.name === "SendMessage") {
       // NOT a dispatch — a message to an already-dispatched child, which registers nothing here. But it
       // may RESTART a child that has already stopped (see trackResumes), and only this record carries a
@@ -1689,9 +1711,12 @@ const LAUNCH_ACK_RE = /^\s*(Async agent launched successfully|Spawned successful
 //   "Command was moved to the background (ID: bqzw0r5ao) so that a message that arrived while it was
 //    running can reach you; it was not interrupted. Output is being written to: …"
 // (verbatim, claude 2.1.296). Nothing about the shell differs from the timeout case, so both wordings
-// promote it. A foreground AGENT moved aside the same way answers with the ordinary async-launch ack,
-// which LAUNCH_ACK_RE has always kept tracking.
+// promote it. A foreground AGENT moved aside the same way answers with the ordinary async-launch ack.
+// One dispatched with no `run_in_background` at all is tracked from its dispatch, so LAUNCH_ACK_RE
+// simply keeps it; one dispatched with `run_in_background: false` was never registered, and is
+// promoted from the same park as the shell on ASYNC_AGENT_ACK_RE.
 const AUTO_BACKGROUND_ACK_RE = /^\s*Command (?:did not complete within its .{0,40}?and )?was moved to the background/
+const ASYNC_AGENT_ACK_RE = /^\s*Async agent launched successfully/
 
 // Move a tracked AGENT entry into the bounded retained ring (drawer review), evicting the oldest.
 // Shared by the foreground-completion path and the <task-notification> path.
@@ -1957,12 +1982,18 @@ function trackLaunchResults(state: TailState, rec: Record): void {
       // tracked shell, from this instant indistinguishable from one launched with run_in_background —
       // or it simply finished, and the park is over either way. `is_error` guards the (unobserved but
       // cheap to exclude) case of the harness reporting the handoff as a failure.
+      //
+      // A parked foreground AGENT is the same question with a different ack: its result is its final
+      // report, unless "send now" moved it to the background, and then it is the async-launch ack every
+      // background child answers with.
       const parked = state.pendingShells?.get(id)
       if (!parked) continue
       state.pendingShells?.delete(id)
       if (state.dismissedOps.has(id)) continue // retired by the operator — see FoldState.dismissedOps
-      if (b.is_error === true || !AUTO_BACKGROUND_ACK_RE.test(text)) continue
-      entry = { kind: "shell", toolUseId: id, label: parked.label, startedAt: parked.startedAt, command: parked.command }
+      if (b.is_error === true || !(parked.agent ? ASYNC_AGENT_ACK_RE : AUTO_BACKGROUND_ACK_RE).test(text)) continue
+      entry = parked.agent
+        ? { kind: "agent", toolUseId: id, label: parked.label, startedAt: parked.startedAt, subagentType: parked.agent.subagentType }
+        : { kind: "shell", toolUseId: id, label: parked.label, startedAt: parked.startedAt, command: parked.command }
       state.subAgents.set(id, entry)
     }
     if (!entry.outputFile) entry.outputFile = launchOutputFile(state, text)

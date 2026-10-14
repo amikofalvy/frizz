@@ -1554,7 +1554,7 @@ test("push-it-now refuses a runtime frizz holds no control channel into", async 
   h.storage.setClaudeRuntime(slug, "legacy")
   const result = await h.router.deliverQueuedNow.handler({ input: { slug, sessionId: `sid-${slug}` } })
   assert.equal(result.interrupted, false)
-  assert.match(result.reason ?? "", /can't be interrupted/)
+  assert.match(result.reason ?? "", /isn't available on this thread's runtime/)
   h.storage.close()
 })
 

@@ -2721,8 +2721,9 @@ export function createRouter(ctx: AppContext) {
         if (!bridge) throw new Error("Claude session broker is unavailable; cannot interrupt this turn")
         // false = no live daemon to interrupt. Not an error and not a lost message: the send is still
         // queued and gets read the ordinary way, so the refusal says "no faster", never "gone".
-        // Same snapshot-then-note as followUp's interrupt: this preempts the same turn and kills the
-        // same children (interrupt-ended.ts).
+        // Same snapshot-then-note as followUp's interrupt: when this ends in an abort that kills
+        // background children, the worker is told which (interrupt-ended.ts). A send-now that moved
+        // the running call aside ends none.
         const childrenBefore = runningSubAgentsOf(ctx.tailer.get(input.slug))
         if (!bridge.interruptTurn({ threadSlug: input.slug, sessionId: row.session_id })) {
           return released > 0
