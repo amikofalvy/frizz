@@ -6,7 +6,7 @@
 // small typed socket protocol (claude-broker-client.ts), never the SDK directly.
 //
 // Wire protocol — newline-delimited JSON frames:
-//   frizz -> broker:  {t:"input", message, requestId?} | {t:"permission", requestId, decision} | {t:"interrupt"} | {t:"set-mode", mode}
+//   frizz -> broker:  {t:"input", message, requestId?} | {t:"permission", requestId, decision} | {t:"interrupt", sendNow?: {messageId?}} | {t:"set-mode", mode}
 //                  | {t:"cancel-input", requestId, id} | {t:"stop-task", requestId, taskId}
 //                  | {t:"reload-plugins", requestId} | {t:"rename", requestId, description} | {t:"list-skills", requestId}
 //   broker -> frizz:  {t:"hello", sessionId, generation} | {t:"event", event} | {t:"permission-request", requestId, request} | {t:"diagnostic", diagnostic}
@@ -473,7 +473,19 @@ export function runClaudeBroker(config: ClaudeBrokerConfig, options: RunClaudeBr
           seedSessionTitle(message)
         }
         else if (msg.t === "permission") { const e = pendingPermissions.get(msg.requestId as string); if (e) { pendingPermissions.delete(msg.requestId as string); e.resolve(msg.decision as ClaudePermissionDecision) } }
-        else if (msg.t === "interrupt") void handle.interrupt().catch(() => {})
+        else if (msg.t === "interrupt") {
+          // `sendNow` (an object, optionally naming the message) asks the runtime to push a waiting
+          // message through, which aborts the turn only when it cannot move what the turn is waiting on
+          // (ClaudeInterruptOptions). A daemon older than the field reads the frame as the plain
+          // interrupt it always was, so the server needs no capability gate: the fallback is the old
+          // behaviour, never a lost message. The outcome is persisted for forensics — which of the two
+          // a send-now turned into is otherwise invisible until someone reads the transcript.
+          const sendNow = msg.sendNow && typeof msg.sendNow === "object" ? msg.sendNow as { messageId?: unknown } : undefined
+          const messageId = typeof sendNow?.messageId === "string" ? sendNow.messageId : undefined
+          void handle.interrupt(sendNow ? { sendNow: messageId ? { messageId } : {} } : undefined).then((receipt) => {
+            if (sendNow) writeDiagnostic?.({ kind: "stderr", message: `send-now: ${receipt?.sendNow ?? "plain interrupt"}${messageId ? ` id=${messageId}` : ""}`, truncated: false })
+          }, () => {})
+        }
         else if (msg.t === "cancel-input") {
           // ALWAYS answer, including on failure: the caller is blocked on this reply and a silent drop
           // would be indistinguishable from a wedged daemon. `sock` rather than `client` is deliberate —

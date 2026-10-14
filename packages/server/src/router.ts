@@ -1118,6 +1118,11 @@ export function createRouter(ctx: AppContext) {
           sessionId: row.session_id,
           cwd: ctx.project.dir,
           text: messageForWorker,
+          // A PERSON'S message says so to the runtime, which is what lets "send now" move a running call
+          // aside for it instead of aborting the turn (see the interrupt below). Everything this route
+          // carries is the operator's own typing except a peer thread's message — the same line the gap
+          // note above is drawn on.
+          human: !parseThreadMessage(input.message),
           // Rides through to the SDK as this input's uuid, which the SDK echoes back on the record
           // that delivers it — the ledger then correlates by identity rather than by text.
           deliveryId: input.deliveryId,
@@ -1181,20 +1186,26 @@ export function createRouter(ctx: AppContext) {
         // hand — the unqueue click asks the NEW daemon about a uuid it never heard of and answers
         // "Too late — that message has already left the queue", which is exactly backwards.
         if (input.freshProcess) retireOutstandingDeliveries(ctx.storage, input.slug)
-        // "Interrupt and send": preempt whatever the worker is doing so it reads this NOW. Strictly
-        // AFTER the delivery above, and that order is the whole mechanism — the SDK's interrupt
-        // aborts the turn without discarding queued inputs (its receipt reports `still_queued`), so
-        // a message queued first is what the next turn opens on. Interrupting first would abort into
-        // an empty queue and the message would merely start an ordinary new turn.
+        // "SEND NOW" (⌘⏎): the worker reads this NOW rather than when whatever it is doing ends.
+        // Strictly AFTER the delivery above, and that order is the whole mechanism — the runtime is
+        // asked to push a WAITING message through, and asked with nothing waiting it does nothing.
         //
-        // Measured live (_live_broker_interrupt_send.mts) against a real 90s tool call in flight:
-        // 94.4s without it, seconds with it, and the session takes ordinary follow-ups afterwards.
+        // What it does to the work in flight (bridge.interruptTurn has the detail): a running Bash or
+        // Agent call is moved to the background and keeps going, and the turn takes the message in on
+        // the spot. Only when nothing can be moved — the model is mid-answer, or a wake Frizz wrote is
+        // waiting too — is the turn aborted, which is all this did until 2026-10-13: the queued message
+        // then opens the next turn.
         //
-        // THE INTERRUPT ALSO ENDS EVERY BACKGROUND SUB-AGENT, and the runtime tells the worker nothing
+        // Measured live against a real tool call in flight: 94.4s to be read without it and seconds
+        // with it, either way (_live_broker_interrupt_send.mts for the abort; _live_broker_send_now.mts
+        // for the move, where the 45s build the message arrived under also finished, once, on time).
+        //
+        // AN ABORT CAN END BACKGROUND SUB-AGENTS, and the runtime tells the worker nothing
         // (interrupt-ended.ts). Snapshot the running children BEFORE the frame goes out, so the note can
-        // name exactly the ones the tailer then sees end — fire-and-forget, after the send succeeded.
+        // name exactly the ones the tailer then sees end — fire-and-forget, after the send succeeded. A
+        // send-now that moved the call aside ends none, and the note then has nothing to say.
         const childrenBefore = input.interrupt === true ? runningSubAgentsOf(ctx.tailer.get(input.slug)) : []
-        const preempted = input.interrupt === true && bridge.interruptTurn({ threadSlug: input.slug, sessionId: row.session_id })
+        const preempted = input.interrupt === true && bridge.interruptTurn({ threadSlug: input.slug, sessionId: row.session_id, deliveryId: input.deliveryId })
         if (preempted) {
           void noteSubAgentsEndedByInterrupt(
             { tailer: ctx.tailer, storage: ctx.storage, log: (line) => frizzLog.info("interrupt", line) },
@@ -1208,10 +1219,10 @@ export function createRouter(ctx: AppContext) {
             state: midTurn && input.freshProcess !== true ? "enqueued" : "delivered",
           })
         }
-        // A landed interrupt frees the WHOLE queue — the next turn opens on it — so nothing outstanding
-        // is still waiting to be read, this send included. Flipping it here rather than in the `state`
-        // above is what covers the sends already queued AHEAD of this one, which the same interrupt
-        // also delivers.
+        // A landed send-now frees the WHOLE queue — the turn takes it in, or the next turn opens on it —
+        // so nothing outstanding is still waiting to be read, this send included. Flipping it here
+        // rather than in the `state` above is what covers the sends already queued AHEAD of this one,
+        // which the same send-now also delivers.
         if (preempted) deliverOutstandingDeliveries(ctx.storage, input.slug)
         // The ledger is not JSONL bytes, so nothing else pushes a transcript frame for it — emit one
         // now so the bubble (gray or delivered) reaches subscribed tabs immediately instead of
@@ -2678,10 +2689,11 @@ export function createRouter(ctx: AppContext) {
     }),
 
     // PUSH IT THROUGH NOW — the ↑ that appears left of a queued bubble on hover. The message is already
-    // in the daemon's queue, so this sends nothing: it preempts the turn standing in front of it, which
-    // is the second half of `followUp`'s `interrupt` flag with the delivery half already done. The SDK
-    // interrupt does not discard queued input (see the ORDER IS THE CONTRACT note on interruptTurn), so
-    // the next turn opens on what is queued — which is exactly what the operator is asking for.
+    // in the daemon's queue, so this sends nothing: it is the second half of `followUp`'s `interrupt`
+    // flag with the delivery half already done. The runtime moves a running call to the background and
+    // takes the queue in, or aborts the turn when it has nothing it can move, and the queue then opens
+    // the next one (see the ORDER IS THE CONTRACT note on interruptTurn) — either way what is queued is
+    // read now, which is exactly what the operator is asking for.
     //
     // Same gates as unqueueFollowUp, and for the same reason: only a broker-backed Claude row gives frizz
     // a control channel into a live turn. A legacy row and a codex steer have no interrupt frizz can
@@ -2703,7 +2715,7 @@ export function createRouter(ctx: AppContext) {
         if (row.backend !== "claude" || row.claude_runtime !== "broker") {
           return released > 0
             ? { interrupted: false, released }
-            : { interrupted: false, reason: "This thread's runtime can't be interrupted from frizz" }
+            : { interrupted: false, reason: "Send now isn't available on this thread's runtime" }
         }
         const bridge = ctx.claudeBroker
         if (!bridge) throw new Error("Claude session broker is unavailable; cannot interrupt this turn")
@@ -2715,7 +2727,7 @@ export function createRouter(ctx: AppContext) {
         if (!bridge.interruptTurn({ threadSlug: input.slug, sessionId: row.session_id })) {
           return released > 0
             ? { interrupted: false, released }
-            : { interrupted: false, reason: "Nothing to interrupt — this thread has no turn running" }
+            : { interrupted: false, reason: "This thread has no turn running, so nothing is ahead of that message" }
         }
         void noteSubAgentsEndedByInterrupt(
           { tailer: ctx.tailer, storage: ctx.storage, log: (line) => frizzLog.info("interrupt", line) },

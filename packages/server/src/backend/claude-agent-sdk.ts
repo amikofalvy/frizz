@@ -27,6 +27,7 @@ import {
   boundedStringArray,
   safeText,
   utf8Bytes,
+  CLAUDE_SEND_NOW_OUTCOMES,
   validateElicitationResult,
   validateInputMessage,
   validatePermissionDecision,
@@ -38,6 +39,7 @@ import {
   type ClaudeDiagnostic,
   type ClaudeElicitationRequest,
   type ClaudeInputMessage,
+  type ClaudeInterruptOptions,
   type ClaudeInterruptReceipt,
   type ClaudeModelCapability,
   type ClaudeOnElicitation,
@@ -64,6 +66,16 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3
 // canary that guards it cannot drift apart. It is real at runtime but missing from the SDK's `.d.ts`,
 // so nothing in the type system would notice it disappearing — see claude-agent-sdk.cancel.test.ts.
 export const CLAUDE_SDK_CANCEL_METHOD = "cancelAsyncMessage"
+// What a CLI that understands a send-now interrupt advertises on `system/init`.
+export const CLAUDE_CLI_CAPABILITY_SEND_NOW = "interrupt_send_now_v1"
+// The SDK `Query` method that writes a control request, which is how a send-now interrupt is sent: the
+// SDK has no typed method that carries it. Undeclared in the `.d.ts` like the cancel method above, and
+// watched by the same canary.
+export const CLAUDE_SDK_REQUEST_METHOD = "request"
+
+function stillQueuedIds(raw: unknown): string[] {
+  return boundedStringArray(raw, "interrupt.stillQueued", 256, 512).map((id, index) => boundedId(id, `interrupt.stillQueued[${index}]`))
+}
 // What the OS can carry in an environment block: a non-empty name with no `=` and no NUL. NOT a POSIX
 // shell identifier, which is what this was until 2026-09-01 (`/^[A-Za-z_][A-Za-z0-9_]*$/`). Every
 // 64-bit Windows environment contains `ProgramFiles(x86)` and `CommonProgramFiles(x86)`, and the
@@ -157,7 +169,11 @@ export interface ClaudeQueryHandle extends AsyncIterable<ClaudeQueryEvent> {
   send(message: ClaudeInputMessage): Promise<void>
   initializationResult(): Promise<ClaudeControlInitialization>
   reinitialize(): Promise<ClaudeControlInitialization>
-  interrupt(): Promise<ClaudeInterruptReceipt | undefined>
+  /**
+   * Abort the running turn. With `sendNow`, ask the runtime to push a waiting message through instead,
+   * which aborts only when it cannot move what the turn is waiting on — see ClaudeInterruptOptions.
+   */
+  interrupt(options?: ClaudeInterruptOptions): Promise<ClaudeInterruptReceipt | undefined>
   /**
    * Take one still-QUEUED input back out of the CLI's command queue, by the uuid `send` supplied.
    * Resolves true only when the CLI positively removed it — i.e. the agent will never read it. False
@@ -215,9 +231,10 @@ export function createClaudeQueryFactory(options: CreateClaudeQueryFactoryOption
   }
 }
 
-class BoundedAsyncQueue<T> implements AsyncIterator<T>, AsyncIterable<T> {
+export class BoundedAsyncQueue<T> implements AsyncIterator<T>, AsyncIterable<T> {
   private readonly buffered: T[] = []
   private readonly waiters: Array<{ resolve: (value: IteratorResult<T>) => void; reject: (error: Error) => void }> = []
+  private readonly drainListeners: Array<() => void> = []
   private ended = false
   private failure: Error | undefined
   private readonly limit: number
@@ -243,6 +260,7 @@ class BoundedAsyncQueue<T> implements AsyncIterator<T>, AsyncIterable<T> {
     if (this.ended || this.failure) return
     this.ended = true
     for (const waiter of this.waiters.splice(0)) waiter.resolve({ done: true, value: undefined })
+    for (const settle of this.drainListeners.splice(0)) settle()
   }
 
   fail(error: Error): void {
@@ -250,6 +268,7 @@ class BoundedAsyncQueue<T> implements AsyncIterator<T>, AsyncIterable<T> {
     this.failure = error
     this.buffered.splice(0)
     for (const waiter of this.waiters.splice(0)) waiter.reject(error)
+    for (const settle of this.drainListeners.splice(0)) settle()
   }
 
   next(): Promise<IteratorResult<T>> {
@@ -257,7 +276,23 @@ class BoundedAsyncQueue<T> implements AsyncIterator<T>, AsyncIterable<T> {
     if (value !== undefined) return Promise.resolve({ done: false, value })
     if (this.failure) return Promise.reject(this.failure)
     if (this.ended) return Promise.resolve({ done: true, value: undefined })
-    return new Promise((resolve, reject) => this.waiters.push({ resolve, reject }))
+    const parked = new Promise<IteratorResult<T>>((resolve, reject) => this.waiters.push({ resolve, reject }))
+    for (const settle of this.drainListeners.splice(0)) settle()
+    return parked
+  }
+
+  /**
+   * Resolves once the consumer has taken everything pushed so far AND come back for more.
+   *
+   * For a consumer that finishes with one value before it asks for the next — the Agent SDK's input
+   * loop writes each message to the CLI and only then pulls again — that is the instant the last pushed
+   * value has been dealt with. It also resolves when the queue ends or fails: nothing more will be
+   * taken, and the caller's next step meets that state on its own.
+   */
+  whenDrained(): Promise<void> {
+    if (this.ended || this.failure) return Promise.resolve()
+    if (this.buffered.length === 0 && this.waiters.length > 0) return Promise.resolve()
+    return new Promise((resolve) => this.drainListeners.push(resolve))
   }
 
   [Symbol.asyncIterator](): AsyncIterator<T> {
@@ -429,6 +464,8 @@ class RealClaudeQueryHandle implements ClaudeQueryHandle {
         // dispatch tool_use id here, which is the CLI's only addressing channel into a running child.
         parent_tool_use_id: parsed.parentToolUseId ?? null,
         uuid: parsed.id as `${string}-${string}-${string}-${string}-${string}`,
+        // See ClaudeInputMessage.human: the runtime's send-now is gentle only for a person's message.
+        ...(parsed.human ? { origin: { kind: "human" as const } } : {}),
       })
     } catch (error) {
       this.outstandingInputs.delete(parsed.id)
@@ -453,13 +490,50 @@ class RealClaudeQueryHandle implements ClaudeQueryHandle {
     return mapControlInitialization(result)
   }
 
-  async interrupt(): Promise<ClaudeInterruptReceipt | undefined> {
+  async interrupt(options?: ClaudeInterruptOptions): Promise<ClaudeInterruptReceipt | undefined> {
     this.assertOpen()
-    await this.ready()
+    const init = await this.ready()
     this.assertOpen()
+    if (options?.sendNow && init.capabilities.includes(CLAUDE_CLI_CAPABILITY_SEND_NOW)) {
+      const sent = await this.sendNow(options.sendNow.messageId)
+      if (sent) return sent
+    }
     const receipt = await this.awaitOpenControl(this.sdkQuery.interrupt())
     if (!receipt) return undefined
-    return { stillQueued: boundedStringArray(receipt.still_queued, "interrupt.stillQueued", 256, 512).map((id, index) => boundedId(id, `interrupt.stillQueued[${index}]`)) }
+    return { stillQueued: stillQueuedIds(receipt.still_queued) }
+  }
+
+  // The runtime's own send-now (ClaudeInterruptOptions). Undefined ⇒ it could not be asked, and the
+  // caller sends the plain interrupt it would have sent before this existed.
+  //
+  // THE ENVELOPE IS WRITTEN HERE, unlike `cancelInput`'s: SDK 0.3.296 has a method for a plain
+  // interrupt and for `cancel_queued`, and none that carries `send_now`, so the request goes through the
+  // query's own `request` — the same writer every one of its typed controls uses. The CLI advertises the
+  // field (`interrupt_send_now_v1`), and a CLI without it reads the request as a plain interrupt, which
+  // is the fallback anyway. If a later SDK drops `request`, this answers undefined and nothing is lost
+  // but the gentleness; _live_broker_send_now.mts is what would say so.
+  //
+  // ORDER: the request must not overtake the message it names. `send` only PUSHES — the SDK's input loop
+  // writes the message to the CLI on its own schedule — while a control request is written at once, so a
+  // send-now issued straight after `send` reached the CLI first and was answered `nothing_waiting`: the
+  // CLI had never heard of the message, did nothing, and the message then waited out the whole tool call
+  // (measured, 4 of 4, 2026-10-13). `whenDrained` is the SDK having written everything pushed so far.
+  private async sendNow(messageId: string | undefined): Promise<ClaudeInterruptReceipt | undefined> {
+    const provider = this.sdkQuery as unknown as { [CLAUDE_SDK_REQUEST_METHOD]?: (request: Record<string, unknown>) => Promise<unknown> }
+    const request = provider[CLAUDE_SDK_REQUEST_METHOD]
+    if (typeof request !== "function") return undefined
+    const named = messageId !== undefined && UUID_PATTERN.test(messageId) ? { message_uuid: messageId } : {}
+    await this.input.whenDrained()
+    this.assertOpen()
+    const answer = await this.awaitOpenControl(request.call(this.sdkQuery, { subtype: "interrupt", send_now: true, ...named }))
+    const response = (answer as { response?: { still_queued?: unknown; send_now?: unknown } } | undefined)?.response
+    const outcome = CLAUDE_SEND_NOW_OUTCOMES.find((known) => known === response?.send_now)
+    return {
+      stillQueued: Array.isArray(response?.still_queued) ? stillQueuedIds(response.still_queued) : [],
+      // Absent when the CLI answered without one: it took the request as a plain interrupt, which has
+      // happened by now either way, so there is nothing left to fall back to.
+      ...(outcome ? { sendNow: outcome } : {}),
+    }
   }
 
   async stopTask(taskId: string): Promise<void> {

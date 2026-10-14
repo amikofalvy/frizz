@@ -11,7 +11,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { query } from "@frizz/claude-agent-sdk-runtime"
-import { CLAUDE_SDK_CANCEL_METHOD } from "./claude-agent-sdk.ts"
+import { CLAUDE_SDK_CANCEL_METHOD, CLAUDE_SDK_REQUEST_METHOD } from "./claude-agent-sdk.ts"
 
 function unspawnedQuery(): Record<string, unknown> {
   return query({
@@ -50,4 +50,15 @@ test("interrupt is still there too — the same undeclared-surface risk, one lev
   // Not strictly this feature's, but it rides the identical private control channel and has the same
   // invisible-to-the-compiler failure mode, so it is watched from the same place.
   assert.equal(typeof unspawnedQuery().interrupt, "function")
+})
+
+test("the SDK still exposes the control-request writer a send-now interrupt goes through", () => {
+  // Without it the adapter falls back to a plain interrupt, so nothing breaks loudly: "send now" just
+  // goes back to killing the call it interrupts. This is the only thing that would say so.
+  assert.equal(
+    typeof unspawnedQuery()[CLAUDE_SDK_REQUEST_METHOD],
+    "function",
+    `@anthropic-ai/claude-agent-sdk no longer exposes Query.${CLAUDE_SDK_REQUEST_METHOD}, so a send-now degrades to a ` +
+    `plain interrupt. Point claude-agent-sdk.ts sendNow at whatever the SDK now offers for it.`,
+  )
 })

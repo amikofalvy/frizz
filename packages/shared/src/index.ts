@@ -1250,7 +1250,8 @@ export type ThreadRecurringPrompt = z.infer<typeof ThreadRecurringPrompt>
 
 // Claude Code narrates its OWN control action into the transcript: every turn cut short leaves a bare
 // `[Request interrupted by user]` user record. Frizz cuts turns short as a feature — "send now" (⌘⏎ and
-// the queue's push-through button) interrupts the running turn so the worker reads the queue at once —
+// the queue's push-through button) aborts the running turn when the runtime has no call it can move
+// aside, so the worker reads the queue at once —
 // so the marker landed as a human bubble directly above the very message that caused it, saying nothing
 // the reader did not just do (maintainer 2026-08-14). The broker's own shutdown writes the same record,
 // which is worse: nobody typed anything at all.
@@ -4523,17 +4524,19 @@ export const FollowUpInput = z.object({
   // newer frizz build in place (hooks are read once, at startup). Everything else that needs a fresh
   // process derives it server-side; see needsFreshProcessForLimit.
   freshProcess: z.boolean().optional(),
-  // PREEMPT the operation the worker is running right now, so this message is read at once instead of
-  // when that operation finishes. The operator's "Interrupt and send" verb, and opt-in for the same
-  // reason `freshProcess` is: it costs the in-flight tool call's result. (It no longer costs the
-  // worker's sub-agents: since 2026-09-24 the broker's SDK query declares `perTaskStopAffordance`,
-  // so the interrupt aborts only the turn and background agents run on.)
+  // SEND NOW: this message is read at once instead of when the operation the worker is running
+  // finishes. The operator's forced send (⌘⏎), and opt-in because it can cost work in flight. Since
+  // 2026-10-13 it usually does not: the runtime moves a running command or foreground sub-agent to the
+  // background and takes the message into the same turn. Only when it has nothing to move — the model
+  // is mid-answer, a wake Frizz wrote is waiting too — is the turn aborted, as it always was before,
+  // and that costs the in-flight call its result. (An abort has not cost the worker's BACKGROUND
+  // sub-agents since 2026-09-24: the broker's SDK query declares `perTaskStopAffordance`.)
   //
   // It exists because delivery is ALREADY as fast as queueing can be. Measured over 14 days of this
   // project's own transcripts, Claude Code drains its queue at the first sampling boundary that
   // exists; the wait an operator feels is the remaining time of whatever was in flight (a long `Bash`,
   // or one 73–133s reasoning+answer generation), which put mid-turn operator prose at p50 13.8s,
-  // p90 49s, p99 2.5m. Preempting is the only lever left.
+  // p90 49s, p99 2.5m. Getting that operation out of the way is the only lever left.
   //
   // Broker-backed Claude only — that is every Claude thread dispatched since the broker cutover. On
   // any other runtime the message is delivered normally and this is ignored, never refused: a send

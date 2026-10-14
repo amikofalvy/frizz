@@ -6,7 +6,7 @@ import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { Hono } from "hono"
 import { mountRouter } from "@frizz/rpc/server"
-import { DISPATCH_TASK_BANNER_MARKER, parseThreadMessage, type BoardSnapshot, type Settings, type ThreadView, type TranscriptMessage } from "@frizz/shared"
+import { DISPATCH_TASK_BANNER_MARKER, formatThreadMessage, parseThreadMessage, type BoardSnapshot, type Settings, type ThreadView, type TranscriptMessage } from "@frizz/shared"
 import type { BoardManager } from "./board.ts"
 import { appendDelivery, parseDeliveryLedger, projectDeliveryLedger } from "./delivery-ledger.ts"
 import { createWakeDeliveryStore } from "./wake-store.ts"
@@ -1451,6 +1451,30 @@ test("interrupt and send frees the sends already queued ahead of it too", async 
   })
   const after = parseDeliveryLedger(h.storage.getSession(slug)!.delivery_ledger)
   assert.deepEqual(after.map((i) => i.state), ["delivered", "delivered"])
+  h.storage.close()
+})
+
+// What "send now" hands the bridge, since the bridge turns it into the runtime's own send-now: WHO
+// typed the message (the runtime moves a running call aside only for a person's, and aborts the turn
+// for anything else) and WHICH message it is for.
+test("send now tells the runtime a person typed the message, and names it", async () => {
+  const { h, slug } = interruptHarness()
+  const deliveryId = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
+  const sent: Array<{ human?: boolean; deliveryId?: string }> = []
+  const pushed: Array<{ deliveryId?: string }> = []
+  ;(h.ctx as { claudeBroker?: unknown }).claudeBroker = {
+    followUp: async (input: { human?: boolean; deliveryId?: string }) => void sent.push({ human: input.human, deliveryId: input.deliveryId }),
+    interruptTurn: (input: { deliveryId?: string }) => { pushed.push({ deliveryId: input.deliveryId }); return true },
+  }
+  await h.router.followUp.handler({ input: { slug, sessionId: `sid-${slug}`, message: "read this", deliveryId, interrupt: true } })
+  assert.deepEqual(sent, [{ human: true, deliveryId }])
+  assert.deepEqual(pushed, [{ deliveryId }])
+  // A peer thread's message arrives by the same route and is nobody's typing.
+  sent.length = 0
+  await h.router.followUp.handler({
+    input: { slug, sessionId: `sid-${slug}`, message: formatThreadMessage({ slug: "other-thread", title: "Other thread" }, "the audit is done") },
+  })
+  assert.deepEqual(sent.map((entry) => entry.human), [false])
   h.storage.close()
 })
 

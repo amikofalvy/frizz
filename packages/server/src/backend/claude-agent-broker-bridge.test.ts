@@ -552,6 +552,42 @@ test("a follow-up and a dispatch carrying undeliverable characters arrive withou
   }
 })
 
+// SEND NOW, from the bridge to the CLI through a daemon it really forked. The operator's message has to
+// arrive saying a person typed it, and the send-now has to name that message by the uuid the CLI queued
+// it under — an id that is not that uuid is left out, because a name the CLI has never heard makes the
+// request do nothing at all.
+test("send now reaches the CLI as its own send-now, for a message it was told a person typed", { timeout: 25_000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "cbrk-sendnow-"))
+  const exe = join(dir, "fake-claude--send-now.mjs")
+  copyFileSync(fakeCli, exe); chmodSync(exe, 0o700)
+  const bridge = createClaudeAgentBrokerBridge({ stateDir: dir, executablePath: exe, env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" } })
+  const sessionId = randomUUID()
+  const slug = "read-this-now"
+  const rows = () => { try { return readFileSync(join(dir, "capture.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>) } catch { return [] } }
+  const sendNows = () => rows().filter((r) => r.kind === "host-control" && r.subtype === "interrupt")
+  try {
+    await bridge.spawnDispatch({ threadSlug: slug, sessionId, cwd: dir, prompt: "start", permissionMode: "default" })
+    const deliveryId = randomUUID()
+    await bridge.followUp({ threadSlug: slug, sessionId, cwd: dir, text: "read this now", deliveryId, human: true })
+    assert.equal(bridge.interruptTurn({ threadSlug: slug, sessionId, deliveryId }), true)
+    for (let i = 0; i < 100 && sendNows().length < 1; i++) await sleep(50)
+    assert.deepEqual(rows().find((r) => r.kind === "user-input" && r.uuid === deliveryId)?.origin, { kind: "human" })
+    assert.equal(rows().find((r) => r.kind === "user-input" && r.text === "start")?.origin, undefined, "the dispatch prompt makes no such claim")
+    assert.equal(sendNows()[0]?.sendNow, true)
+    assert.equal(sendNows()[0]?.messageUuid, deliveryId)
+
+    assert.equal(bridge.interruptTurn({ threadSlug: slug, sessionId, deliveryId: "not-the-uuid-the-cli-knows" }), true)
+    for (let i = 0; i < 100 && sendNows().length < 2; i++) await sleep(50)
+    assert.equal(sendNows()[1]?.sendNow, true)
+    assert.equal(sendNows()[1]?.messageUuid, undefined, "an unnameable message leaves the send-now speaking for whatever waits")
+  } finally {
+    bridge.releaseSession(slug, sessionId, "session-deleted")
+    bridge.close()
+    try { const r = readBrokerRecord(claudeBrokerRecordPath(dir, sessionId)); if (r) process.kill(r.daemonPid, "SIGKILL") } catch {}
+    await rmEventually(dir)
+  }
+})
+
 // A daemon forked by an OLDER build survives the upgrade by hours and has no `input-result` to send.
 // The bridge must read that off the record and not wait for an answer that never comes — a follow-up
 // to such a thread would otherwise fail every time, 30s late. Simulated by stripping the capability

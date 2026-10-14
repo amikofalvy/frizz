@@ -8,6 +8,7 @@ import assert from "node:assert/strict"
 import * as claudeRuntime from "@frizz/claude-agent-sdk-runtime"
 import { claudeWorkerEnv } from "./types.ts"
 import {
+  BoundedAsyncQueue,
   CLAUDE_AGENT_SDK_FOUNDATION_FLAG,
   createClaudeDiagnosticRedactor,
   createClaudeQueryFactory,
@@ -808,6 +809,102 @@ test("interrupt receipt and live permission-mode change are capability/control-c
     const records = await waitForCapture(harness.capturePath, (rows) => rows.some((row) => row.kind === "host-control" && row.subtype === "set_permission_mode"))
     assert.ok(records.some((row) => row.kind === "host-control" && row.subtype === "interrupt"))
     assert.ok(records.some((row) => row.kind === "host-control" && row.subtype === "set_permission_mode" && row.mode === "auto"))
+  } finally {
+    await harness.close()
+  }
+})
+
+// SEND NOW. The fake answers as real claude 2.1.296 does (_live_broker_send_now.mts): it acts only on
+// a message it already holds, and says what it did.
+test("a send-now names the waiting message and reports what the CLI did with it", { timeout: 10_000 }, async () => {
+  const harness = startHarness("send-now")
+  try {
+    await harness.handle.ready()
+    await harness.handle.send({ id: INPUT_ID, text: "read this now", human: true })
+    assert.deepEqual(await harness.handle.interrupt({ sendNow: { messageId: INPUT_ID } }), { stillQueued: [INPUT_ID], sendNow: "delivering" })
+    // A message the CLI is not holding: nothing is waiting, and it says so rather than aborting.
+    assert.equal((await harness.handle.interrupt({ sendNow: { messageId: inputId(7) } }))?.sendNow, "nothing_waiting")
+    const records = await waitForCapture(harness.capturePath, (rows) => rows.filter((row) => row.kind === "host-control" && row.subtype === "interrupt").length === 2)
+    const control = records.find((row) => row.kind === "host-control" && row.subtype === "interrupt")
+    assert.equal(control?.sendNow, true)
+    assert.equal(control?.messageUuid, INPUT_ID)
+    assert.deepEqual(records.find((row) => row.kind === "user-input")?.origin, { kind: "human" }, "a person's message says so on the wire")
+  } finally {
+    await harness.close()
+  }
+})
+
+// The request must not reach the CLI before the message it names (see RealClaudeQueryHandle.sendNow):
+// the SDK writes a pushed message on its own schedule and a control request at once. `whenDrained` is
+// the wait that orders them, and it is pinned here on the queue because the race itself is a matter of
+// microtasks inside the SDK that no fake CLI can hold open — _live_broker_send_now.mts measures it.
+test("the input queue reports drained only once its consumer has come back for more", async () => {
+  const queue = new BoundedAsyncQueue<string>(4, "test queue")
+  let drained = false
+  const settled = () => new Promise<void>((resolve) => setImmediate(resolve))
+  queue.push("a")
+  void queue.whenDrained().then(() => { drained = true })
+  await settled()
+  assert.equal(drained, false, "pushed, nobody has taken it")
+  assert.deepEqual(await queue.next(), { done: false, value: "a" })
+  await settled()
+  assert.equal(drained, false, "taken, but the consumer is still busy with it")
+  const parked = queue.next()
+  await settled()
+  assert.equal(drained, true, "the consumer asked for the next one: the last is dealt with")
+  // Nothing buffered and a consumer waiting is drained already.
+  await queue.whenDrained()
+  // THE CASE THE SDK IS ALWAYS IN: its loop is parked on `next()` when a message is pushed, so the value
+  // goes straight to it and the buffer never holds anything. Empty is not drained — the consumer has the
+  // message in hand and has not written it yet.
+  queue.push("b")
+  drained = false
+  void queue.whenDrained().then(() => { drained = true })
+  assert.deepEqual(await parked, { done: false, value: "b" })
+  await settled()
+  assert.equal(drained, false, "handed straight to a waiting consumer, which is still busy with it")
+  void queue.next()
+  await settled()
+  assert.equal(drained, true)
+  // A queue that will take no more is drained too: nothing else will ever be dealt with.
+  const ended = new BoundedAsyncQueue<string>(4, "test queue")
+  ended.push("never taken")
+  const afterEnd = ended.whenDrained()
+  ended.end()
+  await afterEnd
+})
+
+test("only a message a person typed is stamped as one", { timeout: 10_000 }, async () => {
+  const harness = startHarness("send-now")
+  try {
+    await harness.handle.ready()
+    await harness.handle.send({ id: inputId(0), text: "a wake Frizz wrote" })
+    const records = await waitForCapture(harness.capturePath, (rows) => rows.some((row) => row.kind === "user-input"))
+    assert.equal(records.find((row) => row.kind === "user-input")?.origin, undefined)
+  } finally {
+    await harness.close()
+  }
+})
+
+test("a CLI that does not advertise send-now is sent the plain interrupt", { timeout: 10_000 }, async () => {
+  const harness = startHarness("controls")
+  try {
+    await harness.handle.ready()
+    assert.deepEqual(await harness.handle.interrupt({ sendNow: { messageId: INPUT_ID } }), {
+      stillQueued: ["11111111-1111-4111-8111-111111111111", "internal-queue-id"],
+    })
+    const records = await waitForCapture(harness.capturePath, (rows) => rows.some((row) => row.kind === "host-control" && row.subtype === "interrupt"))
+    assert.equal(records.find((row) => row.kind === "host-control" && row.subtype === "interrupt")?.sendNow, undefined)
+  } finally {
+    await harness.close()
+  }
+})
+
+test("a send-now outcome the adapter cannot read is reported as none, never guessed", { timeout: 10_000 }, async () => {
+  const harness = startHarness("send-now-unreadable")
+  try {
+    await harness.handle.ready()
+    assert.deepEqual(await harness.handle.interrupt({ sendNow: {} }), { stillQueued: [] })
   } finally {
     await harness.close()
   }

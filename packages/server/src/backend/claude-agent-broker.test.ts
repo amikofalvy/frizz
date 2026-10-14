@@ -337,6 +337,42 @@ test("an acknowledged input resolves once the session holds it, and a refused on
   } finally { await b.close() }
 })
 
+// SEND NOW, across the socket. Two things have to survive the trip from the server to the CLI: the
+// claim that a person typed the message (without it the CLI aborts the turn instead of moving the
+// running call aside), and the send-now itself, naming that message. A bare interrupt frame — "Stop",
+// and every frame an older server sends — must stay the plain abort it always was.
+test("a send-now frame reaches the CLI naming the person's message; a bare interrupt stays an interrupt", { timeout: 15_000 }, async () => {
+  const logDir = mkdtempSync(join(tmpdir(), "cbroker-diag-"))
+  const diagnosticLogPath = join(logDir, "diag.log")
+  const b = startBroker("send-now", { diagnosticLogPath })
+  try {
+    const c = clientWith(b.socketPath)
+    const id = randomUUID()
+    await c.client.deliverInput({ id, text: "read this now", human: true }, { acknowledged: true })
+    c.client.interrupt({ sendNow: { messageId: id } })
+    // The fake's capture rows carry more than the title fields `captureRows` is typed for.
+    const interrupts = (r: unknown[]) => (r as Array<Record<string, unknown>>).filter((row) => row.kind === "host-control" && row.subtype === "interrupt")
+    let rows = await waitForRows(b.dir, (r) => interrupts(r).length === 1) as Array<Record<string, unknown>>
+    assert.deepEqual(rows.find((row) => row.kind === "user-input")?.origin, { kind: "human" })
+    const sendNow = interrupts(rows)[0]
+    assert.equal(sendNow?.sendNow, true)
+    assert.equal(sendNow?.messageUuid, id)
+
+    c.client.interrupt()
+    rows = await waitForRows(b.dir, (r) => interrupts(r).length === 2) as Array<Record<string, unknown>>
+    const plain = interrupts(rows)[1]
+    assert.equal(plain?.sendNow, undefined, "an interrupt with no send-now is a plain abort")
+
+    // What the send-now turned into is on record, by id and never by text.
+    const log = readFileSync(diagnosticLogPath, "utf8")
+    assert.match(log, new RegExp(`send-now: delivering id=${id}`))
+    c.client.close()
+  } finally {
+    await b.close()
+    rmSync(logDir, { recursive: true, force: true })
+  }
+})
+
 // The compatibility half: a daemon forked by an older build has no `input-result` to send, so the
 // bridge asks for no acknowledgement and settles for the frame having been WRITTEN to a connected
 // socket. Driven against a current daemon with no requestId on the frame, which is exactly the frame an

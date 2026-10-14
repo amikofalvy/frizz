@@ -1534,6 +1534,14 @@ done rather than idling inside it, and read the newest human message first when 
 // written inside the CLI, so Frizz cannot change it, and a worker believes it: the call "was rejected
 // before it ran" (it ran for seconds and was killed), so it stops and asks what to do.
 //
+// THIS IS THE FALLBACK NOW, NOT THE USUAL CASE. Since 2026-10-13 a send now asks for the runtime's own
+// send-now first (`interruptTurn` in backend/claude-agent-broker-bridge.ts), which moves a running Bash
+// or Agent call to the background and answers it with the truth ("Command was moved to the background
+// … it was not interrupted"), so no call is cut and the paragraph above is never written. A worker
+// still reads it when that request ends the turn instead: a message Frizz wrote itself is waiting
+// beside the person's, or the CLI or the thread's daemon predates send-now
+// (backend/_live_broker_send_now.mts measures both arms). The section stays for those.
+//
 // MEASURED 2026-10-13 on real broker sessions (backend/_live_broker_interrupt_cut_call.mts — Opus; a 45s
 // build cut 6s in by "fyi the build is pretty slow on this machine today"). Under this contract without
 // the section, 4 of 24 workers stopped and asked the human how to re-run the build, each saying the

@@ -8,6 +8,11 @@
 // how to proceed." — and Frizz cannot change that text. The worker contract carries a section saying
 // what the paragraph is (workerPrompt.ts CLAUDE_INTERRUPTED_CALL); this measures whether it works.
 //
+// SINCE 2026-10-13 THIS IS THE FALLBACK. A send now asks for the runtime's own send-now first, which
+// moves the running call to the background instead of cutting it (_live_broker_send_now.mts), so a
+// worker reads the paragraph only when that request ends the turn anyway. This probe still sends the
+// PLAIN interrupt on purpose: it is the one way to produce the paragraph every time.
+//
 // THE DIFFERENTIAL, one variable. Every arm is its own real broker session with the same task: a 45s
 // foreground build, then a step that needs its output. 6s in, a message that says NOTHING about how to
 // proceed is pushed through with an interrupt — the shape the corpus shows, a remark rather than an
