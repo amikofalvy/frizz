@@ -184,6 +184,14 @@ Top to bottom:
 
 The trap is that `groups.ts` `sectionOf` returns `"active"` for Active AND Rested rows alike — that key names the `<section>` holding both bands, not the maintainer's word. `partitionActive` splits it (`.running` = Active, `.rested` = Rested), and `inActiveBand` is the one predicate that means Active exactly. Full detail, including why the archived key is `"inactive"` while its label reads Done, in `ARCHITECTURE.md` § Board nomenclature.
 
+# A thread has three surfaces. A feature asked for on one is a feature of the thread
+
+A thread is drawn on its queue card, in its drawer and on its full-screen page, and a request names whichever one the maintainer was looking at. Build it for the thread. *"Drag a file anywhere onto a card in the queue"* (2026-10-12) was built on the card and nowhere else, and the next day's report was that it did not work in full screen (maintainer 2026-10-13: *"Why is there so much … stuff we accidentally implemented just for the cue card, or just for the sidebar drawer, or just for the full screen view? This shouldn't even be structurally possible"*).
+
+- **Thread behaviour goes in the shell every surface mounts, `packages/web/src/components/ThreadSurface.tsx`**, and a host every page needs goes in `components/PageHosts.tsx`. The card's component (`TodosView.tsx`) and the drawer's and page's (`ChatView.tsx`) decide layout and nothing else. `ThreadSurface.guard.test.ts` and `PageHosts.guard.test.ts` fail on a second copy; if one fails on your change, move the change, not the test. `ARCHITECTURE.md` § A thread's surfaces has the map, including what is still assembled twice.
+- **A difference between surfaces is a decision, written down where it is made**: a comment at the fork, with the reason. An absence nobody explained is a bug, and it is yours to close when you find it in what you are touching.
+- **Verify on every surface before you call it done.** A queued thread has no drawer, since its link opens its card, so the drawer needs a thread that is working or snoozed. `threadSurfaceFileDrop.e2e.test.ts` drives all three on a real stack and is the shape to copy.
+
 # "Shipped" means merged into the primary branch
 
 Never describe a created, opened, or pushed PR as "shipped." An open PR is implemented, pushed,
