@@ -53,6 +53,46 @@ test("every surface that draws a thread's prompt box mounts the shell, once", ()
   assert.deepEqual(filesWith("<ThreadActionBar"), ["components/ChatView.tsx"])
 })
 
+// WHAT A MESSAGE MEANS — which awaiting fence is settled, which registered question the message carries or
+// restates, which answers it pairs with, whether its fenced questions are answerable — was derived three
+// times (the queue card and both of the thread view's columns) and handed to Message at four call sites,
+// kept alike by tests that grepped each copy for the same line. One of each now.
+test("what each transcript message means is derived in the shell alone, and handed to Message in one place", () => {
+  // The derivations: called by the shell, and otherwise only inside the module that defines one, or
+  // where a sibling rule replays one (settledQuestions replays the placement).
+  for (const derive of ["registeredStandingAt(", "settledQuestionPositions("]) {
+    assert.deepEqual(filesWith(derive), [SHELL], `${derive} is the shell's call`)
+  }
+  for (const derive of ["pairAllAnswers(", "unrenderedAnswers("]) {
+    assert.deepEqual(filesWith(derive), [SHELL, "lib/answersMessage.ts"], `${derive} is the shell's call`)
+  }
+  assert.deepEqual(filesWith("placeQuestions("), [SHELL, "lib/settledQuestions.ts"])
+  assert.deepEqual(filesWith("useFenceQuestions("), ["components/RegisteredQuestionCards.tsx", SHELL])
+  assert.equal((sources.get(SHELL)!.match(/const awaitingCut = /g) ?? []).length, 1)
+  for (const [file, text] of sources) if (file !== SHELL) assert.doesNotMatch(text, /const awaitingCut = /, `${file} computes no stale-fence cut of its own`)
+
+  // The hand-over: ThreadMessage, beside Message. Nothing else passes Message what the thread says.
+  const chat = sources.get("components/ChatView.tsx")!
+  for (const prop of ["shadowedBy={", "settledPlaced={", "fenceQuestions={", "restingCardShown={", "staleAwaiting={"]) {
+    assert.deepEqual(filesWith(prop), ["components/ChatView.tsx"], `${prop} is passed in ChatView.tsx alone`)
+    assert.equal(chat.split(prop).length - 1, 1, `${prop} is passed once, by ThreadMessage`)
+  }
+  assert.match(chat, /export function ThreadMessage\(\{ m, index, dense, textOnly, showSendButton \}/, "it takes the message, its index and what a layout decides — nothing a surface could get wrong")
+  // Outside a surface it throws, like the prompt box.
+  assert.match(sources.get(SHELL)!, /if \(!transcript\) throw new Error\(/)
+
+  // Every surface draws its transcript through it. A bare Message on a surface is a line that carries no
+  // question — a queued bubble, a lifted wake — and takes the message, `dense` and its pairing only.
+  const bare = /^<Message (?:key=\{`[^`]*`\} )?m=\{[^}]+\}(?: dense)?(?: paired=\{[^}]+\})? \/>$/
+  for (const [file, viaThreadMessage, own] of [["components/TodosView.tsx", 2, 0], ["components/ChatView.tsx", 2, 1]] as const) {
+    const text = sources.get(file)!
+    assert.equal((text.match(/<ThreadMessage\b/g) ?? []).length, viaThreadMessage, `${file} draws its transcript messages through ThreadMessage`)
+    const sites = text.match(/<Message [^\n]*?\/>/g) ?? []
+    for (const site of sites) assert.match(site, bare, `${file}: ${site}`)
+    assert.equal((text.match(/<Message\b/g) ?? []).length, sites.length + own, `${file} has no other Message site`)
+  }
+})
+
 test("the prompt box takes its surface from the shell and has no way to be handed one", () => {
   const box = sources.get("components/ThreadComposerBox.tsx")!
   assert.match(box, /const \{ fileDrop \} = useThreadSurfaceBox\(\)/)

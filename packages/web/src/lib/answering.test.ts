@@ -216,6 +216,6 @@ test("the queue card wires the reversal; the thread page does not", () => {
   assert.match(todos, /exit: \{ dismiss: dismissThisCard, cancel: cancelThisCard \}/, "…and hands that to its surface")
   assert.match(shell, /\{ onSendFailed: exit\?\.cancel, composer \}/, "the shell reinstates a surface whose send was refused")
   // The thread page has no card to reinstate, so it names no exit at all.
-  assert.match(chat, /const surface = useThreadSurface\(slug, messages\)\n/, "the thread page must not wire a card reversal it has no card for")
+  assert.match(chat, /const surface = useThreadSurface\(\{ slug, thread, messages, openQuestions, settledQuestions \}\)\n/, "the thread page must not wire a card reversal it has no card for")
   assert.ok(!/onSendFailed/.test(chat))
 })

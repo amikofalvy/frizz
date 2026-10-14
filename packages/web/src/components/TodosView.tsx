@@ -2,7 +2,6 @@ import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRe
 import { useSnapshot } from "valtio"
 import { ChevronsUpDown, Inbox } from "lucide-react"
 import type { ThreadView, BoardSnapshot, RegisteredQuestionView, TranscriptMessage } from "@frizz/shared"
-import { questionFencesLive } from "@frizz/shared"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { queueCardTargetY, showToast, store } from "../store.ts"
 import { pageScrollY } from "../lib/pageScrollLock.ts"
@@ -16,7 +15,6 @@ import { showsRegisteredDoneCard } from "../lib/registeredDone.ts"
 import { showsRestedCard } from "./RestedCard.tsx"
 import { providerErrorVisible } from "./ProviderErrorCard.tsx"
 import { carriesDoneRegistration, collapseMiddleRuns, opensQueueSegment, queueCollapseSegments, segmentFolds, supersededAskIndices, survivesQueueCollapse } from "../lib/queueCollapse.ts"
-import { pairAllAnswers, unrenderedAnswers } from "../lib/answersMessage.ts"
 import { lastAskIndex, lastHumanTurnIndex } from "../lib/messagePresentation.ts"
 import { isOptimisticallySteering, useSteeredAt } from "../lib/steering.ts"
 import { prefersReducedMotion } from "../lib/sheet.ts"
@@ -25,11 +23,10 @@ import { useTranscriptHeldForBoard } from "../lib/restAhead.ts"
 import { useTurnAheadOfBoard } from "../lib/queueTurnAhead.ts"
 import { returningHolds } from "../lib/queueReturn.ts"
 import { questionsByAnchor } from "../lib/questionAnchor.ts"
-import { allFencesShadowed, placedFrom, placedRestEnds, placeQuestions, registeredStandingAt } from "../lib/questionShadow.ts"
-import { settledQuestionPositions } from "../lib/settledQuestions.ts"
-import { Message, PermPolicyDenialCard, TranscriptSyncFallbackBanner, transcriptBackgroundShells, withoutLiveTranscriptBackgroundTools, runtimeStatusGapFor, RuntimeStatusLadder, VSpace, STEP, PICTURE_STEP, runtimeStatusRung, type RuntimeStatusState, messageGap, messageHeadIsPicture, messageRendersNothing, messageHasRenderableText, lastAssistantIndex } from "./ChatView.tsx"
+import { allFencesShadowed, placedFrom, placedRestEnds } from "../lib/questionShadow.ts"
+import { carryTimeBreak, timeBreaks, type TimeBreak } from "../lib/timeBreaks.ts"
+import { Message, ThreadMessage, TimeBreakHead, PermPolicyDenialCard, TranscriptSyncFallbackBanner, transcriptBackgroundShells, withoutLiveTranscriptBackgroundTools, runtimeStatusGapFor, RuntimeStatusLadder, VSpace, STEP, PICTURE_STEP, runtimeStatusRung, type RuntimeStatusState, messageGap, messageHeadIsPicture, messageRendersNothing, messageHasRenderableText } from "./ChatView.tsx"
 import { BLOCK_RADIUS, BLOCK_RADIUS_TOP, BLOCK_RADIUS_INNER_BOTTOM } from "./TranscriptCard.tsx"
-import { showsRestingCard } from "./AwaitingBackgroundCard.tsx"
 import { agentCompletionCall } from "../lib/subAgentCompletion.ts"
 import { coalesceToolActivityMessages, historicalToolActivityMessages, liveRuntimeStartedAt, liveToolActivityRun, liveToolActivityTail, toolActivityLabel } from "../lib/toolActivity.ts"
 import { prefs } from "../lib/prefs.ts"
@@ -49,7 +46,7 @@ import { consoleCardOrder, useConsoleGroup } from "../lib/consoleBoard.ts"
 import { useConsoleProjectList } from "../lib/consoleProjects.ts"
 import { ProjectScope } from "../lib/projectScope.tsx"
 import { keyProject } from "../lib/threadKey.ts"
-import { RegisteredQuestionStack, SettledQuestionStack, openQuestionsOf, useArrivedQuestions, useFenceQuestions, useRefusedFences, useSettledQuestions } from "./RegisteredQuestionCards.tsx"
+import { RegisteredQuestionStack, SettledQuestionStack, openQuestionsOf, useArrivedQuestions, useRefusedFences, useSettledQuestions } from "./RegisteredQuestionCards.tsx"
 import { DividerHint, WAKE_DIVIDER_WIDE_ONLY, WakeDivider } from "./WakeDivider.tsx"
 import {
   captureTranscriptViewportAnchor,
@@ -1065,22 +1062,26 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
   // no awaiting fence in the window, since a spinning thread is not resting on anything.
   const running = thread.runtime === "running" || thread.runtime === "spawning"
   const projectDir = useProjectDir()
-  // THE LAST THING THE AGENT SAID, for the same reason the thread view computes it: any ```awaiting fence
-  // above it states a wait that has already resolved, and draws nothing at all. Hoisted to the top of the
-  // component because the collapse walk below needs it too, and a settled fence-only message renders
-  // nothing — so the walk has to skip it rather than spend a step on an empty slot.
-  const lastAgentIdx = useMemo(() => lastAssistantIndex(messages), [messages])
-  const awaitingCut = running ? messages.length : lastAgentIdx
-  const isStaleAwaiting = (idx: number) => awaitingCut >= 0 && idx < awaitingCut
-  // …and the LAST message's fence draws nothing either while the resting banner below states it (the
-  // banner opens on that fence's body). Message takes the two reasons as separate props, and so do the
-  // emptiness predicates: a settled fence that handed the human steps keeps its card, a stated one does not.
-  const restingShown = showsRestingCard(thread)
-  const hidesAwaiting = (idx: number) => [isStaleAwaiting(idx), idx === lastAgentIdx && restingShown] as const
-  // Question↔answer pairing for "Answers:" user messages, precomputed over the FULL list (the lookback
-  // may need messages above the visible window). Indexed by GLOBAL message index — the same one the
-  // Message key uses. null at ordinary indices keeps the memoized Message's props stable.
-  const paired = useMemo(() => pairAllAnswers(messages), [messages])
+  const dismissThisCard = useCallback(() => onResolve(thread.id), [onResolve, thread.id])
+  const cancelThisCard = useCallback(() => onUnresolve(thread.id), [onUnresolve, thread.id])
+  // THE SURFACE (ThreadSurface) owns everything that is the thread's rather than this card's: the
+  // fenced-question controller, the send scope, the drop zone, every context the transcript reads, and
+  // what each message MEANS (surface.transcript) — which fence is settled, which registered question a
+  // message carries, which answers it pairs with — exactly as the drawer and the full-screen page get
+  // them. This card tells it only what is the card's own: that it leaves the queue when its thread is
+  // handed back, and that a COLLAPSED card has no prompt box — a file dropped on one opens it, and the
+  // box takes the file as it mounts (maintainer 2026-10-12: "drag a file anywhere onto a card in the
+  // queue in order to drop it into the chat"). Called here, ahead of the collapse walk, because that
+  // walk needs the surface's answer to "does this message draw anything?".
+  const surface = useThreadSurface(
+    { slug: thread.id, thread, messages, openQuestions, settledQuestions },
+    { exit: { dismiss: dismissThisCard, cancel: cancelThisCard }, onFilesDropped: () => setCollapsed(false) },
+  )
+  // THE LAST THING THE AGENT SAID, and the two reasons an ```awaiting fence draws nothing: the worker
+  // has spoken since, or the resting banner below states it (the banner opens on that fence's body).
+  // The collapse walk needs both — a settled fence-only message renders nothing, so the walk has to skip
+  // it rather than spend a step on an empty slot. `paired` is indexed by GLOBAL message index.
+  const { lastAgentIdx, hidesAwaiting, paired, fencesLive, shadowedByMessage, settledPlacement, inFlightAnswers } = surface.transcript
   // Default window: everything back to (and INCLUDING) the human's most recent INTERACTION — a built-in
   // reminder of what they last asked for. `role === "user"` alone is not the human, and an answer to a
   // registered question is the human even though frizz delivered it: see lastHumanTurnIndex, which owns
@@ -1253,6 +1254,20 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
     () => (running ? historicalToolActivityMessages(coalescedVisible) : coalescedVisible),
     [coalescedVisible, running],
   )
+  // WHEN each row of the window was said: the thread view's rule (lib/timeBreaks) over the same entries,
+  // by their place in `activityVisible`. A coalesced tool run started at `runStartedAt` and last moved at
+  // its walked-forward `at`, so a long run does not read as a pause. The first dated row names the day,
+  // so the top of the card says when it is from. A queued bubble is the human's unsent words and is
+  // dated by nothing. The loop below draws each break — on the row it belongs to, or, where this card
+  // hides that row, on the next one it draws.
+  const windowBreaks = useMemo(
+    () => timeBreaks(
+      activityVisible,
+      (entry) => (entry.message.queued ? undefined : (entry.runStartedAt ?? entry.message.at)),
+      (entry) => (entry.message.queued ? undefined : entry.message.at),
+    ),
+    [activityVisible],
+  )
   const liveToolRun = running ? liveToolActivityRun(coalescedVisible) : undefined
   const liveToolActivity = running ? liveToolActivityTail(coalescedVisible) : undefined
   const liveActivityLabel = liveToolActivity ? toolActivityLabel(liveToolActivity, projectDir) : undefined
@@ -1267,7 +1282,7 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
   // names each one (lib/questionShadow). A placed card renders inside that message and leaves its
   // anchor group; its rest's stack still carries a Send for it (placedRestEnds). A marker ABOVE the
   // window places nothing here — that message is not drawn — so its card flushes first (placedFrom).
-  const placement = useMemo(() => placedFrom(placeQuestions(messages, openQuestions), visibleStart), [messages, openQuestions, visibleStart])
+  const placement = useMemo(() => placedFrom(surface.transcript.placement, visibleStart), [surface.transcript.placement, visibleStart])
   const questionAnchors = useMemo(() => {
     const tail: RegisteredQuestionView[] = []
     const byAnchor = new Map<number, RegisteredQuestionView[]>()
@@ -1290,20 +1305,6 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
     }
     return { byAnchor, tail, tailSend, sendAnchors }
   }, [messages, openQuestions, placement, visibleStart])
-  const settledPlacement = useMemo(() => settledQuestionPositions(messages, settledQuestions), [messages, settledQuestions])
-  // A thread dispatched after the free-form fence was retired never gets a fence controller: a
-  // ```question with a body is prose there, drawn read-only, and the registered card is the only
-  // answerable thing (shared QUESTION_FENCE_RETIRED_AT). A legacy thread keeps the whole fence path.
-  const fencesLive = questionFencesLive(thread.spawnedAt)
-  // …and speaks THE QUESTION FENCE instead: every row it knows, which a fence's `id:` resolves against.
-  const fenceQuestions = useFenceQuestions(fencesLive, openQuestions, settledQuestions, thread)
-  // The registered questions standing at each message — its rest and every later one — so a fence
-  // restating or naming one folds into its card (lib/questionShadow), here exactly as on the thread page.
-  const shadowedByMessage = useMemo(() => registeredStandingAt(messages, openQuestions), [messages, openQuestions])
-  // What the human's in-flight answer still has to SAY — the rows of it the transcript above is not
-  // already drawing. Over `messages`, not the window: an answer scrolled above the fold is still on this
-  // card's page and a second copy of it at the tail is the duplicate either way.
-  const inFlightAnswers = useMemo(() => unrenderedAnswers(messages, thread.answersInFlight), [messages, thread.answersInFlight])
   const hasMore = visibleStart > 0 || transcript?.hasEarlier === true
 
   useLayoutEffect(() => {
@@ -1474,18 +1475,7 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
   // reach onResolve directly. `cancel` reinstates it when an optimistic Mark-as-done is declined by the
   // server. Stable identity (onResolve/onUnresolve are []-useCallbacks, thread.id is fixed per card) so
   // the surface's context value never churns and its consumers don't re-render each frame.
-  const dismissThisCard = useCallback(() => onResolve(thread.id), [onResolve, thread.id])
-  const cancelThisCard = useCallback(() => onUnresolve(thread.id), [onUnresolve, thread.id])
-  // THE SURFACE (ThreadSurface) owns that controller, the send scope, the drop zone and every context
-  // the transcript reads; this card tells it only what is the card's own: that it leaves the queue when
-  // its thread is handed back, and that a COLLAPSED card has no prompt box — a file dropped on one opens
-  // it, and the box takes the file as it mounts (maintainer 2026-10-12: "drag a file anywhere onto a card
-  // in the queue in order to drop it into the chat").
-  const surface = useThreadSurface(thread.id, messages, {
-    exit: { dismiss: dismissThisCard, cancel: cancelThisCard },
-    onFilesDropped: () => setCollapsed(false),
-  })
-  const { answeringForMessage, answerable, anyAnswered, sendAnswers, sendMessage } = surface.answering
+  const { answerable, anyAnswered, sendAnswers, sendMessage } = surface.answering
   const promptBoxSends = surface.promptBoxSends
   // The card-level "Send answers" action is the FALLBACK for a card with no prompt box mounted (a
   // collapsed one): there it shows for the standing ask OR the moment the human touches an OLDER
@@ -1524,7 +1514,6 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
     // (The exit pin above clips for the fade's duration with `overflow: clip`, which keeps stickiness.)
     <ThreadSurface
       surface={surface}
-      thread={thread}
       ref={cardRootRef}
       data-queue-card-root={thread.id}
       data-queue-leaving={leaving}
@@ -1682,6 +1671,17 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
               // so the next gap is a full STEP), and `undefined` before anything is drawn.
               let prev: ChatMessage | null | undefined = undefined
               const gapBefore = (next: ChatMessage) => (prev ? messageGap(prev, next) : messageHeadIsPicture(next) ? PICTURE_STEP : STEP)
+              // A TIME BREAK takes the place of the gap above the row it dates, exactly as in the thread
+              // view (TimeBreakHead). This card hides rows, so a break can belong to one it does not
+              // draw — the wake after a long park, folded into a run's middle. It waits here and heads
+              // the next row that IS drawn, dated at that row's own instant (carryTimeBreak).
+              let pendingBreak: TimeBreak | null = null
+              const leadIn = (i: number, next: ChatMessage, at: string | undefined) => {
+                if (pendingBreak && at) {
+                  out.push(<TimeBreakHead key={`tb${i}`} at={at} kind={pendingBreak} flush={prev === undefined} />)
+                  pendingBreak = null
+                } else if (prev !== undefined) out.push(<VSpace key={`s${i}`} h={gapBefore(next)} />)
+              }
               // A REGISTERED question renders at the rest it was ASKED at, not at the card's tail — the
               // same rule the thread view follows (lib/questionAnchor): after the last DRAWN row at or
               // before its anchor. So a group flushes right after its anchor row draws, and otherwise just
@@ -1724,7 +1724,8 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
               // against the work it caused. The pinned ask and loaded-earlier history render in full.
               const barEmitted = new Set<number>()
               let middleEmitted = false
-              activityVisible.forEach(({ message: m, messageIndex: globalIdx }, i) => {
+              activityVisible.forEach(({ message: m, messageIndex: globalIdx, runStartedAt }, i) => {
+                pendingBreak = carryTimeBreak(pendingBreak, windowBreaks[i])
                 if (m.queued) return
                 if (messageRendersNothing(m, ...hidesAwaiting(globalIdx))) return
                 // "Agent rested" is the queue card's own PREMISE, not news: every card here is a rested
@@ -1798,7 +1799,7 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
                   // The SAME pitch the ordinary path charges, spelled the same way: a waker is a wake
                   // hairline like any other, and a second spelling here is how the rhythm drifts.
                   flushQuestions(globalIdx - 1)
-                  if (prev !== undefined) out.push(<VSpace key={`s${i}`} h={gapBefore(m)} />)
+                  leadIn(i, m, runStartedAt ?? m.at)
                   const wakerKey = m.sourceId ?? `legacy-${globalIdx}`
                   out.push(
                     <div key={wakerKey} data-transcript-source-id={wakerKey} className="flex flex-col">
@@ -1856,11 +1857,11 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
                   if (!messageHasRenderableText(m, ...hidesAwaiting(globalIdx))) return
                   flushQuestions(globalIdx - 1)
                   const prose = proseOnly(m)
-                  if (prev !== undefined) out.push(<VSpace key={`s${i}`} h={gapBefore(prose)} />)
+                  leadIn(i, prose, runStartedAt ?? m.at)
                   const textKey = m.sourceId ?? `legacy-${globalIdx}`
                   out.push(
                     <div key={textKey} data-transcript-source-id={textKey} className="flex flex-col">
-                      <Message m={m} dense textOnly answering={fencesLive ? answeringForMessage(m) : undefined} paired={paired[globalIdx]} staleAwaiting={isStaleAwaiting(globalIdx)} restingCardShown={globalIdx === lastAgentIdx && restingShown} shadowedBy={shadowedByMessage.get(globalIdx)} placed={placement.placed.get(globalIdx)} settledPlaced={settledPlacement.placed.get(globalIdx)} fenceQuestions={fenceQuestions} thread={thread} />
+                      <ThreadMessage m={m} index={globalIdx} dense textOnly />
                     </div>,
                   )
                   // Text-only → the row ends in prose (tool band dropped).
@@ -1870,23 +1871,11 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
                   return
                 }
                 flushQuestions(globalIdx - 1)
-                if (prev !== undefined) out.push(<VSpace key={`s${i}`} h={gapBefore(m)} />)
+                leadIn(i, m, runStartedAt ?? m.at)
                 const sourceKey = m.sourceId ?? `legacy-${globalIdx}`
                 out.push(
                   <div key={sourceKey} data-transcript-source-id={sourceKey} className="flex flex-col">
-                  <Message
-                    m={m}
-                    dense
-                    staleAwaiting={isStaleAwaiting(globalIdx)}
-                    restingCardShown={globalIdx === lastAgentIdx && restingShown}
-                    answering={fencesLive ? answeringForMessage(m) : undefined}
-                    paired={paired[globalIdx]}
-                    shadowedBy={shadowedByMessage.get(globalIdx)}
-                    placed={placement.placed.get(globalIdx)}
-                    settledPlaced={settledPlacement.placed.get(globalIdx)}
-                    fenceQuestions={fenceQuestions}
-                    thread={thread}
-                  />
+                  <ThreadMessage m={m} index={globalIdx} dense />
                   </div>,
                 )
                 prev = m
