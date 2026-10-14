@@ -37,6 +37,9 @@
 //          none      press nothing
 //     [--start=rpc]         at 0, start a turn with a followUp over RPC — a send from ANOTHER tab. Use with
 //                           --action=none to watch a turn open, run and rest with nobody at the keyboard
+//     [--start=rpc-tab]     the same send carrying a deliveryId, as another tab's prompt box sends it: the
+//                           server opens a ledger entry first (its ghost bubble, deliveryInFlight). Plain
+//                           `rpc` has none, which is how a worker's steerThread sends — a different path
 //     [--steers=1500,1900]  ms after 0 at which the page types a steer and presses Send, into the running turn
 //     [--drawer]            record the board's drawer (`/thread/<slug>`) instead of the thread page
 //     [--message=text] [--ms=9000] [--out=/abs/dir] [--w=1400] [--h=900]
@@ -101,7 +104,7 @@ if (!url || !slug) {
   console.error("usage: nub scripts/layout-timeline.mjs --url=http://127.0.0.1:PORT/project/<p> --slug=<thread> [--action=send|steps|answer|markdone|none] [--start=rpc] [--steers=1500,1900] [--message=…] [--ms=9000] [--out=…]")
   process.exit(1)
 }
-const startRpc = flags.start === "rpc"
+const startRpc = flags.start === "rpc" || flags.start === "rpc-tab"
 const boardChange = ["rename", "pin", "unpin", "snooze"].includes(flags.start) ? flags.start : null
 const surface = flags.surface ?? (flags.drawer ? "drawer" : "page")
 const from = flags.from ?? (surface === "sub" ? "page" : surface)
@@ -387,7 +390,7 @@ try {
   }
   if (startRpc) {
     const sessionId = (await api.query("board")).threads.find((t) => t.id === slug)?.sessionId
-    pending.push(api.mutate("followUp", { slug, sessionId, message: "Go on: expand on the second point." }).catch((e) => errors.push(`followUp: ${e.message}`)))
+    pending.push(api.mutate("followUp", { slug, sessionId, message: "Go on: expand on the second point.", ...(flags.start === "rpc-tab" ? { deliveryId: `layout-timeline-${Date.now()}` } : {}) }).catch((e) => errors.push(`followUp: ${e.message}`)))
   }
   if (action === "open-sub") {
     await pressSubAgent()
