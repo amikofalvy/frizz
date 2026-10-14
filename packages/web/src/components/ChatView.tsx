@@ -439,8 +439,8 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false, header
 
   return (
     <ThreadSurface surface={surface} thread={thread} className="flex-1 min-h-0 flex flex-col">
-    <PhoneQuestionsContext.Provider value={phoneQuestions}>
     {header}
+    <PhoneQuestionsContext.Provider value={phoneQuestions}>
     <div
       data-drawer-scroll-ready={q.isPending ? "false" : "true"}
       className="flex-1 min-h-0 flex flex-col overflow-hidden outline-none"
