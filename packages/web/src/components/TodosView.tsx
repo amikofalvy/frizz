@@ -16,19 +16,18 @@ import { lastHumanTurnIndex } from "../lib/messagePresentation.ts"
 import { isOptimisticallySteering, useSteeredAt } from "../lib/steering.ts"
 import { prefersReducedMotion } from "../lib/sheet.ts"
 import { REST_CATCH_UP_MS } from "../lib/steering.ts"
-import { useTranscriptHeldForBoard } from "../lib/restAhead.ts"
 import { useTurnAheadOfBoard } from "../lib/queueTurnAhead.ts"
 import { returningHolds } from "../lib/queueReturn.ts"
 import { questionsByAnchor } from "../lib/questionAnchor.ts"
 import { allFencesShadowed, placedFrom, placedRestEnds } from "../lib/questionShadow.ts"
 import { carryTimeBreak, timeBreaks, type TimeBreak } from "../lib/timeBreaks.ts"
-import { Message, ThreadMessage, TimeBreakHead, TranscriptSyncFallbackBanner, transcriptBackgroundShells, withoutLiveTranscriptBackgroundTools, RuntimeStatusSlot, useRuntimeTail, VSpace, STEP, PICTURE_STEP, messageGap, messageHeadIsPicture, messageRendersNothing, messageHasRenderableText } from "./ChatView.tsx"
+import { Message, ThreadMessage, TimeBreakHead, TranscriptSyncFallbackBanner, RuntimeStatusSlot, useRuntimeTail, VSpace, STEP, PICTURE_STEP, messageGap, messageHeadIsPicture, messageRendersNothing, messageHasRenderableText } from "./ChatView.tsx"
 import { BLOCK_RADIUS, BLOCK_RADIUS_TOP, BLOCK_RADIUS_INNER_BOTTOM } from "./TranscriptCard.tsx"
 import { agentCompletionCall } from "../lib/subAgentCompletion.ts"
 import { coalesceToolActivityMessages, historicalToolActivityMessages } from "../lib/toolActivity.ts"
 import { prefs } from "../lib/prefs.ts"
 import { ThreadComposerBox } from "./ThreadComposerBox.tsx"
-import { ThreadSurface, useThreadSurface } from "./ThreadSurface.tsx"
+import { ThreadSurface, useThreadMessages, useThreadSurface } from "./ThreadSurface.tsx"
 import { HeaderActions } from "./HeaderActions.tsx"
 import { ThreadLifecycleActions } from "./ThreadLifecycle.tsx"
 import { ThreadHeaderFacts } from "./ThreadHeaderFacts.tsx"
@@ -44,7 +43,7 @@ import { useConsoleProjectList } from "../lib/consoleProjects.ts"
 import { ProjectScope } from "../lib/projectScope.tsx"
 import { fetchEarlierPage } from "../lib/loadEarlier.ts"
 import { keyProject } from "../lib/threadKey.ts"
-import { RegisteredQuestionStack, SettledQuestionStack, openQuestionsOf, useArrivedQuestions, useRefusedFences, useSettledQuestions } from "./RegisteredQuestionCards.tsx"
+import { RegisteredQuestionStack, SettledQuestionStack } from "./RegisteredQuestionCards.tsx"
 import { DividerHint, WAKE_DIVIDER_WIDE_ONLY, WakeDivider } from "./WakeDivider.tsx"
 import {
   captureTranscriptViewportAnchor,
@@ -905,10 +904,6 @@ function IntermediateSummary({ toolCount, onExpand }: { toolCount: number; onExp
 // memoized Message. `onResolve` takes the slug (stable useCallback in TodosView) so this card's props
 // never churn identity render-to-render.
 const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, onUnresolve }: { thread: ThreadView; leaving: boolean; frozen: boolean; onResolve: (slug: string) => void; onUnresolve: (slug: string) => void }) {
-  // ANSWERED registered questions keep drawing, greyed, where their open card stood — the thread view's
-  // rule (lib/settledQuestions). The open cards skip any id the settled list holds (openQuestionsOf).
-  const settledQuestions = useSettledQuestions(thread)
-  const boardQuestions = useMemo(() => openQuestionsOf(thread, settledQuestions), [thread, settledQuestions])
   // Tracks only vtReturnTarget (valtio re-renders on accessed keys alone), so the memo'd card
   // re-renders just when a /full exit primes or clears it — see the root div's viewTransitionName.
   const vtSnap = useSnapshot(store)
@@ -1049,25 +1044,12 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
   // Raw server order — each message renders its `parts` in block order (fidelity). Memoized so the
   // windowing/useLiveAnswering below line up on identity.
   const liveMessages = useMemo(() => transcript?.messages ?? [], [transcript])
-  // …less a rest the board has not reached yet (lib/restAhead.ts, the thread view's own hold). A RUNNING
-  // thread can hold a card — see `running` below — and that card takes `running` from the board row and
-  // its messages from this cache, exactly as the thread view does. So a push that ends on the rest while
-  // the board still reports the turn drew the finished reply with the Working row under it until the next
-  // board tick; held, the reply and the Working row's departure land in one render.
-  const rawMessages = useTranscriptHeldForBoard(thread, liveMessages)
-  // A STILL-RUNNING background call (a shell, a Monitor) leaves the transcript and is counted in the ops
-  // line over the prompt box instead — the drawer's rule (ChatView presentationMessages), which this card
-  // broke until 2026-10-09 by drawing the same call as a tool card here AND counting it there. The shells
-  // the ops line counts are read off the RAW transcript, before they are taken out. Index-preserving, so
-  // every global index below still addresses server truth.
-  const liveTranscriptShells = useMemo(() => transcriptBackgroundShells(rawMessages), [rawMessages])
-  const shownMessages = useMemo(() => withoutLiveTranscriptBackgroundTools(rawMessages), [rawMessages])
-  // The open questions this card DRAWS: a fence-asked row waits for the message that asked it, as on the
-  // thread page (lib/questionArrival).
-  const openQuestions = useArrivedQuestions(boardQuestions, rawMessages)
-  // …with every question fence the server REFUSED marked on its message, as on the thread page
-  // (lib/questionFaults): a code block, which places and claims nothing. Index-preserving too.
-  const messages = useRefusedFences(shownMessages, thread, openQuestions, settledQuestions)
+  // What this card draws of it, built by the same pipeline the thread view's is (ThreadSurface
+  // useThreadMessages): a rest the board has not reached held back — a RUNNING thread can hold a card, see
+  // `running` below — the running background calls moved to the line of counts over the prompt box, the
+  // registered questions that have arrived, the refused fences marked. Index-preserving, so every global
+  // index below still addresses server truth.
+  const { messages, openQuestions, settledQuestions, transcriptShells } = useThreadMessages(thread, liveMessages)
   // A RUNNING thread can hold a card (one with an open question keeps working), and it reads as the
   // drawer reads it: the Working… line with its live tool run at the tail, that run out of history, and
   // no awaiting fence in the window, since a spinning thread is not resting on anything.
@@ -1558,8 +1540,10 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
           BELOW this wrapper, so the root's rounded bottom corners are always the dock's, never the
           square-cornered header's. (No overflow here — that would neuter the header's stickiness.) */}
       <div className={`flex flex-col min-w-0 ${collapsed ? "" : "mb-[calc(-1*var(--queue-card-header-h,0px))]"}`}>
-      {/* STICKY header: title + backing-doc filename + status_text on the left, whole-item icon actions
-          on the right. Pins to the scroll container's top (opaque bg + bottom rule) as the body scrolls
+      {/* STICKY header: the title and its facts on the left, whole-item icon actions on the right — the
+          thread header's own pieces (ChatView ThreadHeader), in the card's padding. It drew one more
+          line until 2026-10-14, a needs-human thread's `statusText` — which nothing in the server sets, and
+          a session thread's status is never needs-human — so only fixtures ever drew it. Pins to the scroll container's top (opaque bg + bottom rule) as the body scrolls
           under it, so the actions stay reachable through a long card. Rounding is STATE-DEPENDENT:
           collapsed, the header IS the whole card and takes the full block radius; otherwise it is
           rounded-top-only + a border-b, the dock carrying the bottom corners (a rounded-top + border-b
@@ -1571,14 +1555,6 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
               2026-09-13 ("I should be able to click on it to retitle it"). */}
           <ThreadTitle thread={thread} className="leading-snug" />
           <ThreadHeaderFacts thread={thread} />
-          {/* status_text is worker-authored frontmatter prose — only decision-relevant when the
-              thread is actually waiting on the human, so it renders ONLY for needs-human threads (the
-              declared awaiting-you state; blocked is now a pure machine-wait and never cards). */}
-          {thread.statusText && thread.status === "needs-human" && (
-            <div className="text-[11px] text-muted-80 mt-0.5 truncate" title={thread.statusText}>
-              {thread.statusText}
-            </div>
-          )}
         </div>
         {/* SHARED navigation actions: collapse and open-in-new-tab, plus Retry — which HeaderActions
             itself now gates on `offersRetry` (stalled OR limit-killed; groups.ts). Both card here: a
@@ -1983,7 +1959,7 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
         submitOverride={sendMessage}
         // The shells read off the transcript, as the drawer passes them: a Codex thread's background
         // execs live there and nowhere on the board, so without them the two lines counted differently.
-        above={<QueueOpsSummary thread={thread} transcriptShells={liveTranscriptShells} />}
+        above={<QueueOpsSummary thread={thread} transcriptShells={transcriptShells} />}
       />
       )}
     </ThreadSurface>

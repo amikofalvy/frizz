@@ -37,7 +37,7 @@ import { DividerQuotedTitle, WAKE_DIVIDER_WIDE_ONLY, WakeDivider } from "./WakeD
 import { usePromptBoxSends } from "../lib/sendScope.tsx"
 import { QueueDismissContext, ThreadSlugContext } from "../lib/threadContexts.ts"
 import { lastAssistantIndex } from "../lib/lastAssistant.ts"
-import { ThreadSurface, useThreadSurface, useThreadTranscript, type ThreadTranscript } from "./ThreadSurface.tsx"
+import { ThreadSurface, useThreadMessages, useThreadSurface, useThreadTranscript, type ThreadTranscript } from "./ThreadSurface.tsx"
 import { useIsMobile } from "../lib/mobile.ts"
 import { MobileAnswerSheet } from "./MobileAnswerSheet.tsx"
 import { PhoneAnswerBar, PhoneQuestionsContext, type PhoneQuestions } from "./PhoneQuestionCards.tsx"
@@ -52,7 +52,6 @@ import { SessionMessageLine } from "./SessionMessageLine.tsx"
 import { lastAskIndex, messagePresentationText } from "../lib/messagePresentation.ts"
 import { inQueuedTail, withRestReplyInline } from "../lib/restReply.ts"
 import { steeredSinceRest, useSteeredAt, useTurnHeldForTranscript } from "../lib/steering.ts"
-import { useTranscriptHeldForBoard } from "../lib/restAhead.ts"
 import { snoozePresetInstant, formatSnoozeWake } from "../lib/snooze.ts"
 import { noteGithubRefs } from "../lib/githubHovercards.ts"
 import { ICON_LABEL_NUDGE } from "../lib/iconAlign.ts"
@@ -65,7 +64,7 @@ import { SheetClose } from "./ui/SheetHeader.tsx"
 import { ThreadActionBar } from "./ThreadActionBar.tsx"
 import { QueueOpsSummary } from "./QueueOpsSummary.tsx"
 import type { QueueOpsKind } from "../lib/queueOpsCounts.ts"
-import { threadOps } from "../lib/threadOps.ts"
+import { SHELL_WATCHED_NOTE, shellWatched, threadOps } from "../lib/threadOps.ts"
 import { MobileThreadHeader } from "./MobileThreadHeader.tsx"
 import { HeaderActions } from "./HeaderActions.tsx"
 import { ThreadLifecycleActions, StateButton } from "./ThreadLifecycle.tsx"
@@ -87,7 +86,7 @@ import { ChildOpRow } from "./ChildOpRow.tsx"
 import { ThreadLinks } from "./ThreadLinks.tsx"
 import { TRANSCRIPT_META_LABEL_CLASS, transcriptMetaChevronClass } from "../lib/transcriptMetaLabels.ts"
 import { InteractionStack } from "./InteractionCards.tsx"
-import { ClosedQuestionCard, RegisteredQuestionCard, RegisteredQuestionStack, SettledQuestionCard, SettledQuestionStack, UnregisteredQuestionCard, openQuestionsOf, useArrivedQuestions, useRefusedFences, useSettledQuestions, type FenceQuestionRow, type SettledQuestion } from "./RegisteredQuestionCards.tsx"
+import { ClosedQuestionCard, RegisteredQuestionCard, RegisteredQuestionStack, SettledQuestionCard, SettledQuestionStack, UnregisteredQuestionCard, type FenceQuestionRow, type SettledQuestion } from "./RegisteredQuestionCards.tsx"
 // The shared card chrome and THE question card both live in their own modules now, so every
 // surface can render them without importing the thread view. QuestionBlockCard in particular is
 // shared with the native-AskUserQuestion path, which reaches it through InteractionCards.tsx —
@@ -146,50 +145,6 @@ function useChildDrillSlug(): string | null {
   return threadSlug ?? drillSlug
 }
 
-function isLiveTranscriptBackgroundTool(tool: TranscriptToolCall): boolean {
-  return tool.status === "pending" && tool.backgroundState === "background"
-}
-
-// Codex's deliberate `yield_control()` shell lifecycle is transcript-native, while the older board
-// telemetry still reports bgShells:[]. Present those calls through the EXISTING anchored ops strip and
-// remove only their live copy from the conversation. Once a shell resolves, its completed historical
-// card returns at its canonical transcript position.
-export function transcriptBackgroundShells(messages: readonly ChatMessage[]): (BgShellView & TranscriptShellRecord)[] {
-  const shells: (BgShellView & TranscriptShellRecord)[] = []
-  for (const message of messages) {
-    for (const tool of message.tools) {
-      if (!isLiveTranscriptBackgroundTool(tool)) continue
-      if (!message.at) continue
-      shells.push({
-        label: tool.desc ?? tool.detail ?? tool.command ?? "Background command",
-        // The projected MESSAGE's instant, which is the only one this side has — and is NOT the launch
-        // record's, so it can never be reconciled against the board's row. `launchId` is what does that.
-        startedAt: message.at,
-        state: "running",
-        ...(tool.shellId ? { launchId: tool.shellId } : {}),
-        // The reconciliation key for a CODEX shell, whose board row and transcript row share nothing
-        // else (see mergeBackgroundShells). Carried separately from `label`, which for a codex row is
-        // the model's description of the step rather than the command it ran.
-        ...(tool.command ? { command: tool.command } : {}),
-      })
-    }
-  }
-  return shells
-}
-
-export function withoutLiveTranscriptBackgroundTools(messages: readonly ChatMessage[]): ChatMessage[] {
-  return messages.map((message) => {
-    if (!message.tools.some(isLiveTranscriptBackgroundTool)) return message
-    const tools = message.tools.filter((tool) => !isLiveTranscriptBackgroundTool(tool))
-    const parts = message.parts?.map((part) =>
-      part.kind === "tools"
-        ? { ...part, tools: part.tools.filter((tool) => !isLiveTranscriptBackgroundTool(tool)) }
-        : part,
-    ).filter((part) => part.kind !== "tools" || part.tools.length > 0)
-    return { ...message, tools, parts }
-  })
-}
-
 // The default thread surface: the session transcript (parsed server-side from the JSONL) rendered
 // as a conversation — assistant prose as markdown, tool calls as compact one-liners, a spinner
 // while the turn is in flight. The raw terminal is the ⌘T power-user toggle.
@@ -241,19 +196,6 @@ export function ThreadView({ slug, onStatusApplied, onClose, showReturnToQueue =
 function ChatView({ slug, phone = false, railBeside = false, header }: { slug: string; phone?: boolean; railBeside?: boolean; header: ReactNode }) {
   const board = useBoard()
   const boardThread = threadBySlug(board, slug)
-  // ANSWERED registered questions stay in the transcript, greyed, where their open card stood (see
-  // lib/settledQuestions). The open cards skip any id the settled list holds, so a question just sent
-  // never draws as both.
-  const settledQuestions = useSettledQuestions(boardThread)
-  const boardQuestions = useMemo(() => openQuestionsOf(boardThread, settledQuestions), [boardThread, settledQuestions])
-  // ON A PHONE the registered cards are read-only and answering is a sheet (PhoneQuestionCards,
-  // RegisteredAnswerSheet), opened from the bottom bar's "Answer". Null off the phone page.
-  const phoneQuestions = useMemo<PhoneQuestions | null>(
-    () => (phone ? { numberOf: (id) => boardQuestions.findIndex((q) => q.id === id) + 1 } : null),
-    [phone, boardQuestions],
-  )
-  const [answerSheetOpen, setAnswerSheetOpen] = useState(false)
-
   // Freshness is centrally managed (transcript-live.ts keeps every observed transcript live); `poll`
   // only gates the SSE-fallback interval for a running thread.
   const q = useTranscript(slug, { poll: boardThread?.runtime === "running" || boardThread?.runtime === "spawning" })
@@ -264,23 +206,23 @@ function ChatView({ slug, phone = false, railBeside = false, header }: { slug: s
   // Raw server order — each message renders its `parts` in block order (fidelity). Memoized so
   // useLiveAnswering's `liveMsg` identity check compares objects from THIS same list.
   const liveMessages = useMemo(() => q.data?.messages ?? [], [q.data])
-  // …less a rest the board has not reached yet: a push that ends on one while the board still reports the
-  // turn waits for the board, so the reply, its card and the Working row's departure land in one render
-  // (lib/restAhead.ts). Everything below reads THIS list.
-  const loadedMessages = useTranscriptHeldForBoard(boardThread, liveMessages)
-  // The open questions this surface DRAWS: a fence-asked row waits for the message that asked it, which
-  // the transcript brings a round trip after the board brings the row (lib/questionArrival).
-  const openQuestions = useArrivedQuestions(boardQuestions, loadedMessages)
-  // …with every question fence the server REFUSED marked on its message (lib/questionFaults), so each
-  // reader of a message's fences below — the placement, the claims, Message itself — sees it as the code
-  // block it is. The same array when nothing was refused.
-  const messages = useRefusedFences(loadedMessages, boardThread, openQuestions, settledQuestions)
-  const liveTranscriptShells = useMemo(() => transcriptBackgroundShells(messages), [messages])
+  // What this surface draws of it, built by the same pipeline the queue card's is (ThreadSurface
+  // useThreadMessages): the rest the board has not reached held back, the running background calls moved
+  // to the line of counts, the registered questions that have arrived, the refused fences marked.
+  const { messages, openQuestions, settledQuestions, transcriptShells } = useThreadMessages(boardThread, liveMessages)
+  // ON A PHONE the registered cards are read-only and answering is a sheet (PhoneQuestionCards,
+  // RegisteredAnswerSheet), opened from the bottom bar's "Answer". Null off the phone page. A card is
+  // numbered by its place among the questions the sheet steps through, which are the ones drawn.
+  const phoneQuestions = useMemo<PhoneQuestions | null>(
+    () => (phone ? { numberOf: (id) => openQuestions.findIndex((q) => q.id === id) + 1 } : null),
+    [phone, openQuestions],
+  )
+  const [answerSheetOpen, setAnswerSheetOpen] = useState(false)
   const steerStamp = useSteeredAt()[slug]
   // The send that ends a rest draws where it will land, stamped with the instant this tab sent it — see
-  // lib/restReply.
+  // lib/restReply. The thread view's own stage: the queue card leaves on a send, so it never draws one.
   const presentationMessages = useMemo(
-    () => withRestReplyInline(withoutLiveTranscriptBackgroundTools(messages), steerStamp === undefined ? undefined : new Date(steerStamp).toISOString()),
+    () => withRestReplyInline(messages, steerStamp === undefined ? undefined : new Date(steerStamp).toISOString()),
     [messages, steerStamp],
   )
   // Cut over presentationMessages, not messages: the coalesced entries below carry a messageIndex into
@@ -483,7 +425,7 @@ function ChatView({ slug, phone = false, railBeside = false, header }: { slug: s
           // need to show … the active shells and subagents and all of that beneath the prompt box anymore
           // 'cause it's already showing up in the sidebar to the right"). The rail (FocusRail) lists every
           // row the line counts, its saved links and Codex shells included.
-          above={phone || railBeside || !thread ? undefined : <QueueOpsSummary thread={thread} transcriptShells={liveTranscriptShells} />}
+          above={phone || railBeside || !thread ? undefined : <QueueOpsSummary thread={thread} transcriptShells={transcriptShells} />}
           phoneBarOverride={phone && openQuestions.length > 0
             ? (api) => <PhoneAnswerBar count={openQuestions.length} onAnswer={() => setAnswerSheetOpen(true)} onReply={api.editReply} />
             : undefined}
@@ -4406,11 +4348,8 @@ export function BackgroundOpsStrip({
   // before the shell finished, and 1191 of them never received a notification even though the session
   // provably kept working for minutes-to-days afterwards. An armed watcher is what closes that, so
   // "will this thread actually hear about this" is a real question about a shell row, with two answers.
-  const watchedTargets = new Set(
-    (thread?.watches ?? []).filter((w) => w.kind === "shell" && w.state === "armed").map((w) => w.target),
-  )
-  const isWatched = (s: { id?: string; taskId?: string; label: string }) =>
-    watchedTargets.has(s.taskId ?? "") || watchedTargets.has(s.id ?? "") || watchedTargets.has(s.label)
+  // The full-screen rail's shell rows say the same, off the same predicate (lib/threadOps shellWatched).
+  const isWatched = shellWatched(thread)
   // This is intentionally independent of transcript cards: it sits immediately below the affected
   // prompt box so a resting worker that owns a live shell still reads as active at a glance. Do not
   // add a thread-wide “Running” marker here: a foreground turn and several independent children are
@@ -4469,7 +4408,7 @@ export function BackgroundOpsStrip({
           // Overriding the row's default open-tooltip only when there IS a watcher: an unwatched shell
           // keeps exactly the row it has always had, so the marker is the exception rather than a new
           // reading every row has to carry.
-          title={isWatched(s) ? `${s.label}\nWatched — this thread wakes when it finishes` : undefined}
+          title={isWatched(s) ? `${s.label}\n${SHELL_WATCHED_NOTE}` : undefined}
         />
       ))}
       {/* THE PR WATCHERS, last, because they are the least likely to change while you are looking: a

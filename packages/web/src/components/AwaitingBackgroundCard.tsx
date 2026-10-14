@@ -40,6 +40,7 @@ import { restingOnSteps } from "../lib/stepsAnswer.ts"
 import { pushBackgroundShellDrawer, pushSubAgentDrawer, showToast } from "../store.ts"
 import { rpc } from "../api/rpc.ts"
 import { threadLifecycleAvailability } from "../lib/threadLifecycle.ts"
+import { SHELL_WATCHED_NOTE } from "../lib/threadOps.ts"
 import { ICON_LABEL_NUDGE } from "../lib/iconAlign.ts"
 import { PRIMER, PRIMER_DANGER_LINK } from "../lib/primer.ts"
 import { LinkedHtml } from "./LinkedHtml.tsx"
@@ -763,12 +764,15 @@ function railDismiss(onDismiss: (() => void) | undefined, running: boolean, open
  *  A STALE shell is a process the OS has confirmed gone (CHILD_STALE_SHELL_TITLE), so it drops the
  *  shell blue and says "stale". It read "running · 3h" here until 2026-10-05: a declared watch keeps
  *  its row after the shell it names dies, and that row is the reason the thread is back in the queue. */
-export function BgShellRow({ shell, slug, now, testId, onDismiss }: {
+export function BgShellRow({ shell, slug, now, testId, onDismiss, watched }: {
   shell: ThreadView["bgShells"][number]
   slug: string
   now: number
   testId?: string
   onDismiss?: () => void
+  // An armed watch names this shell (lib/threadOps shellWatched): the tooltip ends on the line the ops
+  // strip's row ends on, so the rail that replaces the strip on /full answers the same question.
+  watched?: boolean
 }) {
   const elapsed = compactElapsedSince(shell.startedAt, now)
   const running = shell.state === "running"
@@ -784,7 +788,7 @@ export function BgShellRow({ shell, slug, now, testId, onDismiss }: {
       mark={<TerminalSquare size={12} className={`${ON_CAP} ${running ? "text-shell" : "text-muted-60"}`} />}
       name={shell.label}
       onOpen={openable ? () => pushBackgroundShellDrawer(slug, shell.id!, { label: shell.label, startedAt: shell.startedAt }) : undefined}
-      title={openable ? `Read this shell's output — ${state}` : running ? shell.label : `${shell.label} — ${state}`}
+      title={[openable ? `Read this shell's output — ${state}` : running ? shell.label : `${shell.label} — ${state}`, watched ? SHELL_WATCHED_NOTE : null].filter(Boolean).join("\n")}
       // The elapsed time alone (maintainer 2026-10-08: "We need to be picky about what we include as the
       // light gray metadata"). The mark already says which: shell blue while it runs, grey once the OS
       // confirms it gone, and the tooltip spells it out.

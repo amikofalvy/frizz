@@ -4,9 +4,9 @@ import { mergeBackgroundShells, visibleChildOps, type TranscriptShellRecord } fr
 /** WHAT A THREAD HAS RUNNING, WATCHED OR SAVED — one answer for every place that lists it: the line of
  *  counts over the prompt box (lib/queueOpsCounts), the panel each count opens (QueueSubAgentLines,
  *  BackgroundOpsStrip), and the full-screen page's rail (FocusRail). Those picked their rows by rules of
- *  their own until 2026-10-14, and the rules had drifted: the rail left out an archived thread's watches
- *  and every watch no longer armed — a past-due timer read "firing…" forever there, and a PR row froze on
- *  its last reading — while the line over the prompt box went on counting both. */
+ *  their own until 2026-10-14, and the rules had drifted: the rail had learned to leave out an archived
+ *  thread's watches and every watch no longer armed, while the line over the prompt box and its panels
+ *  went on counting and listing both. */
 export interface ThreadOps {
   /** Every child still unresolved — running, rested or stale — at every depth (visibleChildOps "card"). */
   agents: readonly SubAgentView[]
@@ -22,16 +22,16 @@ export interface ThreadOps {
 }
 
 /** `transcriptShells` are the shells read off the transcript, whose Codex background execs the board
- *  reports none of (ChatView transcriptBackgroundShells); every caller passes them.
+ *  reports none of (lib/transcriptShells); every caller passes them.
  *
  *  A WATCH IS LISTED WHILE IT IS ARMED AND ITS THREAD IS NOT ARCHIVED. An archived thread watches nothing,
  *  though its registrations stay armed for the day it is reopened: the scheduler neither fires its timers
- *  nor polls its PRs and issues (scheduler.ts evalTimers, and the per-watcher liveness skip). A SHELL watch
+ *  nor polls its PRs and issues (scheduler.ts evalTimers, and the per-watcher liveness skip). Rowed, a
+ *  past-due timer read "firing…" forever and a PR row froze on its last reading. A SHELL watch
  *  is never a row of its own: the shell it waits on is already one, and listing the watch too would name
- *  one process twice (2026-08-14); BackgroundOpsStrip marks it on that shell's row instead. */
+ *  one process twice (2026-08-14); it is marked on that shell's row instead (shellWatched). */
 export function threadOps(thread: ThreadView, transcriptShells: readonly (BgShellView & TranscriptShellRecord)[] = []): ThreadOps {
-  const watching = thread.state !== "archived"
-  const armed = (thread.watches ?? []).filter((watch) => watching && watch.state === "armed")
+  const armed = listedWatches(thread)
   const github = armed.filter((watch) => watch.kind === "github")
   const saved = thread.links ?? []
   return {
@@ -45,3 +45,20 @@ export function threadOps(thread: ThreadView, transcriptShells: readonly (BgShel
     links: saved.filter((link) => link.kind === "link"),
   }
 }
+
+// The watches a thread is listed as waiting on — see threadOps.
+function listedWatches(thread: ThreadView | undefined): ThreadWatchView[] {
+  if (!thread || thread.state === "archived") return []
+  return (thread.watches ?? []).filter((watch) => watch.state === "armed")
+}
+
+/** WILL THE THREAD HEAR ABOUT THIS SHELL? Yes when a listed `shell` watch names it — by its task id, its
+ *  id or its label, whichever the worker registered it by. The answer rides the shell's own row, as its
+ *  tooltip's last line (SHELL_WATCHED_NOTE), wherever the row is drawn: the ops strip and the full-screen
+ *  rail. See BackgroundOpsStrip for why it is worth a line. */
+export function shellWatched(thread: ThreadView | undefined): (shell: { id?: string; taskId?: string; label: string }) => boolean {
+  const targets = new Set(listedWatches(thread).filter((watch) => watch.kind === "shell").map((watch) => watch.target))
+  return (shell) => targets.has(shell.taskId ?? "") || targets.has(shell.id ?? "") || targets.has(shell.label)
+}
+
+export const SHELL_WATCHED_NOTE = "Watched — this thread wakes when it finishes"
