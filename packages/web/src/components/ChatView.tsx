@@ -2,7 +2,7 @@ import { createContext, Fragment, memo, useCallback, useContext, useEffect, useI
 import { createPortal } from "react-dom"
 import { useSnapshot } from "valtio"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { useVirtualizer } from "@tanstack/react-virtual"
+import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual"
 import { AlertTriangle, ArrowDown, ArrowUp, Bot, Check, ChevronRight, FileText, HelpCircle, Hourglass, KeyRound, ListChecks, Loader2, Radar, TerminalSquare, type LucideIcon } from "lucide-react"
 import { awaitingFenceTitle, awaitingSteps, RETRY_FOLLOW_UP } from "@frizz/shared"
 import type { AskQuestion, AwaitingHint, BgShellView, PendingAsk, RegisteredQuestionView, SubAgentView, ThreadView as ThreadViewData, TranscriptEdit, TranscriptMessage, TranscriptPart, TranscriptTodo, TranscriptToolCall } from "@frizz/shared"
@@ -1037,6 +1037,9 @@ function VirtualizedThreadTranscript({
     return next
   }, [beforeCursor, earlierError, hasEarlier, hasRuntimeRow, loadingEarlier, messageRows, messages, questionGroups, settledByRow, transportFallback])
 
+  // The row a "load earlier" must keep under the reader's eye, from the moment it is asked for until the
+  // prepend's layout effect has put it back (see rangeExtractor below and the effect that consumes it).
+  const pendingPrependAnchorRef = useRef<{ rowKey: string; viewportTop: number } | null>(null)
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => transcriptRef.current,
@@ -1053,6 +1056,20 @@ function VirtualizedThreadTranscript({
       return row.kind === "message" ? 108 + row.gap : 82 + row.gap
     },
     overscan: 8,
+    // A PREPEND KEEPS THE READER'S ROW MOUNTED. "Load earlier" inserts a whole page above the row the
+    // reader is looking at, so in the commit that lands it the visible range (still computed for the old
+    // offset, near 0) holds the new page's first rows and not theirs. Rendering the anchored row and the
+    // rows under it as well lets the prepend's layout effect find it in the DOM and put it back under
+    // the reader's eye before that commit paints — instead of a frame of the wrong page, or of nothing.
+    rangeExtractor: (range) => {
+      const indexes = defaultRangeExtractor(range)
+      const anchorKey = pendingPrependAnchorRef.current?.rowKey
+      const anchor = anchorKey ? rows.findIndex((row) => row.key === anchorKey) : -1
+      if (anchor < 0) return indexes
+      const extra: number[] = []
+      for (let i = Math.max(0, anchor - 2); i <= Math.min(rows.length - 1, anchor + 24); i++) extra.push(i)
+      return [...new Set([...indexes, ...extra])].sort((a, b) => a - b)
+    },
     paddingStart: 20,
     paddingEnd: 20,
     anchorTo: "end",
@@ -1107,7 +1124,6 @@ function VirtualizedThreadTranscript({
   const tailReadyRef = useRef(false)
   const readerMovedRef = useRef(false)
   const nearTopLoadArmedRef = useRef(true)
-  const pendingPrependAnchorRef = useRef<{ rowKey: string; viewportTop: number } | null>(null)
   const initialTranscriptKeyRef = useRef<string | undefined>(undefined)
   // THE HEAD TRIM (see the layout effect below). `readerAnchorRef` is refreshed at the END of every
   // tail-follow pass, so a layout effect that runs BEFORE that pass still reads the PREVIOUS commit's
@@ -1251,34 +1267,6 @@ function VirtualizedThreadTranscript({
     return () => cancelAnimationFrame(frame)
   }, [alignToScreenTop, rows.length, slug, transcriptKey, virtualizer])
   useEffect(() => () => cancelAnimationFrame(openHoldFrameRef.current), [])
-
-  useLayoutEffect(() => {
-    const anchor = pendingPrependAnchorRef.current
-    const scroller = transcriptRef.current
-    if (!anchor || !scroller || loadingEarlier) return
-    const alignAnchor = () => {
-      const anchoredRow = Array.from(scroller.querySelectorAll<HTMLElement>("[data-transcript-row-key]"))
-        .find((element) => element.dataset.transcriptRowKey === anchor.rowKey)
-      if (!anchoredRow) return
-      const nextTop = anchoredRow.getBoundingClientRect().top - scroller.getBoundingClientRect().top
-      scroller.scrollTop += nextTop - anchor.viewportTop
-    }
-    // Dynamic markdown/tool rows settle after TanStack's ResizeObserver measurement. Correct once
-    // synchronously and across the next two frames so the same message stays under the reader's eye.
-    alignAnchor()
-    let secondFrame = 0
-    const firstFrame = requestAnimationFrame(() => {
-      alignAnchor()
-      secondFrame = requestAnimationFrame(() => {
-        alignAnchor()
-        if (pendingPrependAnchorRef.current === anchor) pendingPrependAnchorRef.current = null
-      })
-    })
-    return () => {
-      cancelAnimationFrame(firstFrame)
-      cancelAnimationFrame(secondFrame)
-    }
-  }, [loadingEarlier, messageRows.length, transcriptRef])
 
   // Where the reader is actually looking: the first row whose box reaches the pane top, and the offset
   // it sits at.
@@ -1462,6 +1450,53 @@ function VirtualizedThreadTranscript({
     content.style.height = `${virtualizer.getTotalSize() + delta}px`
     for (const { index, size } of changed) virtualizer.resizeItem(index, size)
   })
+
+  // THE PREPEND RESTORE: "load earlier" put a page above the reader, so put the row they were reading
+  // back where it was. On EVERY commit while one is pending, and declared after the measuring pass
+  // above, because that pass resizes the new rows and re-renders before paint — an alignment made in
+  // the first commit, against rows still at their estimates, was undone by the second, and the reader
+  // was shown a frame ~1,800px further down the page (a 250-step transcript, 2026-10-14). The frames
+  // after paint then hold it while rows measured by the ResizeObserver settle.
+  const prependSettleRef = useRef<{ anchor: { rowKey: string; viewportTop: number }; frame: number } | null>(null)
+  useLayoutEffect(() => {
+    const anchor = pendingPrependAnchorRef.current
+    const scroller = transcriptRef.current
+    if (!anchor || !scroller || loadingEarlier) return
+    // Whether the anchored row was on screen and needed no correction.
+    const alignAnchor = (): boolean => {
+      const anchoredRow = Array.from(scroller.querySelectorAll<HTMLElement>("[data-transcript-row-key]"))
+        .find((element) => element.dataset.transcriptRowKey === anchor.rowKey)
+      if (!anchoredRow) {
+        // The row is virtual and not mounted (rangeExtractor keeps it mounted, so this is a fallback):
+        // scroll to where the virtualizer places it, which mounts it, and align it on the next frame.
+        const index = rows.findIndex((row) => row.key === anchor.rowKey)
+        const offset = index >= 0 ? virtualizer.getOffsetForIndex(index, "start")?.[0] : undefined
+        if (offset !== undefined) scroller.scrollTop = offset - anchor.viewportTop
+        return false
+      }
+      const drift = anchoredRow.getBoundingClientRect().top - scroller.getBoundingClientRect().top - anchor.viewportTop
+      if (Math.abs(drift) < 0.5) return true
+      scroller.scrollTop += drift
+      return false
+    }
+    alignAnchor()
+    if (prependSettleRef.current?.anchor === anchor) return
+    // Then every frame until the row has held still for two frames running (at most ten).
+    let steady = 0
+    let frames = 0
+    const settle = () => {
+      steady = alignAnchor() ? steady + 1 : 0
+      frames++
+      if (steady >= 2 || frames >= 10) {
+        if (pendingPrependAnchorRef.current === anchor) pendingPrependAnchorRef.current = null
+        prependSettleRef.current = null
+        return
+      }
+      if (prependSettleRef.current) prependSettleRef.current.frame = requestAnimationFrame(settle)
+    }
+    prependSettleRef.current = { anchor, frame: requestAnimationFrame(settle) }
+  })
+  useEffect(() => () => { if (prependSettleRef.current) cancelAnimationFrame(prependSettleRef.current.frame) }, [])
 
   // Every commit: a row that just mounted at its ESTIMATED height has already pushed the bottom away.
   // A layout effect (not an effect) so the correction lands in the same frame — no visible slip.
