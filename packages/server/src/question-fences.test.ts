@@ -656,6 +656,8 @@ test("a question restated while it was open is not a re-ask once the human has a
     await c.s.tick()
     assert.deepEqual(c.queued().filter((r) => r.fence_id.startsWith("park:question-fence")), [], "no '⚠️ Your ```question fence could not register' for a fence that registered")
     assert.ok(c.queued().some((r) => /^Answers to earlier questions:/.test(r.message)), "the answer itself was queued")
+    // …and the wake names the question by the id its fence gave it, ahead of the restated text.
+    assert.ok(c.queued().some((r) => r.message.includes("\n1. `settings-store` “SQLite or a JSON file?” → SQLite")), c.queued().map((r) => r.message).join("\n---\n"))
   } finally { c.close() }
 })
 

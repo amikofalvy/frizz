@@ -22,6 +22,7 @@ import { projectIdentity } from "./Sidebar.tsx"
 import { X } from "lucide-react"
 import { isConsolePath } from "../lib/base-path.ts"
 import { ProjectScope, useProjectScope } from "../lib/projectScope.tsx"
+import { beginDispatch, dispatchAnswered, dispatchFailed } from "../lib/pendingDispatch.ts"
 import { useConsoleDispatchTarget } from "./ConsoleProjectChip.tsx"
 
 // THE dispatch prompt box — composer + quiet selects row — shared by every surface that can start a
@@ -65,15 +66,22 @@ function useDispatchForm(onDispatched?: () => void, projectPicker?: ReactNode) {
   // waits out session startup, then a link that opens the thread in the side drawer.
   const dispatch = useMutation({
     mutationFn: (input: DispatchInput) => rpcFor(project).dispatch(input),
-    onMutate: () => showToast("Starting thread…", { spinner: true, sticky: true }),
-    onSuccess: (res) => {
+    onMutate: (input) => {
+      showToast("Starting thread…", { spinner: true, sticky: true })
+      // Told to the rail too, which draws the thread as the Running row it is about to become
+      // (lib/pendingDispatch). The board's ids are read as they stand at the click, not subscribed to.
+      return { pendingKey: beginDispatch({ project, backend: input.backend ?? "claude", model: input.model ?? "" }, new Set((store.board?.threads ?? []).map((t) => t.id))) }
+    },
+    onSuccess: (res, _input, context) => {
+      if (context) dispatchAnswered(context.pendingKey, res.slug)
       // The board stream now owns the durable thread row. Drop our local bridge as soon as the
       // server acknowledges it, preventing an optimistic card + server card duplicate.
       setPendingDispatch(null)
       onDispatched?.()
       showToast("Thread started", { link: { label: "Open thread", slug: res.slug } })
     },
-    onError: (e, input) => {
+    onError: (e, input, context) => {
+      if (context) dispatchFailed(context.pendingKey)
       // A submit clears before the RPC starts. Restore only into a still-empty field so retry is
       // effortless without overwriting text typed during the failed request.
       if (!draftStore.get(promptKey)) setPrompt(submittedDraftRef.current || input.prompt)
@@ -250,11 +258,15 @@ export function DispatchForm({
   autoFocus,
   onDispatched,
   projectPicker,
+  pendingCard = true,
 }: {
   autoFocus?: boolean
   onDispatched?: () => void
   /** The Console's project chip, first in the footer. The dispatch goes to the enclosing ProjectScope. */
   projectPicker?: ReactNode
+  /** Draw the "Starting thread…" card under the box while the dispatch call runs. Off where the surface
+   *  shows the pending thread itself: a project's sidebar draws it as a Running row (lib/pendingDispatch). */
+  pendingCard?: boolean
 }) {
   const form = useDispatchForm(onDispatched, projectPicker)
   return (
@@ -275,7 +287,7 @@ export function DispatchForm({
       {form.error && (
         <span className="px-0.5 text-[11px] text-danger truncate">{form.error}</span>
       )}
-      {form.pendingDispatch && <PendingDispatch prompt={form.pendingDispatch} />}
+      {pendingCard && form.pendingDispatch && <PendingDispatch prompt={form.pendingDispatch} />}
       {form.accountModals}
     </div>
   )

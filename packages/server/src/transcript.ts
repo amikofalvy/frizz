@@ -1643,6 +1643,25 @@ function cancelledToolResult(text: string): boolean {
   )
 }
 
+// THE RUNTIME'S STOCK RESULT FOR A CALL AN INTERRUPT CUT OFF. Claude Code answers every tool call that
+// was still running when its turn was interrupted with one fixed paragraph, written for the model:
+// "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file
+// edit, the new_string was NOT written to the file). STOP what you are doing and wait…", then a note
+// about saving a memory. In a Frizz thread the interrupt is "send now" (⌘⏎, the ↑ beside a queued
+// bubble), which ends the turn to deliver a message: all 6 on this machine (2026-10-13) were a Bash
+// call, then the interrupt receipt, then the message that caused it. Nothing failed and nobody refused
+// the call, so its card reads "cancelled" rather than the red "failed" that `is_error` alone gave it,
+// and the paragraph is not its output — it drew under a Bash card as though the command had printed it.
+// (Frizz's own denials never read this way: each `canUseTool` deny carries a message of its own.)
+const CLAUDE_REJECTED_TOOL_LEAD = "The user doesn't want to proceed with this tool use."
+// The same lead with a person's words after it: a rejection typed at Claude Code's own permission
+// prompt, in a terminal session Frizz adopted. That tail is theirs, so it stays on the card.
+const CLAUDE_REJECTION_REASON_MARK = "the user said:"
+
+function interruptCutToolResult(text: string): boolean {
+  return text.trimStart().startsWith(CLAUDE_REJECTED_TOOL_LEAD)
+}
+
 // The harness's AUTO-BACKGROUND handoff: a foreground `Bash` that outlives its `timeout` is not
 // cancelled and has not failed — it is now a detached shell that will notify on exit, exactly like one
 // launched with `run_in_background`. Kept in lockstep with the tailer's AUTO_BACKGROUND_ACK_RE.
@@ -1764,7 +1783,8 @@ function attachToolResults(
     // Claude reports tool failures with `is_error`; keep a narrow text fallback for older logs that
     // omitted the flag. An unanchored search misclassified successful output such as "0 failed".
     const failed = b.is_error === true || Boolean(text && /^(?:error|failed|permission denied)\b/i.test(text.trim()))
-    const status: NonNullable<TranscriptToolCall["status"]> = text && cancelledToolResult(text) ? "cancelled" : failed ? "failed" : "completed"
+    const cutOff = b.is_error === true && Boolean(text && interruptCutToolResult(text))
+    const status: NonNullable<TranscriptToolCall["status"]> = text && (cancelledToolResult(text) || cutOff) ? "cancelled" : failed ? "failed" : "completed"
     const durationMs = elapsedBetween(entry.at, rec.timestamp)
     // A screenshot / image tool_result (e.g. chrome-devtools `take_screenshot`) carries a base64 image
     // block instead of — or alongside — text. Decode it to a temp file (keyed by the tool_use id) so the
@@ -1785,6 +1805,9 @@ function attachToolResults(
         continue
       }
       if (!text) continue
+      // The runtime's stock paragraph for a call an interrupt cut off is addressed to the model and
+      // says nothing the "cancelled" reading does not (see interruptCutToolResult).
+      if (cutOff && !text.includes(CLAUDE_REJECTION_REASON_MARK)) continue
       if (entry.name === "Read") call.read = capRead(text)
       else if (!call.edit || status !== "completed") call.output = capRead(text)
     }

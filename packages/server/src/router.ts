@@ -11,6 +11,8 @@ import {
   DispatchInput,
   FollowUpInput,
   questionAnswerMessage,
+  nameQuestionAnswer,
+  type NamedQuestionAnswer,
   withAnswersNote,
   type QuestionAnswer,
   SteerThreadInput,
@@ -1314,14 +1316,20 @@ export function createRouter(ctx: AppContext) {
   //
   // `delivered` says the CALLER is delivering these itself, in the same call (the follow-up path), so
   // the scheduler's answer wake must not also carry them.
-  function settleQuestionAnswers(slug: string, answers: readonly QuestionAnswer[], now: number, opts: { delivered?: boolean } = {}): QuestionAnswer[] {
-    const settled: QuestionAnswer[] = []
+  //
+  // WHAT COMES BACK IS NAMED; WHAT IS STORED IS NOT. Each returned answer carries the id its question
+  // was asked under (shared nameQuestionAnswer), so the message the follow-up path composes from it
+  // names the question exactly as the scheduler's wake would. The row keeps the answer as the browser
+  // sent it: the id is read off the row whenever a message is composed, and never from the request.
+  function settleQuestionAnswers(slug: string, answers: readonly QuestionAnswer[], now: number, opts: { delivered?: boolean } = {}): NamedQuestionAnswer[] {
+    const settled: NamedQuestionAnswer[] = []
     for (const answer of answers) {
       // Scoped by reading the row first: an id belonging to another thread answers nothing here.
       const q = ctx.storage.getThreadQuestion(answer.questionId)
       if (!q || q.thread_slug !== slug || q.state !== "open") continue
       let stored = answer
-      if (parseQuestionSpec(q.spec)?.secret) {
+      const spec = parseQuestionSpec(q.spec)
+      if (spec?.secret) {
         const value = answer.text?.trim() ?? ""
         if (!value) continue
         const path = serveSecret(ctx.project.stateDir, slug, q.id, value)
@@ -1329,7 +1337,7 @@ export function createRouter(ctx: AppContext) {
       }
       if (!ctx.storage.answerThreadQuestion(answer.questionId, JSON.stringify(stored), now)) continue
       if (opts.delivered) ctx.storage.markSettlementDelivered(answer.questionId)
-      settled.push(stored)
+      settled.push(nameQuestionAnswer(stored, spec, q.handle))
     }
     return settled
   }

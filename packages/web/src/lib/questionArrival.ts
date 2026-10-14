@@ -26,7 +26,7 @@
 // folded out of the window — and an answerable question the human cannot see is worse than a card that
 // starts at the tail, which is exactly what the surface did before this rule.
 import type { AskedQuestion } from "@frizz/shared"
-import { questionFenceBlocks } from "@frizz/shared"
+import { mayHoldQuestionFence, questionFenceBlocks } from "@frizz/shared"
 import { questionNames } from "./questionShadow.ts"
 
 export const FENCE_MESSAGE_WAIT_MS = 2000
@@ -55,7 +55,7 @@ export function awaitsItsMessage(q: ArrivingQuestion, messages: readonly Arrival
     const m = messages[i]
     const at = m.at ? Date.parse(m.at) : Number.NaN
     if (Number.isFinite(at) && at >= asked) return false
-    if (m.role === "assistant" && m.text?.includes("```question")) {
+    if (m.role === "assistant" && m.text && mayHoldQuestionFence(m.text)) {
       names ??= questionNames(q)
       for (const b of questionFenceBlocks(m.text)) {
         if (b.read.form !== "invalid" && names.includes(b.read.id.toLowerCase())) return false

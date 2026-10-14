@@ -8,7 +8,7 @@ import { store, openThread, scrollToQueueCard, queueCardTargetY, pushSubAgentDra
 import { rpc } from "../api/rpc.ts"
 import { useBoard, asThreads } from "../hooks.ts"
 import { prefs } from "../lib/prefs.ts"
-import { sectionThreads, externalThreads, orderByInteraction, partitionActive, needsAction, displayTitle, titleIsProvisional, isPinned, isSnoozed, parkedAwaitingHint, sessionIndicatorKind, offersRetry, futureSnoozedUntil, lastActiveLabelAt, waitNamesPr, prChecksRunning, restingOnSubAgents, restIsWorking, workingWithOpenQuestion } from "../groups.ts"
+import { sectionThreads, externalThreads, orderByInteraction, partitionActive, needsAction, displayTitle, titleIsProvisional, SPINNING_UP_TITLE, isPinned, isSnoozed, parkedAwaitingHint, sessionIndicatorKind, offersRetry, futureSnoozedUntil, lastActiveLabelAt, waitNamesPr, prChecksRunning, restingOnSubAgents, restIsWorking, workingWithOpenQuestion } from "../groups.ts"
 import { ageSpan, relativeAge, limitResumeClock } from "../lib/activityTime.ts"
 import { useNowMs } from "../lib/liveClock.ts"
 import { BoxSpinner, STATUS_BOX } from "./BoxSpinner.tsx"
@@ -28,7 +28,9 @@ import { formatCompactElapsed } from "../lib/durationLabels.ts"
 import { awaitingProse, awaitingWaitClause } from "../lib/awaitingPresentation.ts"
 import { useOptimisticallySteered } from "../lib/steering.ts"
 import { useOptimisticallyArchived } from "../lib/optimisticArchive.ts"
-import { activeSidebarSection, queueCardGeometry, queueNavigationSettled, railRevealDelta, scrolledToDocumentBottom } from "../lib/sidebarScrollspy.ts"
+import { unlandedDispatches, usePendingDispatches, type PendingDispatchEntry } from "../lib/pendingDispatch.ts"
+import { useProjectScope } from "../lib/projectScope.tsx"
+import { activeSidebarSection, markerRow, queueCardGeometry, queueNavigationSettled, railRevealDelta, scrolledToDocumentBottom } from "../lib/sidebarScrollspy.ts"
 import type { ReactElement, ReactNode, RefObject } from "react"
 
 // THE LEFT SIDEBAR — the thread list as a FLOATING column (no border, no fill: it floats in the
@@ -87,20 +89,29 @@ export const SIDEBAR_COLUMN_CLASS =
  * Which row's card is under the reading line, and the rail scrolled to keep that row in view — the
  * sidebar's scroll marker. Shared with the Console's sidebar (ConsoleSidebar.tsx), whose rows sit
  * opposite cards the same way. `view` and `drawerCount` re-arm the observers when the workpane changes.
+ * `queueIds` is the queue band's rows in order: `activeId` is the row the marker is DRAWN on, which is
+ * the reading rule's card until that card's row leaves the band while the card is still fading, and
+ * from then the row that takes its place (markerRow).
  */
-export function useQueueScrollspy(view: string, drawerCount: number): {
+export function useQueueScrollspy(view: string, drawerCount: number, queueIds: readonly string[]): {
   railRef: RefObject<HTMLDivElement | null>
   activeId: string | null
   navigateToQueueCard: (id: string) => void
 } {
   const railRef = useRef<HTMLDivElement>(null)
-  const [activeId, setActiveId] = useState<string | null>(null)
+  const [readingId, setActiveId] = useState<string | null>(null)
+  // The queue's order the last time the marked row was in it. Advanced during render, like the queue's
+  // own departure refs (TodosView): the hand-over has to land in the commit that moves the row.
+  const whileQueued = useRef<readonly string[]>([])
+  if (readingId && queueIds.includes(readingId)) whileQueued.current = queueIds
+  const activeId = markerRow(readingId, queueIds, whileQueued.current)
   // A click-to-card navigation in flight: the row that was clicked, plus where its scroll landed. Both
   // halves matter — see the release conditions in syncActiveSection.
   const pendingNavigation = useRef<{ id: string; landedY: number } | null>(null)
 
   const syncActiveSection = useCallback(() => {
-    const items = queueCardGeometry()
+    // Fading cards included: a card still holds the reader's place until it unmounts (queueCardGeometry).
+    const items = queueCardGeometry({ includeLeaving: true })
     const pending = pendingNavigation.current
     if (pending) {
       const target = items.find((item) => item.id === pending.id)
@@ -197,7 +208,14 @@ export function Sidebar() {
   const activeThreads = sections.active
   const heldThreads = sections.snoozed
   const inactiveThreads = sections.inactive
-  const { railRef, activeId, navigateToQueueCard } = useQueueScrollspy(snap.view, snap.drawers.length)
+  // The two bands of the Active section: RESTED is the cue (one row per queue card), RUNNING the rows
+  // with no card. Split here rather than at the render so the scroll marker can be told the cue's order.
+  const { running, rested } = partitionActive(activeThreads)
+  const { railRef, activeId, navigateToQueueCard } = useQueueScrollspy(snap.view, snap.drawers.length, rested.map((t) => t.id))
+  // A dispatch from the prompt box above, drawn as the Running row it is about to become — see StartingRow.
+  const starting = unlandedDispatches(usePendingDispatches(useProjectScope()), new Set(all.map((t) => t.id)))
+  const runningCount = running.length + starting.length
+  const openCount = activeThreads.length + starting.length
 
   return (
     // HEIGHT MODEL: a sticky, exactly viewport-height wrapper that holds the inner column at its top
@@ -235,7 +253,11 @@ export function Sidebar() {
           {/* The GitHub picker's door now lives INSIDE the dispatch composer (a small icon left of the
               send button — see DispatchForm/Composer leftAction); no separate pill here. */}
           <StatusRow />
-          <DispatchForm />
+          {/* No "Starting thread…" card under this box: it stood between the box and the rail for the
+              length of the dispatch call and then left, so every row moved down 73px and back up
+              (2026-10-13, 472-581ms on a local stack; in the stacked layout the whole queue moved with
+              it). The rail draws the pending thread as the Running row it becomes instead (StartingRow). */}
+          <DispatchForm pendingCard={false} />
         </div>
         <div ref={railRef} data-sidebar-rail className="min-h-0 min-w-0 overflow-y-auto overflow-x-hidden max-[800px]:overflow-y-visible">
           {/* PINNED — the human's shelf, at the very top, above the cue (maintainer 2026-09-02, variant
@@ -259,7 +281,7 @@ export function Sidebar() {
               {/* The separating rule is drawn only when the Rested/Active section actually follows:
                   Snoozed, Done and External each draw their OWN rule above themselves, so drawing one
                   here too would double it whenever that section is empty. */}
-              {activeThreads.length > 0 && <hr className="my-3 border-border/50" />}
+              {openCount > 0 && <hr className="my-3 border-border/50" />}
             </section>
           )}
           {/* RESTED + ACTIVE — always shown, NEVER collapsible (you can't hide your queue or your live
@@ -276,25 +298,30 @@ export function Sidebar() {
               Only the cue's rows carry the rest-time column: it dates a HANDOFF, and a row that is
               still spinning has not made one. An empty band draws no label, the same as Snoozed and
               Done: a "Queue 0" header over nothing is a count nobody needs. */}
-          {activeThreads.length > 0 ? (
-            (() => {
-              const { running, rested } = partitionActive(activeThreads)
-              const renderRow = (restedAge: boolean) => (t: ThreadView) => (
+          {openCount > 0 ? (
+            <>
+              {rested.length > 0 && <SectionHeader label="Queue" count={rested.length} />}
+              {rested.map((t) => (
                 <div key={t.id}>
-                  <ThreadRow t={t} active={activeId === t.id} onQueueNavigate={navigateToQueueCard} restedAge={restedAge} />
+                  <ThreadRow t={t} active={activeId === t.id} onQueueNavigate={navigateToQueueCard} restedAge />
                   <SubAgentRows t={t} />
                 </div>
-              )
-              return (
-                <>
-                  {rested.length > 0 && <SectionHeader label="Queue" count={rested.length} />}
-                  {rested.map(renderRow(true))}
-                  {running.length > 0 && rested.length > 0 && <hr className="my-3 border-border/50" />}
-                  {running.length > 0 && <SectionHeader label="Running" count={running.length} />}
-                  {running.map(renderRow(false))}
-                </>
-              )
-            })()
+              ))}
+              {runningCount > 0 && rested.length > 0 && <hr className="my-3 border-border/50" />}
+              {runningCount > 0 && <SectionHeader label="Running" count={runningCount} />}
+              {/* Newest first, the band's own order (orderByInteraction): a thread that starts lands at
+                  the top, so that is where the row standing in for it is drawn. */}
+              {[...starting].reverse().map((entry) => <StartingRow key={entry.key} entry={entry} />)}
+              {/* NEVER the scroll marker: no Running row has a queue card. A row arrives here still
+                  named by the reading rule on every send — the card it left is fading under the
+                  reader — and the marker is handed to the row that took its place (markerRow). */}
+              {running.map((t) => (
+                <div key={t.id}>
+                  <ThreadRow t={t} onQueueNavigate={navigateToQueueCard} />
+                  <SubAgentRows t={t} />
+                </div>
+              ))}
+            </>
           ) : sections.pinned.length === 0 ? (
             // pl-5 matches ThreadRow's own content inset (its status-indicator column), so the
             // placeholder starts exactly where the rows it stands in for would — and lands within a
@@ -380,6 +407,34 @@ export function Sidebar() {
   )
 }
 
+// A THREAD THAT IS STARTING — a dispatch from the prompt box whose row the board has not delivered yet
+// (lib/pendingDispatch), drawn as the row it is about to become: the Running band's spinner, the
+// "Spinning up a thread…" placeholder a fresh thread's own row opens on (displayTitle), and the provider
+// mark. It copies ThreadRow's boxes class for class, so the real row replaces it without a pixel moving;
+// the recorder that watches the rail (2026-10-13) saw one geometry change per dispatch with it, the row
+// appearing, where the "Starting thread…" card it replaces had three.
+// Not a button: there is no thread to open yet, and it is gone within the dispatch call's answer.
+function StartingRow({ entry }: { entry: PendingDispatchEntry }) {
+  return (
+    <div data-sidebar-starting role="status" aria-label="Starting thread" className="relative flex min-w-0 items-start rounded-md">
+      <div className="min-w-0 flex-1 flex items-start gap-2 pb-1 pl-5 pr-1.5 pt-1 text-left">
+        <span className="w-4 h-[19px] shrink-0 flex items-center justify-center">
+          <span className="flex items-center justify-center"><BoxSpinner /></span>
+        </span>
+        <span className="min-w-0 flex-1 flex flex-col">
+          <span className="flex min-w-0 items-baseline gap-3">
+            <span className="min-w-0 flex-1 break-words text-[13px] leading-[19px] text-provisional">
+              <TitleWithTrailers title={SPINNING_UP_TITLE}>
+                <ProviderMark backend={entry.backend} model={entry.model} className="ml-1" />
+              </TitleWithTrailers>
+            </span>
+          </span>
+        </span>
+      </div>
+    </div>
+  )
+}
+
 // A section header: an optional collapse caret, the label, and the count. ONE source of truth for
 // every band header so they can never visually drift apart again. Snoozed, Done and External are
 // collapsible; Pinned, Queue and Running (since 2026-09-19) omit onToggle and render as a static div
@@ -399,7 +454,13 @@ export function SectionHeader({ label, count, collapsed, onToggle }: { label: st
       <span className="ml-1.5 tabular-nums text-muted-60">{count}</span>
     </>
   )
-  const cls = "flex w-full items-center gap-1 px-1.5 py-1 text-[11px] uppercase tracking-wide text-muted-70"
+  // A WHOLE-PIXEL HEADER: `leading-4` makes it 24px (py-1 + a 16px line). Left to the font's own line
+  // height it was 23.703px in sans, so a band arriving or leaving changed the rail's height by a fraction
+  // (48.703px for Running). Beside the queue that only put the rows under it on fractional pixels; ABOVE
+  // it (the stacked layout, ≤800px) the page's scroll anchor compensates in whole pixels, so every send
+  // and every rest moved the whole queue by the remainder — the cards read 1px off at the send and 1px
+  // back at the return in 3 of 3 recordings at 780x900 (2026-10-13).
+  const cls = "flex w-full items-center gap-1 px-1.5 py-1 text-[11px] leading-4 uppercase tracking-wide text-muted-70"
   return onToggle ? (
     <button onClick={onToggle} className={`${cls} transition-colors hover:text-fg`}>
       {inner}
@@ -776,7 +837,15 @@ function RestedAge({ t, yieldsToRetry }: { t: ThreadView; yieldsToRetry?: boolea
       aria-label={`Rested ${relativeAge(at, now) ?? span}`}
       // shrink-0 + tabular-nums: the column must not compress under a long title, and the digits must
       // not jitter horizontally when the clock ticks. The title takes the remaining width and wraps.
-      className={`shrink-0 tabular-nums text-[10.5px] leading-[19px] text-muted-55 ${
+      // leading-[15px], NOT the title's 19px. The two sit on one baseline (the flex line is
+      // items-baseline), and at 10.5px a 19px box carries its baseline a pixel higher than the 13px
+      // title's does, so the box hung a pixel below the title's and made every cue row 28px where every
+      // other row is 27 (measured in sans, 2026-10-13: time box 5-24 beside a title box 4-23). A row
+      // therefore changed height each time it crossed between Queue and Running, and everything under
+      // the bands moved 1px on every send and back on every rest — the whole queue too, in the stacked
+      // layout. At 15px the box is 7-22, inside the title's line; the ink does not move, the baseline
+      // being what places it.
+      className={`shrink-0 tabular-nums text-[10.5px] leading-[15px] text-muted-55 ${
         yieldsToRetry ? "transition-opacity group-hover:opacity-0 group-focus-within:opacity-0" : ""
       }`}
     >

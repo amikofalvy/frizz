@@ -20,7 +20,7 @@
 // the human has not seen elsewhere on the page. The text rule is deliberately loose about markup (the
 // fence wraps `code` and [links](…) that the registration's plain string cannot carry) and about
 // trailing prose (the worker appends a parenthetical), and strict about the question itself.
-import { type AskedQuestion, questionHandles, type RegisteredQuestionView } from "@frizz/shared"
+import { type AskedQuestion, mayHoldQuestionFence, questionHandles, type RegisteredQuestionView } from "@frizz/shared"
 import { type AnchorMessage, questionsByAnchor, restEnd } from "./questionAnchor.ts"
 import { type MessageSegment, parseQuestionBlock, questionFenceIdsIn, splitQuestionBlocks } from "./questionBlocks.ts"
 
@@ -212,7 +212,7 @@ export function resolveQuestionName<Q extends { id: string; spec?: AskedQuestion
  *  theirs carries a handle for it to match. A fence the server REFUSED (`refused`, the message's
  *  `refusedFences`) places nothing: reusing an id does not move that id's card. */
 export function placementNamesIn(text: string, refused?: ReadonlySet<string>): string[] {
-  if (!text.includes("```question")) return []
+  if (!mayHoldQuestionFence(text)) return []
   return [...markerIdsIn(text), ...questionFenceIdsIn(text, refused)]
 }
 

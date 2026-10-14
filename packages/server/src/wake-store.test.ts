@@ -44,6 +44,25 @@ test("quiet window: a SENT wake is a handoff too — the turn began when the fra
   storage.close()
 })
 
+test("quiet window: a second question-fence correction is due at once, seconds after the first was handed over", () => {
+  // The worker that gets its fence wrong twice (found 2026-10-13 with a scripted worker on a real broker:
+  // the first correction landed 1.3s after the rest, the second was queued a tick later and held until
+  // the first one's handoff + 5m, with the question still not in front of the human).
+  const { storage, outbox } = store()
+  const first = "park:question-fence:2026-10-13T23:21:57.847Z"
+  const second = "park:question-fence:2026-10-13T23:21:59.265Z"
+  outbox.enqueue(wake("first", { fenceId: first, hintKey: first }), T0)
+  const sent = outbox.claim("me", T0, T0 + 30_000, 6)!
+  assert.ok(outbox.markSent(sent.id, "me", T0 + 7, T0 + 60_007))
+  assert.equal(outbox.enqueue(wake("second", { fenceId: second, hintKey: second }), T0 + 10_000).delivery.nextAttemptAt, T0 + 10_000)
+  // …and so is a first correction that follows any other wake: a timer's turn that ends on a broken fence.
+  outbox.enqueue(wake("timer", { hintKey: "timer:tmr_1" }), T0 + 400_000)
+  outbox.acknowledge(outbox.claim("me", T0 + 400_000, T0 + 430_000, 6)!.id, "me", T0 + 400_000)
+  const third = "park:question-fence:2026-10-13T23:29:00.000Z"
+  assert.equal(outbox.enqueue(wake("third", { fenceId: third, hintKey: third }), T0 + 402_000).delivery.nextAttemptAt, T0 + 402_000)
+  storage.close()
+})
+
 test("quiet window: an answer and a limit resume are not held; the exemption is by hint-key prefix", () => {
   assert.equal(isQuietWindowExempt("answers:abc123"), true)
   assert.equal(isQuietWindowExempt("limit:session"), true)
@@ -57,7 +76,11 @@ test("quiet window: an answer and a limit resume are not held; the exemption is 
   assert.equal(isQuietWindowExempt("park:dead:2026-09-25T21:59:41.787Z"), true)
   assert.equal(isQuietWindowExempt("park:retired:2026-09-25T21:59:41.787Z"), true)
   assert.equal(isQuietWindowExempt("park:nameless:2026-09-25T21:59:41.787Z"), true)
-  assert.equal(isQuietWindowExempt("park:question:2026-09-25T21:59:41.787Z"), true)
+  assert.equal(isQuietWindowExempt("park:needs-input:2026-10-20T10:04:00.000Z"), true)
+  assert.equal(isQuietWindowExempt("park:question-fence:2026-10-20T10:04:00.000Z"), true)
+  // The retired open-question refusal's cause: nothing mints it, and it is not a prefix of the one above.
+  assert.equal(isQuietWindowExempt("park:question:2026-09-25T21:59:41.787Z"), false)
+  assert.equal(isQuietWindowExempt("park:done-open-question:2026-10-20T10:04:00.000Z"), true)
   assert.equal(isQuietWindowExempt("park:expired:2026-09-25T21:59:41.787Z"), false)
   assert.equal(isQuietWindowExempt("prwatch:prw_1"), false)
   assert.equal(isQuietWindowExempt("timer:tmr_1"), false)
