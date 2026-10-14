@@ -863,6 +863,107 @@ test("allSessions: a rolled-back transaction never leaves the cache holding data
   assert.equal(s.allSessions()[0].title, "before", "the rolled-back title is gone from the cache too")
 })
 
+// THE PATCHED SNAPSHOT (change-tracking.ts). A write re-reads only the rows it touched, so these pin the
+// three things that would make a patched snapshot differ from a fresh read: an untouched row must stay
+// the SAME object (the board keys its per-thread memo on that), a touched one must be the fresh row,
+// and the sequence must be the one a cold read returns. `fresh()` is that cold read — a second storage
+// on its own connection, which has no cache to agree with by accident.
+function freshRead(s: Storage): SessionRow[] {
+  const other = createStorage(s.db.name, "p")
+  try { return [...other.allSessions()] } finally { other.close() }
+}
+
+test("allSessions: one write re-reads one row; every other row keeps its identity, in slug order", () => {
+  const s = store()
+  for (const slug of ["delta", "alpha", "charlie", "bravo"]) s.upsertSession(row({ slug, session_id: `sid-${slug}`, thread_name: `frizz-${slug}` }))
+  const before = s.allSessions()
+  assert.deepEqual(before.map((r) => r.slug), ["alpha", "bravo", "charlie", "delta"], "slug order, not insertion order")
+
+  s.setState("charlie", "archived")
+  const after = s.allSessions()
+  assert.notEqual(after, before, "a new array, so identity still answers 'did the registry move'")
+  assert.equal(after[2].state, "archived")
+  assert.notEqual(after[2], before[2], "the written row is the fresh one")
+  for (const i of [0, 1, 3]) assert.equal(after[i], before[i], `untouched row ${after[i].slug} is the same object`)
+  assert.deepEqual(after, freshRead(s), "the patched snapshot is exactly what a cold read returns")
+
+  // Inserts and deletes land in the same order a cold read gives.
+  s.upsertSession(row({ slug: "bravo-two", session_id: "sid-b2", thread_name: "frizz-bravo-two" }))
+  s.forgetSession("alpha")
+  assert.deepEqual(s.allSessions().map((r) => r.slug), ["bravo", "bravo-two", "charlie", "delta"])
+  assert.deepEqual(s.allSessions(), freshRead(s))
+  assert.equal(s.getSession("bravo-two")?.session_id, "sid-b2")
+  assert.equal(s.getSession("alpha"), undefined)
+
+  // A write to ANOTHER table moves the scope's write count but logs no session row: same array back.
+  const settled = s.allSessions()
+  s.markThreadDone("bravo", "done", 1)
+  assert.equal(s.allSessions(), settled, "a registry write re-reads no session rows")
+})
+
+test("allSessions: a write through ANOTHER connection is still seen — data_version re-reads the table", () => {
+  const s = store()
+  s.upsertSession(row({ slug: "one", session_id: "sid-1", title: "before" }))
+  const first = s.allSessions()
+  const other = new Database(s.db.name)
+  try {
+    other.prepare("UPDATE session SET title = 'from elsewhere' WHERE slug = 'one'").run()
+  } finally { other.close() }
+  assert.equal(s.allSessions()[0].title, "from elsewhere", "another connection's commit is not in our log, and is still seen")
+  assert.notEqual(s.allSessions(), first)
+})
+
+test("allSessions: a lost trigger or a pruned log falls back to a full read, never to a stale one", () => {
+  const s = store()
+  s.upsertSession(row({ slug: "one", session_id: "sid-1", title: "a" }))
+  s.allSessions()
+  // A trigger gone (as it would be if its table were rebuilt): the write is not logged, and the cache
+  // must notice the missing trigger rather than trust a log that is silently empty.
+  s.db.exec("DROP TRIGGER temp.frizz_track_session_upd")
+  s.setTitle("one", "b")
+  assert.equal(s.allSessions()[0].title, "b", "a missing trigger forces a re-read")
+  s.setTitle("one", "c")
+  assert.equal(s.allSessions()[0].title, "c", "…and is reinstalled, so the next write is logged again")
+
+  // Far more writes than the log keeps between two of this storage's reads, while ANOTHER project on
+  // the same connection reads (and so prunes) in between: this storage's watermark falls behind the
+  // pruned range. The one write to "two" is only in the pruned part of the log, so replaying what is
+  // left would miss it; the storage must notice the gap and re-read.
+  s.upsertSession(row({ slug: "two", session_id: "sid-2", thread_name: "frizz-two", title: "x" }))
+  s.allSessions()
+  s.setTitle("two", "y")
+  for (let i = 0; i < 9000; i++) s.setTitle("one", `t${i}`)
+  const neighbour = createStorage(s.db, "q")
+  neighbour.allSessions()
+  neighbour.upsertSession(row({ slug: "elsewhere", session_id: "sid-q" }))
+  neighbour.allSessions() // patches its own snapshot, which prunes the shared log
+  assert.equal(s.getSession("two")?.title, "y", "a consumer behind the prune re-reads instead of replaying a gap")
+  assert.equal(s.getSession("one")?.title, "t8999")
+  assert.deepEqual(s.allSessions(), freshRead(s))
+  neighbour.close()
+})
+
+test("registry reads: the same map until ITS table is written; untouched buckets keep their identity", () => {
+  const s = store()
+  s.markThreadDone("one", "first", 1)
+  s.markThreadDone("two", "second", 2)
+  s.askThreadQuestion({ id: "q1", slug: "one", spec: "{}", askedAtMs: 1 })
+  const done = s.threadDoneBySlug()
+  const questions = s.threadQuestionsBySlug()
+  assert.equal(s.threadDoneBySlug(), done, "nothing written: the same map")
+
+  s.setState("one", "archived") // a session write: no registry moved
+  assert.equal(s.threadDoneBySlug(), done)
+  assert.equal(s.threadQuestionsBySlug(), questions)
+
+  s.markThreadDone("two", "second, revised", 3)
+  const doneAfter = s.threadDoneBySlug()
+  assert.notEqual(doneAfter, done, "its own table written: re-read")
+  assert.equal(doneAfter.get("one"), done.get("one"), "an untouched slug's entry is the same object")
+  assert.deepEqual(doneAfter.get("two"), { body: "second, revised", doneAt: 3 })
+  assert.equal(s.threadQuestionsBySlug(), questions, "another registry's write leaves this one alone")
+})
+
 test("forgetSession: DELETEs the row and returns it; the slug is gone", () => {
   const s = store()
   s.upsertSession(row({ slug: "phantom", session_id: "sid-1" }))

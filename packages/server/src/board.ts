@@ -1621,13 +1621,13 @@ export function registeredDoneFence(
 // `groupBySlug` note in storage.ts), and a thread with no rows is simply absent from the map, which is
 // why every read below spells the fallback `?? []` — the empty array the per-thread call returned.
 interface ThreadRegistries {
-  links: Map<string, ThreadLinkRow[]>
-  prWatches: Map<string, PrWatchRow[]>
-  timers: Map<string, ThreadTimerRow[]>
-  commandWatches: Map<string, CommandWatchRow[]>
-  questions: Map<string, ThreadQuestionRow[]>
-  watches: Map<string, ThreadWatchRow[]>
-  done: Map<string, { body: string; doneAt: number }>
+  links: ReadonlyMap<string, readonly ThreadLinkRow[]>
+  prWatches: ReadonlyMap<string, readonly PrWatchRow[]>
+  timers: ReadonlyMap<string, readonly ThreadTimerRow[]>
+  commandWatches: ReadonlyMap<string, readonly CommandWatchRow[]>
+  questions: ReadonlyMap<string, readonly ThreadQuestionRow[]>
+  watches: ReadonlyMap<string, readonly ThreadWatchRow[]>
+  done: ReadonlyMap<string, { readonly body: string; readonly doneAt: number }>
 }
 
 function readThreadRegistries(storage: Storage): ThreadRegistries {

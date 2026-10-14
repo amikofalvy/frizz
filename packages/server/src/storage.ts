@@ -2,6 +2,7 @@ import Database from "./sqlite.ts"
 import { ThreadSlug, slugify, threadIdentityName } from "@frizz/shared"
 import { createInteractionStore, type InteractionStore } from "./interaction-store.ts"
 import { scopeDatabase, type ProjectScope } from "./project-scope.ts"
+import { ensureChangeTracking, pruneSessionChanges, registryRevision, sessionChangesSince, sessionLogHead, trackingIntact, type TrackedRegistryTable } from "./change-tracking.ts"
 import { log } from "./logging.ts"
 
 // The UI-state store (never .frizz/): session registry + settings. ONE SQLite file for the whole
@@ -568,6 +569,34 @@ export interface SubAgentSteerRow {
 // so each bucket comes out in exactly the order the global ORDER BY produced — which is the per-slug
 // ORDER BY restricted to that slug, because every one of these orders on columns the slug does not
 // participate in.
+// Two registry buckets hold the same rows: same length, and each row's columns equal. Rows are flat
+// objects of SQLite scalars, so a key-by-key === is the whole comparison.
+function sameRows<Row extends object>(a: readonly Row[], b: readonly Row[]): boolean {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i] as Record<string, unknown>
+    const y = b[i] as Record<string, unknown>
+    if (x === y) continue
+    const keys = Object.keys(x)
+    if (keys.length !== Object.keys(y).length) return false
+    for (const key of keys) if (x[key] !== y[key]) return false
+  }
+  return true
+}
+
+// Where `slug` sits (or would sit) in a slug-ordered session snapshot — the ORDER BY slug of
+// `selAll`. Slugs are ASCII (ThreadSlug), so JS string order is SQLite's BINARY order for them.
+function sortedIndex(rows: readonly SessionRow[], slug: string): number {
+  let lo = 0
+  let hi = rows.length
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1
+    if (rows[mid].slug < slug) lo = mid + 1
+    else hi = mid
+  }
+  return lo
+}
+
 function groupBySlug<Row extends { thread_slug: string }>(rows: Row[]): Map<string, Row[]> {
   const bySlug = new Map<string, Row[]>()
   for (const row of rows) {
@@ -726,7 +755,7 @@ export interface Storage {
   /** Every thread's ARMED timers at once, keyed by slug — the board's read (see groupBySlug above).
    *  Same predicate and same `fire_at, id` order as `listThreadTimers(slug, { armedOnly: true })`; a
    *  thread with none is ABSENT from the map, so a caller reads `?? []` for the empty array. */
-  armedThreadTimersBySlug(): Map<string, ThreadTimerRow[]>
+  armedThreadTimersBySlug(): ReadonlyMap<string, readonly ThreadTimerRow[]>
   getThreadTimer(id: string): ThreadTimerRow | undefined
   // Every armed timer that is due, across all threads — the scheduler's one read per tick.
   dueThreadTimers(nowMs: number): ThreadTimerRow[]
@@ -750,7 +779,7 @@ export interface Storage {
   /** Every thread's ARMED watchers at once, keyed by slug — the board's read (see groupBySlug above).
    *  Same predicate and same `created_at, id` order as `listPrWatches(slug, { armedOnly: true })`;
    *  a thread with none is ABSENT from the map. */
-  armedPrWatchesBySlug(): Map<string, PrWatchRow[]>
+  armedPrWatchesBySlug(): ReadonlyMap<string, readonly PrWatchRow[]>
   getPrWatch(id: string): PrWatchRow | undefined
   // Every armed watcher across all threads — the scheduler's one read per tick.
   armedPrWatches(): PrWatchRow[]
@@ -770,7 +799,7 @@ export interface Storage {
   /** A thread's command watches, oldest first; `armedOnly` is what the worker reads back. */
   listCommandWatches(slug: string, opts?: { armedOnly?: boolean }): CommandWatchRow[]
   /** Every thread's ARMED command watches at once, keyed by slug — the board's read (see groupBySlug). */
-  armedCommandWatchesBySlug(): Map<string, CommandWatchRow[]>
+  armedCommandWatchesBySlug(): ReadonlyMap<string, readonly CommandWatchRow[]>
   getCommandWatch(id: string): CommandWatchRow | undefined
   /** Every armed command watch across all threads — the scheduler's one read per tick. */
   armedCommandWatches(): CommandWatchRow[]
@@ -785,7 +814,7 @@ export interface Storage {
   // A label is a stable slot: re-registering it updates the destination without moving the row.
   upsertThreadLink(link: { id: string; slug: string; kind: "link" | "file"; label: string; target: string; createdAtMs: number }): ThreadLinkRow
   listThreadLinks(slug: string): ThreadLinkRow[]
-  threadLinksBySlug(): Map<string, ThreadLinkRow[]>
+  threadLinksBySlug(): ReadonlyMap<string, readonly ThreadLinkRow[]>
   dropThreadLink(slug: string, id: string): boolean
   /** Register a watch, or return the armed one already covering this (thread, kind, target). Idempotent
    *  by that triple, so a worker re-registering the same wait after a wake gets one row, not two. */
@@ -794,7 +823,7 @@ export interface Storage {
   /** Every thread's ARMED watches at once, keyed by slug — the board's read (see groupBySlug above).
    *  Same predicate and same `created_at, id` order as `listThreadWatches(slug, { armedOnly: true })`;
    *  a thread with none is ABSENT from the map. */
-  armedThreadWatchesBySlug(): Map<string, ThreadWatchRow[]>
+  armedThreadWatchesBySlug(): ReadonlyMap<string, readonly ThreadWatchRow[]>
   getThreadWatch(id: string): ThreadWatchRow | undefined
   /** Every armed watch whose timeout has elapsed — the scheduler cancels these and wakes their threads. */
   expiredThreadWatches(nowMs: number): ThreadWatchRow[]
@@ -821,7 +850,7 @@ export interface Storage {
    *  renders the OPEN ones and `answersInFlight` reads the just-ANSWERED ones off the same list, so
    *  narrowing this to open rows here would silently drop the in-flight half. Same `asked_at, rowid`
    *  order; a thread with none is ABSENT from the map. */
-  threadQuestionsBySlug(): Map<string, ThreadQuestionRow[]>
+  threadQuestionsBySlug(): ReadonlyMap<string, readonly ThreadQuestionRow[]>
   getThreadQuestion(id: string): ThreadQuestionRow | undefined
   /** Every OPEN question on the machine — what the `done` gate and the board both read. */
   openThreadQuestions(): ThreadQuestionRow[]
@@ -854,7 +883,7 @@ export interface Storage {
   /** Every thread's completion at once, keyed by slug — the board's read (see groupBySlug above). One
    *  row per thread is the table's PRIMARY KEY, so this is a Map of VALUES rather than of arrays, and
    *  a thread with none is ABSENT — the same `undefined` `getThreadDone` returns. */
-  threadDoneBySlug(): Map<string, { body: string; doneAt: number }>
+  threadDoneBySlug(): ReadonlyMap<string, { readonly body: string; readonly doneAt: number }>
   /** Forget it, so the thread is no longer done. */
   clearThreadDone(slug: string): boolean
   // ---- OPERATOR STEERS INTO SUB-AGENT DRAWERS -----------------------------------------------------
@@ -1450,7 +1479,13 @@ export function createStorage(source: string | Database, projectId: string): Sto
   }
 
   const selOne = scope.prepare<[string], SessionRow>("SELECT * FROM session WHERE project_id = @project_id AND slug = ?")
-  const selAll = scope.prepare<[], SessionRow>("SELECT * FROM session WHERE project_id = @project_id")
+  // ORDER BY slug: a stated order, so a cache patched row by row (below) is the same sequence a fresh
+  // read returns. Without it the order was the planner's — `session_snoozed_until_idx` on a populated
+  // table, so a snooze reordered the registry — which nothing may depend on (the board's client
+  // re-sorts every render) but which no incremental cache could reproduce. The primary key's index
+  // serves both the predicate and this order, so it costs no sort.
+  const selAll = scope.prepare<[], SessionRow>("SELECT * FROM session WHERE project_id = @project_id ORDER BY slug")
+  ensureChangeTracking(db)
 
   // ---- the whole-table read, memoised --------------------------------------------------------------
   // `allSessions()` is the single hottest operation in the server. It is not a background chore: the
@@ -1464,46 +1499,94 @@ export function createStorage(source: string | Database, projectId: string): Sto
   //
   // So keep the last read and re-run the query only when the database actually moved. Two cheap probes
   // decide that, and they are deliberately BOTH here:
-  //   * `total_changes()` (~0.3µs) counts rows this connection has inserted/updated/deleted. It moves
-  //     for any write we made, whatever table — over-invalidating (a `tail_state` flush re-reads the
-  //     sessions) but never under-invalidating, which is the only direction that could serve stale rows.
-  //     A no-op UPDATE that matches nothing does not move it, so the per-assemble snooze sweep is free.
+  //   * `scope.writes()` (a JS counter) counts every write this project made through its scope. It
+  //     moves for any write we made, whatever table — over-invalidating (a `tail_state` flush) but never
+  //     under-invalidating, which is the only direction that could serve stale rows.
   //   * `PRAGMA data_version` (~1.8µs) changes only when ANOTHER connection commits. Today one process
   //     owns each project DB, so this never fires; it is here so that if that ever stops being true the
   //     failure mode is a re-read rather than a board frozen forever.
-  // Both are read on every call rather than trusting a hand-maintained version counter: there are ~40
-  // statements that write this table, and a new one added later must not be able to silently serve
-  // stale rows to the board.
+  //
+  // AND WHEN OUR OWN WRITE MOVED IT, ONLY THE ROWS IT TOUCHED ARE RE-READ (2026-10-14). The probes above
+  // say only THAT something was written, so every write used to re-read the whole table — one `setState`
+  // on a 5,000-thread board re-materialised 5,000 rows, a quarter of a ~260ms board refresh. The TEMP
+  // triggers in change-tracking.ts log the (project, slug) of every session row this connection writes,
+  // whatever statement wrote it, and the cache replays the log past its watermark: one write, one row
+  // re-read, and every OTHER row object stays the identical object it was — which is what lets the board
+  // skip re-deriving a thread whose row did not move (board.ts archivedViewMemo). A write to another
+  // table logs nothing here and re-reads nothing. A moved data_version (another connection), a pruned
+  // log, or a missing trigger still re-read the table whole.
   //
   // The returned array is SHARED, hence `readonly SessionRow[]` on the interface — the compiler is what
-  // keeps a caller from sorting or splicing the cache out from under the next one.
+  // keeps a caller from sorting or splicing the cache out from under the next one. A patched snapshot is
+  // a NEW array (so identity still answers "did the registry move", which the tailer's rowsMoved reads),
+  // and an unchanged row in it is the SAME object as before.
   const dataVersionStmt = db.prepare<[], { data_version: number }>("PRAGMA data_version")
   let cachedSessions: SessionRow[] | null = null
   let cachedBySlug: Map<string, SessionRow> | null = null
   let cachedAtChanges = -1
   let cachedAtDataVersion = -1
-  const readAllSessions = () => selAll.all().filter((row) => ThreadSlug.safeParse(row.slug).success)
-  // True while the memoised snapshot is still the database's current state. Both probes are read every
+  // The session-log sequence number the cache reflects (change-tracking.ts).
+  let cachedAtLogSeq = 0
+  const validSlug = (row: SessionRow) => ThreadSlug.safeParse(row.slug).success
+  const readAllSessions = () => selAll.all().filter(validSlug)
+  // Patch the cached snapshot with the rows written since its watermark. False when the log cannot
+  // answer (pruned past the watermark, or a trigger went missing) and the table must be re-read.
+  const patchCache = (logHead: number): boolean => {
+    if (!cachedSessions || !cachedBySlug) return false
+    if (!trackingIntact(db)) return false
+    const slugs = sessionChangesSince(db, projectId, cachedAtLogSeq)
+    if (slugs === null) return false
+    cachedAtLogSeq = logHead
+    if (slugs.length === 0) return true
+    // A mass write (a migration, a repair) is cheaper to take as one fresh read.
+    if (slugs.length > 64 && slugs.length * 4 > cachedSessions.length) return false
+    const next = cachedSessions.slice()
+    for (const slug of slugs) {
+      const before = cachedBySlug.get(slug)
+      const fresh = ThreadSlug.safeParse(slug).success ? selOne.get(slug) : undefined
+      const at = sortedIndex(next, slug)
+      // The snapshot and its index disagreeing would be a bug here, not a database state; re-read.
+      if (before && next[at] !== before) return false
+      if (before && fresh) next[at] = fresh
+      else if (before) next.splice(at, 1)
+      else if (fresh) next.splice(at, 0, fresh)
+      if (fresh) cachedBySlug.set(slug, fresh)
+      else cachedBySlug.delete(slug)
+    }
+    cachedSessions = next
+    return true
+  }
+  // True while the memoised snapshot is (now) the database's current state. Both probes are read every
   // time; see the note above for why neither alone is enough.
   const cacheIsCurrent = (): boolean => {
     if (db.inTransaction) return false
     const changes = scope.writes()
     const dataVersion = dataVersionStmt.get()?.data_version ?? -1
     if (cachedSessions && changes === cachedAtChanges && dataVersion === cachedAtDataVersion) return true
+    const logHead = sessionLogHead(db)
+    if (cachedSessions && dataVersion === cachedAtDataVersion && patchCache(logHead)) {
+      cachedAtChanges = changes
+      pruneSessionChanges(db)
+      return true
+    }
     cachedSessions = null
     cachedBySlug = null
     cachedAtChanges = changes
     cachedAtDataVersion = dataVersion
+    cachedAtLogSeq = logHead
     return false
   }
   const allSessions = (): readonly SessionRow[] => {
-    // NEVER cache a read taken inside an open transaction. `total_changes()` counts statements as they
-    // execute and a ROLLBACK does not wind it back, so a mid-transaction read stored under the
-    // post-write watermark would survive the rollback as a view of data that no longer exists. Nothing
-    // on the hot path (the tick, board assembly) runs inside a transaction, so this costs nothing.
+    // NEVER cache a read taken inside an open transaction. Its log entries (and the scope's write
+    // count) describe writes a ROLLBACK may still undo, so a mid-transaction read stored under them
+    // would survive the rollback as a view of data that no longer exists. Nothing on the hot path (the
+    // tick, board assembly) runs inside a transaction, so this costs nothing.
     if (db.inTransaction) return readAllSessions()
     if (cacheIsCurrent() && cachedSessions) return cachedSessions
+    // A full read. The watermark was taken by cacheIsCurrent BEFORE this read, so a write logged in
+    // between (none can be — this is synchronous on the one connection) would be replayed, not lost.
     cachedSessions = readAllSessions()
+    cachedBySlug = new Map(cachedSessions.map((row) => [row.slug, row]))
     return cachedSessions
   }
   // The single-row read rides the SAME snapshot, for the same reason. `tailer.get()` asks
@@ -1518,6 +1601,32 @@ export function createStorage(source: string | Database, projectId: string): Sto
     if (!cacheIsCurrent() || !cachedSessions) return selOne.get(slug)
     if (!cachedBySlug) cachedBySlug = new Map(cachedSessions.map((row) => [row.slug, row]))
     return cachedBySlug.get(slug) ?? selOne.get(slug)
+  }
+
+  // ---- the board's batched registry reads, memoised per table ------------------------------------------
+  // Each of the `*BySlug()` reads below used to re-run its whole-table statement on every board build,
+  // so a project's HISTORY (every question ever asked, every completion ever registered) was re-read and
+  // re-grouped on every refresh. Each read is now kept until a write to ITS table moves that table's
+  // counter (change-tracking.ts) or another connection commits (data_version), and a re-read hands back
+  // the previous bucket OBJECT for every slug whose rows did not change — so the board can tell a thread
+  // whose registries are untouched by identity alone. The returned maps and buckets are shared, hence
+  // ReadonlyMap / readonly arrays on the interface. Never cached inside a transaction (see allSessions).
+  const registryMemo = new Map<TrackedRegistryTable, { rev: number; dataVersion: number; value: Map<string, unknown> }>()
+  function registryBySlug<V>(table: TrackedRegistryTable, read: () => Map<string, V>, same: (a: V, b: V) => boolean): ReadonlyMap<string, V> {
+    if (db.inTransaction) return read()
+    const dataVersion = dataVersionStmt.get()?.data_version ?? -1
+    const rev = registryRevision(db, table)
+    const memo = registryMemo.get(table) as { rev: number; dataVersion: number; value: Map<string, V> } | undefined
+    if (memo && memo.rev === rev && memo.dataVersion === dataVersion && trackingIntact(db)) return memo.value
+    const fresh = read()
+    if (memo) {
+      for (const [slug, bucket] of fresh) {
+        const before = memo.value.get(slug)
+        if (before !== undefined && same(before, bucket)) fresh.set(slug, before)
+      }
+    }
+    registryMemo.set(table, { rev, dataVersion, value: fresh })
+    return fresh
   }
   const upsertStmt = scope.prepare(`
     INSERT INTO session (project_id, slug, session_id, thread_name, spawned_at, last_read_at, unread, exited, title_auto, title_locked, title, state, snoozed_until, snooze_prompt, meta, seen_at, transcript_id, model, effort, profile_pending_model, profile_pending_effort, profile_revision, profile_handoff, permission_mode, permission_pending, control_error, runtime_generation, runtime_control, runtime_control_revision)
@@ -2743,7 +2852,7 @@ export function createStorage(source: string | Database, projectId: string): Sto
       (opts?.armedOnly ? armedPrWatchesBySlugStmt : prWatchesBySlugStmt).all(slug),
     // Grouped off `armedPrWatchesStmt` — the scheduler's own whole-project read, which already carries
     // the identical `state = 'armed'` predicate and `created_at, id` order the per-slug statement uses.
-    armedPrWatchesBySlug: () => groupBySlug(armedPrWatchesStmt.all()),
+    armedPrWatchesBySlug: () => registryBySlug("pr_watch", () => groupBySlug(armedPrWatchesStmt.all()), sameRows),
     getPrWatch: (id) => prWatchByIdStmt.get(id),
     armedPrWatches: () => armedPrWatchesStmt.all(),
     expiredPrWatches: (nowMs) => expiredPrWatchesStmt.all(nowMs),
@@ -2766,7 +2875,7 @@ export function createStorage(source: string | Database, projectId: string): Sto
       })!,
     listCommandWatches: (slug, opts) =>
       (opts?.armedOnly ? armedCommandWatchesBySlugStmt : commandWatchesBySlugStmt).all(slug),
-    armedCommandWatchesBySlug: () => groupBySlug(armedCommandWatchesStmt.all()),
+    armedCommandWatchesBySlug: () => registryBySlug("command_watch", () => groupBySlug(armedCommandWatchesStmt.all()), sameRows),
     getCommandWatch: (id) => commandWatchByIdStmt.get(id),
     armedCommandWatches: () => armedCommandWatchesStmt.all(),
     expiredCommandWatches: (nowMs) => expiredCommandWatchesStmt.all(nowMs),
@@ -2776,7 +2885,7 @@ export function createStorage(source: string | Database, projectId: string): Sto
     settleCommandWatch: (id, state, settledAtMs) => settleCommandWatchStmt.run(state, settledAtMs, id).changes === 1,
     upsertThreadLink: (link) => upsertThreadLinkStmt.get(link)!,
     listThreadLinks: (slug) => threadLinksBySlugStmt.all(slug),
-    threadLinksBySlug: () => groupBySlug(threadLinksStmt.all()),
+    threadLinksBySlug: () => registryBySlug("thread_link", () => groupBySlug(threadLinksStmt.all()), sameRows),
     dropThreadLink: (slug, id) => dropThreadLinkStmt.run(slug, id).changes === 1,
     // IDEMPOTENT BY (thread, kind, target), which is what the partial unique index enforces. A worker
     // woken by an expiry re-registers the same wait, and a worker that simply calls twice must not end
@@ -2792,7 +2901,7 @@ export function createStorage(source: string | Database, projectId: string): Sto
       (opts?.armedOnly ? armedThreadWatchesBySlugStmt : threadWatchesBySlugStmt).all(slug),
     // Grouped off `armedThreadWatchesStmt`, for the same reason as the PR watchers above: it is already
     // the identical predicate and order, asked of the whole project instead of one slug.
-    armedThreadWatchesBySlug: () => groupBySlug(armedThreadWatchesStmt.all()),
+    armedThreadWatchesBySlug: () => registryBySlug("thread_watch", () => groupBySlug(armedThreadWatchesStmt.all()), sameRows),
     getThreadWatch: (id) => threadWatchByIdStmt.get(id),
     expiredThreadWatches: (nowMs) => expiredThreadWatchesStmt.all(nowMs),
     armedThreadWatches: () => armedThreadWatchesStmt.all(),
@@ -2803,7 +2912,7 @@ export function createStorage(source: string | Database, projectId: string): Sto
     growThreadQuestionSpec: (slug, id, spec) => growThreadQuestionSpecStmt.run(spec, id, slug).changes === 1,
     listThreadQuestions: (slug, opts) =>
       (opts?.openOnly ? openThreadQuestionsBySlugStmt : threadQuestionsBySlugStmt).all(slug),
-    threadQuestionsBySlug: () => groupBySlug(allThreadQuestionsStmt.all()),
+    threadQuestionsBySlug: () => registryBySlug("thread_question", () => groupBySlug(allThreadQuestionsStmt.all()), sameRows),
     getThreadQuestion: (id) => threadQuestionByIdStmt.get(id),
     openThreadQuestions: () => openThreadQuestionsStmt.all(),
     answerThreadQuestion: (id, answer, atMs) => answerThreadQuestionStmt.run(answer, atMs, id).changes === 1,
@@ -2820,11 +2929,11 @@ export function createStorage(source: string | Database, projectId: string): Sto
     },
     // The same ms→`doneAt` mapping as `getThreadDone`, applied once per row instead of once per call,
     // so the board reads the identical shape out of the map that it read out of the single-row call.
-    threadDoneBySlug: () => {
+    threadDoneBySlug: () => registryBySlug("thread_done", () => {
       const bySlug = new Map<string, { body: string; doneAt: number }>()
       for (const row of allThreadDoneStmt.all()) bySlug.set(row.thread_slug, { body: row.body, doneAt: row.done_at })
       return bySlug
-    },
+    }, (a, b) => a.body === b.body && a.doneAt === b.doneAt),
     clearThreadDone: (slug) => clearThreadDoneStmt.run(slug).changes > 0,
     recordSubAgentSteer: (row) => { recordSubAgentSteerStmt.run(row) },
     listSubAgentSteers: (slug, subAgentId) => listSubAgentSteersStmt.all(slug, subAgentId),
@@ -2833,7 +2942,7 @@ export function createStorage(source: string | Database, projectId: string): Sto
     armThreadTimer: (timer) => void armTimerStmt.run(timer),
     listThreadTimers: (slug, opts) =>
       (opts?.armedOnly ? armedTimersBySlugStmt : timersBySlugStmt).all(slug),
-    armedThreadTimersBySlug: () => groupBySlug(armedTimersStmt.all()),
+    armedThreadTimersBySlug: () => registryBySlug("thread_timer", () => groupBySlug(armedTimersStmt.all()), sameRows),
     getThreadTimer: (id) => timerByIdStmt.get(id),
     dueThreadTimers: (nowMs) => dueTimersStmt.all(nowMs),
     cancelThreadTimer: (slug, id, settledAtMs) =>
