@@ -371,3 +371,19 @@ test("a ghost waiting on a turn whose end the transcript has not reached ends no
     assert.equal(transcriptHold(undefined, [], showedRest), undefined)
   })
 }
+
+test("overlayEach hands back the input array when nothing is overlaid, and copies only once something is", async () => {
+  const { overlayEach, plainEntries } = await import("./steering.ts")
+  const threads = ["a", "b", "c"].map((id) => ({ id }) as unknown as ThreadView)
+  assert.equal(overlayEach(threads, (t) => t), threads, "the board's own array, so a memo keyed on it holds")
+  const out = overlayEach(threads, (t) => (t.id === "b" ? ({ ...t, runtime: "running" } as ThreadView) : t))
+  assert.notEqual(out, threads)
+  assert.equal(out[0], threads[0])
+  assert.equal(out[1].runtime, "running")
+  assert.equal(out[2], threads[2])
+  // The stamps' own keys, as a plain map — nothing per thread.
+  let reads = 0
+  const record = new Proxy({ x: 1, y: 2 } as Record<string, number>, { get(target, key, receiver) { reads++; return Reflect.get(target, key, receiver) } })
+  assert.deepEqual([...plainEntries(record)], [["x", 1], ["y", 2]])
+  assert.equal(reads, 2)
+})

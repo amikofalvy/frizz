@@ -754,6 +754,35 @@ export function sectionThreads(threads: readonly ThreadView[], direction: QueueD
   out.pinned.sort((a, b) => (a.pinnedAt ?? "").localeCompare(b.pinnedAt ?? "") || a.id.localeCompare(b.id))
   out.active = orderActive(out.active, direction)
   out.snoozed = orderByInteraction(out.snoozed)
-  out.inactive = orderByInteraction(out.inactive)
+  out.inactive = orderDone(out.inactive)
+  return out
+}
+
+// THE DONE BAND'S ORDER, KEPT while its members are the same objects. The band holds every thread the
+// project ever finished and almost never changes, but sectionThreads runs on every board delta — a
+// worker streaming its turn moves one thread, and the Done band was sorted again each time: a key and a
+// Date.parse per thread, then the sort, ~2.4ms of every delta at 5,000 threads (CPU profile, production
+// bundle). The band arrives in board order, which a delta never reorders, so "the same members" is one
+// identity check per slot; a thread archived, reopened or replaced misses and sorts afresh.
+//
+// The same-objects rule is what makes the reuse exact: a Done row's sort key (lastActiveAt) reads only
+// the thread itself, never the clock. Two entries, because the rail and the phone board each section
+// the same board with their own overlays in between.
+const doneOrders: { input: readonly ThreadView[]; out: ThreadView[] }[] = []
+function orderDone(input: ThreadView[]): ThreadView[] {
+  for (const hit of doneOrders) {
+    if (hit.input.length !== input.length) continue
+    let same = true
+    for (let i = 0; i < input.length; i++) {
+      if (hit.input[i] !== input[i]) {
+        same = false
+        break
+      }
+    }
+    if (same) return hit.out
+  }
+  const out = orderByInteraction(input)
+  doneOrders.unshift({ input, out })
+  doneOrders.length = Math.min(doneOrders.length, 2)
   return out
 }

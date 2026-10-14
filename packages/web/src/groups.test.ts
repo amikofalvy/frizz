@@ -1232,3 +1232,21 @@ test("isSnoozed: the event-snooze yields to a live sub-agent, a queue reason, an
   assert.equal(isSnoozed(thread({ ...base, runtime: "running" })), false)
   assert.equal(sessionIndicatorKind(thread({ ...base, runtime: "running" })), "working")
 })
+
+test("sectionThreads: the Done band's order is reused while its members are the same objects, and only then", () => {
+  const done = (id: string, at: string) => thread({ id, kind: "session", state: "archived", lastAssistantAt: at })
+  const a = done("a", "2026-07-08T01:00:00.000Z"), b = done("b", "2026-07-08T03:00:00.000Z"), c = done("c", "2026-07-08T02:00:00.000Z")
+  const running = thread({ id: "r", kind: "session", state: "open", runtime: "running" })
+  const first = sectionThreads([a, running, b, c])
+  assert.deepEqual(first.inactive.map((t) => t.id), ["b", "c", "a"])
+  // A delta that moves only the running thread: the Done band is the same array, not a re-sort.
+  const second = sectionThreads([a, { ...running, lastActivityAt: "2026-07-08T04:00:00.000Z" }, b, c])
+  assert.equal(second.inactive, first.inactive)
+  // A Done thread REPLACED (its rest moved) is a different object: sorted afresh, and correctly.
+  const third = sectionThreads([{ ...a, lastAssistantAt: "2026-07-08T05:00:00.000Z" }, running, b, c])
+  assert.notEqual(third.inactive, first.inactive)
+  assert.deepEqual(third.inactive.map((t) => t.id), ["a", "b", "c"])
+  // A thread joining the band misses too.
+  const d = done("d", "2026-07-08T06:00:00.000Z")
+  assert.deepEqual(sectionThreads([a, running, b, c, d]).inactive.map((t) => t.id), ["d", "b", "c", "a"])
+})
