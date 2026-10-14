@@ -1,7 +1,6 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react"
+import { useEffect, useRef, type CSSProperties } from "react"
 import { useNavigate } from "react-router"
 import { useSnapshot } from "valtio"
-import { useQuery } from "@tanstack/react-query"
 import { closeGithubPicker, store, seedBoard, pushDrawer, resolveRoutedThread, topDrawer, topThreadSlug, showToast } from "./store.ts"
 import { useBoard } from "./hooks.ts"
 import { closeDrawerAnimated } from "./lib/overlays.ts"
@@ -24,22 +23,7 @@ import { SettingsDrawer } from "./components/SettingsDrawer.tsx"
 import { CommandPalette } from "./components/CommandPalette.tsx"
 import { StatusListView } from "./components/StatusListView.tsx"
 import { ErrorBoundary } from "./components/ErrorBoundary.tsx"
-import { RestartOverlay } from "./components/RestartOverlay.tsx"
-import { useSupervisorStatus } from "./api/supervisorStatus.ts"
-import {
-  frizzBuildIdentity,
-  IDLE_RESTART_HOLD,
-  nextControlPlane,
-  nextRestartHold,
-  readyBelieved,
-  RELOAD_AFTER_UPDATE_RESTART,
-  restartFailureCopy,
-  restartFailureOutcome,
-  shouldReloadForNewBuild,
-  UPDATE_RESTART_FROM_VERSION,
-  type RestartHold,
-} from "./api/restart.ts"
-import { formatCompactElapsed } from "./lib/durationLabels.ts"
+import { PageFrame } from "./components/PageFrame.tsx"
 
 // The not-signed-in hint fires at most once per page load. A module-scoped flag (not React state)
 // keeps it from re-firing across re-renders, effect re-runs, or a StrictMode double-invoke.
@@ -70,86 +54,6 @@ export function App() {
   // rendered match stay the same thing.
   const navigate = useNavigate()
   useEffect(() => startRouter((path, options) => navigate(path, options)), [navigate])
-
-  // The public supervisor survives replacement of the app child. It is consequently the only
-  // trustworthy transition signal: an old child can still say ready while the next artifact builds.
-  // The READ is shared — api/supervisorStatus.ts owns the one poll (gentle at rest, prompt across a
-  // handoff) that this board, the Restart Frizz button and the dev-build probe all observe; this effect
-  // is only what the BOARD does with each answer. Writes are gated in rpc.ts but drafts remain
-  // session-backed and editable throughout.
-  const { data: supervisorStatus, dataUpdatedAt: supervisorAnsweredAt } = useSupervisorStatus()
-  const announcedFailure = useRef<string | null>(null)
-  // The hold's clock (finding 1, audit 2026-09-11): how long the supervisor has been silent while the
-  // board shows "restarting", and whether that has run past the deadline. Stepped once per poll by the
-  // pure reducer in api/restart.ts; a null answer used to be ignored here outright, which is how a
-  // successor that never came up left every tab behind the blocking overlay forever.
-  const [hold, setHold] = useState<RestartHold>(IDLE_RESTART_HOLD)
-  // The build this page was served by (finding 8): the first identity any answer named. A later READY
-  // answer naming a different one means a new server is up under an old bundle — reload, whichever
-  // tab clicked. Cleared by the reload itself, since the next page captures the new identity first.
-  const seenBuild = useRef<string | null>(null)
-  const reloading = useRef(false)
-  useEffect(() => {
-    const status = supervisorStatus
-    if (status) {
-      // An optimistic, user-initiated restart raised the overlay before the supervisor confirmed the
-      // transition. HOLD it until a poll actually OBSERVES a server-confirmed non-"ready" status: a
-      // "ready" read while pending is either the pre-flip state or a stale in-flight response, and
-      // applying it would drop the overlay and (with a destination armed) reload onto the old child.
-      // And not just any non-"ready": one whose request STARTED after the supervisor acked the POST.
-      // A "failed" that was already in flight at the click — real, because the board offers retry
-      // from "failed" — used to clear the guard for the new attempt, after which the launcher's
-      // deliberate "ready" (`preparing`) reloaded the tab onto the old bundle (pullfrog on #35,
-      // 2026-09-11). The verdict is the pure reducer's; this effect only applies it.
-      const plane = nextControlPlane({ state: store.controlPlaneState, message: store.controlPlaneMessage, attempt: store.controlPlaneRestartAttempt }, status)
-      store.controlPlaneState = plane.state
-      store.controlPlaneMessage = plane.message
-      store.controlPlaneRestartAttempt = plane.attempt
-      if (seenBuild.current === null) seenBuild.current = frizzBuildIdentity(status)
-    }
-    // Step the hold on EVERY answer, null included — the null ones are the whole point. `restarting`
-    // is what the board shows after applying this poll, so silence only ever accrues under the overlay.
-    setHold((prev) => nextRestartHold(prev, { restarting: store.controlPlaneState === "restarting", answered: status != null, at: Date.now() }))
-    if (!status || reloading.current) return
-    const destination = sessionStorage.getItem(RELOAD_AFTER_UPDATE_RESTART)
-    if (readyBelieved({ state: store.controlPlaneState, message: store.controlPlaneMessage, attempt: store.controlPlaneRestartAttempt }, status)) {
-      if (destination) {
-        sessionStorage.removeItem(RELOAD_AFTER_UPDATE_RESTART)
-        sessionStorage.removeItem(UPDATE_RESTART_FROM_VERSION)
-        reloading.current = true
-        window.location.replace(destination)
-        return
-      }
-      // Every OTHER tab: no destination was armed here, but the server answering is not the one that
-      // served this bundle. `reload()` rather than `replace(href)`, which is a same-document jump when
-      // the URL carries a fragment and would load nothing.
-      if (shouldReloadForNewBuild(seenBuild.current, status)) {
-        reloading.current = true
-        window.location.reload()
-        return
-      }
-    }
-    if (status.state === "failed" && destination) {
-      const fromVersion = sessionStorage.getItem(UPDATE_RESTART_FROM_VERSION) ?? undefined
-      sessionStorage.removeItem(RELOAD_AFTER_UPDATE_RESTART)
-      sessionStorage.removeItem(UPDATE_RESTART_FROM_VERSION)
-      if (announcedFailure.current !== status.message) {
-        // Announce the failure, never its REASON: the supervisor's message is raw build output —
-        // a `nub run typecheck` failure arrives as several hundred characters of absolute
-        // snapshot paths — and pasting that into a toast stretched a strip across the entire
-        // viewport, four lines deep, saying the same thing the failure panel beside the reload
-        // button was already showing properly. The panel owns the detail; this owns the attention.
-        // Which failure it was (the old version giving up, or the new one failing to start) is judged
-        // by the version the failed answer names against the one at click — finding 11.
-        announcedFailure.current = status.message ?? "Update & Restart failed"
-        showToast(`Update & Restart failed — ${restartFailureCopy(restartFailureOutcome(fromVersion, status)).summary}`, { duration: 7000 })
-      }
-    }
-    // `supervisorAnsweredAt`, not the status alone: react-query's structural sharing hands back the SAME
-    // object when a poll's answer is unchanged, and this body has to run on EVERY answer the way the
-    // interval loop it replaces did — the reload destination is armed between two reads, so a run keyed
-    // on the status object could miss it.
-  }, [supervisorStatus, supervisorAnsweredAt])
 
   // While ANY overlay is open (thread sheet, doc drawer, settings, new-thread modal, palette), the
   // PAGE must not scroll — only the overlay's own pane does.
@@ -182,13 +86,6 @@ export function App() {
       window.scrollTo(0, takeScrollAfterUnlock() ?? y)
     }
   }, [overlayOpen])
-
-  // Mirror settings.notifications onto the store so the (React-free) SSE handler can gate desktop
-  // notifications. Refetched whenever the settings query is invalidated (e.g. after a save).
-  const settings = useQuery({ queryKey: ["settingsGet"], queryFn: () => rpc.settingsGet() })
-  useEffect(() => {
-    store.notificationsEnabled = settings.data?.notifications ?? false
-  }, [settings.data?.notifications])
 
   // GitHub availability drives two things: the picker TRIGGER (in the sidebar / brand-new view, gated
   // in GithubTrigger off this same cached query) and — when the repo IS a GitHub repo but gh is NOT
@@ -282,18 +179,11 @@ export function App() {
   // do it in. A `.frizz`-less repo is simply a board with zero threads — TodosView's `nothingAtAll`
   // branch already renders exactly the right thing for it (centered prompt box, sidebar hidden).
   return (
-    <>
-    <RestartOverlay
-      open={snap.controlPlaneState === "restarting"}
-      message={snap.controlPlaneMessage}
-      stalled={hold.stalled}
-      silentFor={hold.silentSince === null ? undefined : formatCompactElapsed(hold.silentForMs)}
-    />
-    {/* While restarting, the whole app subtree goes inert so nothing behind the scrim is focusable or
-        clickable; the overlay above is a sibling OUTSIDE it so it stays interactive. Once the hold has
-        stalled the overlay stops blocking, and so does this. */}
-    <div
-      inert={snap.controlPlaneState === "restarting" && !hold.stalled}
+    // THE FRAME, not a bare root: following the supervisor (the restart overlay, this subtree going
+    // inert under it, the reload onto a new build) and mirroring the notifications setting are what a
+    // tab does on EVERY page, so they are components/PageFrame.tsx's and the full-screen thread page
+    // stands in the same one. They were this file's alone until 2026-10-13, and that page had neither.
+    <PageFrame
       className="relative min-h-screen bg-bg text-fg text-sm"
       // What sticks to the window's top sticks below the Console's home band instead (the cards' headers).
       // The narrow layout's own 40px offset gives way to the band as well: the switcher shows down to the
@@ -383,7 +273,6 @@ export function App() {
       {snap.showNewThread && <NewThreadDialog onClose={() => { store.showNewThread = false }} />}
       {snap.showGithubPicker && <GithubPickerModal onClose={closeGithubPicker} />}
       <CommandPalette />
-    </div>
-    </>
+    </PageFrame>
   )
 }

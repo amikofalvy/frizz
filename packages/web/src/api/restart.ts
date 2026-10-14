@@ -63,7 +63,7 @@ export interface FrizzSupervisorStatus {
 export const FRIZZ_SUPERVISOR_STATUS_WAKE_EVENT = "frizz:supervisor-status-wake"
 
 // ── What the clicking tab remembers across an update (per tab: sessionStorage) ────────────────────────
-// The button arms both when the supervisor ACCEPTS an update-restart; App consumes both when a later
+// The button arms both when the supervisor ACCEPTS an update-restart; PageFrame consumes both when a later
 // poll settles it. The destination is the route to reload onto once the successor is ready. The
 // version is what "failed" is measured against (finding 11, audit 2026-09-11): a "failed" that still
 // names the version we clicked on means the OLD launcher gave up and kept serving; one that names a

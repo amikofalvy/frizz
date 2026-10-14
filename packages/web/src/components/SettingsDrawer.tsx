@@ -36,9 +36,10 @@ function currentPerm(): NotifPerm {
 // means it no longer lives here at all, so the tab strip went with it.
 export function SettingsDrawer({ offerUpdate = false }: {
   /**
-   * Show the phone page's "Update Frizz" row. Only the board passes it: an update is finished by App's
-   * supervisor monitor and RestartOverlay (App.tsx), which mount with the board and not with the Projects
-   * page (`/`), so the same row there would raise no overlay and never reload onto the new version.
+   * Show the phone page's "Update Frizz" row. Only the board passes it: an update is finished by
+   * PageFrame's supervisor monitor and RestartOverlay (PageFrame.tsx), which the board and the full-screen
+   * thread page stand in and the Projects page (`/`) does not, so the same row there would raise no
+   * overlay and never reload onto the new version.
    */
   offerUpdate?: boolean
 } = {}) {
