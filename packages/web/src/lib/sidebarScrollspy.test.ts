@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { activeSidebarSection, queueNavigationSettled, railRevealDelta } from "./sidebarScrollspy.ts"
+import { activeSidebarSection, markerRow, queueNavigationSettled, railRevealDelta } from "./sidebarScrollspy.ts"
 
 // An 800px viewport throughout: half of it — the coverage a newcomer must reach — is 400.
 const VIEWPORT = 800
@@ -98,4 +98,30 @@ test("rail reveal scrolls only enough to expose an active item and leaves visibl
   assert.equal(railRevealDelta(100, 500, 90, 126), -18)
   assert.equal(railRevealDelta(100, 500, 470, 520), 28)
   assert.equal(railRevealDelta(100, 500, 160, 220), 0)
+})
+
+// The marker's row. `previous` is the queue's order while the marked row was still in it.
+test("the marker stays on the row the reading rule names while that row is in the queue", () => {
+  assert.equal(markerRow("b", ["a", "b", "c"], ["a", "b", "c"]), "b")
+  assert.equal(markerRow(null, ["a", "b"], ["a", "b"]), null)
+})
+
+test("a marked row that leaves the queue hands the marker to the row below it", () => {
+  // A send moved `b` to Running in the click's commit; its card is still fading under the reader.
+  assert.equal(markerRow("b", ["a", "c"], ["a", "b", "c"]), "c")
+})
+
+test("the last row of the queue hands the marker to the row above it", () => {
+  assert.equal(markerRow("c", ["a", "b"], ["a", "b", "c"]), "b")
+})
+
+test("the hand-over skips rows that left the queue with it, and an emptied queue has no marker", () => {
+  assert.equal(markerRow("b", ["a", "d"], ["a", "b", "c", "d"]), "d")
+  assert.equal(markerRow("a", [], ["a"]), null)
+})
+
+test("a row that was never in the queue band keeps its marker", () => {
+  // A pinned thread's row stays in the Pinned band through its own send.
+  assert.equal(markerRow("pinned", ["a", "b"], ["a", "b"]), "pinned")
+  assert.equal(markerRow("pinned", ["a", "b"], []), "pinned")
 })

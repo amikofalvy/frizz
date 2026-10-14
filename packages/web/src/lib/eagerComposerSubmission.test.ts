@@ -1,6 +1,9 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { DELIVERY_RETRY_BACKOFF_MS, beginEagerSubmission, enqueueThreadSend, sendFollowUpAttempt, withDeliveryRetry } from "./eagerComposerSubmission.ts"
+import type { ThreadView } from "@frizz/shared"
+import { DELIVERY_RETRY_BACKOFF_MS, beginEagerSubmission, enqueueThreadSend, reanchorsOnLanding, sendFollowUpAttempt, withDeliveryRetry } from "./eagerComposerSubmission.ts"
+import { isOptimisticallySteering, optimisticallySteered } from "./steering.ts"
+import { partitionActive } from "../groups.ts"
 
 test("eager composer submission clears and paints before its request settles", async () => {
   const order: string[] = []
@@ -140,6 +143,73 @@ test("the steer optimism is re-anchored on every attempt, not just at submit", a
     instant,
   )
   assert.equal(anchors, 3, "two backoff re-anchors plus one when the send finally landed")
+})
+
+test("the re-anchor is told which boundary it is on: a refusal, or the send that landed", async () => {
+  let calls = 0
+  const seen: boolean[] = []
+  await withDeliveryRetry(
+    async () => { if (++calls < 3) throw retryable("contended") },
+    (landed) => { seen.push(landed) },
+    instant,
+  )
+  assert.deepEqual(seen, [false, false, true])
+})
+
+// A FAST TURN ENDS BEFORE ITS OWN followUp RETURNS. The reply is already written; re-stamping the steer at
+// the call's return claimed "working" over it for the stamp's whole 12s cap — the row in the Running band,
+// the card frozen on the transcript from before the send (recorded 3 of 3 against the scripted Claude,
+// replythink=0 disklag=25). The board and the call's answer arrive in either order, so both are pinned.
+test("a turn that ends before its own followUp returns is not re-anchored: the row rests and the card thaws", () => {
+  const SENT = 1_000_000
+  const LANDED = SENT + 300
+  const rested = (lastActivityAt: number | undefined) => ({
+    id: "t", kind: "session", state: "open", status: "active", runtime: "turn-idle", needsYou: true,
+    spawnedAt: new Date(SENT - 600_000).toISOString(),
+    lastUserAt: new Date(SENT + 20).toISOString(),
+    lastAssistantAt: lastActivityAt === undefined ? undefined : new Date(lastActivityAt).toISOString(),
+    lastActivityAt: lastActivityAt === undefined ? undefined : new Date(lastActivityAt).toISOString(),
+  }) as unknown as ThreadView
+  // The reply was written 160ms after the send.
+  const done = rested(SENT + 160)
+  const before = rested(SENT - 5_000)
+
+  // ORDER 1 — the board reported the reply before the call answered.
+  assert.equal(reanchorsOnLanding(done, SENT, SENT, LANDED), false)
+  // ORDER 2 — the call answered first: the board still shows the rest from before the send, and the reply
+  // it is about to report is stamped BEFORE this instant. The live stamp keeps the send's instant.
+  assert.equal(reanchorsOnLanding(before, SENT, SENT, LANDED), false)
+
+  // Either way the stamp is still the send's, so once the board reports the reply it yields: at +600ms and
+  // at +3s the row is the board's own (the Queue band), and the card's freeze — the same predicate, see
+  // isFrozen in TodosView — is off.
+  for (const now of [SENT + 600, SENT + 3_000]) {
+    assert.equal(isOptimisticallySteering(done, SENT, now), false)
+    const row = optimisticallySteered(done, SENT, now)
+    assert.equal(row, done, "the board's row, by identity")
+    assert.deepEqual(partitionActive([row]).rested.map((t) => t.id), ["t"])
+  }
+  // The control: the same thread under a stamp moved to the call's return is the defect, pinned.
+  assert.equal(isOptimisticallySteering(done, LANDED, SENT + 3_000), true)
+  assert.deepEqual(partitionActive([optimisticallySteered(done, LANDED, SENT + 3_000)]).running.map((t) => t.id), ["t"])
+})
+
+test("a landed send re-anchors only a hint that lapsed mid-flight, and never past the board's answer", () => {
+  const SENT = 1_000_000
+  const at = (ms: number | undefined) => ({ lastActivityAt: ms === undefined ? undefined : new Date(ms).toISOString() })
+  const SLOW = SENT + 20_000
+  // A delivery slower than the cap: the hint is gone (its timer deleted it), and the tailer still has to
+  // observe the turn. Stamped again — with no board activity, activity from before the send, or a thread
+  // the board does not hold.
+  assert.equal(reanchorsOnLanding(at(SENT - 5_000), SENT, undefined, SLOW), true)
+  assert.equal(reanchorsOnLanding(at(undefined), SENT, undefined, SLOW), true)
+  assert.equal(reanchorsOnLanding(undefined, SENT, undefined, SLOW), true)
+  // …and a stamp left standing past its cap counts as lapsed too.
+  assert.equal(reanchorsOnLanding(at(SENT - 5_000), SENT, SENT, SLOW), true)
+  // But not when the board has reported anything since the send, however slow the delivery was.
+  assert.equal(reanchorsOnLanding(at(SENT + 15_000), SENT, undefined, SLOW), false)
+  // A refusal moved the stamp 4s in; the send lands 2s later. Live, so it stays where the refusal put it.
+  assert.equal(reanchorsOnLanding(at(SENT - 5_000), SENT, SENT + 4_000, SENT + 6_000), false)
 })
 
 // ── the send deadline ────────────────────────────────────────────────────────────────────────────

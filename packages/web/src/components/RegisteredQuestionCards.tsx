@@ -26,7 +26,7 @@ import { nameQuestionAnswer } from "@frizz/shared"
 import type { AskedQuestion, ClosedQuestionView, NamedQuestionAnswer, QuestionAnswer, RegisteredQuestionView, SettledQuestionView, ThreadView } from "@frizz/shared"
 import { rpc } from "../api/rpc.ts"
 import { draftKey, draftStore, useDraftValues, useProjectDir } from "../lib/drafts.ts"
-import { clearSteered, markSteered } from "../lib/steering.ts"
+import { clearSteered, markAnswered, markSteered } from "../lib/steering.ts"
 import { SendScopeContext, usePromptBoxSends } from "../lib/sendScope.tsx"
 import type { BlockAnswer } from "../lib/questionBlocks.ts"
 import { arrivedQuestions, type ArrivalMessage } from "../lib/questionArrival.ts"
@@ -189,6 +189,9 @@ export function useRegisteredAnswering(thread: ThreadView | undefined): Register
     void queryClient.cancelQueries({ queryKey: key })
     const settledAt = new Date().toISOString()
     const ids = new Set(pairs.map((pair) => pair.q.id))
+    // …and the rail's steer overlay stops counting them as open, so the row does not go to Running
+    // wearing the "?" of a question that was just answered (lib/steering markAnswered).
+    markAnswered(owner, [...ids])
     const shown = displayed(pairs)
     queryClient.setQueryData<SettledQuestion[]>(key, (prev) => [
       ...(prev ?? []).filter((s) => !ids.has(s.id)),

@@ -1,7 +1,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import type { ThreadView } from "@frizz/shared"
-import { returningHolds } from "./queueReturn.ts"
+import { cacheEndsBeforeTurn, returningHolds } from "./queueReturn.ts"
 import { REST_CATCH_UP_MS, type RestEvidence } from "./steering.ts"
 
 const T = (s: number) => new Date(Date.UTC(2026, 9, 13, 12, 0, s)).toISOString()
@@ -57,4 +57,31 @@ test("a released card is not held again by a later render", () => {
 
 test("a held card the board takes back out of the queue stops being held", () => {
   assert.equal(returningHolds(new Map([["back", NOW]]), new Set(["back"]), [], () => PRE_TURN, NOW + 10).size, 0)
+})
+
+// The card unmounted before the server's echo of the message reached it: the cache stops at the PREVIOUS
+// turn's rest boundary, with at most this tab's ghost under it.
+test("a cache that stopped before the human's message — ending on the previous turn's boundary — is held too", () => {
+  const back = { id: "back", runtime: "turn-idle", lastUserAt: T(5), lastAssistantAt: T(9) } as unknown as ThreadView
+  const ghost: RestEvidence = { role: "user", at: T(5), queued: true }
+  const STOPPED_EARLY = [said(T(0)), restAt(T(1))]
+  assert.equal(cacheEndsBeforeTurn(back, STOPPED_EARLY), true)
+  assert.equal(cacheEndsBeforeTurn(back, [...STOPPED_EARLY, ghost]), true)
+  assert.deepEqual([...returningHolds(new Map(), new Set(), [back], () => [...STOPPED_EARLY, ghost], NOW)], [["back", NOW]])
+  // Released by the transcript that carries the turn: its own boundary is newer than the message.
+  assert.equal(cacheEndsBeforeTurn(back, [...STOPPED_EARLY, human(T(5)), said(T(9)), restAt(T(9))]), false)
+  assert.equal(returningHolds(new Map([["back", NOW]]), new Set(["back"]), [back], () => [...STOPPED_EARLY, human(T(5)), said(T(9)), restAt(T(9))], NOW + 30).size, 0)
+})
+
+test("…but not a rest no human message opened, a message nobody answered, or a boundary with no instant", () => {
+  const STOPPED_EARLY = [said(T(0)), restAt(T(1))]
+  // A wake's turn: the board's lastUserAt is still the previous turn's, older than the boundary.
+  assert.equal(cacheEndsBeforeTurn({ id: "t", runtime: "turn-idle", lastUserAt: T(0), lastAssistantAt: T(9) } as unknown as ThreadView, STOPPED_EARLY), false)
+  // The message is newer than anything the worker said: no turn has ended on it.
+  assert.equal(cacheEndsBeforeTurn({ id: "t", runtime: "turn-idle", lastUserAt: T(5), lastAssistantAt: T(1) } as unknown as ThreadView, STOPPED_EARLY), false)
+  const back = { id: "t", runtime: "turn-idle", lastUserAt: T(5), lastAssistantAt: T(9) } as unknown as ThreadView
+  assert.equal(cacheEndsBeforeTurn(back, [said(T(0)), { role: "assistant", kind: "event", boundary: "rest" }]), false)
+  // A cache that ends on anything else is transcriptBehindRest's to judge.
+  assert.equal(cacheEndsBeforeTurn(back, [said(T(0)), restAt(T(1)), human(T(5))]), false)
+  assert.equal(cacheEndsBeforeTurn({ ...back, runtime: "running" } as unknown as ThreadView, STOPPED_EARLY), false)
 })

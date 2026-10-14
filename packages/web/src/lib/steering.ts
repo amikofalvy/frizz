@@ -14,7 +14,7 @@ import type { ThreadView, TranscriptMessage } from "@frizz/shared"
 // The optimistic record closes that window. It is NOT a second source of truth: it is a short-lived
 // hint that only ever fires while server truth has said nothing new, and it yields the moment the
 // server has anything at all to say.
-const steering = proxy({ at: {} as Record<string, number> })
+const steering = proxy({ at: {} as Record<string, number>, answered: {} as Record<string, string[]> })
 
 // How long the hint may outlive its evidence. Past this the operator is better served by the truth —
 // a steer that produced no observable activity in twelve seconds is one they should see stalled,
@@ -32,7 +32,31 @@ export function markSteered(slug: string, nowMs = Date.now()): void {
   expiries.set(slug, setTimeout(() => {
     expiries.delete(slug)
     delete steering.at[slug]
+    delete steering.answered[slug]
   }, STEER_OPTIMISM_MS))
+}
+
+// THE STEER ANSWERED THESE REGISTERED QUESTIONS — the ids ride beside the stamp, and the overlay takes
+// them off the thread's open `questions`. Without them the row went to the Running band still holding the
+// question it had just been given the answer to, and a running thread with an open question draws a "?"
+// inside its spinner (groups.workingWithOpenQuestion: "a question is waiting on your answer"). So every
+// answer sent from a queue card flashed that mark on its row until the server's board push dropped the
+// question, 100-400ms later (painted frames, 2026-10-13). Ids accumulate for the life of the stamp: an
+// answered question never reopens, so a stale id filters nothing.
+export function markAnswered(slug: string, questionIds: readonly string[]): void {
+  if (questionIds.length === 0) return
+  steering.answered[slug] = [...new Set([...(steering.answered[slug] ?? []), ...questionIds])]
+}
+
+/** The standing stamp, read outside React; undefined once it has lapsed or been cleared. */
+export function steeredAtNow(slug: string): number | undefined {
+  return steering.at[slug]
+}
+
+/** The question ids the standing steer answered, read outside React. They live and die with the stamp:
+ *  its expiry and clearSteered drop both. */
+export function answeredNow(slug: string): readonly string[] | undefined {
+  return steering.answered[slug]
 }
 
 // The send failed and its bubble was rolled back — the thread is not working after all.
@@ -40,6 +64,7 @@ export function clearSteered(slug: string): void {
   const prior = expiries.get(slug)
   if (prior !== undefined) { clearTimeout(prior); expiries.delete(slug) }
   delete steering.at[slug]
+  delete steering.answered[slug]
 }
 
 // Whether `t` should render as working purely on the strength of a just-sent steer. Server truth wins
@@ -74,16 +99,19 @@ export function useSteeredAt(): Record<string, number> {
 // server's flag reaches every tab and a reload, and holds for as long as the delivery is actually on its
 // way. Either one takes the overlay. Only the local stamp moves `lastUserAt`: it is the only one that
 // knows the instant, and the server's own reading of it lands with the turn.
-export function optimisticallySteered(t: ThreadView, at: number | undefined, nowMs = Date.now()): ThreadView {
+export function optimisticallySteered(t: ThreadView, at: number | undefined, nowMs = Date.now(), answered?: readonly string[]): ThreadView {
   const local = at !== undefined && isOptimisticallySteering(t, at, nowMs)
   if (!local && t.deliveryInFlight !== true) return t
-  return steeredFields(t, local ? new Date(at!).toISOString() : t.lastUserAt)
+  return steeredFields(t, local ? new Date(at!).toISOString() : t.lastUserAt, local ? answered : undefined)
 }
 
-function steeredFields(t: ThreadView, lastUserAt: string | undefined): ThreadView {
+function steeredFields(t: ThreadView, lastUserAt: string | undefined, answered?: readonly string[]): ThreadView {
   return {
     ...t,
     runtime: "running",
+    // The registered questions this steer answered are no longer open (markAnswered). The board's own
+    // array when it answered none, so nothing keyed on it churns.
+    questions: answered?.length && t.questions?.some((q) => answered.includes(q.id)) ? t.questions.filter((q) => !answered.includes(q.id)) : t.questions,
     // A running thread is not awaiting you — deriveNeedsYou says so itself (`if (!atRest) return
     // false`). The queue reasons a steer resolves (an unanswered question, a native ask, a permission
     // prompt, a bare-rest handoff) are precisely the ones the operator just cleared by typing; the
@@ -322,6 +350,6 @@ export function useTurnHeldForTranscript(t: ThreadView | undefined, messages: re
 // the memoized rows still skip re-rendering; the memo re-runs when the board changes or when a stamp
 // is set/expired (markSteered's expiry timer is what guarantees the cap actually repaints).
 export function useOptimisticallySteered(threads: readonly ThreadView[]): ThreadView[] {
-  const at = useSteeredAt()
-  return useMemo(() => threads.map((t) => optimisticallySteered(t, at[t.id])), [threads, at])
+  const { at, answered } = useSnapshot(steering) as { at: Record<string, number>; answered: Record<string, readonly string[]> }
+  return useMemo(() => threads.map((t) => optimisticallySteered(t, at[t.id], undefined, answered[t.id])), [threads, at, answered])
 }

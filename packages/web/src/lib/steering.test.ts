@@ -1,8 +1,8 @@
-import { test } from "node:test"
+import { mock, test } from "node:test"
 import assert from "node:assert/strict"
 import type { ThreadView } from "@frizz/shared"
-import { isOptimisticallySteering, optimisticallySteered, steeredSinceRest, STEER_OPTIMISM_MS, transcriptBehindRest, transcriptBehindTurn, transcriptHold, transcriptPastRest } from "./steering.ts"
-import { isActivelyRunning, isSnoozed, orderActive, partitionActive, sectionOf, sessionIndicatorKind } from "../groups.ts"
+import { answeredNow, clearSteered, isOptimisticallySteering, markAnswered, markSteered, optimisticallySteered, steeredSinceRest, STEER_OPTIMISM_MS, transcriptBehindRest, transcriptBehindTurn, transcriptHold, transcriptPastRest } from "./steering.ts"
+import { isActivelyRunning, isSnoozed, orderActive, partitionActive, sectionOf, sessionIndicatorKind, workingWithOpenQuestion } from "../groups.ts"
 
 const at = (lastActivityAt?: string) => ({ id: "t", lastActivityAt } as unknown as ThreadView)
 
@@ -77,6 +77,49 @@ test("a steered row leaves the dimmed Snoozed band, exactly as a real turn start
   const snoozed = queued({ needsYou: false, pendingQuestion: false, snoozedUntil: new Date(SENT + 6 * 3_600_000).toISOString() })
   assert.equal(isSnoozed(snoozed, SENT + 200), true)
   assert.equal(isSnoozed(optimisticallySteered(snoozed, SENT, SENT + 200), SENT + 200), false)
+})
+
+test("a steer that answered a registered question takes it off the row: no '?' in the Running band", () => {
+  const asked = queued({ questions: [{ id: "q1" }, { id: "q2" }] } as unknown as Partial<ThreadView>)
+  // Steered WITHOUT the answer (a typed message while the question stands): it is still open, and the
+  // running row says so with the "?" inside its spinner.
+  const typed = optimisticallySteered(asked, SENT, SENT + 200)
+  assert.equal(typed.questions, asked.questions)
+  assert.equal(workingWithOpenQuestion(typed), true)
+  // Answering one leaves the other open.
+  assert.deepEqual(optimisticallySteered(asked, SENT, SENT + 200, ["q1"]).questions?.map((q) => q.id), ["q2"])
+  // Answering both is a plain spinner, which is what the server's own board push will say.
+  const answered = optimisticallySteered(asked, SENT, SENT + 200, ["q1", "q2"])
+  assert.deepEqual(answered.questions, [])
+  assert.equal(workingWithOpenQuestion(answered), false)
+  assert.equal(sessionIndicatorKind(answered), "working")
+})
+
+test("the answered ids are cleared with the stamp: at its cap, and when the send fails", () => {
+  mock.timers.enable({ apis: ["setTimeout"] })
+  try {
+    markSteered("answered-thread")
+    markAnswered("answered-thread", ["q1"])
+    // A second answer under the same stamp adds to the first; a repeat adds nothing.
+    markAnswered("answered-thread", ["q2", "q1"])
+    assert.deepEqual(answeredNow("answered-thread"), ["q1", "q2"])
+    mock.timers.tick(STEER_OPTIMISM_MS - 1)
+    assert.deepEqual(answeredNow("answered-thread"), ["q1", "q2"])
+    mock.timers.tick(1)
+    assert.equal(answeredNow("answered-thread"), undefined)
+
+    // The send failed: the stamp is rolled back, and the questions it claimed to answer are open again.
+    markSteered("failed-thread")
+    markAnswered("failed-thread", ["q1"])
+    clearSteered("failed-thread")
+    assert.equal(answeredNow("failed-thread"), undefined)
+
+    // Answering nothing records nothing.
+    markAnswered("empty-thread", [])
+    assert.equal(answeredNow("empty-thread"), undefined)
+  } finally {
+    mock.timers.reset()
+  }
 })
 
 test("the overlay yields — expired, unsteered, and newer-server-truth rows come back BY IDENTITY", () => {
