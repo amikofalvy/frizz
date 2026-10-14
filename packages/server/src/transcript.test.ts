@@ -1680,6 +1680,77 @@ test("real Claude Code 2.1.207 SDK lifecycle dedupes its prompt and back-fills c
   assert.equal(cancelled.output, "Interrupted by user")
 })
 
+// "SEND NOW" ENDS THE TURN TO DELIVER A MESSAGE, and the runtime answers the tool call it cut off with a
+// paragraph addressed to the model. `is_error` filed the card as a red "failed" with that paragraph as
+// the command's output (maintainer 2026-10-13: "this prints out even for a bash call, so the stuff about
+// the new_string, I'm not sure it even makes sense"). The cut record is a real one from Claude Code
+// 2.1.296, a Bash call 5s into a 45s build.
+const INTERRUPT_CUT_RESULT =
+  "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.\n\n" +
+  "Note: The user's next message may contain a correction or preference. Pay close attention — if they explain what went wrong or how they'd prefer you to work, consider saving that to memory for future sessions."
+
+test("a tool call cut off by an interrupt reads cancelled, without the runtime's stock paragraph", () => {
+  const raw = [
+    JSON.stringify({
+      type: "assistant",
+      timestamp: "2026-10-14T00:49:40.376Z",
+      message: { id: "m-build", content: [{ type: "tool_use", id: "build", name: "Bash", input: { command: "nub run build", description: "Running the build" } }] },
+    }),
+    JSON.stringify({ type: "queue-operation", operation: "enqueue", timestamp: "2026-10-14T00:49:45.433Z", content: "fyi the build is slow today" }),
+    JSON.stringify({
+      type: "user",
+      timestamp: "2026-10-14T00:49:45.440Z",
+      toolUseResult: "User rejected tool use",
+      toolDenialKind: "user-rejected",
+      message: { role: "user", content: [{ type: "tool_result", tool_use_id: "build", is_error: true, content: INTERRUPT_CUT_RESULT }] },
+    }),
+    JSON.stringify({ type: "user", timestamp: "2026-10-14T00:49:45.442Z", message: { role: "user", content: [{ type: "text", text: "[Request interrupted by user for tool use]" }] } }),
+    JSON.stringify({ type: "queue-operation", operation: "dequeue", timestamp: "2026-10-14T00:49:45.446Z" }),
+    JSON.stringify({ type: "user", timestamp: "2026-10-14T00:49:45.449Z", message: { role: "user", content: "fyi the build is slow today" }, promptSource: "sdk" }),
+  ].join("\n")
+  const messages = parseTranscript(raw)
+  const [build] = messages.flatMap((m) => m.tools)
+  assert.equal(build.status, "cancelled", "nothing failed: the human's own message ended the turn")
+  assert.equal(build.output, undefined, "the paragraph is the runtime talking to the model, not the command's output")
+  assert.equal(build.durationMs, 5064)
+  assert.deepEqual(messages.filter((m) => m.role === "user").map((m) => m.text), ["fyi the build is slow today"])
+})
+
+test("only the runtime's own stock rejection is taken off a card", () => {
+  const worded = "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). To tell you how to proceed, the user said:\nuse the staging database instead"
+  const raw = [
+    JSON.stringify({
+      type: "assistant",
+      timestamp: "2026-10-14T01:00:00.000Z",
+      message: {
+        id: "m-two",
+        content: [
+          { type: "tool_use", id: "worded", name: "Bash", input: { command: "psql prod" } },
+          { type: "tool_use", id: "quoted", name: "Bash", input: { command: "cat notes.txt" } },
+        ],
+      },
+    }),
+    JSON.stringify({
+      type: "user",
+      timestamp: "2026-10-14T01:00:02.000Z",
+      message: {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "worded", is_error: true, content: worded },
+          { type: "tool_result", tool_use_id: "quoted", is_error: false, content: INTERRUPT_CUT_RESULT },
+        ],
+      },
+    }),
+  ].join("\n")
+  const [rejected, quoted] = parseTranscript(raw).flatMap((m) => m.tools)
+  // A rejection typed at Claude Code's own prompt carries the person's words, and those stay.
+  assert.equal(rejected.status, "cancelled")
+  assert.equal(rejected.output, worded)
+  // A command that PRINTS the paragraph (a transcript, this test's own fixture) ran and succeeded.
+  assert.equal(quoted.status, "completed")
+  assert.equal(quoted.output, INTERRUPT_CUT_RESULT)
+})
+
 // A dispatched prompt that ends in a newline — a programmatic caller building it from a template. The
 // delivered record is read trimmed, so a raw enqueue key never matched it: the prompt rendered once as
 // the real first message and again as a gray "queued" bubble stuck at the tail of the thread.
