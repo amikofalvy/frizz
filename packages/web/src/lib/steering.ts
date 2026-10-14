@@ -243,8 +243,18 @@ export function transcriptBehindRest(t: ThreadView | undefined, messages: readon
 // bubble, a wake's bubble or divider, a peer's message, so its arrival is what releases the hold, whatever
 // kind it is. A send from THIS tab never matches: its ghost bubble already sits after the rest in the same
 // render that sent it (lib/restReply.ts, steeredSinceRest), so the transcript does not end on the rest.
+//
+// The board can report the turn before it is running, too: a message another tab sent is in the server's
+// delivery ledger (`deliveryInFlight`) a beat before the worker is handed it, and that delta carries
+// whatever the send changed on the row. A send to a SNOOZED thread un-parks it, so the delta clears the
+// snooze, and the drawer dropped its snooze card ~30ms before the bubble that ended the snooze landed,
+// then grew by the bubble and the Working row (2026-10-14: 3 states where 2 say it). The send's own ghost
+// bubble is in the transcript push that follows, so it releases the hold like any opener. An ANSWER in
+// flight is not counted: its wake can take seconds, and the board's reading of it (the question gone)
+// is not this race.
 export function transcriptBehindTurn(t: ThreadView | undefined, messages: readonly RestEvidence[]): boolean {
-  if (!t || (t.runtime !== "running" && t.runtime !== "spawning")) return false
+  const sendOnItsWay = t?.deliveryInFlight === true && !t.answersInFlight
+  if (!t || (t.runtime !== "running" && t.runtime !== "spawning" && !sendOnItsWay)) return false
   const last = messages[messages.length - 1]
   return last?.kind === "event" && last.boundary === "rest"
 }

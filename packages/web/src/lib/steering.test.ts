@@ -303,6 +303,16 @@ test("a ghost waiting on a turn whose end the transcript has not reached ends no
     assert.equal(transcriptBehindTurn(live(), [human(T(5)), said(T(8)), restAt(T(8)), said(T(11))]), false)
   })
 
+  test("a send another tab made is ahead of the transcript from the moment the server holds it", () => {
+    // The board's first word is the ledger entry (deliveryInFlight), at rest, with the snooze it cleared.
+    const sent = { ...rested(T(9)), deliveryInFlight: true }
+    assert.equal(transcriptBehindTurn(sent, [human(T(5)), said(T(8)), restAt(T(8))]), true)
+    // Its ghost bubble lands after the rest and releases it.
+    assert.equal(transcriptBehindTurn(sent, [human(T(5)), said(T(8)), restAt(T(8)), { role: "user" as const, at: T(10), queued: true }]), false)
+    // An answer on its way is not this race: its wake can take seconds.
+    assert.equal(transcriptBehindTurn({ ...sent, answersInFlight: "1. Yes" }, [human(T(5)), said(T(8)), restAt(T(8))]), false)
+  })
+
   test("a send from this tab is never held: its ghost already sits after the rest", () => {
     const ghost = { role: "user" as const, at: T(10), queued: true }
     assert.equal(transcriptBehindTurn(live(), [human(T(5)), said(T(8)), restAt(T(8)), ghost]), false)
