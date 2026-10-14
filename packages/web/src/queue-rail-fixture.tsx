@@ -30,6 +30,8 @@ import "./styles.css"
 //     project the chip points at (`gamma` has nothing on the Console, so its block does not exist yet);
 //   · `first-run` — a board with no thread at all: the centred prompt box, and no rail to draw a row in.
 //
+// `window.__startElsewhere()` adds a Running thread the way a board delta nobody here asked for does.
+//
 // The server is modelled on what those recordings showed. A follow-up's board delta (the thread running,
 // off the queue) lands tens of milliseconds after the click, well after the optimistic commit. A
 // dispatch's board delta lands BEFORE the call's own answer, by 9-14ms.
@@ -177,6 +179,13 @@ window.fetch = async (input, init) => {
     return json({ slug: "started-thread", sessionId: "started-session" })
   }
   return json(null)
+}
+
+// A thread that starts somewhere else — another tab, a wake, a GitHub batch: its Running row arrives in
+// the rail with no click on this page and no pending entry (lib/stackedRailAnchor is what it exercises).
+;(window as unknown as { __startElsewhere: () => void }).__startElsewhere = () => {
+  const now = new Date().toISOString()
+  setThreads((threads) => [...threads, makeThread("started-elsewhere", "started-elsewhere", 0, { titleAuto: true, runtime: "running", needsYou: false, spawnedAt: now, lastUserAt: now, lastAssistantAt: undefined, lastActivityAt: now } as Partial<ThreadViewModel>)])
 }
 
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } } })

@@ -24,6 +24,7 @@ import {
 import { keyProject } from "../lib/threadKey.ts"
 import { unlandedDispatches, useConsolePendingDispatches, type PendingDispatchEntry } from "../lib/pendingDispatch.ts"
 import { ProjectScope } from "../lib/projectScope.tsx"
+import { STACKED_RAIL_ANCHOR_CLASS, stackedRailAnchor } from "../lib/stackedRailAnchor.ts"
 import { CONSOLE_TOP_PX } from "../lib/homeView.ts"
 import { DispatchForm } from "./NewThreadModal.tsx"
 import { useConsoleDispatchTarget } from "./ConsoleProjectChip.tsx"
@@ -99,7 +100,7 @@ export function ConsoleSidebar() {
   )
 
   return (
-    <aside className={CONSOLE_SIDEBAR_COLUMN_CLASS} style={{ paddingTop: CONSOLE_TOP_PX }} data-console-sidebar>
+    <aside ref={stackedRailAnchor} className={`${CONSOLE_SIDEBAR_COLUMN_CLASS} ${STACKED_RAIL_ANCHOR_CLASS}`} style={{ paddingTop: CONSOLE_TOP_PX }} data-console-sidebar>
       <div className="flex min-h-0 min-w-0 w-full flex-1 flex-col max-[800px]:max-h-none">
         {/* mb-5: the 20px that sets the grouping switch off from the prompt box (GroupSwitch). */}
         <div className="mb-5 shrink-0 px-0.5">

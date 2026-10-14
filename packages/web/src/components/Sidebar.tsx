@@ -29,6 +29,7 @@ import { awaitingProse, awaitingWaitClause } from "../lib/awaitingPresentation.t
 import { useOptimisticallySteered } from "../lib/steering.ts"
 import { useOptimisticallyArchived } from "../lib/optimisticArchive.ts"
 import { unlandedDispatches, usePendingDispatches, type PendingDispatchEntry } from "../lib/pendingDispatch.ts"
+import { STACKED_RAIL_ANCHOR_CLASS, stackedRailAnchor } from "../lib/stackedRailAnchor.ts"
 import { useProjectScope } from "../lib/projectScope.tsx"
 import { activeSidebarSection, markerRow, queueCardGeometry, queueNavigationSettled, railRevealDelta, scrolledToDocumentBottom } from "../lib/sidebarScrollspy.ts"
 import type { ReactElement, ReactNode, RefObject } from "react"
@@ -237,7 +238,7 @@ export function Sidebar() {
     // 34vw is smallest and the workpane is squeezed hardest — 320px claimed ~39% of an 820px viewport
     // for nav and left the queue with the remainder. 272px still holds the dispatch composer's profile
     // chip and its icon buttons on one line, and hands the difference back to the queue.
-    <aside className={SIDEBAR_COLUMN_CLASS}>
+    <aside ref={stackedRailAnchor} className={`${SIDEBAR_COLUMN_CLASS} ${STACKED_RAIL_ANCHOR_CLASS}`}>
       {/* The content column FILLS the aside track (no narrow inner cap). Its cap reserves the 52px top
           inset and 16px below, and under it the column grows and then scrolls INTERNALLY. The reserve used to be 44px a side, holding open the band the FIXED
           status bar occupied in the page's top-left corner so a long thread list could not push the

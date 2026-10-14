@@ -19,6 +19,12 @@ import test from "node:test"
 //      no rail to draw a row in, and the form is centred in the window, so the card lifted the heading
 //      and the box 36-37px (3 of 3). The card stays there and floats under the form instead.
 //
+//   4. In the stacked layout (800px and under, the sidebar above the queue) a row arriving in the rail
+//      moved every card down by its height whenever any slice of the rail was still on screen, because
+//      the browser anchors a scroll position to the first thing on screen and that was the rail. The
+//      rail is not an anchor while a queue card is on screen (lib/stackedRailAnchor), so the offset
+//      absorbs the row and the cards hold.
+//
 // Skipped unless a Vite URL serving the fixtures is provided (same pattern as the other *.e2e.test.ts
 // here): `nub run test:e2e -- queueRailSettle.e2e.test.ts`, or start `vite` in packages/web and set
 // FRIZZ_QUEUE_RAIL_SETTLE_E2E_URL to its origin.
@@ -342,6 +348,105 @@ test("the first-run prompt box: the Starting thread… card hangs under the form
     assert.ok(Math.abs(withCard[0].card! - withCard[0].boxBottom! - 12) <= 1, `the card must hang 12px under the box: box bottom ${withCard[0].boxBottom}, card ${withCard[0].card}`)
 
     assert.deepEqual(errors, [])
+  } finally {
+    await browser.close()
+  }
+})
+
+
+test("stacked layout: a row arriving in the rail is absorbed by the scroll offset — the cards on screen hold", {
+  skip: !baseUrl,
+  timeout: 60_000,
+}, async () => {
+  const { launchHeadless } = await import("../../../../scripts/lib/headless-browser.mjs")
+  const browser = await launchHeadless()
+  const errors: string[] = []
+  type Frame = { t: number; scrollY: number; card: number; railBottom: number; started: boolean }
+  try {
+    const page = await browser.newPage()
+    await page.setViewport({ width: 780, height: 900, deviceScaleFactor: 1 })
+    page.on("console", (m) => { if (m.type() === "error" && !/404|favicon/i.test(m.text())) errors.push(m.text()) })
+    page.on("pageerror", (e) => errors.push(String(e)))
+    await page.goto(`${baseUrl}/queue-rail-fixture.html`, { waitUntil: "networkidle0" })
+    await page.waitForSelector(`[data-queue-card-root="${BELOW}"]`)
+    // The reader is in the queue with the END of the rail still on screen above the first card: the
+    // arrangement in which the rail, being first on screen, used to be the anchor.
+    const railBottom = await page.evaluate(() => {
+      const rail = document.querySelector<HTMLElement>("[data-sidebar-rail]")!
+      window.scrollTo(0, window.scrollY + rail.getBoundingClientRect().bottom - 80)
+      return rail.getBoundingClientRect().bottom
+    })
+    assert.ok(railBottom > 40 && railBottom < 200, `the rail's last rows must be on screen: bottom at ${railBottom}`)
+    await page.waitForFunction(() => document.querySelector("aside")!.hasAttribute("data-queue-in-view"))
+    await new Promise((r) => setTimeout(r, 300))
+
+    await page.evaluate((first: string) => {
+      const w = window as unknown as { __stackedFrames: unknown[]; __startElsewhere: () => void }
+      w.__stackedFrames = []
+      const t0 = performance.now()
+      const q = (n: number) => Math.round(n * 100) / 100
+      const tick = () => {
+        w.__stackedFrames.push({
+          t: +(performance.now() - t0).toFixed(1),
+          scrollY: q(window.scrollY),
+          card: q(document.querySelector(`[data-queue-card="${first}"]`)!.getBoundingClientRect().top),
+          railBottom: q(document.querySelector("[data-sidebar-rail]")!.getBoundingClientRect().bottom),
+          started: !!document.querySelector('[data-sidebar-item="started-elsewhere"]'),
+        })
+        if (performance.now() - t0 < 700) requestAnimationFrame(tick)
+      }
+      tick()
+      window.setTimeout(() => w.__startElsewhere(), 150)
+    }, ABOVE)
+    await page.waitForSelector('[data-sidebar-item="started-elsewhere"]', { timeout: 5_000 })
+    await new Promise((r) => setTimeout(r, 700))
+    const frames = (await page.evaluate(() => (window as unknown as { __stackedFrames: unknown[] }).__stackedFrames)) as Frame[]
+
+    const before = frames.filter((f) => !f.started)
+    const after = frames.filter((f) => f.started)
+    assert.ok(before.length > 3 && after.length > 10, `expected frames on both sides of the arrival: ${before.length} / ${after.length}`)
+    // The first Running row brings its label and the rule above it: the rail grew by all three.
+    const grew = after[after.length - 1].scrollY - before[0].scrollY
+    assert.ok(grew > 20, `the rail must have grown above the queue and the offset absorbed it: scrollY moved ${grew}px`)
+    assert.deepEqual([...new Set(frames.map((f) => f.card))], [before[0].card], `the first card moved on screen: ${JSON.stringify(frames.filter((f, i) => i === 0 || frames[i - 1].card !== f.card).map((f) => [f.t, f.card, f.scrollY]))}`)
+    assert.equal(after[0].scrollY - before[0].scrollY, grew, "the offset must move in the frame the row arrives, not after it")
+
+    assert.deepEqual(errors, [])
+  } finally {
+    await browser.close()
+  }
+})
+
+test("stacked layout: the rail stays the scroll anchor while no queue card is on screen", {
+  skip: !baseUrl,
+  timeout: 60_000,
+}, async () => {
+  const { launchHeadless } = await import("../../../../scripts/lib/headless-browser.mjs")
+  const browser = await launchHeadless()
+  try {
+    const page = await browser.newPage()
+    // A window too short to show the queue under the rail: a reader inside the rail has only the rail
+    // to anchor to, and taking it away would move the rows they are reading instead of the cards.
+    await page.setViewport({ width: 780, height: 240, deviceScaleFactor: 1 })
+    await page.goto(`${baseUrl}/queue-rail-fixture.html`, { waitUntil: "networkidle0" })
+    await page.waitForSelector(`[data-queue-card-root="${BELOW}"]`)
+    const state = () => page.evaluate(() => {
+      const aside = document.querySelector("aside")!
+      return { flagged: aside.hasAttribute("data-queue-in-view"), anchor: getComputedStyle(aside).overflowAnchor, queueTop: document.getElementById("workpane")!.getBoundingClientRect().top }
+    })
+    await new Promise((r) => setTimeout(r, 300))
+    const inRail = await state()
+    assert.ok(inRail.queueTop > 240, `the queue must start below this window: ${inRail.queueTop}`)
+    assert.deepEqual([inRail.flagged, inRail.anchor], [false, "auto"])
+
+    await page.evaluate(() => document.querySelector("[data-queue-card]")!.scrollIntoView())
+    await page.waitForFunction(() => document.querySelector("aside")!.hasAttribute("data-queue-in-view"))
+    assert.equal((await state()).anchor, "none")
+
+    // Beside the queue (over 800px) the rail is its own column and is never excluded.
+    await page.setViewport({ width: 1400, height: 900, deviceScaleFactor: 1 })
+    await new Promise((r) => setTimeout(r, 300))
+    assert.equal((await state()).anchor, "auto")
   } finally {
     await browser.close()
   }
