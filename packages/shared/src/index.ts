@@ -1537,6 +1537,9 @@ export function prWatchWakeMessage(input: {
    *  ONE LINE for all of them, joined with semicolons, because each is a clause and not a headline: a
    *  separate line per fact would give a label edit the same weight as a red build. */
   changes?: string[]
+  /** One of `changes` says the PR left the merge queue, or lost auto-merge, without merging and is not
+   *  back in the queue. Adds the paragraph that says what to do about it. */
+  offMergePath?: boolean
   review?: string
   merged?: boolean
   closed?: boolean
@@ -1573,6 +1576,21 @@ export function prWatchWakeMessage(input: {
   if (input.changes?.length) {
     if (lines.length) lines.push("")
     lines.push(`🔔 ${input.target}: ${input.changes.join("; ")}.`)
+    if (input.offMergePath) {
+      // THE OTHER REPORT THAT NAMES ITS OWN DEAD END, beside the gated one above. A PR out of the queue
+      // with auto-merge off merges only when somebody acts, and its own checks can still read green
+      // because the merge queue tests a separate commit — so a worker that re-parks on this watcher waits
+      // out its whole `for:` (2026-10-14).
+      const ref = /^(.+)#(\d+)$/.exec(input.target)
+      lines.push(
+        "",
+        "It did NOT merge, and nothing will merge it now. A merge queue tests the PR merged onto its base in"
+          + " a separate `gh-readonly-queue/…` commit, so those failures do not show on the PR head, whose"
+          + " checks can still read green. Find out why it left, then fix it and put it back"
+          + (ref ? ` (\`gh pr merge ${ref[2]} --repo ${ref[1]} --auto\` re-queues it, or re-enables auto-merge)` : "")
+          + " if it is yours to land, or tell whoever owns it if it is not.",
+      )
+    }
   }
   if (input.review) {
     if (lines.length) lines.push("")
@@ -2190,6 +2208,21 @@ export function prWatchExpiredWakeMessage(ref: string, kind: "pull" | "issue" = 
     `you now.\n\nIf you still care about it, register it again with \`${command}\` and a ` +
     `fresh \`--for\`. If you do not, and it was the only thing you were waiting on, end in a proper ` +
     `terminal state instead of parking on it again.`
+  )
+}
+
+/** A registered PR or issue watcher whose subject GitHub no longer resolves — deleted, transferred to
+ *  another repository, or out of sight of this machine's `gh` login. The watcher settles with it: every
+ *  poll after this would fail the same way, and the thread parked on it would wait out its whole `for:`,
+ *  which on a PR or issue runs to a year. */
+export function prWatchGoneWakeMessage(ref: string, kind: "pull" | "issue", forMinutes: number): string {
+  const noun = kind === "issue" ? "issue" : "PR"
+  const tool = kind === "issue" ? "mcp__frizz__watch_issue" : "mcp__frizz__watch_pr"
+  return (
+    `⏰ ${ref} can no longer be read — GitHub has answered that it does not exist for ${forMinutes}m. ` +
+    `It was deleted, transferred to another repository, or this machine's \`gh\` login lost access to it.` +
+    `\n\nYour watcher on it is settled, so nothing on that ${noun} will wake you now. Find out where it ` +
+    `went; if you still need to wait on it, register the new reference with \`${tool}\`.`
   )
 }
 

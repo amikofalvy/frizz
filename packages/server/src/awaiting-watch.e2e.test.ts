@@ -364,6 +364,11 @@ async function prHarness() {
   // `undefined` is what the `gh` fallback serves — it has no check suites, only `workflowRuns`.
   let checkSuites: Record<string, unknown>[] | undefined = []
   let workflowRuns: Record<string, unknown>[] = []
+  // The road to the merge: draft or not, the merge-queue entry, and the timeline's exits from it.
+  let isDraft: boolean | undefined
+  let queued: { position?: number } | null | undefined
+  let mergeExits: Record<string, unknown>[] | undefined
+  let reviewResult: unknown
   let clock = Date.now()
   const delivered: string[] = []
   const s = createScheduler({
@@ -373,11 +378,17 @@ async function prHarness() {
     resume: async (_slug, message) => { delivered.push(message) },
     log: () => {},
     now: () => clock,
-    fetchPr: async () => ({ state: prState, mergedAt: null, mergeable, rollup, head, workflowRuns, checkSuites, labels, reviewRequests } as never),
-    fetchGithubReview: async () => activity as never,
+    fetchPr: async () => {
+      if (reviewResult) throw new Error("gh: Could not resolve to a PullRequest")
+      return { state: prState, mergedAt: null, mergeable, rollup, head, workflowRuns, checkSuites, labels, reviewRequests, isDraft, queued, mergeExits } as never
+    },
+    fetchGithubReview: async () => (reviewResult ?? activity) as never,
   })
   return {
     delivered, storage,
+    /** What the batched query answers, when it is not the plain activity list — an error, say. The `gh`
+     *  fallback then fails too, as it does for a PR that does not exist. */
+    setReviewResult: (next: unknown) => { reviewResult = next },
     setChecks: (next: Record<string, unknown>[]) => { rollup = next },
     setPrState: (next: string) => { prState = next },
     push: (sha: string) => { head = sha },
@@ -385,6 +396,11 @@ async function prHarness() {
     setMergeable: (next: string) => { mergeable = next },
     setLabels: (next: string[] | undefined) => { labels = next },
     setReviewRequests: (next: string[] | undefined) => { reviewRequests = next },
+    setDraft: (next: boolean | undefined) => { isDraft = next },
+    setQueued: (next: { position?: number } | null | undefined) => { queued = next },
+    setMergeExits: (next: Record<string, unknown>[] | undefined) => { mergeExits = next },
+    /** An instant the poll will read as having just happened. */
+    justNow: () => new Date(clock).toISOString(),
     setGated: (names: string[]) => {
       workflowRuns = []
       checkSuites = names.map((workflowName) => ({ status: "COMPLETED", conclusion: "ACTION_REQUIRED", workflowName }))
@@ -743,6 +759,130 @@ test("a poll that never read the labels leaves the baseline alone", async () => 
     h.setLabels(["needs-ci"]) // …and the same labels are still not news
     await h.tick()
     assert.deepEqual(h.delivered, [], "an unread poll must not turn the next one into a false announcement")
+  } finally { h.close() }
+})
+
+// ---- LEAVING THE MERGE PATH WITHOUT MERGING (2026-10-14) ----------------------------------------
+// The report (2026-10-14): a worker parked on a queued PR (`status: watching`, `for: 1d`) after the
+// watcher's "CI PASSED". At 20:26:52Z GitHub's merge queue dropped the PR for `failed_checks` — on the
+// merge group's commit, so the PR's own checks stayed green and its merge state stayed CLEAN. Nothing the
+// watcher read had moved, so nothing woke the thread; a human found it 2h25m later. The merge itself was
+// the only outcome it could report, and that outcome was now never coming.
+const dropped = (at: string, over: Record<string, unknown> = {}) => ({
+  id: "dequeued:RFMQE_1", kind: "dequeued", at, reason: "failed_checks", actor: "github-merge-queue",
+  rollup: [
+    { status: "COMPLETED", conclusion: "FAILURE", name: "integration (shard 1)" },
+    { status: "COMPLETED", conclusion: "FAILURE", name: "Validation" },
+    { status: "COMPLETED", conclusion: "SUCCESS", name: "lint" },
+  ],
+  ...over,
+})
+
+test("a PR the merge queue drops wakes its worker, names the merge group's failures and says what to do", async () => {
+  const h = await prHarness()
+  try {
+    h.setChecks([{ status: "COMPLETED", conclusion: "SUCCESS", name: "build" }])
+    h.setQueued({ position: 1 })
+    h.setMergeExits([])
+    await h.tick()
+    assert.match(h.delivered[0], /CI PASSED/, "precondition: the watcher's one report so far")
+    h.delivered.length = 0
+    await h.tick()
+    assert.equal(h.delivered.length, 0, "queued and green: nothing to say")
+
+    // The bounce, exactly as GitHub shows it: the PR's own checks and merge state do not move.
+    h.setQueued(null)
+    h.setMergeExits([dropped(h.justNow())])
+    await h.tick()
+    assert.equal(h.delivered.length, 1, "the bounce is the news the thread was parked for")
+    const text = h.delivered[0]
+    assert.match(text, /🔔 acme\/app#391: REMOVED from the merge queue \(failed checks: integration \(shard 1\), Validation\)\./)
+    assert.doesNotMatch(text, /by @github-merge-queue/, "GitHub's own queue is not an actor worth naming")
+    assert.match(text, /It did NOT merge, and nothing will merge it now/)
+    assert.match(text, /`gh pr merge 391 --repo acme\/app --auto`/, "the next move, ready to run")
+    assert.match(text, /STILL ARMED/, "the watcher keeps watching: a re-queued PR still merges or bounces again")
+
+    await h.tick()
+    assert.equal(h.delivered.length, 1, "one bounce, one report")
+  } finally { h.close() }
+})
+
+test("a watcher armed before exits were read still hears about the bounce it slept through, and no older one", async () => {
+  const h = await prHarness()
+  try {
+    // The cursor a watcher armed before this change carries: it has polled, and it has never seen an exit.
+    h.storage.setPrWatchCursor("prw_1", JSON.stringify({ seen: [], checks: "sha-aaa:passing:", report: 1 }))
+    h.setMergeExits([
+      dropped(h.justNow()),
+      // Before the watcher was registered: the worker registered after it, so it is not news.
+      dropped("2026-01-01T00:00:00Z", { id: "dequeued:RFMQE_0" }),
+    ])
+    await h.tick()
+    assert.equal(h.delivered.length, 1)
+    assert.equal(h.delivered[0].match(/REMOVED from the merge queue/g)?.length, 1, "only the bounce after registration")
+  } finally { h.close() }
+})
+
+test("a PR already back in the queue, auto-merge switched off, and a return to draft each say only what happened", async () => {
+  const h = await prHarness()
+  try {
+    h.setDraft(false)
+    h.setMergeExits([])
+    await h.tick() // baseline
+    h.delivered.length = 0
+
+    // Bounced and re-queued between two polls: worth a line, and no instructions — nothing is stuck.
+    h.setQueued({ position: 2 })
+    h.setMergeExits([dropped(h.justNow(), { reason: "MANUALLY_REMOVED", actor: "alice", rollup: [] })])
+    await h.tick()
+    assert.equal(h.delivered.length, 1)
+    assert.match(h.delivered[0], /REMOVED from the merge queue by @alice \(manually removed\), and is back in the queue at position 2\./)
+    assert.doesNotMatch(h.delivered[0], /nothing will merge it now/)
+    h.delivered.length = 0
+
+    // Auto-merge off in a repo with no queue is the same dead end.
+    h.setQueued(undefined)
+    h.setMergeExits([{ id: "auto-merge-off:AMDE_1", kind: "auto-merge-off", at: h.justNow(), reason: "MERGE_CONFLICT", actor: "bob" }])
+    await h.tick()
+    assert.equal(h.delivered.length, 1)
+    assert.match(h.delivered[0], /auto-merge turned OFF by @bob \(merge conflict\)\./)
+    assert.match(h.delivered[0], /nothing will merge it now/)
+    h.delivered.length = 0
+
+    h.setDraft(true)
+    await h.tick()
+    assert.equal(h.delivered.length, 1)
+    assert.match(h.delivered[0], /🔔 acme\/app#391: converted back to a DRAFT\./)
+  } finally { h.close() }
+})
+
+// A PR OR ISSUE THAT STOPS EXISTING — deleted, transferred, or out of the token's sight — is the other
+// ending a watcher could not say. GitHub answers NOT_FOUND on every poll, frizz logged it, and the thread
+// parked on it waited out its whole `for:`, which on a PR runs to a year.
+test("a watched PR GitHub stops resolving settles its watcher and tells the worker, after a grace period", async () => {
+  const h = await prHarness()
+  try {
+    await h.tick()
+    h.delivered.length = 0
+    const gone = { status: "error", failure: { kind: "not-found", message: "GitHub: Could not resolve to a PullRequest with the number of 391." } }
+    h.setReviewResult(gone)
+    for (let i = 0; i < 19; i++) await h.tick() // 28.5 minutes of NOT_FOUND
+    assert.equal(h.delivered.length, 0, "a blip is not an ending")
+
+    h.setReviewResult(undefined) // it reads again: the clock starts over
+    await h.tick()
+    h.setReviewResult(gone)
+    for (let i = 0; i < 19; i++) await h.tick()
+    assert.equal(h.delivered.length, 0, "a recovery resets the grace period")
+    assert.equal(h.storage.getPrWatch("prw_1")?.state, "armed")
+
+    for (let i = 0; i < 2; i++) await h.tick()
+    assert.equal(h.delivered.length, 1)
+    assert.match(h.delivered[0], /acme\/app#391 can no longer be read/)
+    assert.match(h.delivered[0], /deleted, transferred to another repository, or this machine's `gh` login lost access/)
+    assert.equal(h.storage.getPrWatch("prw_1")?.state, "settled", "a watcher that can never read again stops trying")
+    await h.tick()
+    assert.equal(h.delivered.length, 1)
   } finally { h.close() }
 })
 
