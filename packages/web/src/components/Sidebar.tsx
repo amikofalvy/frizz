@@ -454,7 +454,13 @@ export function SectionHeader({ label, count, collapsed, onToggle }: { label: st
       <span className="ml-1.5 tabular-nums text-muted-60">{count}</span>
     </>
   )
-  const cls = "flex w-full items-center gap-1 px-1.5 py-1 text-[11px] uppercase tracking-wide text-muted-70"
+  // A WHOLE-PIXEL HEADER: `leading-4` makes it 24px (py-1 + a 16px line). Left to the font's own line
+  // height it was 23.703px in sans, so a band arriving or leaving changed the rail's height by a fraction
+  // (48.703px for Running). Beside the queue that only put the rows under it on fractional pixels; ABOVE
+  // it (the stacked layout, ≤800px) the page's scroll anchor compensates in whole pixels, so every send
+  // and every rest moved the whole queue by the remainder — the cards read 1px off at the send and 1px
+  // back at the return in 3 of 3 recordings at 780x900 (2026-10-13).
+  const cls = "flex w-full items-center gap-1 px-1.5 py-1 text-[11px] leading-4 uppercase tracking-wide text-muted-70"
   return onToggle ? (
     <button onClick={onToggle} className={`${cls} transition-colors hover:text-fg`}>
       {inner}
