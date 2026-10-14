@@ -147,6 +147,23 @@ now leaves Claude's login out (`"claudeLogin": false` in the json line) and a Cl
 2. **Keep the real HOME and isolate only the PROJECT** (`--home=$HOME --project=/tmp/<throwaway>`) when
    nothing but a live model can show the behavior. The keychain is found there, so nothing prompts.
 
+**Where a real-HOME stack keeps Frizz's own state is the `frizzRoot` in its json line**, and it is never
+a `~/.frizz` the machine did not already have. That folder existing is what tells every Frizz process
+to use it for everything (`frizz-paths.ts`, rule 1), so on a machine whose Frizz lives in the platform's
+own location (macOS Application Support) creating it starts the maintainer's server on an empty tree
+the next time it boots. `--home=$HOME` did create it until 2026-10-13, and left it behind.
+
+- `"isolated"`: the machine has no `~/.frizz`. The stack's registry, `ui.db`, locks and cache are in a
+  temp root (`isolatedRoot`) it deletes on exit unless you pass `--keep`, and nothing of the real Frizz
+  is shared. The root is named by `XDG_DATA_HOME` / `XDG_STATE_HOME` / `XDG_CACHE_HOME`, which every
+  process the stack starts inherits: a tool in a worker that honors XDG finds empty directories there
+  (a package cache refills; opencode's login under `~/.local/share` is not found).
+- `"shared"`: the machine's Frizz already lives in `~/.frizz`, and the stack uses that tree as it is,
+  registry and settings included.
+
+Never `mkdir ~/.frizz` yourself, and if you find one on a machine whose state is under
+`~/Library/Application Support/Frizz`, move it out of the HOME before anything else starts.
+
 `--creds` remains for the other backends that need a login in the sandbox (Codex, and opencode's
 `~/.local/share/opencode`, ARCHITECTURE.md § ACP backend); after dispatching one, run the AGENTS.md log query and
 confirm no `SecurityAgent` started. HOME's keychain is also why a bare temp HOME fails
@@ -156,9 +173,10 @@ hides the credential even though it is user-scoped).
 **A raw Chromium raises the same dialog.** A process in a sandbox HOME that starts a Chromium without `--use-mock-keychain` — it was the real `/Applications/Google Chrome.app`, which no agent starts at all any more (AGENTS.md § Agents never touch the maintainer's real Chrome) — makes Chrome store its "Chrome Safe Storage" key, macOS finds no default keychain under that HOME, and the system shows *"Keychain Not Found — A keychain cannot be found to store "Chrome.""* for every Chrome start. Headless `--screenshot` Chrome also often hangs at exit on its own, so a worker kills and restarts it, and every restart opens another dialog (2026-10-03: two harness runs, 13 SecurityAgent processes, maintainer: *"It's shown up hundreds of times"*). Chrome that puppeteer launches is immune, because puppeteer passes `--use-mock-keychain --password-store=basic`. So a worker's browser comes from `launchHeadless()` (`scripts/lib/headless-browser.mjs`), every raw headless-shell command a sandbox worker runs carries `--use-mock-keychain`, and when your prompt asks a worker for a browser, the launcher or the flag goes in the prompt you hand it. The sandbox HOME itself stays WITHOUT a keychain: the maintainer declined linking the real `~/Library/Keychains` in (2026-10-03), and an empty keychain there is worse, because Claude Code deletes the real `~/.claude/.credentials.json` after its first token write into one. `log show --last 3h --style compact --predicate 'process == "SecurityAgent"'` tells you whether a dialog fired.
 
 Clean up after yourself: kill the stack by exact PID, kill the leftover `claude` broker processes (find
-them by their `FRIZZ_STATE_DIR=<that project id>` in `ps`), then
-`rm -rf ~/.frizz/projects/<id> <throwaway-repo> ~/.claude/projects/<cwd-slug>`. Do NOT write settings
-through a real-HOME stack — `~/.frizz/ui.db` settings are global and shared with the real boards.
+them by the checkout's `packages/server/src/backend/claude-agent-broker.ts` in `ps`), then
+`rm -rf <throwaway-repo> ~/.claude/projects/<cwd-slug>`. An isolated root went with the stack; on a
+`"shared"` one, also `rm -rf ~/.frizz/projects/<id>`, and do NOT write settings through the stack:
+`~/.frizz/ui.db` settings there are global and shared with the real boards.
 
 ### Simulating a worker (no live provider)
 
