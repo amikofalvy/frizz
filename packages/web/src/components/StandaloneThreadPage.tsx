@@ -17,7 +17,6 @@ import { FileViewerPanel } from "./FileViewerPanel.tsx"
 import { FocusRail, RAIL_WIDTH } from "./FocusRail.tsx"
 import { exitFullscreen } from "./CollapseThreadLink.tsx"
 import { TooltipProvider } from "./Tooltip.tsx"
-import { Toaster } from "./Toaster.tsx"
 import { useQuery } from "@tanstack/react-query"
 
 /**
@@ -208,7 +207,6 @@ export function StandaloneThreadPage({ slug }: { slug: string }) {
             Escape at rest — every drawer and the file viewer already unwound — exits fullscreen, the
             same way out as the header's collapse icon. */}
         <DrawerStack onEscapeAtRest={() => exitFullscreen(slug)} />
-        <Toaster />
       </div>
     </TooltipProvider>
   )
