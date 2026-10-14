@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useSyncExternalStore } from "react"
 import { useSnapshot } from "valtio"
-import { store } from "../store.ts"
+import type { BoardSnapshot } from "@frizz/shared"
+import { store, threadBySlug } from "../store.ts"
 import { projectPathDir, subscribeLocalPathBase } from "./localPathBase.ts"
 import { useProjectScope } from "./projectScope.tsx"
 import { splitThreadKey } from "./threadKey.ts"
@@ -267,7 +268,7 @@ export function useProjectDir(): string | undefined {
   return scoped || boardDir
 }
 export function useThreadSessionId(slug: string): string | undefined {
-  return useSnapshot(store).board?.threads.find((thread) => thread.id === slug)?.sessionId
+  return threadBySlug(useSnapshot(store).board as BoardSnapshot | null, slug)?.sessionId
 }
 // SUBSCRIBE TO THE VALUE, NEVER TO THE SNAPSHOT OBJECT. `commit` replaces `this.snapshot` wholesale on
 // every keystroke, so a hook whose `getSnapshot` returns that object re-renders on EVERY edit to ANY

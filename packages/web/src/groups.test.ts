@@ -1,7 +1,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { activeBandThread, type ThreadView } from "@frizz/shared"
-import { needsAction, queued, orderQueue, partitionActive, sectionOf, sectionThreads, isSnoozed, sessionIndicatorKind, offersRetry, restIsWorking, workingWithOpenQuestion, titleIsProvisional, displayTitle, lastActiveLabelAt, SPINNING_UP_TITLE, UNTITLED_THREAD_TITLE } from "./groups.ts"
+import { needsAction, queued, orderQueue, orderByInteraction, partitionActive, sectionOf, sectionThreads, isSnoozed, sessionIndicatorKind, offersRetry, restIsWorking, workingWithOpenQuestion, titleIsProvisional, displayTitle, lastActiveLabelAt, SPINNING_UP_TITLE, UNTITLED_THREAD_TITLE } from "./groups.ts"
 
 // Minimal ThreadView fixture — the same shape board-delta.test.ts uses, defaulting to a live/active
 // thread; each case overrides only the fields under test.
@@ -522,6 +522,27 @@ test("orderQueue: a background sub-agent completing (lastActivityAt bump) does N
   ]
   assert.deepEqual(orderQueue(rows("2026-07-14T12:00:01.000Z")).map((item) => item.id), ["alpha", "bravo"])
   assert.deepEqual(orderQueue(rows("2026-07-14T18:00:00.000Z")).map((item) => item.id), ["alpha", "bravo"])
+})
+
+// Both orders read each thread's key ONCE and sort on that (groups.ts byLastActive): deriving it inside
+// the comparator cost a Date.parse per side per comparison, 12ms of a rail render over 1,000 Done rows.
+// What must survive the rewrite is the order itself, ties included, in each direction.
+test("orderQueue / orderByInteraction: equal times break on the slug, ascending, whichever way time runs", () => {
+  const same = "2026-07-14T12:00:00.000Z"
+  const rows = () => [
+    thread({ id: "mike", lastAssistantAt: same }),
+    thread({ id: "newest", lastAssistantAt: "2026-07-14T13:00:00.000Z" }),
+    thread({ id: "alpha", lastAssistantAt: same }),
+    thread({ id: "oldest", lastAssistantAt: "2026-07-14T11:00:00.000Z" }),
+    thread({ id: "zulu", lastAssistantAt: same }),
+  ]
+  assert.deepEqual(orderQueue(rows()).map((t) => t.id), ["oldest", "alpha", "mike", "zulu", "newest"])
+  assert.deepEqual(orderQueue(rows(), "lifo").map((t) => t.id), ["newest", "alpha", "mike", "zulu", "oldest"])
+  assert.deepEqual(orderByInteraction(rows()).map((t) => t.id), ["newest", "alpha", "mike", "zulu", "oldest"])
+  const input = rows()
+  const ordered = orderQueue(input)
+  assert.deepEqual(input.map((t) => t.id), ["mike", "newest", "alpha", "oldest", "zulu"], "the input is left as it was")
+  assert.equal(ordered[1], input[2], "and the result holds the very rows it was given")
 })
 
 test("orderQueue: high-frequency agent activity on a RUNNING row cannot oscillate order (churn guard)", () => {

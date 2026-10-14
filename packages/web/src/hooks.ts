@@ -1,8 +1,9 @@
-import { useEffect, useMemo } from "react"
-import { useSnapshot } from "valtio"
+import { useEffect, useMemo, useSyncExternalStore } from "react"
+import { subscribe, useSnapshot } from "valtio"
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query"
 import type { BoardSnapshot, InteractionRecord, ThreadView, TranscriptMessage } from "@frizz/shared"
-import { store, threadBySlug } from "./store.ts"
+import { boardThreadsNow, store, threadBySlug, threadSnapshotBySlug } from "./store.ts"
+import { queued } from "./groups.ts"
 import { rpc } from "./api/rpc.ts"
 import { retryTranscriptSocket, subscribeFile, subscribeTranscript, unsubscribeFile, unsubscribeTranscript } from "./api/socket.ts"
 import { mergeOptimistic, preserveMessageIdentity, isTranscriptStale, newestRenderedAt } from "./lib/transcript-sync.ts"
@@ -54,6 +55,82 @@ export function useHomeDir(): string | undefined {
 
 export function asThreads(threads: readonly unknown[]): ThreadView[] {
   return threads as ThreadView[]
+}
+
+// ── THE BOARD'S THREADS, READ WITHOUT TRACKING ────────────────────────────────────────────────────
+// useBoard() hands out valtio's TRACKING view: every property a render reads off it is recorded, per
+// object, so the next store change can be tested against exactly what was read. That is the right tool
+// for a component that reads one thread. It is the wrong one for a component that walks the whole list —
+// the rail sections and sorts every thread, the queue filters every thread — because the walk then costs
+// a proxy trap and a bookkeeping write per read, per thread, per render, and the list is mostly Done
+// threads nobody is looking at. Measured on a send from a queue card (2026-10-13, three runs each, the
+// click's own handler, then the first frame the card fades):
+//
+//   Done threads                 30                 300                1,000
+//   production bundle, before    12-18 / 30-40ms    20-23 / 37-45ms    24-36 / 43-53ms
+//   production bundle, after     11-12 / 25-31ms    13-18 / 30-37ms    13-17 / 29-37ms
+//   dev server, before           27-32 / 48-62ms    74-89 / 151-164ms  156-162 / 284-298ms
+//   dev server, after            27-30 / 56-70ms    26-29 / 50-69ms    28-31 / 58-67ms
+//
+// (The dev figure was mostly instrumentation walking the same recorded reads again: valtio's
+// useDebugValue path list and React's per-render prop diff, 207ms of a 420ms profile at 1,000.)
+//
+// These hooks read valtio's SNAPSHOT instead: plain immutable objects, replaced only along a path that
+// changed, so an unchanged thread is the same object from one board to the next. A reader subscribes to
+// the identity of what it derives and recomputes only when that moves; memo boundaries below it compare
+// rows by identity. Nothing here defers or batches anything — the work is simply not done.
+//
+// WHAT IS LEFT at 1,000 is valtio's own: a change to any thread rebuilds the snapshot of the threads
+// ARRAY, one slot per thread, 1.3-3.1ms each time (a send makes two such changes inside its click). That
+// is the price of holding every Done thread in the one reactive array, and no reader can avoid it.
+//
+// TWO RULES FOR A COMPONENT THAT STILL USES useBoard():
+//   - Find a thread with threadBySlug (store.ts), never `board.threads.find`: it reads one row.
+//   - Never hand the tracked board, or a tracked thread, to a child as a PROP. React's development build
+//     diffs a changed prop key by key, and through the tracking view every `in` check is recorded as a
+//     read of the parent's. One `<BoardErrorsBanner board={board} />` left the queue page holding 101,748
+//     recorded paths on a 1,047-thread board, re-walked after every render.
+const NO_THREADS: readonly ThreadView[] = Object.freeze([]) as readonly ThreadView[]
+const onStoreChange = (notify: () => void) => subscribe(store, notify)
+const allThreadsNow = (): readonly ThreadView[] => boardThreadsNow() ?? NO_THREADS
+
+/** Every thread on the board, as plain snapshots. Re-renders when any thread changes, and only then. */
+export function useBoardThreads(): readonly ThreadView[] {
+  return useSyncExternalStore(onStoreChange, allThreadsNow)
+}
+
+// The queue's threads, unordered. The SAME array until a queued thread changes or the set does, so the
+// queue page does not re-render while the threads that are merely running tick.
+let queuedFrom: readonly ThreadView[] | undefined
+let queuedNow: readonly ThreadView[] = NO_THREADS
+/** useQueuedThreads' reading. Exported for its test, which pins the identity rule. */
+export function queuedThreadsNow(): readonly ThreadView[] {
+  const threads = allThreadsNow()
+  if (threads === queuedFrom) return queuedNow
+  queuedFrom = threads
+  const next = threads.filter(queued)
+  if (next.length !== queuedNow.length || next.some((t, i) => t !== queuedNow[i])) queuedNow = next
+  return queuedNow
+}
+
+/** The threads waiting on the human (groups.queued), as plain snapshots, in board order. */
+export function useQueuedThreads(): readonly ThreadView[] {
+  return useSyncExternalStore(onStoreChange, queuedThreadsNow)
+}
+
+/** Whether a board has arrived at all. A boolean, so only the edge re-renders. */
+export function useBoardLoaded(): boolean {
+  return useSyncExternalStore(onStoreChange, () => boardThreadsNow() !== undefined)
+}
+
+/** Whether the board holds no thread at all (or has not arrived). A boolean, so only the edge re-renders. */
+export function useBoardIsEmpty(): boolean {
+  return useSyncExternalStore(onStoreChange, () => allThreadsNow().length === 0)
+}
+
+/** One thread, as a plain snapshot. Re-renders when THAT thread changes, and only then. */
+export function useThreadSnapshot(slug: string | null | undefined): ThreadView | undefined {
+  return useSyncExternalStore(onStoreChange, () => threadSnapshotBySlug(slug))
 }
 
 // True once the /ws multiplex is the transcript source (server pushes into the cache). Components read

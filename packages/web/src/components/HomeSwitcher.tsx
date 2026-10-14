@@ -1,11 +1,8 @@
 import type { CSSProperties } from "react"
 import { useNavigate } from "react-router"
 import { useQuery } from "@tanstack/react-query"
-import { useSnapshot } from "valtio"
 import { rpc } from "../api/rpc.ts"
-import { queued } from "../groups.ts"
-import { store } from "../store.ts"
-import { asThreads } from "../hooks.ts"
+import { useBoardLoaded, useQueuedThreads } from "../hooks.ts"
 import { isConsolePath } from "../lib/base-path.ts"
 import { HOME_BAND_PX, homeHref, setHomeView, useHomeView, type HomeView } from "../lib/homeView.ts"
 import { RAIL_WIDTH_PX } from "./ProjectRail.tsx"
@@ -43,13 +40,14 @@ const BAND_FADE_PX = 10
  */
 export function useQueueTotal(): number | undefined {
   const onConsole = isConsolePath()
-  const board = useSnapshot(store).board
+  const board = useBoardLoaded()
+  const queuedThreads = useQueuedThreads()
   const polled = useQuery({
     queryKey: ["projectsRailCounts"],
     queryFn: () => rpc.projectsRailCounts(),
     refetchInterval: 5_000,
   })
-  if (onConsole && board) return asThreads(board.threads).filter(queued).length
+  if (onConsole && board) return queuedThreads.length
   if (!polled.data) return undefined
   return Object.values(polled.data).reduce((sum, counts) => sum + counts.queued, 0)
 }

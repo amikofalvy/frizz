@@ -3,7 +3,7 @@ import { useSnapshot } from "valtio"
 import { ArrowLeft, Check, Clock, Plus, Settings as SettingsIcon } from "lucide-react"
 import { activeBandThread, boardAskThread, type ThreadView } from "@frizz/shared"
 import { openThread, store } from "../store.ts"
-import { asThreads, useBoard } from "../hooks.ts"
+import { useBoard, useBoardThreads } from "../hooks.ts"
 import { prefs } from "../lib/prefs.ts"
 import {
   displayTitle,
@@ -441,7 +441,8 @@ export function MobileBoard() {
   // Both optimistic overlays, exactly as the rail composes them: a just-sent steer pulls a row into the
   // running reading and a just-clicked Mark-as-done drops it into Done, each folded in BEFORE any band
   // is derived — so a row's appearance and its band always land together.
-  const all = useOptimisticallyArchived(useOptimisticallySteered(asThreads(board?.threads ?? [])))
+  // Untracked, like the desktop rail's (hooks.ts useBoardThreads): the bands below walk every thread.
+  const all = useOptimisticallyArchived(useOptimisticallySteered(useBoardThreads()))
   const queueOrder = useSnapshot(prefs).queueOrder
   const sections = useMemo(() => sectionThreads(all, queueOrder), [all, queueOrder])
 

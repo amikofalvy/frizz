@@ -4,7 +4,8 @@ import { useSnapshot } from "valtio"
 import { AlarmClock, Check, ChevronLeft, ChevronRight, Copy, ExternalLink, FileText, Loader2, Pencil, RefreshCw, RotateCcw, RotateCw } from "lucide-react"
 import { SNOOZE_PROMPT_MAX, type ThreadLinkView, type ThreadView } from "@frizz/shared"
 import { rpc } from "../api/rpc.ts"
-import { showToast, store } from "../store.ts"
+import { showToast, store, threadBySlug } from "../store.ts"
+import type { BoardSnapshot } from "@frizz/shared"
 import { displayTitle, futureSnoozedUntil, offersRetry } from "../groups.ts"
 import { prefs } from "../lib/prefs.ts"
 import {
@@ -70,7 +71,7 @@ export interface ThreadActionsSheetProps {
 
 export function ThreadActionsSheet({ slug, onClose, onArchived, initialView = "actions" }: ThreadActionsSheetProps) {
   const snap = useSnapshot(store)
-  const thread = snap.board?.threads.find((t) => t.id === slug) as ThreadView | undefined
+  const thread = threadBySlug(snap.board as BoardSnapshot | null, slug)
   const [view, setView] = useState<ThreadActionsView>(initialView)
   const dismiss = useBackDismiss(onClose)
   // A thread that leaves the board while its sheet is up (archived elsewhere, another tab) has nothing

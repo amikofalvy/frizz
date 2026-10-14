@@ -6,7 +6,8 @@ import { rpc, rpcFor } from "../api/rpc.ts"
 import { scopedKey } from "../lib/projectScope.tsx"
 import { keyProject } from "../lib/threadKey.ts"
 import { threadFollowUpBlocked, threadComposerStatus, threadPermissionBlockedReason, threadPermissionEffectMessage } from "../lib/threadPermissions.ts"
-import { showToast, store } from "../store.ts"
+import { showToast, store, threadBySlug } from "../store.ts"
+import type { BoardSnapshot } from "@frizz/shared"
 import { ProfileGridSelector } from "../components/ProfileGridSelector.tsx"
 import { AcpModelSelect } from "../components/AcpModelSelect.tsx"
 import { Select } from "../components/ui/Select.tsx"
@@ -35,7 +36,7 @@ import { threadProfileControlState } from "../lib/threadProfile.ts"
 // ProfileGridSelector's own phone branch), with no permission picker. Permissions stay on the desktop.
 export function useThreadComposerControls(slug: string): { busy: boolean; footer: ReactNode; phoneTools: ReactNode; status: ReactNode } {
   const snap = useSnapshot(store)
-  const thread = snap.board?.threads.find((candidate) => candidate.id === slug)
+  const thread = threadBySlug(snap.board as BoardSnapshot | null, slug)
   const profiles = useQuery({
     queryKey: ["threadProfileOptions", slug],
     queryFn: () => rpc.threadProfileOptions({ slug }),

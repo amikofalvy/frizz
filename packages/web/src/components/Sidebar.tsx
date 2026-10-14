@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useQueryClient } from "@tanstack/react-query"
 import { useVirtualizer } from "@tanstack/react-virtual"
 import { useSnapshot } from "valtio"
@@ -6,7 +6,7 @@ import { AlarmClock, Check, ChevronRight, CircleDashed, Ellipsis, Github, Hourgl
 import type { BoardSnapshot, ThreadView } from "@frizz/shared"
 import { store, openThread, scrollToQueueCard, queueCardTargetY, pushSubAgentDrawer, showToast, queueCardViewportTop } from "../store.ts"
 import { rpc } from "../api/rpc.ts"
-import { useBoard, asThreads } from "../hooks.ts"
+import { useBoardThreads } from "../hooks.ts"
 import { prefs } from "../lib/prefs.ts"
 import { sectionThreads, externalThreads, orderByInteraction, partitionActive, needsAction, displayTitle, titleIsProvisional, SPINNING_UP_TITLE, isPinned, isSnoozed, parkedAwaitingHint, sessionIndicatorKind, offersRetry, futureSnoozedUntil, lastActiveLabelAt, waitNamesPr, prChecksRunning, restingOnSubAgents, restIsWorking, workingWithOpenQuestion } from "../groups.ts"
 import { ageSpan, relativeAge, limitResumeClock } from "../lib/activityTime.ts"
@@ -182,7 +182,6 @@ export function useQueueScrollspy(view: string, drawerCount: number, queueIds: r
 
 export function Sidebar() {
   const snap = useSnapshot(store)
-  const board = useBoard()
   // A just-sent steer is folded into the board BEFORE anything is derived from it, so the row's
   // spinner and its POSITION land together. Consulting the hint further down (in the indicator alone,
   // as this once did) left the two disagreeing for the whole injection + tailer round-trip: the row
@@ -193,8 +192,13 @@ export function Sidebar() {
   // Mark-as-done drops it into Done — each folded in BEFORE any band is derived, so the row's
   // appearance and its POSITION always land together instead of one waiting on a round-trip the other
   // already skipped (lib/steering.ts, lib/optimisticArchive.ts).
-  const all = useOptimisticallyArchived(useOptimisticallySteered(asThreads(board?.threads ?? [])))
-  const sections = sectionThreads(all, useSnapshot(prefs).queueOrder)
+  // The threads are read UNTRACKED and everything derived from them is memoized on their identity
+  // (hooks.ts useBoardThreads): the rail sections and sorts every thread, and most of a long-lived
+  // board is the Done band. Walking it through useBoard()'s tracking view on every render was most of
+  // what a send's click handler spent on a board of 1,000 Done threads.
+  const all = useOptimisticallyArchived(useOptimisticallySteered(useBoardThreads()))
+  const queueOrder = useSnapshot(prefs).queueOrder
+  const sections = useMemo(() => sectionThreads(all, queueOrder), [all, queueOrder])
   // Its own partition, deliberately NOT a SectionKey: sectionThreads drops external rows entirely, and
   // that stays true — an external session must never be able to land in Active, Snoozed or Done by
   // accident. This band is the only place they render, and they leave it by being STEERED, not by
@@ -203,17 +207,19 @@ export function Sidebar() {
   // the band. It cannot be left to discovery order: the tailer returns these ids by file MTIME, while
   // the label prints the agent's own last output — two clocks that disagree whenever a transcript is
   // touched without the agent speaking (a resume that writes a header, a copy, a restore).
-  const externalSessions = orderByInteraction(externalThreads(all))
+  const externalSessions = useMemo(() => orderByInteraction(externalThreads(all)), [all])
   const collapsed = snap.sidebarCollapsed
   const activeThreads = sections.active
   const heldThreads = sections.snoozed
   const inactiveThreads = sections.inactive
   // The two bands of the Active section: RESTED is the cue (one row per queue card), RUNNING the rows
   // with no card. Split here rather than at the render so the scroll marker can be told the cue's order.
-  const { running, rested } = partitionActive(activeThreads)
+  const { running, rested } = useMemo(() => partitionActive(activeThreads), [activeThreads])
   const { railRef, activeId, navigateToQueueCard } = useQueueScrollspy(snap.view, snap.drawers.length, rested.map((t) => t.id))
   // A dispatch from the prompt box above, drawn as the Running row it is about to become — see StartingRow.
-  const starting = unlandedDispatches(usePendingDispatches(useProjectScope()), new Set(all.map((t) => t.id)))
+  // The board's ids are only gathered while one is pending.
+  const pending = usePendingDispatches(useProjectScope())
+  const starting = useMemo(() => (pending.length === 0 ? pending : unlandedDispatches(pending, new Set(all.map((t) => t.id)))), [pending, all])
   const runningCount = running.length + starting.length
   const openCount = activeThreads.length + starting.length
 

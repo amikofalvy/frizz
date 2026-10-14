@@ -1,4 +1,4 @@
-import { proxy } from "valtio"
+import { proxy, snapshot } from "valtio"
 import type { BoardSnapshot, ThreadView, BoardDelta } from "@frizz/shared"
 import { applyBoardDelta } from "@frizz/shared"
 import type { ComposerContextItem } from "./lib/composerContext.ts"
@@ -724,7 +724,52 @@ export function applyDelta(delta: BoardDelta): boolean {
   return true
 }
 
+// ONE LOOKUP TABLE PER BOARD STATE, so finding a thread does not cost a walk of every thread the project
+// has ever finished. Keyed on the threads array of valtio's SNAPSHOT, which is immutable and replaced
+// exactly when a thread changes, so a table can never describe a board that has moved on; a WeakMap, so
+// it goes with the snapshot it describes.
+const slugIndexes = new WeakMap<object, Map<string, number>>()
+function slugIndex(threads: readonly ThreadView[]): Map<string, number> {
+  let index = slugIndexes.get(threads)
+  if (!index) {
+    index = new Map()
+    for (let i = 0; i < threads.length; i++) index.set(threads[i].id, i)
+    slugIndexes.set(threads, index)
+  }
+  return index
+}
+
+/** The store's board as valtio's immutable snapshot: plain objects, replaced only along a path that
+ *  changed. What the untracked readers in hooks.ts subscribe to. */
+export function boardThreadsNow(): readonly ThreadView[] | undefined {
+  return (snapshot(store).board?.threads as ThreadView[] | undefined) ?? undefined
+}
+
+/** A thread of the live board as a plain snapshot object, by table. */
+export function threadSnapshotBySlug(slug: string | null | undefined): ThreadView | undefined {
+  const threads = slug ? boardThreadsNow() : undefined
+  if (!threads) return undefined
+  const at = slugIndex(threads).get(slug!)
+  return at === undefined ? undefined : threads[at]
+}
+
 export function threadBySlug(board: BoardSnapshot | null, slug: string | null): ThreadView | undefined {
   if (!board || !slug) return undefined
+  // THE TABLE SAYS WHERE TO LOOK, AND THE BOARD IN HAND CONFIRMS IT. `find` reads `id` off every thread
+  // ahead of the one it wants, each read through a proxy, and it is asked once per card per render —
+  // by a transcript query's staleTime and its watchdog, by every send, and by each component of a card
+  // that needs its own thread. On a board with 1,000 Done threads that was 7ms of a send's click handler
+  // through the live board (CPU profile, production bundle, 2026-10-13), and through useBoard()'s
+  // TRACKING view every one of those reads is also recorded, so a card that looked itself up subscribed
+  // to the id of every thread ahead of it. One indexed read instead: the row at the table's position, kept
+  // only if its id matches. A board the table does not describe (a tracked view of an older state, a
+  // fixture's own board) fails that check and is searched as before, so the answer is never the table's
+  // word alone — except on the live board, which the snapshot always describes exactly.
+  const threads = boardThreadsNow()
+  const at = threads ? slugIndex(threads).get(slug) : undefined
+  if (at !== undefined) {
+    const row = board.threads[at]
+    if (row?.id === slug) return row
+  } else if (board === store.board) return undefined
   return board.threads.find((t) => t.id === slug)
 }

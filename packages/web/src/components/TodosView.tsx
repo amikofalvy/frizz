@@ -1,14 +1,14 @@
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { useSnapshot } from "valtio"
 import { ChevronsUpDown, Inbox } from "lucide-react"
-import type { ThreadView, BoardSnapshot, RegisteredQuestionView, TranscriptMessage } from "@frizz/shared"
+import type { ThreadView, RegisteredQuestionView, TranscriptMessage } from "@frizz/shared"
 import { questionFencesLive } from "@frizz/shared"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { queueCardTargetY, showToast, store } from "../store.ts"
 import { pageScrollY } from "../lib/pageScrollLock.ts"
 import { rpc } from "../api/rpc.ts"
-import { useBoard, asThreads, useProjectDir, useTranscript } from "../hooks.ts"
-import { orderQueue, queued } from "../groups.ts"
+import { useBoard, useBoardIsEmpty, useProjectDir, useQueuedThreads, useTranscript } from "../hooks.ts"
+import { orderQueue } from "../groups.ts"
 import { tailAskIdx, useLiveAnswering } from "../lib/answering.ts"
 import { SendScopeContext, useComposerSendHandle, useComposerSendPresent, useSendScope } from "../lib/sendScope.tsx"
 import { shouldSubmitStagedEnter } from "../lib/composerKeyboard.ts"
@@ -189,7 +189,12 @@ export function TodosView() {
   const onConsole = isConsolePath()
   const consoleGroup = useConsoleGroup()
   const consoleProjects = useConsoleProjectList(onConsole)
-  const queueItems = orderQueue(asThreads(board?.threads ?? []).filter(queued), useSnapshot(prefs).queueOrder)
+  // The queued threads come UNTRACKED and identity-stable (hooks.ts useQueuedThreads): filtering the
+  // whole board through useBoard()'s tracking view read every Done thread on every render of this page.
+  const queuedThreads = useQueuedThreads()
+  const boardIsEmpty = useBoardIsEmpty()
+  const queueOrder = useSnapshot(prefs).queueOrder
+  const queueItems = useMemo(() => orderQueue(queuedThreads, queueOrder), [queuedThreads, queueOrder])
   const items = onConsole ? consoleCardOrder(queueItems, consoleGroup, consoleProjects.projects.map((p) => p.slug)) : queueItems
   const itemKey = items.map((i) => i.id).join(",")
 
@@ -645,7 +650,7 @@ export function TodosView() {
   // rail mounts at all; the two disagreeing would centre the prompt beside a populated sidebar.
   // Never on the Console: its sidebar is always up with its own prompt box, so an empty Console is the
   // calm inbox-zero below rather than a first-run screen.
-  const nothingAtAll = !onConsole && (board?.threads.length ?? 0) === 0
+  const nothingAtAll = !onConsole && boardIsEmpty
 
   return (
     // The queue column, top to bottom: queue cards (or the empty-inbox state) → rule → dispatch box.
@@ -664,7 +669,7 @@ export function TodosView() {
       {/* Source-of-truth failures are LOUD: a board that can't be read renders as this banner, never
           as a silently empty listing (a truncated shell-out once blanked a 700-thread board with the
           error hidden in an unrendered field). */}
-      <BoardErrorsBanner board={board} />
+      <BoardErrorsBanner />
       {/* Held returning cards render nothing; each one only observes its transcript (lib/queueReturn). */}
       {[...holds].map(([slug, since]) => (
         <ProjectScope key={slug} project={keyProject(slug)}>
@@ -750,7 +755,12 @@ function ReturnGate({ slug, since, onSettle }: { slug: string; since: number; on
 // gets a one-click Repair button that prepends minimal frontmatter and rebuilds the board; the entry
 // clears on the next snapshot. Non-repairable errors render exactly as before. Falls back to the plain
 // `errors` strings when the structured `errorItems` is absent (a pre-restart server).
-function BoardErrorsBanner({ board }: { board: BoardSnapshot | null }) {
+// It reads the board ITSELF and takes no prop. Handed the page's tracked board as a prop, it made React's
+// development build diff that prop key by key on every render, each `in` check recorded by valtio as a
+// read of this page's: 101,748 recorded paths on a board of 1,047 threads, re-walked after every render
+// of the page (75ms of a send's click on the dev server, 2026-10-13). A production build never diffed.
+function BoardErrorsBanner() {
+  const board = useBoard()
   const items = board?.errorItems ?? []
   const legacy = board?.errors ?? []
   if (items.length === 0 && legacy.length === 0) return null

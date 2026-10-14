@@ -3,7 +3,7 @@ import { useSnapshot } from "valtio"
 import { ChevronDown, ChevronUp } from "lucide-react"
 import type { ProjectCard, ThreadView } from "@frizz/shared"
 import { store } from "../store.ts"
-import { asThreads, useBoard } from "../hooks.ts"
+import { useBoardThreads } from "../hooks.ts"
 import { isPinned } from "../groups.ts"
 import { prefs } from "../lib/prefs.ts"
 import { useOptimisticallySteered } from "../lib/steering.ts"
@@ -60,8 +60,8 @@ function RowSquare({ project }: { project: ProjectCard | undefined }) {
 
 export function ConsoleSidebar() {
   const snap = useSnapshot(store)
-  const board = useBoard()
-  const all = useOptimisticallyArchived(useOptimisticallySteered(asThreads(board?.threads ?? [])))
+  // Untracked, like the project rail's (hooks.ts useBoardThreads): this board is EVERY project's.
+  const all = useOptimisticallyArchived(useOptimisticallySteered(useBoardThreads()))
   const direction = useSnapshot(prefs).queueOrder
   const group = useConsoleGroup()
   const { projects, bySlug } = useConsoleProjectList()

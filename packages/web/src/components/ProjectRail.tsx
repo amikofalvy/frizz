@@ -3,13 +3,12 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type DragEvent as DragEvent_, type KeyboardEvent as KeyboardEvent_, type MouseEvent as MouseEvent_, type PointerEvent as PointerEvent_, type ReactNode } from "react"
 import { House, Plus } from "lucide-react"
 import { Link, useNavigate } from "react-router"
-import { useSnapshot } from "valtio"
 import type { ProjectCard, ProjectRailCounts } from "@frizz/shared"
 import { activeBandThread, boardAskThread, PROJECT_ICON_EXTENSIONS } from "@frizz/shared"
 import { rpc } from "../api/rpc.ts"
 import { queued } from "../groups.ts"
-import { asThreads } from "../hooks.ts"
-import { showToast, store } from "../store.ts"
+import { useBoardLoaded, useBoardThreads } from "../hooks.ts"
+import { showToast } from "../store.ts"
 import { projectHref, projectSlug } from "../lib/base-path.ts"
 import { homeHref, useHomeView } from "../lib/homeView.ts"
 import { useOptimisticallyArchived } from "../lib/optimisticArchive.ts"
@@ -502,13 +501,15 @@ function useRailCounts(currentSlug: string | undefined, projects: readonly Proje
     queryFn: () => rpc.projectsRailCounts(),
     refetchInterval: 5_000,
   })
-  // valtio tracks the property read, so this re-renders on board changes and nothing else.
-  const board = useSnapshot(store).board
+  // Plain snapshots (hooks.ts § The board's threads, read without tracking): three filters over every
+  // thread, Done ones included, are three walks nothing needs recorded.
+  const board = useBoardLoaded()
+  const all = useBoardThreads()
   // THE SAME TWO OVERLAYS THE SIDEBAR FOLDS IN (Sidebar.tsx), so the square's counts and the rows beside
   // it change on the same click: a just-sent steer leaves Queue for Running, a just-clicked Mark as done
   // leaves both. Read off the raw board instead, the badge kept the old count for the whole round-trip
   // while the sidebar had already moved. Hooks cannot be conditional, hence the empty list.
-  const overlaid = useOptimisticallyArchived(useOptimisticallySteered(board ? asThreads(board.threads) : []))
+  const overlaid = useOptimisticallyArchived(useOptimisticallySteered(all))
   const threads = currentSlug !== undefined && board ? overlaid : undefined
   const live = threads && { queued: threads.filter(queued).length, running: threads.filter(activeBandThread).length, asks: threads.filter(boardAskThread).length }
   const currentId = currentSlug === undefined ? undefined : projects.find((project) => project.slug === currentSlug)?.id

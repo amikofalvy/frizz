@@ -185,10 +185,20 @@ export function sortThreads(threads: readonly ThreadView[]): ThreadView[] {
 // an at-rest row keys off when it came to rest, matching its "Last active" label. New array; input
 // untouched.
 export function orderByInteraction(threads: readonly ThreadView[]): ThreadView[] {
-  return [...threads].sort((a, b) => {
-    const d = lastActiveAt(b) - lastActiveAt(a)
-    return d !== 0 ? d : a.id.localeCompare(b.id)
+  return byLastActive(threads, -1)
+}
+
+// Sort by lastActiveAt with each thread's key read ONCE. The comparator used to derive it — a runtime
+// check and a Date.parse per side — on every comparison, which for the Done band of a long-lived board
+// is ten thousand derivations to order a thousand rows (12ms of a 32ms rail render, production bundle,
+// 2026-10-13). `dir` 1 = oldest first, -1 = newest first; ties break on the slug, ascending, either way.
+function byLastActive(threads: readonly ThreadView[], dir: 1 | -1): ThreadView[] {
+  const keyed = threads.map((t) => ({ t, at: lastActiveAt(t) }))
+  keyed.sort((a, b) => {
+    const d = (a.at - b.at) * dir
+    return d !== 0 ? d : a.t.id.localeCompare(b.t.id)
   })
+  return keyed.map((k) => k.t)
 }
 
 // The queue is a SINGLE strictly time-ordered list — no priority band. Every waiting card orders by
@@ -206,11 +216,7 @@ export function orderByInteraction(threads: readonly ThreadView[]): ThreadView[]
 // the stable user-interaction time for a running row, so agent tool churn never reorders a card.
 // id-tiebroken for a stable order among equal-age rows.
 export function orderQueue(threads: readonly ThreadView[], direction: QueueDirection = "fifo"): ThreadView[] {
-  const dir = direction === "lifo" ? -1 : 1
-  return [...threads].sort((a, b) => {
-    const age = (lastActiveAt(a) - lastActiveAt(b)) * dir
-    return age !== 0 ? age : a.id.localeCompare(b.id)
-  })
+  return byLastActive(threads, direction === "lifo" ? -1 : 1)
 }
 
 // ── SESSION-FIRST QUEUE ──────────────────────────────────────────────────────────────────────────

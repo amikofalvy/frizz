@@ -1,7 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query"
 import { subscribe as subscribeStore } from "valtio/vanilla"
 import type { BoardSnapshot } from "@frizz/shared"
-import { store } from "../store.ts"
+import { store, threadBySlug } from "../store.ts"
 import { subscribeTranscript, unsubscribeTranscript } from "./socket.ts"
 
 // ── Observer-driven transcript liveness ────────────────────────────────────────────────────────────────
@@ -57,8 +57,7 @@ function transcriptSlug(queryKey: unknown): string | null {
 }
 
 function threadActivity(slug: string): string | undefined {
-  const board = store.board as BoardSnapshot | null
-  return board?.threads.find((t) => t.id === slug)?.lastActivityAt
+  return threadBySlug(store.board as BoardSnapshot | null, slug)?.lastActivityAt
 }
 
 // The live set is the MAX_LIVE most recently observed slugs. Newly observed slugs enter through the drip

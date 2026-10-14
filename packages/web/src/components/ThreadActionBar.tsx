@@ -1,6 +1,7 @@
 import { type ReactNode } from "react"
 import { useSnapshot } from "valtio"
-import { store } from "../store.ts"
+import { store, threadBySlug } from "../store.ts"
+import type { BoardSnapshot } from "@frizz/shared"
 import { ThreadComposerBox } from "./ThreadComposerBox.tsx"
 import type { PhoneBarApi } from "./Composer.tsx"
 
@@ -15,7 +16,7 @@ import type { PhoneBarApi } from "./Composer.tsx"
 // `phoneBarOverride` passes straight through to the phone bar's answer seam (ThreadComposerBox).
 export function ThreadActionBar({ slug, above, phoneBarOverride, phoneChrome }: { slug: string; above?: ReactNode; phoneBarOverride?: (api: PhoneBarApi) => ReactNode; phoneChrome?: boolean }) {
   const snap = useSnapshot(store)
-  const thread = snap.board?.threads.find((t) => t.id === slug)
+  const thread = threadBySlug(snap.board as BoardSnapshot | null, slug)
 
   if (!thread) return null
 
