@@ -302,7 +302,7 @@ export function RestartActionButton({
 /**
  * The update control's state and its one verb, shared by the desktop status-row button below and the
  * phone Settings page's "Update Frizz" row (SettingsDrawer.tsx), so a click means the same thing on
- * both: the same request, the same blocking RestartOverlay (App.tsx), the same reload-after-ready
+ * both: the same request, the same blocking RestartOverlay (PageFrame.tsx), the same reload-after-ready
  * hand-off and the same failure reading. Only the markup differs.
  *
  * The control is live only while there is something to install; on a current Frizz it stays greyed and
@@ -373,7 +373,7 @@ export function useUpdateRestart() {
     try {
       if (updateAvailable) await requestFrizzUpdateRestart()
       else await requestFrizzRestart()
-      // Do not reload onto the same old child while an immutable candidate is still building. App's
+      // Do not reload onto the same old child while an immutable candidate is still building. PageFrame's
       // supervisor monitor reloads this exact route only after the durable owner reports readiness.
       if (updateAvailable) {
         // Arm the reload destination now that the supervisor owns the transition, and ramp the poll.
@@ -403,7 +403,7 @@ export function useUpdateRestart() {
       const message = (caught as Error).message.slice(0, 140)
       setBusy(false)
       setError(message)
-      // The reason goes in the failure panel, not the toast — see the same call in App.tsx.
+      // The reason goes in the failure panel, not the toast — see the same call in PageFrame.tsx.
       showToast(`${updateAvailable ? "Update & Restart" : "Restart Frizz"} failed`)
     }
   }

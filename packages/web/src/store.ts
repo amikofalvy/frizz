@@ -116,7 +116,7 @@ export const store = proxy({
   // believe ANY answer whose request started before the ack, whichever state it names: a "failed" that
   // was already in flight when the operator clicked retry used to clear this guard for the new attempt
   // (pullfrog on #35, 2026-09-11). `ackedAt` is set when the supervisor accepts the transition; the
-  // record is cleared by App's poll effect once an answer requested after that ack observes it
+  // record is cleared by PageFrame's poll effect once an answer requested after that ack observes it
   // (nextControlPlane in api/restart.ts), or by the button when the POST is rejected.
   controlPlaneRestartAttempt: null as RestartAttempt | null,
   showSettings: false,
@@ -161,7 +161,8 @@ export const store = proxy({
     // change races the close — see markDrawerClosing).
   }[],
   // Mirrors settings.notifications so the (React-free) SSE handler can gate desktop
-  // notifications without reaching into TanStack Query. Kept in sync from App.
+  // notifications without reaching into TanStack Query. Kept in sync by PageFrame, on the
+  // board and on the full-screen thread page alike.
   notificationsEnabled: false,
   // True once the /ws multiplex confirms it's live (server pushes transcript updates into the query
   // cache). useTranscript reads this to DROP its 1.5s poll + subscribe instead; false before the socket

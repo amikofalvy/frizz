@@ -15,6 +15,7 @@ import { ThreadView as ThreadViewSurface } from "./ChatView.tsx"
 import { DrawerStack } from "./DrawerStack.tsx"
 import { FileViewerPanel } from "./FileViewerPanel.tsx"
 import { FocusRail, RAIL_WIDTH } from "./FocusRail.tsx"
+import { PageFrame } from "./PageFrame.tsx"
 import { exitFullscreen } from "./CollapseThreadLink.tsx"
 import { TooltipProvider } from "./Tooltip.tsx"
 import { useQuery } from "@tanstack/react-query"
@@ -133,7 +134,13 @@ export function StandaloneThreadPage({ slug }: { slug: string }) {
 
   return (
     <TooltipProvider>
-      <div className="h-dvh min-h-0 bg-bg text-sm text-fg">
+      {/* THE FRAME, the same one the board stands in (PageFrame.tsx): it follows the supervisor — the
+          restart overlay, this page going inert under it, the reload onto a new build — and mirrors the
+          notifications setting. This page did none of that until 2026-10-13: it kept an old bundle
+          running against a new server, and a tab cold-loaded here never raised a notification. The
+          overlay is the frame's own sibling of this root, so it is outside the transformed row below
+          for the same reason the drawer stack is. */}
+      <PageFrame className="h-dvh min-h-0 bg-bg text-sm text-fg">
         {/* THE FULLSCREEN LAYOUT (maintainer 2026-08-28, second pass): the thread column and the
             rail sit together as ONE CENTERED PAIR — "the combination of the agent pane and the
             artifact readout should be centered on the page, and there should be some reasonable
@@ -207,7 +214,7 @@ export function StandaloneThreadPage({ slug }: { slug: string }) {
             Escape at rest — every drawer and the file viewer already unwound — exits fullscreen, the
             same way out as the header's collapse icon. */}
         <DrawerStack onEscapeAtRest={() => exitFullscreen(slug)} />
-      </div>
+      </PageFrame>
     </TooltipProvider>
   )
 }

@@ -424,8 +424,8 @@ const GEAR_DOT = "pointer-events-none absolute right-[9.5px] top-[10.5px] size-[
 
 const TAB_COUNT = "text-[12.5px] font-medium tabular-nums text-muted"
 
-// The restart overlay, the drawer stack and the modals stay the App's: they are identical on both
-// shells and mounting them twice would stack two of everything.
+// The drawer stack and the modals stay the App's, and the restart overlay the PageFrame's that App
+// stands in: they are identical on both shells and mounting them twice would stack two of everything.
 export function MobileBoard() {
   const board = useBoard()
   const snap = useSnapshot(store)

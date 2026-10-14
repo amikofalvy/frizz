@@ -9,7 +9,7 @@ const RESTART_BODY =
 
 // The copy once the hold has run past its deadline (finding 1, audit 2026-09-11): the old process is
 // gone, nothing answers on the port, and the only remedy is the terminal. `silentFor` is the house
-// duration reading (`3m`, never "3 minutes"), measured by App from the first unanswered poll.
+// duration reading (`3m`, never "3 minutes"), measured by PageFrame from the first unanswered poll.
 export const STALLED_HEADING = "Frizz did not come back"
 export function stalledRestartCopy(silentFor: string | undefined): string {
   const silence = silentFor ? `Nothing has answered for ${silentFor}.` : "Nothing is answering."
@@ -41,11 +41,11 @@ function swallowsInteractionKey(event: KeyboardEvent): boolean {
  * Full-viewport blocking modal shown for the entire rebuild+reload window. Unlike the frosted
  * dialogs, this is a HARD block: it grays out the whole app, intercepts every pointer path through
  * its scrim, parks focus on itself and neutralizes the focus/activation keys — the user simply
- * cannot act until Frizz is ready, at which point App reloads this exact route. Sits at z-[300], above
+ * cannot act until Frizz is ready, at which point PageFrame reloads this exact route. Sits at z-[300], above
  * ALL app chrome and every modal (the tallest of which — the shared Radix Dialog — is z-[200]).
  *
  * `stalled` is the one way out that is not "Frizz came back": past the hold's deadline the block is
- * lifted — no scrim, no focus trap, no key guard, App drops `inert` in step — and the card becomes a
+ * lifted — no scrim, no focus trap, no key guard, PageFrame drops `inert` in step — and the card becomes a
  * dismissible notice pinned to the top, because the board underneath is dead and the operator needs
  * to read what to do, not be walled off from a page that can no longer do anything. Polling continues
  * behind it, so a board that does come back still reloads the page on its own.
