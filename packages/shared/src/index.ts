@@ -2288,6 +2288,15 @@ export function parsePrWatchExpiredWake(text: string): { ref: string } | null {
   return m ? { ref: m[1] } : null
 }
 
+const PR_WATCH_GONE_HEAD = /^⏰ (\S+) can no longer be read — GitHub has answered that it does not exist\b/
+
+/** The PR or issue whose watcher settled because GitHub stopped resolving it (`prWatchGoneWakeMessage`),
+ *  or null. The same one hairline as an expiry: the registration is gone, and the ref is what is left. */
+export function parsePrWatchGoneWake(text: string): { ref: string } | null {
+  const m = PR_WATCH_GONE_HEAD.exec(text.trim())
+  return m ? { ref: m[1] } : null
+}
+
 const OWN_WATCH_EXPIRED_HEAD = /^⏰ Your watch on the (sub-agent|background shell) `([^`]+)` has expired and is no longer armed\b/
 
 /** A lapsed `frizzctl watch` on one of the worker's own shells or sub-agents, or null. The twin of

@@ -31,7 +31,7 @@
 // accent ref, the corner glyph) with no hierarchy between them.
 import { Fragment, useId, useRef, useState, type ReactNode } from "react"
 import { AlarmClock, Bell, Bot, Github, Hourglass, MessageCircleOff, RefreshCw, TerminalSquare } from "lucide-react"
-import { isGithubWakeBacklog, isInjectedNoise, isParkCorrection, parseCommandWatchWake, parseGithubWakeSteer, parseInterruptEndedWake, parseLimitModelSwitchWake, parseLimitResumeWake, parseMergedWake, parseOwnWatchExpiredWake, parseParkWake, parsePrWatchExpiredWake, parsePrWatchStateWake, parsePrWatchWake, parseQuestionsCancelledWake, parseRecurringPrompt, parseShellDoneWake, parseTimerWake, stripWakeTrailer, type CommandWatchWake, type GithubWakeSteer, type InterruptEndedSubAgent, type LimitWindow, type MergedWakePart, type ParkWake, type PrWatchStateWake, type PrWatchWake, type ShellDoneWake, type TimerWake } from "@frizz/shared"
+import { isGithubWakeBacklog, isInjectedNoise, isParkCorrection, parseCommandWatchWake, parseGithubWakeSteer, parseInterruptEndedWake, parseLimitModelSwitchWake, parseLimitResumeWake, parseMergedWake, parseOwnWatchExpiredWake, parseParkWake, parsePrWatchExpiredWake, parsePrWatchGoneWake, parsePrWatchStateWake, parsePrWatchWake, parseQuestionsCancelledWake, parseRecurringPrompt, parseShellDoneWake, parseTimerWake, stripWakeTrailer, type CommandWatchWake, type GithubWakeSteer, type InterruptEndedSubAgent, type LimitWindow, type MergedWakePart, type ParkWake, type PrWatchStateWake, type PrWatchWake, type ShellDoneWake, type TimerWake } from "@frizz/shared"
 import { commandWatchName } from "./AwaitingBackgroundCard.tsx"
 import { useMermaidIslands } from "./CodexRichOutput.tsx"
 import { QUEUE_WRAP, TranscriptCard } from "./TranscriptCard.tsx"
@@ -98,6 +98,8 @@ export function FrizzWake({ steer: served, text, sourceId, at, wrap }: { steer?:
   if (park) return <ParkDivider wake={park} sourceId={sourceId} at={at} />
   const lapsed = parsePrWatchExpiredWake(text)
   if (lapsed) return <PrWatchExpiredDivider watchRef={lapsed.ref} sourceId={sourceId} at={at} />
+  const gone = parsePrWatchGoneWake(text)
+  if (gone) return <PrWatchExpiredDivider watchRef={gone.ref} sentence="Not found — watcher ended" sourceId={sourceId} at={at} />
   const ownLapsed = parseOwnWatchExpiredWake(text)
   if (ownLapsed) return <OwnWatchExpiredDivider kind={ownLapsed.kind} sourceId={sourceId} at={at} />
   const command = parseCommandWatchWake(text)
@@ -366,17 +368,19 @@ function ParkDivider({ wake, sourceId, at }: { wake: ParkWake; sourceId?: string
 }
 
 // A registered watcher whose own `for:` ran out. One line, and the ref is the only thing on it a reader
-// can act on — so it is the link, the same muted underline every other divider's link wears.
+// can act on — so it is the link, the same muted underline every other divider's link wears. A watcher
+// that settled because GitHub stopped resolving its ref (`prWatchGoneWakeMessage`) is the same ending for
+// a different reason, so it is the same line with its own sentence.
 //
 // STATE FIRST, ref second, like the status line below ("PR merged on …"). It read "Watcher on
 // nubjs/nub#777 expired" until 2026-10-11, which put the one word of news at the end of a label that
 // clips from the right: on a narrow row it said a watcher existed and stopped before saying it had lapsed.
-function PrWatchExpiredDivider({ watchRef, sourceId, at }: { watchRef: string; sourceId?: string; at?: string }) {
+function PrWatchExpiredDivider({ watchRef, sentence = "Watcher expired", sourceId, at }: { watchRef: string; sentence?: string; sourceId?: string; at?: string }) {
   const url = githubRefUrl(watchRef)
-  const label = `Watcher expired on ${watchRef}`
+  const label = `${sentence} on ${watchRef}`
   return (
     <WakeDivider icon={Github} sourceId={sourceId} marker="event" ariaLabel={label} at={at}>
-      <DividerSentenceOnRef sentence="Watcher expired">
+      <DividerSentenceOnRef sentence={sentence}>
         {url
           ? <a href={url} target="_blank" rel="noreferrer" className={DIVIDER_LINK}><RefText value={watchRef} /></a>
           : <RefText value={watchRef} />}
