@@ -11,7 +11,9 @@ export type SidebarPresence = {
 // has had something to navigate; only a genuinely fresh project retains the centered first-task view.
 export function nextSidebarPresence(
   previous: SidebarPresence,
-  board: Pick<BoardSnapshot, "projectDir" | "threads"> | null,
+  // How many threads, not the threads: App reads this off useBoardIsEmpty rather than walk the tracked
+  // board's threads array, which costs proxy-compare a pass over every slot each time a delta replaces it.
+  board: (Pick<BoardSnapshot, "projectDir"> & { threadCount: number }) | null,
 ): SidebarPresence {
   if (!board) return previous
   const projectChanged = previous.projectDir !== board.projectDir
@@ -22,7 +24,7 @@ export function nextSidebarPresence(
   // terminal and never dispatched a frizz thread in. Discounting them there hid the only surface that
   // could show them. A truly empty board — no threads of any origin — still gets the centered
   // first-task view.
-  const hasWorkspaceContent = board.threads.length > 0
+  const hasWorkspaceContent = board.threadCount > 0
   return {
     projectDir: board.projectDir,
     hasBeenVisible: projectChanged ? hasWorkspaceContent : previous.hasBeenVisible || hasWorkspaceContent,

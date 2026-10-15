@@ -1,7 +1,6 @@
 import { useMemo, useState } from "react"
 import { ArrowLeft, MoreHorizontal } from "lucide-react"
-import { useBoard, useTranscript } from "../hooks.ts"
-import { threadBySlug } from "../store.ts"
+import { useThreadSnapshot, useTranscript } from "../hooks.ts"
 import { appPushedCurrentEntry } from "../lib/router.ts"
 import { leaveFiledThread } from "../lib/mobileTriage.ts"
 import { displayTitle } from "../groups.ts"
@@ -39,8 +38,7 @@ import { ThreadActionsSheet, useModelEffortLabel } from "./MobileThreadActionsSh
 // Rename, Copy link, and Retry / Restart worker where the header offers them — is in the ⋯ sheet
 // (ThreadActionsSheet).
 export function MobileThreadHeader({ slug, onClose }: { slug: string; onClose: () => void }) {
-  const board = useBoard()
-  const thread = threadBySlug(board, slug)
+  const thread = useThreadSnapshot(slug)
   const [sheetOpen, setSheetOpen] = useState(false)
   const now = useNowMs()
   const running = thread?.runtime === "running" || thread?.runtime === "spawning"

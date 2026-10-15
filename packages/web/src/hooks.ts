@@ -85,8 +85,17 @@ export function asThreads(threads: readonly unknown[]): ThreadView[] {
 // ARRAY, one slot per thread, 1.3-3.1ms each time (a send makes two such changes inside its click). The
 // array is a plain value now, replaced copy-on-write, and a snapshot shares it (store.ts plainArray).
 //
+// A COMPONENT THAT SHOWS ONE THREAD READS IT WITH useThreadSnapshot, not by looking it up on useBoard().
+// Through the tracking view, even threadBySlug's one-row read makes proxy-compare wrap the threads array,
+// and wrapping a NEW array (every delta brings one) first walks a property descriptor for every slot to
+// decide whether it must copy it. Once per array, whichever render gets there first: ~0.5ms of every
+// delta at 5,000 threads with a thread's drawer open (CPU profile, the Console, production bundle,
+// 2026-10-15), and it grew with the history. useThreadSnapshot finds the row by table and re-renders
+// when that thread is replaced, which is what the tracked read did.
+//
 // TWO RULES FOR A COMPONENT THAT STILL USES useBoard():
-//   - Find a thread with threadBySlug (store.ts), never `board.threads.find`: it reads one row.
+//   - Never walk `board.threads`; and where a hook cannot reach (a callback, a loop), find a thread with
+//     threadBySlug (store.ts), never `board.threads.find`: it reads one row.
 //   - Never hand the tracked board, or a tracked thread, to a child as a PROP. React's development build
 //     diffs a changed prop key by key, and through the tracking view every `in` check is recorded as a
 //     read of the parent's. One `<BoardErrorsBanner board={board} />` left the queue page holding 101,748

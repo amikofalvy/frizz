@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react"
 import { useSnapshot } from "valtio"
-import { store, threadBySlug } from "../store.ts"
-import { useBoard } from "../hooks.ts"
+import { store } from "../store.ts"
+import { useBoard, useThreadSnapshot } from "../hooks.ts"
 import { rpc } from "../api/rpc.ts"
 import { displayTitle, queued } from "../groups.ts"
 import { resolveThreadRoute } from "../lib/threadRouteState.ts"
@@ -63,7 +63,10 @@ export function StandaloneThreadPage({ slug }: { slug: string }) {
   const snap = useSnapshot(store)
   const fileOpen = snap.filePanels.some((panel) => !panel.closing)
   const board = useBoard()
-  const route = resolveThreadRoute(board, slug, threadBySlug)
+  // Its thread through its own subscription, not looked up on the tracked board (hooks.ts
+  // useThreadSnapshot): this page re-renders on every delta of a thread that is working.
+  const tracked = useThreadSnapshot(slug)
+  const route = resolveThreadRoute(board, slug, () => tracked)
   const thread = route.kind === "found" ? route.thread : undefined
   const projectDir = board?.projectDir
 

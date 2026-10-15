@@ -18,7 +18,6 @@
 // expand" toggles the body. A whole-row button would have to nest the link, which HTML forbids.
 import { useId, useRef, useState } from "react"
 import { MessagesSquare } from "lucide-react"
-import { useSnapshot } from "valtio"
 import type { ThreadView, TranscriptMessage } from "@frizz/shared"
 import { useMermaidIslands } from "./CodexRichOutput.tsx"
 import { DIVIDER_LINK } from "./FrizzWake.tsx"
@@ -28,7 +27,7 @@ import { displayTitle } from "../groups.ts"
 import { outerPath, projectHref } from "../lib/base-path.ts"
 import { useInnerHtml } from "../lib/innerHtml.ts"
 import { useMarkdownHtml } from "../lib/useMarkdown.ts"
-import { store, threadBySlug } from "../store.ts"
+import { useThreadSnapshot } from "../hooks.ts"
 
 type SessionPeer = NonNullable<TranscriptMessage["sessionPeer"]>
 
@@ -37,13 +36,12 @@ export function sessionPeerHref(thread: NonNullable<SessionPeer["thread"]>): str
 }
 
 export function SessionMessageLine({ peer, text, queued, sourceId, at, wrap }: { peer: SessionPeer; text: string; queued?: boolean; sourceId?: string; at?: string; wrap?: boolean }) {
-  const snap = useSnapshot(store)
   const [open, setOpen] = useState(false)
   const bodyId = useId()
   const sender = peer.thread
   // A sender on THIS board takes the title the sidebar shows, live — the server's copy is the row's
   // title at read time, which is all it can offer for a thread in another project.
-  const local = sender && !sender.project ? (threadBySlug(snap.board as typeof store.board, sender.slug) as ThreadView | undefined) : undefined
+  const local = useThreadSnapshot(sender && !sender.project ? sender.slug : undefined)
   const title = local ? displayTitle(local) : sender?.title
   const html = useMarkdownHtml(text)
   const body = useInnerHtml(html)

@@ -1,7 +1,5 @@
 import { type ReactNode } from "react"
-import { useSnapshot } from "valtio"
-import { store, threadBySlug } from "../store.ts"
-import type { BoardSnapshot } from "@frizz/shared"
+import { useThreadSnapshot } from "../hooks.ts"
 import { ThreadComposerBox } from "./ThreadComposerBox.tsx"
 import type { PhoneBarApi } from "./Composer.tsx"
 
@@ -15,8 +13,7 @@ import type { PhoneBarApi } from "./Composer.tsx"
 // model/effort footer, the status line) lives in that component.
 // `phoneBarOverride` passes straight through to the phone bar's answer seam (ThreadComposerBox).
 export function ThreadActionBar({ slug, above, phoneBarOverride, phoneChrome }: { slug: string; above?: ReactNode; phoneBarOverride?: (api: PhoneBarApi) => ReactNode; phoneChrome?: boolean }) {
-  const snap = useSnapshot(store)
-  const thread = threadBySlug(snap.board as BoardSnapshot | null, slug)
+  const thread = useThreadSnapshot(slug)
 
   if (!thread) return null
 

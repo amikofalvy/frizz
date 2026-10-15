@@ -1,7 +1,8 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { sectionOf, type ThreadView } from "@frizz/shared"
-import { externalThreads, isPinned, orderActive, orderByInteraction, queued, sectionThreads, type SectionedThreads } from "../groups.ts"
+import { activeBandThread, sectionOf, type ThreadView } from "@frizz/shared"
+import { externalThreads, isPinned, orderActive, orderByInteraction, orderQueue, queued, sectionThreads, type SectionedThreads } from "../groups.ts"
+import { consoleQueue, consoleRunning } from "./consoleBoard.ts"
 import { optimisticallySteered, overlayEach, overlayLive } from "./steering.ts"
 import { partitionBoard, settledThread } from "./boardPartition.ts"
 
@@ -101,6 +102,11 @@ function checkAgainstReference(threads: readonly ThreadView[], label: string): v
   }
   assert.deepEqual(ids(externalThreads(threads)), ids(threads.filter((t) => t.kind === "session" && t.foreign === true)), `${label}: external`)
   assert.deepEqual(ids(p.live.filter(queued)), ids(threads.filter(queued)), `${label}: queued`)
+  // The Console's two bands (lib/consoleBoard.ts) ask the live threads only.
+  for (const direction of ["fifo", "lifo"] as const) {
+    assert.deepEqual(ids(consoleQueue(threads, direction)), ids(orderQueue(threads.filter(queued), direction)), `${label}: Console queue, ${direction}`)
+  }
+  assert.deepEqual(ids(consoleRunning(threads)), ids(orderByInteraction(threads.filter(activeBandThread))), `${label}: Console running`)
   const now = Date.parse("2026-10-14T00:00:00.000Z")
   const steer = (t: ThreadView) => optimisticallySteered(t, undefined, now)
   const live = overlayLive(threads, steer)

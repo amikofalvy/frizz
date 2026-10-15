@@ -1,13 +1,12 @@
 import { useMutation, useQuery } from "@tanstack/react-query"
 import type { ReactNode } from "react"
-import { useSnapshot } from "valtio"
 import { acpAgentIdFromModel, acpModelIdFromModel, acpModelSlug, type PermissionMode } from "@frizz/shared"
 import { rpc, rpcFor } from "../api/rpc.ts"
 import { scopedKey } from "../lib/projectScope.tsx"
 import { keyProject } from "../lib/threadKey.ts"
 import { threadFollowUpBlocked, threadComposerStatus, threadPermissionBlockedReason, threadPermissionEffectMessage } from "../lib/threadPermissions.ts"
-import { showToast, store, threadBySlug } from "../store.ts"
-import type { BoardSnapshot } from "@frizz/shared"
+import { showToast, store } from "../store.ts"
+import { useThreadSnapshot } from "../hooks.ts"
 import { ProfileGridSelector } from "../components/ProfileGridSelector.tsx"
 import { AcpModelSelect } from "../components/AcpModelSelect.tsx"
 import { Select } from "../components/ui/Select.tsx"
@@ -35,8 +34,7 @@ import { threadProfileControlState } from "../lib/threadProfile.ts"
 // ON A PHONE the strip is `phoneTools`: the model chip alone (it opens the phone's model sheet — the
 // ProfileGridSelector's own phone branch), with no permission picker. Permissions stay on the desktop.
 export function useThreadComposerControls(slug: string): { busy: boolean; footer: ReactNode; phoneTools: ReactNode; status: ReactNode } {
-  const snap = useSnapshot(store)
-  const thread = threadBySlug(snap.board as BoardSnapshot | null, slug)
+  const thread = useThreadSnapshot(slug)
   const profiles = useQuery({
     queryKey: ["threadProfileOptions", slug],
     queryFn: () => rpc.threadProfileOptions({ slug }),

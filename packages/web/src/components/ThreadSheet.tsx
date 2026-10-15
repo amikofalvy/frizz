@@ -1,8 +1,8 @@
 import * as RadixDialog from "@radix-ui/react-dialog"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useSnapshot } from "valtio"
-import { store, threadBySlug } from "../store.ts"
-import { useBoard } from "../hooks.ts"
+import { store } from "../store.ts"
+import { useBoard, useThreadSnapshot } from "../hooks.ts"
 import { rpc } from "../api/rpc.ts"
 import { displayTitle } from "../groups.ts"
 import { registerDrawerFocus } from "../lib/overlays.ts"
@@ -62,7 +62,12 @@ export function ThreadSheet({ id, slug, depth, widthDepth, initiallyOpen }: { id
   // new activity reaches rest while the drawer is open so last_read_at reflects what was actually on
   // screen; mid-turn tailer churn is excluded. Idempotent and fire-and-forget.
   const board = useBoard()
-  const route = resolveThreadRoute(board, slug, threadBySlug)
+  // The thread through its own subscription, never through the tracked board's threads array: a tracked
+  // read of that array costs proxy-compare a walk of every slot each time a delta replaces it (hooks.ts
+  // useThreadSnapshot), which on a board with 5,000 Done threads was ~0.5ms of every delta while a drawer
+  // was open. `board` is read only for whether it has arrived and its one field below.
+  const thread = useThreadSnapshot(slug)
+  const route = resolveThreadRoute(board, slug, () => thread)
   const t = route.kind === "found" ? route.thread : undefined
   const projectDir = board?.projectDir
   const atRestNow = t ? t.runtime === "turn-idle" || t.runtime === "exited" || t.runtime === "none" : false

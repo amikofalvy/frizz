@@ -5,7 +5,8 @@ import { nextSidebarPresence } from "./lib/sidebarPresence.ts"
 function board(projectDir: string, options: { owned?: boolean } = {}) {
   return {
     projectDir,
-    threads: options.owned === false ? [{ foreign: true }] : options.owned === true ? [{ foreign: false }] : [],
+    // One thread (a foreign or an owned one) or none: the presence counts threads of any origin.
+    threadCount: options.owned === undefined ? 0 : 1,
   }
 }
 

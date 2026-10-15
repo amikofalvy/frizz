@@ -4,6 +4,7 @@ import { activeBandThread } from "@frizz/shared"
 import { orderByInteraction, orderQueue, queued } from "../groups.ts"
 import type { QueueDirection } from "../groups.ts"
 import type { PendingDispatchEntry } from "./pendingDispatch.ts"
+import { partitionBoard } from "./boardPartition.ts"
 import { keyProject } from "./threadKey.ts"
 
 // THE CONSOLE'S TWO BANDS AND ITS TWO GROUPINGS.
@@ -64,14 +65,19 @@ export function setRunningExpanded(project: string, expanded: boolean): void {
   state.expanded[project] = expanded
 }
 
+// Both bands are asked of the LIVE threads only (lib/boardPartition.ts): a settled thread is archived and
+// at rest, so it is neither waiting nor running, and the merged board holds every project's Done
+// history. Asking all of them was 0.9ms of every delta at 5,000 threads (CPU profile, a streaming turn
+// with its drawer open on the Console), and it grew with each project's history.
+
 /** Every project's waiting threads, in the queue's own order. */
 export function consoleQueue(threads: readonly ThreadView[], direction: QueueDirection): ThreadView[] {
-  return orderQueue(threads.filter(queued), direction)
+  return orderQueue(partitionBoard(threads).live.filter(queued), direction)
 }
 
 /** Every project's running threads, most recently touched first — a project board's Running order. */
 export function consoleRunning(threads: readonly ThreadView[]): ThreadView[] {
-  return orderByInteraction(threads.filter(activeBandThread))
+  return orderByInteraction(partitionBoard(threads).live.filter(activeBandThread))
 }
 
 export interface ProjectBlock {

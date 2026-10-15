@@ -2,7 +2,7 @@ import { useEffect, useRef, type CSSProperties } from "react"
 import { useNavigate } from "react-router"
 import { useSnapshot } from "valtio"
 import { closeGithubPicker, store, pushDrawer, resolveRoutedThread, topDrawer, topThreadSlug, showToast } from "./store.ts"
-import { useBoard } from "./hooks.ts"
+import { useBoard, useBoardIsEmpty } from "./hooks.ts"
 import { closeDrawerAnimated } from "./lib/overlays.ts"
 import { takeScrollAfterUnlock } from "./lib/pageScrollLock.ts"
 import { startRouter } from "./lib/router.ts"
@@ -140,7 +140,8 @@ export function App() {
   // first arrives. (resolveRoutedThread no-ops unless there is a parked slug AND a board.)
   useEffect(() => { resolveRoutedThread() }, [board, snap.routeThreadSlug])
 
-  sidebarPresence.current = nextSidebarPresence(sidebarPresence.current, board)
+  const boardEmpty = useBoardIsEmpty()
+  sidebarPresence.current = nextSidebarPresence(sidebarPresence.current, board && { projectDir: board.projectDir, threadCount: boardEmpty ? 0 : 1 })
   // The Console's sidebar is always there: it carries the Console's only prompt box.
   const showSidebar = board !== null && (onConsole || sidebarPresence.current.hasBeenVisible)
   // Before the first board lands, hold the sidebar's column open if this project had one last time —

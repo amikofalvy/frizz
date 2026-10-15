@@ -3,8 +3,8 @@ import { useSnapshot } from "valtio"
 import type { AccountBackend, ThreadSkill, ThreadView } from "@frizz/shared"
 import { awaitingSteps, hasStandingQuestion, questionAnswerMessage, withAnswersNote } from "@frizz/shared"
 import { rpc } from "../api/rpc.ts"
-import { restoreContextItems, showToast, store, takeContextItems, threadBySlug } from "../store.ts"
-import type { BoardSnapshot } from "@frizz/shared"
+import { restoreContextItems, showToast, store, takeContextItems } from "../store.ts"
+import { useThreadSnapshot } from "../hooks.ts"
 import { buildMessageWithContext, hasToken } from "../lib/composerContext.ts"
 import { splitComposerValue } from "../lib/imagePaths.ts"
 import { useThreadComposerControls } from "../hooks/useThreadComposerControls.tsx"
@@ -106,7 +106,7 @@ export function ThreadComposerBox({
   // to this box, which draws the drop hint and owns the intake (see Composer's `fileDrop`).
   const { fileDrop } = useThreadSurfaceBox()
   const snap = useSnapshot(store)
-  const thread = threadBySlug(snap.board as BoardSnapshot | null, slug)
+  const thread = useThreadSnapshot(slug)
   // THE ONE SEND (lib/sendScope). Everything staged on the surface's question cards leaves through
   // this box: the registered questions' answers (shared through their own context) and the fenced
   // ones (through the surface's scope). Either context may be absent — a box mounted with no question

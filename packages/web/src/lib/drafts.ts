@@ -1,7 +1,6 @@
 import { useCallback, useMemo, useSyncExternalStore } from "react"
-import { useSnapshot } from "valtio"
-import type { BoardSnapshot } from "@frizz/shared"
-import { store, threadBySlug } from "../store.ts"
+import { subscribe, useSnapshot } from "valtio"
+import { store, threadSnapshotBySlug } from "../store.ts"
 import { projectPathDir, subscribeLocalPathBase } from "./localPathBase.ts"
 import { useProjectScope } from "./projectScope.tsx"
 import { splitThreadKey } from "./threadKey.ts"
@@ -267,8 +266,12 @@ export function useProjectDir(): string | undefined {
   const boardDir = useSnapshot(store).board?.projectDir
   return scoped || boardDir
 }
+// Read off the live board's snapshot by table rather than through a tracked view of it: a tracked read
+// of the threads array costs proxy-compare a pass over every slot each time a delta replaces it, which a
+// board's Done history makes long (hooks.ts useThreadSnapshot). A string, so only a new session re-renders.
+const onStoreChange = (notify: () => void) => subscribe(store, notify)
 export function useThreadSessionId(slug: string): string | undefined {
-  return threadBySlug(useSnapshot(store).board as BoardSnapshot | null, slug)?.sessionId
+  return useSyncExternalStore(onStoreChange, () => threadSnapshotBySlug(slug)?.sessionId)
 }
 // SUBSCRIBE TO THE VALUE, NEVER TO THE SNAPSHOT OBJECT. `commit` replaces `this.snapshot` wholesale on
 // every keystroke, so a hook whose `getSnapshot` returns that object re-renders on EVERY edit to ANY

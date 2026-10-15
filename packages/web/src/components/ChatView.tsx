@@ -6,8 +6,8 @@ import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual"
 import { AlertTriangle, ArrowDown, ArrowUp, Bot, Check, ChevronRight, FileText, HelpCircle, Hourglass, KeyRound, ListChecks, Loader2, Radar, TerminalSquare, type LucideIcon } from "lucide-react"
 import { awaitingFenceTitle, awaitingSteps, RETRY_FOLLOW_UP } from "@frizz/shared"
 import type { AskQuestion, AwaitingHint, BgShellView, PendingAsk, RegisteredQuestionView, SubAgentView, ThreadView as ThreadViewData, TranscriptEdit, TranscriptMessage, TranscriptPart, TranscriptTodo, TranscriptToolCall } from "@frizz/shared"
-import { store, threadBySlug, pushDrawer, pushSubAgentDrawer, pushBackgroundShellDrawer, showToast } from "../store.ts"
-import { useBackgroundShellLines, useBoard, useProjectDir, useTranscript, type ChatMessage, type TranscriptData } from "../hooks.ts"
+import { store, pushDrawer, pushSubAgentDrawer, pushBackgroundShellDrawer, showToast } from "../store.ts"
+import { useBackgroundShellLines, useProjectDir, useThreadSnapshot, useTranscript, type ChatMessage, type TranscriptData } from "../hooks.ts"
 import { rpc } from "../api/rpc.ts"
 import { stripFrontmatter } from "../lib/markdown.ts"
 import { useMarkdownHtml, useInlineMarkdownHtml } from "../lib/useMarkdown.ts"
@@ -169,8 +169,7 @@ function useChildDrillSlug(): string | null {
 // prompt box until 2026-10-05; its verbs and the context reading moved into ThreadHeader, and the Goal
 // into the prompt box's rail.)
 export function ThreadView({ slug, onStatusApplied, onClose, showReturnToQueue = false }: { slug: string; onStatusApplied?: () => void; onClose?: () => void; showReturnToQueue?: boolean }) {
-  const board = useBoard()
-  const thread = threadBySlug(board, slug)
+  const thread = useThreadSnapshot(slug)
   const phone = useIsMobile() && onClose !== undefined
   // THE RAIL IS BESIDE THIS THREAD — the /full page's own column (`showReturnToQueue` is passed by
   // StandaloneThreadPage alone), at a width that draws its side pane. `splitFileViewer` is that width:
@@ -194,8 +193,7 @@ export function ThreadView({ slug, onStatusApplied, onClose, showReturnToQueue =
 }
 
 function ChatView({ slug, phone = false, railBeside = false, header }: { slug: string; phone?: boolean; railBeside?: boolean; header: ReactNode }) {
-  const board = useBoard()
-  const boardThread = threadBySlug(board, slug)
+  const boardThread = useThreadSnapshot(slug)
   // Freshness is centrally managed (transcript-live.ts keeps every observed transcript live); `poll`
   // only gates the SSE-fallback interval for a running thread.
   const q = useTranscript(slug, { poll: boardThread?.runtime === "running" || boardThread?.runtime === "spawning" })
@@ -1572,8 +1570,7 @@ function JumpToLatest({ overlay, hidden, onJump }: { overlay: HTMLElement | null
 // — the same strip the queue card's header draws. It carried a Chat|Doc tab strip until 2026-08-06; see
 // ThreadView for why that went.
 export function ThreadHeader({ slug, onStatusApplied, onClose, showReturnToQueue = false }: { slug: string; onStatusApplied?: () => void; onClose?: () => void; showReturnToQueue?: boolean }) {
-  const board = useBoard()
-  const thread = threadBySlug(board, slug)
+  const thread = useThreadSnapshot(slug)
   const markComplete = useMutation({ mutationFn: () => rpc.markComplete({ slug }) })
   // The "Frizz document" header affordance opens .frizz/<slug>.md (threadBody). Many session threads have
   // no such file — a session thread's working files are its own business — so it would dead-end on
@@ -2190,8 +2187,7 @@ function ToolCalls({ tools, at }: { tools: CollapsedTool[]; dense?: boolean; at?
 // is a header-only card. All share the same bordered card family so no call ever reads as bare text.
 export function ToolCardRouter({ t, startedAt }: { t: CollapsedTool; startedAt?: string }) {
   const slug = useContext(ThreadSlugContext)
-  const board = useBoard()
-  const thread = slug ? threadBySlug(board, slug) : undefined
+  const thread = useThreadSnapshot(slug)
   const liveBackgroundState = liveBackgroundOperationState(t, thread?.bgShells ?? [])
   if (t.edits && t.status !== "failed" && t.status !== "cancelled") {
     return <DiffBlock edits={t.edits} meta={<ToolStatusMeta status={t.status} backgroundState={t.backgroundState} liveBackgroundState={liveBackgroundState} exitCode={t.exitCode} durationMs={t.durationMs} />} />
@@ -2824,8 +2820,7 @@ export function AgentBlock({
   // Thread surface OR sub-agent drawer (a nested dispatch inside a child's own transcript still drills
   // in — the router maps an id it can no longer resolve to "gone", which the drawer states plainly).
   const slug = useChildDrillSlug()
-  const board = useBoard()
-  const thread = slug ? threadBySlug(board, slug) : undefined
+  const thread = useThreadSnapshot(slug)
   // The live tracked sub-agent for this dispatch (matched by tool_use id) — drives the "running Nm"
   // header + spinner. Only present before the transcript records a completion (a finished child has
   // left the live set). The DRAWER, though, resolves live AND completed children, so the title links
@@ -4063,12 +4058,11 @@ export function FenceCard({ fenceKind, body, hints, wrap, pastRest }: { fenceKin
   // drawer. Wired into both fence actions so Mark-as-done / park scroll the next card up, exactly like
   // the header's Mark-as-done and Snooze do (maintainer 2026-07-21: every card-dismissing control must).
   const queueDismiss = useContext(QueueDismissContext)
-  const board = useBoard()
   // Resolve the owning thread + whether whole-thread lifecycle actions are applicable (session, not
   // foreign). Shared by both branches: the done card's Mark-as-done button renders only for a real,
   // actionable session thread, and the awaiting card needs the thread for its rows (null in a sub-agent
   // transcript, where there's no ThreadSlugContext → the fence renders card-only).
-  const fenceThread = slug ? threadBySlug(board, slug) : undefined
+  const fenceThread = useThreadSnapshot(slug)
   const lifecycle = fenceThread ? threadLifecycleAvailability(fenceThread) : undefined
   // Deliberately NOT `lifecycle`: that stays true on a done thread — whose header cluster renders as a
   // "Done" readout — and keying on it here would grow a live Mark-as-done button on the done fence of a
@@ -4362,8 +4356,7 @@ export function BackgroundOpsStrip({
   // in would credit this child with its parent's watchers.
   parentAgentId?: string
 }) {
-  const board = useBoard()
-  const thread = threadBySlug(board, slug)
+  const thread = useThreadSnapshot(slug)
   const allAgents = thread?.subAgents ?? []
   // `displayDepth` rides only the scoped rows (see childOpSubtree); the thread-wide reading indents off
   // `depth` as it always has, so the field is optional here rather than back-filled onto every row.
