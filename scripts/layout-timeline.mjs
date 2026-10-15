@@ -336,6 +336,9 @@ try {
       const railRows = [...document.querySelectorAll("[data-sidebar-item]")].map((e) => `${e.dataset.sidebarItem.slice(0, 12)}@${Math.round(e.getBoundingClientRect().top)}`)
       const sideRail = document.querySelector("[data-focus-rail]")
       const side = sideRail ? [...sideRail.querySelectorAll("button, a, [data-file-dir], li")].map((e) => { const b = e.getBoundingClientRect(); return `${Math.round(b.top)}+${Math.round(b.height)}` }).join(" ") : null
+      // Its group headings ("Sub-agents", "Background shells", …) by name and top, so a group that
+      // stayed can be told apart from the one that came or went.
+      const sideHeads = sideRail ? [...sideRail.querySelectorAll('[class*="uppercase"]')].map((e) => [(e.textContent ?? "").replace(/[0-9\s]+$/, "").trim(), Math.round(e.getBoundingClientRect().top)]) : []
       const overlay = Boolean(document.querySelector('[role="alertdialog"][aria-label="Updating and restarting Frizz"]'))
       if (read) {
         const { scroller, pane } = read
@@ -354,9 +357,9 @@ try {
         const jump = [...jumpScope.querySelectorAll("button")].some((b) => /Jump to latest/.test(b.textContent ?? "") && b.getBoundingClientRect().height > 0 && getComputedStyle(b).visibility !== "hidden" && getComputedStyle(b).opacity !== "0")
         const chrome = { scroller: scroller === document.scrollingElement ? null : box4(scroller.getBoundingClientRect()), rowsX: [...xs].join(" ") }
         for (const [name, el] of Object.entries(read.chrome)) chrome[name] = Array.isArray(el) ? el.map((e) => rect(e)[0]).join(",") : rect(el)
-        window.__frames.push({ t: performance.now(), st: Math.round(scroller.scrollTop), max: Math.round(scroller.scrollHeight - scroller.clientHeight), rows, jump, chrome, railRows, side, overlay, empty: read.rows.length === 0 })
+        window.__frames.push({ t: performance.now(), st: Math.round(scroller.scrollTop), max: Math.round(scroller.scrollHeight - scroller.clientHeight), rows, jump, chrome, railRows, side, sideHeads, overlay, empty: read.rows.length === 0 })
       } else {
-        window.__frames.push({ t: performance.now(), none: true, st: 0, max: 0, rows: [], jump: false, chrome: null, railRows, side, overlay })
+        window.__frames.push({ t: performance.now(), none: true, st: 0, max: 0, rows: [], jump: false, chrome: null, railRows, side, sideHeads, overlay })
       }
       if (performance.now() - t0 < ms + 2000) requestAnimationFrame(sample)
     }
@@ -469,15 +472,23 @@ try {
   const railSig = (f) => f.railRows.join(" ")
   let railStates = 0
   let sideStates = 0
+  // A side-rail group that is there before and after a change and moved anyway: what a change to ANOTHER
+  // group did to it. The rail's own reading, beside `side states`, which counts every change of any row.
+  let sideStandingMoves = 0
   let flashFrames = 0
   let hadRows = Boolean(before && before.rows.length)
   {
     let r = before ? railSig(before) : null
     let sd = before ? before.side : null
+    let heads = new Map(before?.sideHeads ?? [])
     for (const f of frames) {
       if (f.t < zero) continue
       if (railSig(f) !== r) { r = railSig(f); railStates++; lines.push({ t: f.t, text: `${at(f.t)}  ▤ rail ${f.railRows.length} rows: ${f.railRows.slice(0, 8).join(" ")}${f.railRows.length > 8 ? " …" : ""}` }) }
       if (f.side !== sd) { sd = f.side; sideStates++; lines.push({ t: f.t, text: `${at(f.t)}  ▥ side rail ${f.side ?? "(none)"}` }) }
+      const nextHeads = new Map(f.sideHeads ?? [])
+      const moved = [...nextHeads].filter(([head, top]) => heads.has(head) && heads.get(head) !== top)
+      if (moved.length) { sideStandingMoves++; lines.push({ t: f.t, text: `${at(f.t)}  ▥ side group stayed and moved: ${moved.map(([head, top]) => `${head} ${heads.get(head)}→${top}`).join(", ")}` }) }
+      heads = nextHeads
       if (f.rows.length) hadRows = true
       else if (hadRows && f.empty) flashFrames++
     }
@@ -531,7 +542,7 @@ try {
     lines.push({ t: f.t, text: `${at(f.t)}  ■ state ${states} st=${f.st}/${f.max}${f.jump ? " JUMP-TO-LATEST" : ""}${f.none ? " (no surface)" : f.empty ? " (EMPTY)" : ""}${flags.chrome ? ` chrome=${JSON.stringify(f.chrome)}` : ""}\n${rowsOf(f)}` })
   }
   lines.sort((a, b) => a.t - b.t)
-  const report = `${lines.map((l) => l.text).join("\n")}\n\ngeometry states after the action: ${states}${firstSteer === undefined ? "" : ` (before the first steer: ${statesBeforeSteer}, from it: ${states - statesBeforeSteer})`}\nWorking row: ${workingFlips.join(", ") || (before && working(before) ? "shown throughout" : "never shown")}\nopacity changes: ${opacityFlips}\nrail states: ${railStates}\nside states: ${sideStates}\nflash frames: ${flashFrames}\ntail gap at end: ${(() => { const last = frames.filter((f) => !f.none).pop(); return last ? `${last.max - last.st}px` : "(no surface)" })()}\n${anchorReport.map((l) => `${l}\n`).join("")}painted frames: ${painted.length} in ${outDir}/frames\npage errors: ${JSON.stringify(errors.filter((e) => !e.includes("404")).slice(0, 4))}\n`
+  const report = `${lines.map((l) => l.text).join("\n")}\n\ngeometry states after the action: ${states}${firstSteer === undefined ? "" : ` (before the first steer: ${statesBeforeSteer}, from it: ${states - statesBeforeSteer})`}\nWorking row: ${workingFlips.join(", ") || (before && working(before) ? "shown throughout" : "never shown")}\nopacity changes: ${opacityFlips}\nrail states: ${railStates}\nside states: ${sideStates}\nside groups moved by another's change: ${sideStandingMoves}\nflash frames: ${flashFrames}\ntail gap at end: ${(() => { const last = frames.filter((f) => !f.none).pop(); return last ? `${last.max - last.st}px` : "(no surface)" })()}\n${anchorReport.map((l) => `${l}\n`).join("")}painted frames: ${painted.length} in ${outDir}/frames\npage errors: ${JSON.stringify(errors.filter((e) => !e.includes("404")).slice(0, 4))}\n`
   writeFileSync(join(outDir, "timeline.txt"), report)
   console.log(report)
 } finally {
