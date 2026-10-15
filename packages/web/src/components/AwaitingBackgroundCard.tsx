@@ -44,7 +44,7 @@ import { SHELL_WATCHED_NOTE } from "../lib/threadOps.ts"
 import { ICON_LABEL_NUDGE } from "../lib/iconAlign.ts"
 import { PRIMER, PRIMER_DANGER_LINK } from "../lib/primer.ts"
 import { LinkedHtml } from "./LinkedHtml.tsx"
-import { StepsComplete, StepsList } from "./AwaitingSteps.tsx"
+import { StepsComplete, StepsCompleted, StepsList } from "./AwaitingSteps.tsx"
 import { CARD_ACTION_EXPLAINER, CardActions, CARD_BODY, CARD_LINK, CARD_PRIMARY_ACTION, QUEUE_WRAP, TranscriptCard } from "./TranscriptCard.tsx"
 
 // Name what the thread is ACTUALLY waiting on. Three real cases, and the sentence has to be true in all
@@ -1214,7 +1214,7 @@ function AwaitingSnooze({ thread, onSnooze, onSnoozeFailed }: {
   )
 }
 
-export function AwaitingBackgroundCard({ thread, fence, onSnooze, onSnoozeFailed, onReplied, onReplyFailed }: {
+export function AwaitingBackgroundCard({ thread, fence, onSnooze, onSnoozeFailed, onReplied, onReplyFailed, stepsDone }: {
   // `id` joins the Pick because the rows OPEN things now: a shell's output drawer and a sub-agent's
   // transcript are both addressed by the parent thread's slug. `lastFence` joined on 2026-08-24: the
   // fence's prose is this card's opening stratum, so the card reads it directly off the thread.
@@ -1247,6 +1247,9 @@ export function AwaitingBackgroundCard({ thread, fence, onSnooze, onSnoozeFailed
   // a snooze does, and puts it back if the send fails. Queue-only, like the pair above.
   onReplied?: () => void
   onReplyFailed?: () => void
+  /** A SETTLED steps card whose rest the human answered with its box (lib/stepsAnswer
+   *  stepsDoneReplies): the box stays, ticked and inert, as the record that the steps were done. */
+  stepsDone?: boolean
 }) {
   // The thread's live work, as the rows and the heading read it. A card with no owning thread has none
   // of it — no rows, no shell-only heading — rather than a branch at every use below.
@@ -1407,9 +1410,12 @@ export function AwaitingBackgroundCard({ thread, fence, onSnooze, onSnoozeFailed
           introduced the band on 2026-08-31; every card with a verb wears it since 2026-09-30. It draws
           on EVERY surface the card is live on; a thread with no snooze verb draws the card without it.
           A STEPS card ends on its box instead — the card's answer, last like a verb — and wears the band
-          only for its own Send, where no prompt box sends the box for it (AwaitingSteps). */}
+          only for its own Send, where no prompt box sends the box for it (AwaitingSteps). Once its rest
+          is over the box stays only where the human's reply was the box's, ticked (`stepsDone`). */}
       {stepsLive ? (
         <StepsComplete slug={thread.id} steps={steps} onReplied={onReplied} onReplyFailed={onReplyFailed} />
+      ) : steps.length > 0 && stepsDone ? (
+        <StepsCompleted />
       ) : snoozable ? (
         <CardActions data-awaiting-snooze>
           <AwaitingSnooze thread={thread} onSnooze={onSnooze} onSnoozeFailed={onSnoozeFailed} />

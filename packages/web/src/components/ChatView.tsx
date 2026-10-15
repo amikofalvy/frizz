@@ -3436,6 +3436,7 @@ export function ThreadMessage({ m, index, dense, textOnly, showSendButton }: { m
       paired={t.paired[index]}
       staleAwaiting={staleAwaiting}
       restingCardShown={restingCardShown}
+      stepsDone={t.stepsDone.has(index)}
       shadowedBy={t.shadowedByMessage.get(index)}
       placed={t.placement.placed.get(index)}
       settledPlaced={t.settledPlacement.placed.get(index)}
@@ -3479,7 +3480,10 @@ export function ThreadMessage({ m, index, dense, textOnly, showSendButton }: { m
 // presence switches the splitter to that grammar, and a fence's `id:` resolves against it: a row placed
 // here draws in the fence's slot, a row drawn elsewhere draws nothing here, and an ask that names no row
 // yet draws read-only from its own bytes. One array per surface, memoized, so the memo boundary holds.
-export const Message = memo(function Message({ m, answering, dense, paired, textOnly, showSendButton, staleAwaiting, shadowedBy, placed, settledPlaced, fenceQuestions, thread, restingCardShown }: { m: ChatMessage; answering?: MessageAnswering; dense?: boolean; paired?: PairedAnswer[] | null; textOnly?: boolean; showSendButton?: boolean; staleAwaiting?: boolean; shadowedBy?: readonly RegisteredQuestionView[]; placed?: readonly RegisteredQuestionView[]; settledPlaced?: readonly SettledQuestion[]; fenceQuestions?: readonly FenceQuestionRow[]; thread?: ThreadViewData; restingCardShown?: boolean }) {
+// `stepsDone` — the human answered this message's rest on steps with the "I have completed this" box
+// (lib/stepsAnswer stepsDoneReplies), so its settled steps card keeps the box, ticked. A boolean, false
+// on every other row.
+export const Message = memo(function Message({ m, answering, dense, paired, textOnly, showSendButton, staleAwaiting, shadowedBy, placed, settledPlaced, fenceQuestions, thread, restingCardShown, stepsDone }: { m: ChatMessage; answering?: MessageAnswering; dense?: boolean; paired?: PairedAnswer[] | null; textOnly?: boolean; showSendButton?: boolean; staleAwaiting?: boolean; shadowedBy?: readonly RegisteredQuestionView[]; placed?: readonly RegisteredQuestionView[]; settledPlaced?: readonly SettledQuestion[]; fenceQuestions?: readonly FenceQuestionRow[]; thread?: ThreadViewData; restingCardShown?: boolean; stepsDone?: boolean }) {
   // ANSWERING ON A PHONE happens in a sheet, one question at a time (MobileAnswerSheet) — the cards in
   // the transcript stay READ-ONLY there, so the questions are still visible in the context that
   // produced them but a 44pt-thumb answer never has to land on a 24pt chip inside a scrolling message.
@@ -3611,8 +3615,9 @@ export const Message = memo(function Message({ m, answering, dense, paired, text
         // is the only place they were ever written down. So it keeps the card, stated with no thread: no
         // live rows, and no Done (nobody is waiting on these steps any more, and a later fence restating
         // the same steps must not grow a second verb). A refused fence still goes — its re-fence restates it.
+        // When the human's reply was the box's, the box stays, ticked and inert (`stepsDone`).
         if (fseg.fenceKind === "awaiting" && staleAwaiting && !m.fenceRefused && !restingCardShown && settledFenceDraws(fseg.hints)) {
-          push(<AwaitingBackgroundCard key={`${keyBase}-f${fi}`} fence={{ body: fseg.body, hints: fseg.hints }} />)
+          push(<AwaitingBackgroundCard key={`${keyBase}-f${fi}`} fence={{ body: fseg.body, hints: fseg.hints }} stepsDone={stepsDone} />)
           continue
         }
         if (fseg.fenceKind === "awaiting" && (m.fenceRefused || staleAwaiting || restingCardShown)) continue

@@ -15,6 +15,7 @@ import "./styles.css"
 //                the prompt box under it sends (or, `&drawer=1` at a phone width, the card's own Send)
 //   ?at=running  the human sent the ticked box and the worker is mid-turn (the default)
 //   ?at=moved    the worker finished and rested again on a later fence of its own
+//   ?at=asked    the human replied in words instead of ticking the box, and the worker is mid-turn
 //
 // The transcript also carries an EARLIER settled fence with no steps — a plain shell wait — which must
 // keep drawing nothing in every state: that is the negative control for the exception.
@@ -54,7 +55,7 @@ const messages: TranscriptMessage[] = [
   human("u1", "Cut the acme 4.2.0 release.", 40),
   say("a1", `Building the release artifacts.\n\n${SHELL_FENCE}`, 38),
   say("a2", `The build is green.\n\n${STEPS_FENCE}`, 20),
-  ...(AT === "rest" ? [] : [human("u2", "Done", 5)]),
+  ...(AT === "rest" ? [] : [human("u2", AT === "asked" ? "Which account should approve it — the bot or mine?" : "Done", 5)]),
   ...(AT === "moved" ? [say("a3", LATER_FENCE, 1)] : []),
 ]
 
@@ -64,15 +65,15 @@ const thread = {
   status: "active",
   mechanism: null,
   humanBlocked: false,
-  needsYou: AT !== "running",
-  awaitingBackground: AT !== "running",
+  needsYou: AT === "rest" || AT === "moved",
+  awaitingBackground: AT === "rest" || AT === "moved",
   ready: false,
   dependsOn: [],
   externalDeps: [],
   agents: [],
   errors: [],
   warnings: [],
-  runtime: AT === "running" ? "running" : "turn-idle",
+  runtime: AT === "running" || AT === "asked" ? "running" : "turn-idle",
   sessionId: "sid-settled-steps",
   unread: false,
   archived: false,

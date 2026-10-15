@@ -12,6 +12,11 @@ const baseUrl = process.env.FRIZZ_SETTLED_STEPS_E2E_URL
 // fence draws nothing; one that handed the human `steps:` keeps its card, minus the box nobody is waiting
 // on any more. Pinned in the real drawer (settled-steps-fixture.html), whose transcript also holds
 // an earlier settled shell wait — the negative control, which must stay invisible in every state.
+//
+// …AND WHEN THE REPLY WAS THE BOX'S, THE BOX STAYS, TICKED (2026-10-15, maintainer: "we should have
+// something to indicate that the awaiting human block … was, in fact, completed. Maybe just leave the
+// checked checkbox in there") — inert, as a record, from the frame the reply's bubble is drawn. A reply in
+// words instead leaves the card with no box.
 
 const CARD = "[data-awaiting-background]"
 const STEPS = [
@@ -19,7 +24,7 @@ const STEPS = [
   "Approve the browser prompt with the acme-bot account.",
 ]
 
-test("a steps card stays in the transcript after its rest, with no box", {
+test("a steps card stays in the transcript after its rest, its box ticked when the reply was the box's", {
   skip: !baseUrl,
   timeout: 120_000,
 }, async () => {
@@ -44,6 +49,11 @@ test("a steps card stays in the transcript after its rest, with no box", {
             steps: [...el.querySelectorAll("[data-awaiting-steps] .frizz-step-text")].map((li) => (li as HTMLElement).innerText.trim()),
             // The box answers only while the thread rests on these steps; a settled card is a record.
             box: !!el.querySelector("[data-steps-complete]"),
+            // The record of a reply that was the box's: ticked, and no control.
+            completed: (() => {
+              const row = el.querySelector("[data-steps-completed]") as HTMLElement | null
+              return row ? { checked: row.getAttribute("aria-checked"), controls: row.querySelectorAll("button, input").length, label: row.innerText.trim() } : null
+            })(),
             // The card's own Send, drawn only where no prompt box sends the box for it.
             send: !!el.querySelector("[data-steps-send]"),
             // The step markers are never controls of their own.
@@ -63,7 +73,7 @@ test("a steps card stays in the transcript after its rest, with no box", {
     // AT REST on the steps: the tail's resting card states them, WITH the box — and the transcript does
     // not draw them a second time above it.
     const rest = await read("rest")
-    assert.deepEqual(rest.cards, [{ ...stepsCard, box: true, send: false, markerControls: 0 }], "one card, the live one, with its box — and the drawer's prompt box to send it")
+    assert.deepEqual(rest.cards, [{ ...stepsCard, box: true, completed: null, send: false, markerControls: 0 }], "one card, the live one, with its box — and the drawer's prompt box to send it")
     assert.equal(rest.shellProse, false, "a settled shell wait still draws nothing")
     assert.equal(rest.stepsProse, 1)
 
@@ -89,11 +99,12 @@ test("a steps card stays in the transcript after its rest, with no box", {
     // Every commit from the Send on: the steps cards on screen, whether one still has its box, and whether
     // the reply's ghost bubble is drawn.
     await page.evaluate((sel) => {
-      const w = window as unknown as { __commits: { cards: number; box: boolean; ghost: boolean }[] }
+      const w = window as unknown as { __commits: { cards: number; box: boolean; completed: boolean; ghost: boolean }[] }
       w.__commits = []
       new MutationObserver(() => w.__commits.push({
         cards: document.querySelectorAll(`${sel} [data-awaiting-steps]`).length,
         box: !!document.querySelector("[data-steps-complete]"),
+        completed: !!document.querySelector("[data-steps-completed]"),
         ghost: [...document.querySelectorAll(".bg-user-bubble.opacity-50")].some((el) => el.textContent?.includes("Done")),
       })).observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true })
     }, CARD)
@@ -106,16 +117,18 @@ test("a steps card stays in the transcript after its rest, with no box", {
     // card at the tail becomes the record in its message right there: the steps stay on screen through every
     // commit, and once the ghost is drawn, nobody is waiting on their box.
     await page.waitForFunction(() => document.querySelector(".bg-user-bubble.opacity-50"), { timeout: 10_000 })
-    const commits = await page.evaluate(() => (window as unknown as { __commits: { cards: number; box: boolean; ghost: boolean }[] }).__commits)
+    const commits = await page.evaluate(() => (window as unknown as { __commits: { cards: number; box: boolean; completed: boolean; ghost: boolean }[] }).__commits)
     assert.ok(commits.some((c) => c.ghost), "the reply's ghost bubble is drawn")
     assert.deepEqual(commits.filter((c) => c.cards !== 1), [], "the steps are on screen, once, in every commit")
     assert.deepEqual(commits.filter((c) => c.ghost && c.box), [], "no commit draws the ghost beside the live box")
+    assert.deepEqual(commits.filter((c) => c.ghost && !c.completed), [], "every commit that draws the ghost draws the ticked record with it")
+    assert.deepEqual(commits.filter((c) => !c.box && !c.completed), [], "the box is never missing in between: live, then the record")
 
     // ON A PHONE the bar under the drawer sends no answers (they have their own sheet), so the card draws
     // its own Send — dark until the box is ticked, and then the same ordinary reply.
     await page.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true })
     const phone = await read("rest&drawer=1")
-    assert.deepEqual(phone.cards, [{ ...stepsCard, box: true, send: true, markerControls: 0 }], "the card's own Send, where nothing else sends the box")
+    assert.deepEqual(phone.cards, [{ ...stepsCard, box: true, completed: null, send: true, markerControls: 0 }], "the card's own Send, where nothing else sends the box")
     await recordSends()
     assert.equal(await page.$eval("[data-steps-send]", (b) => (b as HTMLButtonElement).disabled), true, "nothing ticked, nothing to send")
     await tick()
@@ -124,17 +137,23 @@ test("a steps card stays in the transcript after its rest, with no box", {
     assert.deepEqual(await sent(), ["Done"], "one reply, the word")
     await page.setViewport({ width: 900, height: 1000 })
 
-    // SENT, worker mid-turn: the card stays where it was, without the box.
+    // SENT, worker mid-turn: the card stays where it was, its box ticked and no longer a control.
+    const ticked = { checked: "true", controls: 0, label: "I have completed this" }
     const running = await read("running")
-    assert.deepEqual(running.cards, [{ ...stepsCard, box: false, send: false, markerControls: 0 }], "the steps stay, and nobody is waiting on their box")
+    assert.deepEqual(running.cards, [{ ...stepsCard, box: false, completed: ticked, send: false, markerControls: 0 }], "the steps stay, with the record that they were done")
     assert.equal(running.shellProse, false)
     assert.equal(running.stepsProse, 1)
 
-    // THE THREAD MOVED ON to a later rest: still there, still no box, beside the new resting card.
+    // ANSWERED IN WORDS instead: the steps stay, and no box claims they were done.
+    const asked = await read("asked")
+    assert.deepEqual(asked.cards, [{ ...stepsCard, box: false, completed: null, send: false, markerControls: 0 }], "a reply that was not the box's leaves no box")
+
+    // THE THREAD MOVED ON to a later rest: still there, still ticked, beside the new resting card.
     const moved = await read("moved")
     assert.equal(moved.cards.length, 2, "the settled steps card and the new resting card")
-    assert.deepEqual(moved.cards[0], { ...stepsCard, box: false, send: false, markerControls: 0 })
+    assert.deepEqual(moved.cards[0], { ...stepsCard, box: false, completed: ticked, send: false, markerControls: 0 })
     assert.equal(moved.cards[1].steps.length, 0, "the later rest is a plain wait")
+    assert.equal(moved.cards[1].completed, null, "and carries no box")
     assert.equal(moved.shellProse, false)
     assert.equal(moved.stepsProse, 1)
 

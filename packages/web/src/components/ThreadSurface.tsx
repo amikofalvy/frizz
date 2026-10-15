@@ -13,6 +13,7 @@ import { useTranscriptHeldForBoard } from "../lib/restAhead.ts"
 import { queuedRunOf, type QueuedRun } from "../lib/restReply.ts"
 import { SendScopeContext, useComposerSendHandle, useComposerSendPresent, useSendScope, type SendScope } from "../lib/sendScope.tsx"
 import { settledQuestionPositions, type SettledPlacement } from "../lib/settledQuestions.ts"
+import { stepsDoneReplies } from "../lib/stepsAnswer.ts"
 import { QueueDismissContext, QueuedRunContext, ThreadSlugContext, type SurfaceExit } from "../lib/threadContexts.ts"
 import { transcriptBackgroundShells, withoutLiveTranscriptBackgroundTools } from "../lib/transcriptShells.ts"
 import { showsRestingCard } from "./AwaitingBackgroundCard.tsx"
@@ -129,6 +130,9 @@ export interface ThreadTranscript {
    *  do the emptiness predicates — a settled fence that handed the human steps keeps its card, a stated
    *  one does not. */
   hidesAwaiting: (index: number) => readonly [stale: boolean, stated: boolean]
+  /** The messages whose rest on steps the human answered with the "I have completed this" box
+   *  (lib/stepsAnswer stepsDoneReplies), so their settled steps card keeps the box, ticked. */
+  stepsDone: ReadonlySet<number>
   openQuestions: readonly RegisteredQuestionView[]
   /** A thread dispatched after the free-form fence was retired never gets a fence controller: a
    *  ```question with a body is prose there, and the registered card is the only answerable thing
@@ -271,6 +275,7 @@ export function useThreadSurface(source: ThreadSurfaceSource, options: ThreadSur
   const placement = useMemo(() => placeQuestions(messages, openQuestions), [messages, openQuestions])
   const settledPlacement = useMemo(() => settledQuestionPositions(messages, settledQuestions), [messages, settledQuestions])
   const paired = useMemo(() => pairAllAnswers(messages), [messages])
+  const stepsDone = useMemo(() => stepsDoneReplies(messages), [messages])
   const inFlightAnswers = useMemo(() => unrenderedAnswers(messages, thread?.answersInFlight), [messages, thread?.answersInFlight])
   const opsThread = useOpsHeldForTranscript(thread, messages)
   const run = useMemo(() => queuedRunOf(messages), [messages])
@@ -284,6 +289,7 @@ export function useThreadSurface(source: ThreadSurfaceSource, options: ThreadSur
       awaitingCut,
       restingShown,
       hidesAwaiting: (index) => [awaitingCut >= 0 && index < awaitingCut, index === lastAgentIdx && restingShown] as const,
+      stepsDone,
       openQuestions,
       fencesLive,
       fenceQuestions,
@@ -295,7 +301,7 @@ export function useThreadSurface(source: ThreadSurfaceSource, options: ThreadSur
       answeringForMessage,
       opsThread,
     }),
-    [thread, messages, running, lastAgentIdx, awaitingCut, restingShown, openQuestions, fencesLive, fenceQuestions, shadowedByMessage, placement, settledPlacement, paired, inFlightAnswers, answeringForMessage, opsThread],
+    [thread, messages, running, lastAgentIdx, awaitingCut, restingShown, stepsDone, openQuestions, fencesLive, fenceQuestions, shadowedByMessage, placement, settledPlacement, paired, inFlightAnswers, answeringForMessage, opsThread],
   )
 
   // The surface is the zone and its prompt box the intake (lib/fileDrop). Files given while no box is
