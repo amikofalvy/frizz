@@ -6037,6 +6037,18 @@ export const BoardMeta = z.object({
 })
 export type BoardMeta = z.infer<typeof BoardMeta>
 
+// Keyed per-thread delta. `upserts` are COMPLETE ThreadViews for threads whose serialization changed (or
+// are new); `removed` are ids gone from the board; `meta` is present only when a board-level field
+// changed. Emitted only by a post-restart server → seq/bootId are required here.
+const BoardDeltaEvent = z.object({
+  type: z.literal("board-delta"),
+  seq: z.number(),
+  bootId: z.string(),
+  upserts: z.array(ThreadView),
+  removed: z.array(ThreadSlug),
+  meta: BoardMeta.optional(),
+})
+
 export const ServerEvent = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("board"),
@@ -6048,17 +6060,7 @@ export const ServerEvent = z.discriminatedUnion("type", [
     seq: z.number().optional(),
     bootId: z.string().optional(),
   }),
-  z.object({
-    // Keyed per-thread delta. `upserts` are COMPLETE ThreadViews for threads whose serialization
-    // changed (or are new); `removed` are ids gone from the board; `meta` is present only when a
-    // board-level field changed. Emitted only by a post-restart server → seq/bootId are required here.
-    type: z.literal("board-delta"),
-    seq: z.number(),
-    bootId: z.string(),
-    upserts: z.array(ThreadView),
-    removed: z.array(ThreadSlug),
-    meta: BoardMeta.optional(),
-  }),
+  BoardDeltaEvent,
   z.object({
     type: z.literal("notify"),
     slug: ThreadSlug,
@@ -6088,6 +6090,23 @@ export const ServerEvent = z.discriminatedUnion("type", [
 export type ServerEvent = z.infer<typeof ServerEvent>
 export type BoardEvent = Extract<ServerEvent, { type: "board" }>
 export type BoardDelta = Extract<ServerEvent, { type: "board-delta" }>
+
+// THE BOARD'S DELTAS OVER HTTP — the `boardDeltas` query. The Console's fallback when a project's /ws
+// never opens (web api/consoleFeed.ts): it cannot fall back to an EventSource per project, since those
+// hold one of the browser's ~six HTTP/1.1 connections to the host each, so it asks for the deltas after
+// the seq it holds, from the same ring a socket's resume replays (board.ts DeltaRing). `resync` says the
+// ring cannot answer — another boot, a seq older than the ring, or newer than anything published — and
+// the client reads the board whole, exactly as for a socket's board-resync.
+export const BoardDeltasInput = z.object({
+  bootId: z.string().min(1).max(200),
+  seq: z.number().int().min(0),
+})
+export type BoardDeltasInput = z.infer<typeof BoardDeltasInput>
+export const BoardDeltasResult = z.union([
+  z.object({ bootId: z.string(), deltas: z.array(BoardDeltaEvent) }),
+  z.object({ bootId: z.string(), resync: z.enum(["boot", "expired", "ahead"]) }),
+])
+export type BoardDeltasResult = z.infer<typeof BoardDeltasResult>
 
 // Pure delta engine + client apply/decision helpers (kept in a sibling module, re-exported here so
 // `@frizz/shared` stays the single entry point).

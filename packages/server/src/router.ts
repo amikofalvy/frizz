@@ -7,6 +7,8 @@ import { query, mutation } from "@frizz/rpc/server"
 import {
   BoardSnapshot,
   BoardState,
+  BoardDeltasInput,
+  BoardDeltasResult,
   AdoptThreadInput,
   AdoptThreadResult,
   DispatchInput,
@@ -2140,6 +2142,19 @@ export function createRouter(ctx: AppContext) {
       handler: async () => {
         const { board, seq } = await ctx.board.snapshotState()
         return { board, seq, bootId: ctx.bootId }
+      },
+    }),
+
+    // The deltas after a board the client holds, from the ring a socket's resume replays — what the
+    // Console polls for a project whose /ws never opened (@frizz/shared BoardDeltasResult has the why).
+    boardDeltas: query({
+      input: BoardDeltasInput,
+      output: BoardDeltasResult,
+      handler: async ({ input }): Promise<BoardDeltasResult> => {
+        if (input.bootId !== ctx.bootId) return { bootId: ctx.bootId, resync: "boot" as const }
+        const deltas = ctx.board.deltasSince(input.seq)
+        if (!deltas) return { bootId: ctx.bootId, resync: input.seq > ctx.board.currentSeq() ? ("ahead" as const) : ("expired" as const) }
+        return { bootId: ctx.bootId, deltas }
       },
     }),
 

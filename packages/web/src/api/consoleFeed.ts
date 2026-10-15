@@ -34,16 +34,27 @@ import { writeTranscriptPush } from "./transcript-push.ts"
 // Console's cards are reading. api/transcript-live.ts decides WHICH threads are live, as it does on a
 // project page; it calls api/socket.ts, which hands a Console page's calls to here.
 //
-// What this does NOT have is the SSE fallback. Browsers allow about six connections per host over
-// HTTP/1.1 and the Console would need one EventSource per project. It needs none for a big board any
-// more: the board never rides the socket, so no board is too big for it. (Until 2026-10-14 a board past
-// the 4 MiB frame limit shut that project's board channel and was polled over HTTP every 5s instead.)
+// ITS FALLBACK IS A POLL, NOT AN EVENTSOURCE. A project page whose /ws never opens (a proxy that does not
+// pass WebSocket upgrades) falls back to SSE (api/socket.ts). The Console cannot: browsers allow about six
+// connections per host over HTTP/1.1, and an EventSource per project would hold one each, starving every
+// other request once five projects were open. So a feed whose socket never opened asks its project for
+// the deltas after the board it holds (`boardDeltas`, from the same ring a socket's resume replays) every
+// POLL_MS, and applies them through the very path a socket's deltas take; a `resync` answer reads the
+// board again. One short request per project per poll, none held open.
+//
+// What the poll does not carry is everything else a socket does: transcripts (useTranscript polls them
+// itself while no feed is live, `store.socketTranscripts`), desktop notifications, interaction
+// invalidations and the project list's change notice. That is the degraded mode — the board stays live.
+// Measured through a proxy that refuses upgrades, a rename on either project showed within one poll.
+// (Until 2026-10-15 the Console had no fallback at all: its boards loaded over HTTP and then never moved.)
 
 const HEARTBEAT_TIMEOUT = 35_000
 // The same drip api/socket.ts replays with: the server budgets transcript reads per origin per project.
 const REPLAY_BATCH = 6
 const REPLAY_MS = 700
 const MAX_BUDGET_RETRIES = 5
+// How often a feed whose /ws never opened asks for its project's deltas (see the header).
+const POLL_MS = 1_500
 
 let qc: QueryClient | null = null
 const feeds = new Map<string, ProjectFeed>()
@@ -113,6 +124,11 @@ class ProjectFeed {
   /** Has this project's first board landed? The Console's first paint waits for every project's. */
   keyframed = false
   private confirmed = false
+  // This project's /ws never opened, so its deltas are polled for (the header). Kept across a restart:
+  // it describes the path to this server, not one start of the feed — as api/socket.ts's `fellBack`.
+  private fellBack = false
+  private pollTimer: ReturnType<typeof setTimeout> | null = null
+  private polling = false
   private protocolReady = false
   private failures = 0
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
@@ -147,6 +163,7 @@ class ProjectFeed {
 
   connect(): void {
     if (this.closed || this.ws) return
+    if (this.fellBack) return this.schedulePoll(0)
     const sock = new WebSocket(`${location.origin.replace(/^http/, "ws")}${projectApiBase(this.project)}/ws`)
     this.ws = sock
     this.protocolReady = false
@@ -175,6 +192,8 @@ class ProjectFeed {
       this.protocolReady = false
       this.resume.dropped()
       if (this.closed) return
+      // Closed before it ever opened: nothing on the way to this server passes a WebSocket.
+      if (!this.confirmed) return this.fallBack()
       this.failures++
       this.setState(this.failures > 3 ? "closed" : "connecting")
       this.scheduleReconnect()
@@ -223,6 +242,10 @@ class ProjectFeed {
   /** The watchdog's and the wake signals' reconnect: a socket gone quiet past the heartbeat is dead. */
   checkHealth(now: number, force = false): void {
     if (this.closed) return
+    if (this.fellBack) {
+      if (force) this.schedulePoll(0)
+      return
+    }
     if (!this.ws) {
       if (force) this.scheduleReconnect(true)
       return
@@ -255,14 +278,61 @@ class ProjectFeed {
     this.closed = true
     this.dropSocket()
     this.resume.reset()
-    for (const timer of [this.reconnectTimer, this.replayTimer]) if (timer) clearTimeout(timer)
+    for (const timer of [this.reconnectTimer, this.replayTimer, this.pollTimer]) if (timer) clearTimeout(timer)
     for (const timer of this.budgetTimers.values()) clearTimeout(timer)
-    this.reconnectTimer = this.replayTimer = null
+    this.reconnectTimer = this.replayTimer = this.pollTimer = null
     this.budgetTimers.clear()
     const board = store.board ?? staged
     if (board) dropProject(board, this.project)
     setProjectGithubRepo(this.project, null)
     for (const slug of this.subs.keys()) delete store.socketTranscriptFallbacks[threadKey(this.project, slug)]
+  }
+
+  /** Stop trying /ws for this project and poll for its deltas instead (the header). */
+  private fallBack(): void {
+    if (this.fellBack) return
+    this.fellBack = true
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
+    this.reconnectTimer = null
+    this.schedulePoll(0)
+  }
+
+  private schedulePoll(delay = POLL_MS): void {
+    if (this.closed) return
+    if (this.pollTimer) {
+      if (delay > 0) return
+      clearTimeout(this.pollTimer)
+    }
+    this.pollTimer = setTimeout(() => {
+      this.pollTimer = null
+      void this.poll()
+    }, delay)
+  }
+
+  private async poll(): Promise<void> {
+    if (this.closed || this.polling) return
+    // Nothing to carry forward until the board is read (BoardResume reads it, and retries a failure).
+    const held = this.boot !== null && this.seq >= 0 ? { bootId: this.boot, seq: this.seq } : null
+    if (!held) return this.schedulePoll()
+    this.polling = true
+    try {
+      const out = await rpcFor(this.project).boardDeltas(held)
+      if (this.closed || !isConsolePath()) return
+      noteServerBootId(out.bootId)
+      this.failures = 0
+      if (this.state !== "open") this.setState("open")
+      // A board read since the request went out (a restart, a resync) is newer than what was asked
+      // about; its own next poll carries it forward.
+      if (this.boot !== held.bootId) return
+      if ("resync" in out) this.resume.resync()
+      else for (const event of out.deltas) this.handleEvent(event)
+    } catch {
+      this.failures++
+      this.setState(this.failures > 3 ? "closed" : "connecting")
+    } finally {
+      this.polling = false
+      this.schedulePoll()
+    }
   }
 
   private handle(msg: SocketServerMsg): boolean {

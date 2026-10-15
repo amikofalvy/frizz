@@ -20,6 +20,8 @@ import type {
   DropOwnLinkResult,
   BoardSnapshot,
   BoardState,
+  BoardDeltasInput,
+  BoardDeltasResult,
   Settings,
   DispatchInput,
   AdoptThreadInput,
@@ -137,6 +139,8 @@ export interface Api {
   board(): Promise<BoardSnapshot>
   // The board and the (seq, boot) it reflects: what a page reads before resuming /ws from that seq.
   boardState(): Promise<BoardState>
+  // The deltas after (bootId, seq), or `resync`: the Console's poll for a project whose /ws never opened.
+  boardDeltas(input: BoardDeltasInput): Promise<BoardDeltasResult>
   threadBody(input: { slug: string }): Promise<{ markdown: string }>
   threadTranscript(input: { slug: string }): Promise<TranscriptPage>
   threadTranscriptEarlier(input: TranscriptEarlierInput): Promise<TranscriptPage>
@@ -391,6 +395,7 @@ export type ProcType = "query" | "mutation"
 export const PROCEDURES = {
   board: "query",
   boardState: "query",
+  boardDeltas: "query",
   threadBody: "query",
   threadTranscript: "query",
   threadSettledQuestions: "query",
