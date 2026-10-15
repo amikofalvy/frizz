@@ -671,10 +671,8 @@ export function topThreadSlug(): string | null {
 //
 // `ref` marks the object so valtio leaves it as it is: a thread is read as the plain object the server
 // sent, and a snapshot holds that same object. The array holding them is replaced as a whole by every
-// delta that touches it (plainArray, below), which is what notifies. On the Console's merged board,
-// whose array is still a proxy, a component that reads one field of a thread through useSnapshot
-// re-renders when that thread is replaced, not only when the field it read differs; a thread is
-// replaced only when the server says it changed.
+// delta that touches it (plainArray, below), which is what notifies — on a project's board and on the
+// Console's merged one alike (api/consoleFeed.ts).
 //
 // So NOTHING MAY WRITE INTO A THREAD ON THE BOARD. A write would reach no subscriber. Replace the slot.
 export function plainThreads<T extends ThreadView>(threads: T[]): T[] {
@@ -701,9 +699,12 @@ export function plainThreads<T extends ThreadView>(threads: T[]): T[] {
 // it untrackable, which would re-render every card on every delta — so the board's arrays are named to
 // its `canProxy` hook here. Only arrays passed to plainArray are affected; every other value proxies
 // exactly as before.
+//
+// The Console's merged board (api/consoleFeed.ts) holds its threads the same way, through the same two
+// doors: plainArray for an array it builds whole, threadsWithDelta for one project's delta.
 const plainArrays = new WeakSet<object>()
 unstable_replaceInternalFunction("canProxy", (canProxy) => (value) => !(typeof value === "object" && value !== null && plainArrays.has(value)) && canProxy(value))
-function plainArray<T>(threads: T[]): T[] {
+export function plainArray<T>(threads: T[]): T[] {
   plainArrays.add(threads)
   return threads
 }
@@ -781,17 +782,27 @@ export function applyDelta(delta: BoardDelta): boolean {
   // moves with it — a copy has the same slots. Any other board (one a test assigned directly) is a
   // valtio proxy and takes the delta in place, as every board once did.
   if (isPlainThreadArray(current) && (delta.upserts.length > 0 || delta.removed.length > 0)) {
-    const positions = positionsFor(current)
-    const next = { threads: current.slice() } as BoardSnapshot
-    applyBoardDelta(next, { upserts: delta.upserts, removed: delta.removed }, positions)
-    boardPositions.delete(current)
-    boardPositions.set(next.threads, positions)
-    board.threads = plainArray(next.threads)
+    board.threads = threadsWithDelta(current, delta.upserts, delta.removed)
     if (delta.meta) applyBoardDelta(board, { upserts: [], removed: [], meta: delta.meta })
     return true
   }
   applyBoardDelta(board, delta, positionsFor(current))
   return true
+}
+
+/**
+ * A threads array with a delta's upserts and removals applied, as a NEW plain array: `threads` itself is
+ * never written, so a snapshot holding it keeps the board it saw. The slot table moves to the copy, which
+ * has the same slots, so the next delta's lookups stay one each. Upserts must be plain already
+ * (plainThreads). The project page's applyDelta and the Console's merged board both apply deltas here.
+ */
+export function threadsWithDelta(threads: ThreadView[], upserts: ThreadView[], removed: string[]): ThreadView[] {
+  const positions = positionsFor(threads)
+  const next = { threads: threads.slice() } as BoardSnapshot
+  applyBoardDelta(next, { upserts, removed }, positions)
+  boardPositions.delete(threads)
+  boardPositions.set(next.threads, positions)
+  return plainArray(next.threads)
 }
 
 // ONE LOOKUP TABLE PER BOARD STATE, so finding a thread does not cost a walk of every thread the project

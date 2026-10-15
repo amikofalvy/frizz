@@ -1,7 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query"
 import type { BoardSnapshot, BoardState, ServerEvent, SocketClientMsg, SocketServerMsg, ThreadView } from "@frizz/shared"
-import { applyBoardDelta, deltaAction } from "@frizz/shared"
-import { store, openThread, plainThreads, setBoardPendingCheck } from "../store.ts"
+import { deltaAction } from "@frizz/shared"
+import { store, openThread, plainArray, plainThreads, setBoardPendingCheck, threadsWithDelta } from "../store.ts"
 import { isConsolePath, projectApiBase, projectHref } from "../lib/base-path.ts"
 import { setProjectGithubRepo } from "../lib/githubAutolink.ts"
 import { localFileQueryKey } from "../lib/localFileQuery.ts"
@@ -62,7 +62,7 @@ let projectsKnown = false
 
 /** The merged board's own fields. It belongs to no project, so it carries no project's identity. */
 function emptyUnion(): BoardSnapshot {
-  return { projectDir: "", projectName: "Console", projectLabel: "Console", threads: [], errors: [], warnings: [] }
+  return { projectDir: "", projectName: "Console", projectLabel: "Console", threads: plainArray([]), errors: [], warnings: [] }
 }
 
 /** A project's thread under its key. `dependsOn` names threads of the same project, so it is keyed too. */
@@ -71,27 +71,37 @@ export function keyThread(project: string, t: ThreadView): ThreadView {
   return plainThreads([{ ...t, id: threadKey(project, t.id), dependsOn: t.dependsOn.map((slug) => threadKey(project, slug)) }])[0]
 }
 
+// THE MERGED THREADS ARRAY IS A PLAIN VALUE, like a project page's (store.ts plainArray): every change
+// below builds a new array and assigns it, and never writes into the one already there, so a snapshot
+// that holds it keeps the board it saw. As a valtio proxy it was the one part of the Console that grew
+// with every project's history — each delta made the next snapshot copy every thread slot of every
+// project, and proxy-compare copy that again for each tracking view — and the merged board is the
+// biggest board there is. A delta now costs one `slice` of it, and its upserts keep the slot table
+// (threadsWithDelta), so a delta also finds its threads without a walk.
+
 /** Replace ONE project's threads on the merged board with this board's. */
 export function mergeKeyframe(union: BoardSnapshot, project: string, board: BoardSnapshot): void {
   const prefix = threadKey(project, "")
   const kept = union.threads.filter((t) => !t.id.startsWith(prefix))
-  union.threads = [...kept, ...board.threads.map((t) => keyThread(project, t))]
+  union.threads = plainArray([...kept, ...board.threads.map((t) => keyThread(project, t))])
   // The machine's home directory is the same whichever project says it; the Console's paths use it.
   if (board.homeDir && !union.homeDir) union.homeDir = board.homeDir
 }
 
 /** Apply one project's delta to the merged board. Board-level meta is that project's, so it is not applied. */
 export function mergeDelta(union: BoardSnapshot, project: string, delta: Extract<ServerEvent, { type: "board-delta" }>): void {
-  applyBoardDelta(union, {
-    upserts: delta.upserts.map((t) => keyThread(project, t)),
-    removed: delta.removed.map((slug) => threadKey(project, slug)),
-  })
+  if (delta.upserts.length === 0 && delta.removed.length === 0) return
+  union.threads = threadsWithDelta(
+    union.threads,
+    delta.upserts.map((t) => keyThread(project, t)),
+    delta.removed.map((slug) => threadKey(project, slug)),
+  )
 }
 
 /** Drop a project's threads from the merged board — it closed, was removed, or left the Console's set. */
 export function dropProject(union: BoardSnapshot, project: string): void {
   const prefix = threadKey(project, "")
-  if (union.threads.some((t) => t.id.startsWith(prefix))) union.threads = union.threads.filter((t) => !t.id.startsWith(prefix))
+  if (union.threads.some((t) => t.id.startsWith(prefix))) union.threads = plainArray(union.threads.filter((t) => !t.id.startsWith(prefix)))
 }
 
 class ProjectFeed {
