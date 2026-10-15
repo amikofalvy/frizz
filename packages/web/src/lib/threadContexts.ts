@@ -1,5 +1,5 @@
 import { createContext } from "react"
-import type { HeldRun } from "./restReply.ts"
+import type { QueuedRun } from "./restReply.ts"
 
 // The contexts a thread surface provides to everything drawn inside it. They are provided in ONE place,
 // components/ThreadSurface.tsx, and defined here rather than there so a consumer deep in the transcript
@@ -27,9 +27,7 @@ export interface SurfaceExit {
 // is no queue to scroll — there the fence buttons behave as before (archive/snooze, no scroll).
 export const QueueDismissContext = createContext<SurfaceExit | null>(null)
 
-// The surface's messages SENT TO THE QUEUE, as one run (lib/restReply heldRunOf): the held message whose
-// bubble draws the run's one status line, and how many it speaks for. Its own context, with a value that
-// changes only when the run does, because every user bubble reads it — on the transcript's context each
-// one would re-render on every message. Null outside a surface (a fixture, a sub-agent's sheet), where a
-// held message draws its own line.
-export const HeldRunContext = createContext<HeldRun | null>(null)
+// The surface's queued tail, as the one Send now under it reads it (lib/restReply queuedRunOf). Its own
+// context, with a value that changes only when the counts do, so the control does not re-render on
+// every message the transcript's context carries. Null outside a surface.
+export const QueuedRunContext = createContext<QueuedRun | null>(null)

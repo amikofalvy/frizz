@@ -2,13 +2,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { createRoot } from "react-dom/client"
 import { useState, type ReactNode } from "react"
 import { ArrowUp } from "lucide-react"
-import type { BoardSnapshot } from "@frizz/shared"
 import type { ChatMessage } from "./hooks.ts"
 import { Message, WorkingIndicator } from "./components/ChatView.tsx"
 import { HUMAN_RUN_STEP, STEP, VSpace } from "./components/rhythm.tsx"
 import { TooltipProvider } from "./components/Tooltip.tsx"
-import { HeldRunContext, ThreadSlugContext } from "./lib/threadContexts.ts"
-import { store } from "./store.ts"
 import "./styles.css"
 
 // MOCKUP SHEET — ONE SMALLER "SEND NOW" ARROW UNDER THE QUEUED MESSAGES.
@@ -16,6 +13,10 @@ import "./styles.css"
 // Not shipped UI and not a test. The maintainer, 2026-10-15: "I think that the Send Now arrow should
 // actually be smaller, and it should probably be visible at all times underneath the set of queued
 // messages. Let's mock that up."
+//
+// PICKED: B, the same day, without the status words in either mode ("I don't think we need the little
+// message that says 'Queued until the agent rests'") — shipped as ChatView QueuedSendNow. The sheet
+// stays as the record of what was weighed; its "today" frame went with the control it drew.
 //
 // WHAT IS TRUE TODAY (read from the code on 2026-10-15):
 //   · Every queued bubble grows its own ↑ on hover, 28×28 with a 15px glyph, to the LEFT of the bubble,
@@ -38,13 +39,6 @@ import "./styles.css"
 const params = new URLSearchParams(location.search)
 document.documentElement.dataset.font = "sans"
 document.documentElement.dataset.theme = params.get("theme") === "light" ? "light" : "dark"
-
-// THE BASELINE FRAME draws today's real control, which needs a running Claude thread on the board.
-const TODAY = "today"
-store.board = {
-  projectDir: "/fixture/acme",
-  threads: [{ id: TODAY, slug: TODAY, backend: "claude", runtime: "running", sessionId: "sid-today" }],
-} as unknown as BoardSnapshot
 
 const originalFetch = window.fetch
 window.fetch = async (input, init) => {
@@ -283,29 +277,6 @@ function CandidateFrame({ candidate, mode }: { candidate: (typeof CANDIDATES)[nu
   )
 }
 
-// TODAY: the real control. Each bubble carries its own ↑ on hover (try it), and a held run its one line.
-function TodayFrame({ mode }: { mode: Mode }) {
-  const held = mode === "held"
-  const list = bubbles(mode, held ? { deliveryState: "held" } : undefined).map((m, i) => ({ ...m, deliveryId: `d-${mode}-${i}` }))
-  return (
-    <Frame label={mode === "steer" ? "Sent as steer · hover a bubble" : "Sent to queue · hover a bubble"}>
-      <ThreadSlugContext.Provider value={TODAY}>
-        <HeldRunContext.Provider value={held ? { last: list[list.length - 1].deliveryId!, count: list.length } : null}>
-          <Message m={AGENT} />
-          <VSpace h={STEP} />
-          <WorkingIndicator since={at(2)} />
-          {list.map((m, i) => (
-            <div key={m.sourceId} className="flex flex-col">
-              <VSpace h={i === 0 ? STEP : HUMAN_RUN_STEP} />
-              <Message m={m} />
-            </div>
-          ))}
-        </HeldRunContext.Provider>
-      </ThreadSlugContext.Provider>
-    </Frame>
-  )
-}
-
 function Section({ id, name, says, children }: { id: string; name: string; says: string; children: ReactNode }) {
   return (
     <section className="mb-14">
@@ -335,10 +306,6 @@ function Sheet() {
             The spacing fix is already on <code className="text-fg">main</code> in every frame: the bubbles sit 6px apart
             and a held run has one status line.
           </p>
-          <Section id="0" name="Today" says="The control as it ships: a 28px arrow left of whichever bubble is under the pointer. Hovering any of the three shows the same control, and it sends all three.">
-            <TodayFrame mode="steer" />
-            <TodayFrame mode="held" />
-          </Section>
           {CANDIDATES.map((c) => (
             <Section key={c.key} id={c.key} name={c.name} says={c.says}>
               <CandidateFrame candidate={c} mode="steer" />

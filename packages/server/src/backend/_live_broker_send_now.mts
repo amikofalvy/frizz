@@ -1,7 +1,7 @@
 // LIVE PROBE: does "send now" get a message read at once WITHOUT killing the call it arrived under?
 //   nub packages/server/src/backend/_live_broker_send_now.mts [arm[:runs] ...]
 //
-// WHY. "Send now" (⌘⏎, the ↑ beside a queued bubble) used to be a plain interrupt: the running tool
+// WHY. "Send now" (⌘⏎, the Send now under the queued messages) used to be a plain interrupt: the running tool
 // call was killed, Claude Code answered it with its stock rejection paragraph ("The user doesn't want
 // to proceed with this tool use … STOP what you are doing"), and the worker had to work out that
 // nothing had been rejected and run the call again (_live_broker_interrupt_cut_call.mts). The runtime

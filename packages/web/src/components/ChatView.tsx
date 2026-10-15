@@ -35,7 +35,7 @@ import { parseSentContext, splitProseByTokens, tokenLabel, type SentContextItem 
 import { AnswersCard } from "./AnswersCard.tsx"
 import { DividerQuotedTitle, WAKE_DIVIDER_WIDE_ONLY, WakeDivider } from "./WakeDivider.tsx"
 import { usePromptBoxSends } from "../lib/sendScope.tsx"
-import { HeldRunContext, QueueDismissContext, ThreadSlugContext } from "../lib/threadContexts.ts"
+import { QueueDismissContext, QueuedRunContext, ThreadSlugContext } from "../lib/threadContexts.ts"
 import { lastAssistantIndex } from "../lib/lastAssistant.ts"
 import { ThreadSurface, useThreadMessages, useThreadSurface, useThreadTranscript, type ThreadTranscript } from "./ThreadSurface.tsx"
 import { useIsMobile } from "../lib/mobile.ts"
@@ -532,6 +532,7 @@ type VirtualThreadRow =
   | ({ kind: "message"; timeBreak: TimeBreak | null; timeBreakAt: string | undefined } & VirtualTranscriptMessageRow)
   | { key: "runtime-status"; kind: "runtime-status" }
   | { key: string; kind: "queued"; message: ChatMessage; messageIndex: number; gap: number }
+  | { key: "queued-send-now"; kind: "queued-send-now" }
 
 // THE RUNTIME-STATUS LADDER — ONE slot at the transcript's end, nine mutually exclusive rungs, hardest
 // reading first, and ONE renderer for all of it.
@@ -919,6 +920,7 @@ function VirtualizedThreadTranscript({
       next.push({ key, kind: "queued", message, messageIndex, gap })
       previousQueued = message
     })
+    if (previousQueued) next.push({ key: "queued-send-now", kind: "queued-send-now" })
     return next
   }, [beforeCursor, earlierError, hasEarlier, hasRuntimeRow, loadingEarlier, messageRows, messages, questionGroups, settledByRow, transportFallback])
 
@@ -933,6 +935,7 @@ function VirtualizedThreadTranscript({
       const row = rows[index]
       if (!row) return 80
       if (row.kind === "head-anchor" || row.kind === "interactions") return 1
+      if (row.kind === "queued-send-now") return 22
       if (row.kind === "earlier-history") return 42
       if (row.kind === "transport-fallback") return 76
       if (row.kind === "runtime-status") return 54
@@ -1532,6 +1535,10 @@ function VirtualizedThreadTranscript({
             ) : row.kind === "runtime-status" ? (
               <div className="px-6">
                 <RuntimeStatusSlot tail={runtimeTail} />
+              </div>
+            ) : row.kind === "queued-send-now" ? (
+              <div className="flex flex-col px-6">
+                <QueuedSendNow />
               </div>
             ) : (
               // The QUEUED branch: built straight from `messages`, never through the tool-activity coalescer.
@@ -3222,66 +3229,65 @@ function FailedSendRow({ deliveryId, text, rawText, error }: { deliveryId: strin
   )
 }
 
-// UNDER A MESSAGE SENT TO THE QUEUE — the one line that says why it is still gray, with the two things
-// the operator can do about it. "Send now" hands it over as the steer it would have been (no interrupt:
-// the forced send stays on the ↑ beside the bubble and on ⌘/Ctrl-Enter); "Take back" drops it and puts
-// the words back in the prompt box. `text` is the WHOLE message — for answers sent with a note, both.
+// SEND THE QUEUE NOW — one control under the queued messages, always visible, for all of them at once
+// (maintainer 2026-10-15: "we definitely don't need the Send Now button under every one of the messages
+// . it applies to all three"). It replaced two things: a ↑ that grew beside whichever queued bubble was
+// under the pointer, though it always sent the whole queue, and the "Queued until the agent rests ·
+// Send now · Take back" line under a message sent to the queue. The maintainer picked it from six drawn
+// candidates (queued-send-now-mockup-fixture, B) and dropped the line's status words with it. A message
+// still takes itself back on a click, which its hover lift offers.
 //
-// ONE LINE PER RUN, NOT PER MESSAGE (lib/restReply heldRunOf). Every held message waits for the same
-// rest and "Send now" releases all of them, so the line under each one said the same thing three times
-// and pushed the bubbles apart (maintainer 2026-10-15). It draws once, under the last; `count` is how
-// many it speaks for. With several, "Take back" leaves the line — it can only ever take back one message, and
-// on a line under all of them it would read as taking back the lot. Each bubble still takes itself
-// back on a click, which its hover lift offers.
-function HeldLine({ deliveryId, text, rawText, count }: { deliveryId: string; text: string; rawText: string; count: number }) {
+// It means STOP WAITING, one step at a time. Messages Frizz is holding for the rest go to the agent's
+// next step without interrupting it (deliverQueuedNow `releaseOnly`); once nothing is held, a press
+// pushes the queue through now, and the runtime moves a running command to the background or cuts the
+// turn (router deliverQueuedNow). So a held run takes two presses to interrupt.
+//
+// It carries its own leading spacer and draws nothing when there is nothing it can do, so a surface
+// mounts it under its queued tail unconditionally. The arrow is a 1em glyph on the words' baseline,
+// lifted to the middle of their cap band (`1cap`), so it sits on the words in any face at any size.
+export function QueuedSendNow() {
   const slug = useContext(ThreadSlugContext)
-  const { unqueue, pending: takingBack } = useUnqueueFollowUp(slug)
-  const { releaseHeld, pending: sending } = useDeliverQueuedNow(slug)
-  const action = "underline decoration-border underline-offset-2 outline-none transition-colors hover:text-fg focus-visible:text-fg disabled:opacity-50"
+  const run = useContext(QueuedRunContext)
+  const interruptible = useDeliverQueuedNowSupported(slug)
+  const { deliverNow, releaseHeld, pending } = useDeliverQueuedNow(slug)
+  if (!slug || !run) return null
+  const releasing = run.held > 0
+  if (!releasing && !(run.steered > 0 && interruptible)) return null
+  const several = run.held + run.steered > 1
+  const glyph = "size-[1em] shrink-0 self-baseline translate-y-[calc(0.5em_-_0.5cap)]"
   return (
-    <div data-held-line data-held-count={count} className="mt-1 flex items-baseline justify-end gap-2 text-[11.5px] leading-[16px] text-muted">
-      <span>Queued until the agent rests</span>
-      {slug && (
-        <>
-          <span aria-hidden className="text-muted-60">·</span>
-          <button type="button" data-held-send-now className={action} disabled={sending || takingBack} onMouseDown={(e) => e.preventDefault()} onClick={releaseHeld} title={count > 1 ? "Send them now — the agent reads them at its next step" : "Send it now — the agent reads it at its next step"}>
-            Send now
-          </button>
-          {count === 1 && (
-            <>
-              <span aria-hidden className="text-muted-60">·</span>
-              <button type="button" data-held-take-back className={action} disabled={sending || takingBack} onClick={(e) => unqueue({ deliveryId, text, rawText, from: e.currentTarget })} title="Put it back in the prompt box">
-                Take back
-              </button>
-            </>
-          )}
-        </>
-      )}
-    </div>
+    <>
+      <VSpace h={HUMAN_RUN_STEP} />
+      <div data-queued-send-now={releasing ? "release" : "interrupt"} className="flex items-baseline justify-end text-[11.5px] leading-[16px] text-muted">
+        <button
+          type="button"
+          // Same as every submit affordance beside a live input: never blur on the click path.
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={releasing ? releaseHeld : deliverNow}
+          disabled={pending}
+          title={releasing
+            ? several ? "Send them now — the agent reads them at its next step" : "Send it now — the agent reads it at its next step"
+            : "Send now — the worker reads the queue immediately, and a command it is running carries on in the background"}
+          className="flex items-baseline gap-1 outline-none transition-colors hover:text-fg focus-visible:text-fg disabled:opacity-50"
+        >
+          {pending ? <Loader2 aria-hidden className={`${glyph} animate-spin`} strokeWidth={2.4} /> : <ArrowUp aria-hidden className={glyph} strokeWidth={2.4} />}
+          <span className="underline decoration-border underline-offset-2">Send now</span>
+        </button>
+      </div>
+    </>
   )
-}
-
-// How many held messages the line under this one speaks for: the surface's run (HeldRunContext) draws
-// it under its last message only, and 0 under the rest. Outside a surface each draws its own.
-function useHeldLineCount(deliveryId: string | undefined, held: boolean): number {
-  const run = useContext(HeldRunContext)
-  if (!held || !deliveryId) return 0
-  if (!run) return 1
-  return run.last === deliveryId ? run.count : 0
 }
 
 // ANSWERS SENT WITH A NOTE — the prompt box's one Send (2026-10-11) carries the staged answers and the
 // typed message as one turn, and it reads as one: the Answers card, and the human's words in their own
 // bubble under it. The note of a message that answered both registered and fenced questions is itself
 // an answers message (the fenced ones, composed in the browser), so it draws the same way, recursively.
-function AnswersWithNote({ m, text, answers, note }: { m: ChatMessage; text: string; answers: PairedAnswer[]; note: string }) {
-  const heldLine = useHeldLineCount(m.deliveryId, m.deliveryState === "held")
+function AnswersWithNote({ m, answers, note }: { m: ChatMessage; answers: PairedAnswer[]; note: string }) {
   const body = (noteText: string, depth: number): ReactNode => {
     if (!noteText) return null
     const inner = depth < 2 ? parseAnswersCard(noteText) : null
     if (inner) return <>{<AnswersCard answers={inner} queued={m.queued} />}{body(answersNote(noteText), depth + 1)}</>
-    // No deliveryId: the bubble is half of a send, and taking back half of it is not a thing. A held
-    // one is taken back whole from the line below.
+    // No deliveryId: the bubble is half of a send, and taking back half of it is not a thing.
     return <UserBubble text={noteText} rawText={m.text} queued={m.queued} />
   }
   return (
@@ -3290,13 +3296,11 @@ function AnswersWithNote({ m, text, answers, note }: { m: ChatMessage; text: str
     <div data-frizz-msg={m.sourceId} data-answers-with-note className="flex w-full flex-col gap-2 self-end">
       <AnswersCard answers={answers} queued={m.queued} />
       {body(note, 0)}
-      {heldLine > 0 && m.deliveryId && <div className="self-end"><HeldLine deliveryId={m.deliveryId} text={text} rawText={m.text} count={heldLine} /></div>}
     </div>
   )
 }
 
 function UserBubble({ text, rawText, queued, held, deliveryUnconfirmed, deliveryFailed, deliveryError, deliveryId, sourceId }: { text: string; rawText?: string; queued?: boolean; held?: boolean; deliveryUnconfirmed?: boolean; deliveryFailed?: boolean; deliveryError?: string; deliveryId?: string; sourceId?: string }) {
-  const heldLine = useHeldLineCount(deliveryId, Boolean(held))
   // TAKE IT BACK. A still-queued send is the one bubble in the transcript that isn't history yet, so
   // it alone is clickable: the click unqueues it at the provider and hands the words back to the
   // prompt box (see lib/unqueueFollowUp.ts). Three gates, all of them load-bearing:
@@ -3309,24 +3313,10 @@ function UserBubble({ text, rawText, queued, held, deliveryUnconfirmed, delivery
   const unqueueSupported = useUnqueueSupported(unqueueSlug)
   const { unqueue, pending: unqueuePending } = useUnqueueFollowUp(unqueueSlug)
   // A HELD message (sent to the queue) is Frizz's alone to hand back, on every backend: no provider
-  // has it. Its own line below carries the same two verbs in words.
+  // has it.
   const unqueueable = Boolean(queued && deliveryId && unqueueSlug && (unqueueSupported || held))
-  // PUSH IT THROUGH. The other half of what you can do to a message that hasn't been read yet: instead
-  // of taking it back, stop waiting for it. A ↑ appears left of the bubble on hover and preempts the
-  // turn standing in front of the queue (see lib/deliverQueuedNow.ts). It replaces the composer's ⚡,
-  // which asked for the same decision at the wrong moment — before the operator knew how long the
-  // worker would take — and pictured it as a lightning bolt, which meant nothing.
-  //
-  // Gated on `queued` and a running turn, NOT on deliveryId: this addresses the thread's turn, not one
-  // message, so it works for a queued bubble frizz did not itself send.
-  // `queued ? slug : null` is a PERF gate, not a correctness one. Unlike unqueue's scalar (backend,
-  // which effectively never changes) this one tracks `runtime`, which flips on every turn boundary —
-  // subscribed unconditionally it would re-render every user bubble in the transcript each time a turn
-  // starts or ends. Passing null makes the snapshot a constant `false` for the historical bubbles, so
-  // they never see a change to re-render for.
-  const pushNowSupported = useDeliverQueuedNowSupported(queued ? unqueueSlug : null)
-  const { deliverNow, pending: pushNowPending } = useDeliverQueuedNow(unqueueSlug)
-  const pushable = Boolean(queued && unqueueSlug && pushNowSupported)
+  // The other half of what can be done to a message that hasn't been read yet — stop waiting for it —
+  // is the queue's, not this bubble's: one Send now under the whole run (QueuedSendNow).
   // The composer parks attached files in the draft as TRAILING standalone absolute-path lines
   // (joinComposerValue) and presents them as chips — so a sent message carries those paths as text, and
   // this bubble reprinted the screenshot the human had just attached as a wall of mono path. Peel them
@@ -3348,11 +3338,6 @@ function UserBubble({ text, rawText, queued, held, deliveryUnconfirmed, delivery
           is verbatim, so its line breaks must survive. Skipped entirely for an attachment-only send, so the
           picture stands on its own instead of hanging under an empty gray pill. */}
       {prose.trim() !== "" && (
-        // The bubble's own positioning context, and the hover GROUP the ↑ rides on. It has to be the
-        // group rather than the bubble, or moving the pointer off the bubble toward the button would
-        // hide the button before it could be clicked — and would drop the queued bubble back to 50%
-        // while its own control is under the cursor.
-        <div className="group relative">
         <div
           {...(unqueueable ? {
             role: "button",
@@ -3376,7 +3361,7 @@ function UserBubble({ text, rawText, queued, held, deliveryUnconfirmed, delivery
           // in the app uses. A KEYBOARD focus ring still has to exist, so it keeps the accent — but
           // OFFSET onto the near-black page, which is the only place this yellow reads clean and is how
           // every other focus ring in the app is drawn.
-          className={`relative ${BLOCK_RADIUS} rounded-br-sm bg-user-bubble px-3.5 py-3 text-[14px] whitespace-pre-wrap [overflow-wrap:anywhere] text-user-bubble-fg ${queued || deliveryFailed ? "opacity-50" : ""} ${unqueueable ? "cursor-pointer transition-opacity group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-bg" : ""} ${unqueuePending ? "!opacity-30" : ""}`}
+          className={`relative ${BLOCK_RADIUS} rounded-br-sm bg-user-bubble px-3.5 py-3 text-[14px] whitespace-pre-wrap [overflow-wrap:anywhere] text-user-bubble-fg ${queued || deliveryFailed ? "opacity-50" : ""} ${unqueueable ? "cursor-pointer transition-opacity hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-bg" : ""} ${unqueuePending ? "!opacity-30" : ""}`}
         >
           {/* Verbatim bytes, but link-shaped runs (a pasted URL, `#123`, a commit hash) render as the
               anchors they would be in agent prose — see LinkifiedText. The anchors stop their own
@@ -3384,29 +3369,6 @@ function UserBubble({ text, rawText, queued, held, deliveryUnconfirmed, delivery
               A message carrying ⌘I context renders its references as chips instead (SentContextBody);
               the unqueue payload above stays the whole serialized text either way. */}
           {sentContext ? <SentContextBody body={sentContext.body} items={sentContext.items} /> : <LinkifiedText text={prose} />}
-        </div>
-        {/* SEND IT NOW — icon only, no fill until the pointer is on it, and ABSOLUTE so it costs the
-            bubble no width. Laying it out as a flex sibling would narrow every queued bubble by 36px
-            and re-wrap the text the moment the send landed, which is the class of reflow this file
-            spends most of its comments avoiding.
-            `bottom-0` aligns it with the bubble's BOTTOM edge (maintainer's call), which is also where
-            the composer keeps its send arrow, so the two reads as the same gesture. */}
-        {pushable && (
-          <button
-            type="button"
-            // Same as every submit affordance beside a live input: never blur on the click path.
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={deliverNow}
-            disabled={pushNowPending}
-            // What it costs the work in flight is the runtime's call: a running command or sub-agent
-            // carries on in the background; an answer being written is cut short (router followUp).
-            title="Send now — the worker reads the queue immediately, and a command it is running carries on in the background"
-            aria-label="Send now"
-            className="icon-hover-outline absolute bottom-0 right-full mr-2 flex h-7 w-7 items-center justify-center rounded-lg text-muted opacity-0 outline-none transition-[opacity,color,background-color] group-hover:opacity-100 enabled:hover:bg-panel-2/70 enabled:hover:text-fg enabled:focus-visible:opacity-100 enabled:focus-visible:bg-panel-2/70 enabled:focus-visible:ring-1 enabled:focus-visible:ring-muted/80 enabled:focus-visible:ring-offset-1 enabled:focus-visible:ring-offset-bg enabled:active:bg-elevated"
-          >
-            {pushNowPending ? <Loader2 size={15} strokeWidth={2.2} className="animate-spin" /> : <ArrowUp size={15} strokeWidth={2.2} />}
-          </button>
-        )}
         </div>
       )}
       {/* Below the words, mirroring the composer (prose in the textarea, chips along its bottom edge) —
@@ -3437,7 +3399,6 @@ function UserBubble({ text, rawText, queued, held, deliveryUnconfirmed, delivery
       {deliveryFailed && deliveryId && (
         <FailedSendRow deliveryId={deliveryId} text={text} rawText={rawText ?? text} error={deliveryError} />
       )}
-      {heldLine > 0 && deliveryId && <HeldLine deliveryId={deliveryId} text={text} rawText={rawText ?? text} count={heldLine} />}
       {/* No "click to unqueue" hint: the hover lift above already says the bubble is live, and a
           label spelling that out is noise on every queued send. Only the IN-FLIGHT retraction gets a
           line, because "did my click land?" isn't something the hover state can answer. It reserves no
@@ -3557,7 +3518,7 @@ export const Message = memo(function Message({ m, answering, dense, paired, text
     if (answers && m.deliveryState !== "failed") {
       const note = answersNote(text)
       if (!note && m.deliveryState !== "held") return <AnswersCard answers={answers} queued={m.queued} sourceId={m.sourceId} />
-      return <AnswersWithNote m={m} text={text} answers={answers} note={note} />
+      return <AnswersWithNote m={m} answers={answers} note={note} />
     }
     // A scheduler wake is recorded as a user turn because it is pasted into the worker's composer —
     // but FRIZZ wrote it, not the human, so it must not wear the human's off-white right-justified

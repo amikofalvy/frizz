@@ -59,22 +59,21 @@ export function inQueuedTail(message: Pick<ChatMessage, "queued" | "restReply">)
   return message.queued === true && message.restReply !== true
 }
 
-/** The messages SENT TO THE QUEUE share one status line, drawn under the last of them (ChatView HeldLine):
- *  they wait for the same rest and one "Send now" releases them all, so a line under each said the same
- *  thing again and pushed the run apart (maintainer 2026-10-15). `last` is that message's deliveryId,
- *  null when nothing in the tail is held. */
-export interface HeldRun {
-  last: string | null
-  count: number
+/** THE QUEUED TAIL as the one Send now under it reads it (ChatView QueuedSendNow): how many of its
+ *  messages Frizz is holding for the agent's rest, and how many are waiting on its next step. A failed or
+ *  unconfirmed send is neither — it carries its own row, and nothing is waiting on it. */
+export interface QueuedRun {
+  held: number
+  steered: number
 }
 
-export function heldRunOf(messages: readonly Pick<ChatMessage, "queued" | "restReply" | "deliveryState" | "deliveryId">[]): HeldRun {
-  let last: string | null = null
-  let count = 0
+export function queuedRunOf(messages: readonly Pick<ChatMessage, "queued" | "restReply" | "deliveryState">[]): QueuedRun {
+  let held = 0
+  let steered = 0
   for (const m of messages) {
-    if (!inQueuedTail(m) || m.deliveryState !== "held" || !m.deliveryId) continue
-    last = m.deliveryId
-    count++
+    if (!inQueuedTail(m) || m.deliveryState === "failed" || m.deliveryState === "unconfirmed") continue
+    if (m.deliveryState === "held") held++
+    else steered++
   }
-  return { last, count }
+  return { held, steered }
 }

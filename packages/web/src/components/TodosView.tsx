@@ -21,7 +21,7 @@ import { returningHolds, type Departure } from "../lib/queueReturn.ts"
 import { questionsByAnchor } from "../lib/questionAnchor.ts"
 import { allFencesShadowed, placedFrom, placedRestEnds } from "../lib/questionShadow.ts"
 import { carryTimeBreak, timeBreaks, type TimeBreak } from "../lib/timeBreaks.ts"
-import { Message, ThreadMessage, TimeBreakHead, TranscriptSyncFallbackBanner, RuntimeStatusSlot, useRuntimeTail, VSpace, STEP, PICTURE_STEP, messageGap, messageHeadIsPicture, messageRendersNothing, messageHasRenderableText } from "./ChatView.tsx"
+import { Message, QueuedSendNow, ThreadMessage, TimeBreakHead, TranscriptSyncFallbackBanner, RuntimeStatusSlot, useRuntimeTail, VSpace, STEP, PICTURE_STEP, messageGap, messageHeadIsPicture, messageRendersNothing, messageHasRenderableText } from "./ChatView.tsx"
 import { BLOCK_RADIUS, BLOCK_RADIUS_TOP, BLOCK_RADIUS_INNER_BOTTOM } from "./TranscriptCard.tsx"
 import { agentCompletionCall } from "../lib/subAgentCompletion.ts"
 import { coalesceToolActivityMessages, historicalToolActivityMessages } from "../lib/toolActivity.ts"
@@ -1922,6 +1922,8 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
                 )
               })
             })()}
+            {/* One Send now for the whole run, under it — it draws nothing when there is no run. */}
+            <QueuedSendNow />
           </>
         )}
       </div>

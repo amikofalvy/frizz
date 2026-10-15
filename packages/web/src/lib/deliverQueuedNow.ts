@@ -9,15 +9,16 @@ import { showToast, store, threadBySlug } from "../store.ts"
 // measured p50 13.8s, p90 49s, p99 2.5m, and the tail is a real 90s tool call. The operator can already
 // pay for that wait up front (⌘⏎ sends AND interrupts), but that forces the decision at the moment of
 // typing, before they know how long the worker is going to take. This is the same capability offered
-// AFTERWARDS, from the one surface that is on screen for the whole wait: the queued bubble.
+// AFTERWARDS, from the one place on screen for the whole wait: under the queued messages
+// (ChatView QueuedSendNow).
 //
 // There is nothing to send here — the words are already queued. All that is left is asking the runtime
 // to push them through: it moves a running command or sub-agent to the background and the turn takes
 // the queue in, or — with nothing it can move — aborts the turn, which leaves queued input intact for
 // the next one to open on (router deliverQueuedNow). Either way no new delivery path was needed.
 //
-// It acts on the QUEUE, so with several bubbles queued it delivers all of them, in order. The button's
-// title says that rather than implying it singles out the one under the pointer.
+// It acts on the QUEUE, so with several bubbles queued it delivers all of them, in order — which is why
+// it is one control under the run rather than one per bubble (maintainer 2026-10-15).
 
 // Which surfaces can offer this at all: the same broker-backed-Claude boundary as unqueue (a codex
 // steer goes straight into the running turn, so there is no queue to jump), plus a turn that is

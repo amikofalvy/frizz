@@ -25,6 +25,9 @@ const INTERLEAVE = PARAMS.get("interleave") === "1"
 // ?held=1 — the tail was sent TO THE QUEUE (the Send menu's "Send to queue"): Frizz holds each message
 // until the agent rests, rather than handing it to the agent's next step.
 const HELD = PARAMS.get("held") === "1"
+// ?backend=codex — a runtime with no queue to push through: a steer there has no Send now, and a message
+// held for the rest still does (Frizz releases it).
+const BACKEND = PARAMS.get("backend") === "codex" ? "codex" : "claude"
 // The app picks its prose face in `index.html` before first paint, and a fixture that leaves it unset
 // renders the MONO default — so a reading fitted here would only ever be right in one of the two faces
 // this app ships. `?font=sans` (the default here, matching the maintainer's own window) / `?font=mono`.
@@ -51,7 +54,7 @@ const thread = {
   pendingQuestion: false,
   kind: "session",
   foreign: false,
-  backend: "claude",
+  backend: BACKEND,
   permissionMode: "default",
   subAgents: [],
   bgShells: [],

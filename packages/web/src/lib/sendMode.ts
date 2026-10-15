@@ -9,7 +9,7 @@ import { proxy, useSnapshot } from "valtio"
 //   queue — Frizz keeps the message until the agent comes to rest, then delivers it as the next turn.
 //
 // A third way, the FORCED send that interrupts the turn, is deliberately not a row: it stays on
-// ⌘/Ctrl-Enter and on the ↑ beside a waiting bubble.
+// ⌘/Ctrl-Enter and on the Send now under the queued messages.
 //
 // PER THREAD, IN MEMORY, AND BACK TO STEER WHEN THE AGENT RESTS. Queueing is a decision about the turn
 // in front of the operator — "not now, after this" — so it ends with that turn: a tick that outlived it

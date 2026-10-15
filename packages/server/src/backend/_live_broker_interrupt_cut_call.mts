@@ -1,7 +1,7 @@
 // LIVE PROBE: does a worker go back to the tool call "send now" cut off?
 //   nub packages/server/src/backend/_live_broker_interrupt_cut_call.mts [arm[:runs] ...]
 //
-// WHY. "Send now" (⌘⏎, the ↑ beside a queued bubble) interrupts the running turn so the worker reads a
+// WHY. "Send now" (⌘⏎, the Send now under the queued messages) interrupts the running turn so the worker reads a
 // message at once (_live_broker_interrupt_send.mts). Claude Code answers the tool call that was in
 // flight with the stock paragraph it uses for a real rejection — "The user doesn't want to proceed with
 // this tool use. The tool use was rejected (…) STOP what you are doing and wait for the user to tell you

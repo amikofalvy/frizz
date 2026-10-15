@@ -9,7 +9,7 @@ import type { SendMode } from "../lib/sendMode.ts"
 // always reads "Send": "broad enough to encapsulate the fact that it may also be sending question
 // answers". The caret beside it opens the two ways a send can go out while the agent is working; the
 // ticked one is what the button and Enter do. The third way, the forced send that interrupts the
-// turn, is not a row: it stays on ⌘/Ctrl-Enter and on the ↑ beside a waiting bubble.
+// turn, is not a row: it stays on ⌘/Ctrl-Enter and on the Send now under the queued messages.
 //
 // IT IS WHITE WHENEVER THERE IS SOMETHING TO SEND, which includes an answer staged on a card with the
 // box still empty. The caret stays live when the button is dim: choosing how the next message goes

@@ -208,7 +208,7 @@ export function Composer({
   // KEYBOARD ONLY — there is deliberately no button here. It used to render a ⚡ in the rail, and the
   // bolt was the wrong picture of the thing (maintainer, 2026-08-03: "we need to drop the lightning
   // bolt icon to mean force push. That doesn't make any sense."). Preempting is now offered where the
-  // waiting message actually IS: a ↑ on the queued bubble itself (UserBubble's push-now control), which
+  // waiting messages actually ARE: one Send now under the queued run (ChatView QueuedSendNow), which
   // needs no message payload because the send is already in the provider's queue. The shortcut stays
   // because it is a real send path with muscle memory behind it — only the picture was wrong.
   onInterruptSubmit?: () => void

@@ -1674,9 +1674,9 @@ function cancelledToolResult(text: string): boolean {
 // was still running when its turn was interrupted with one fixed paragraph, written for the model:
 // "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file
 // edit, the new_string was NOT written to the file). STOP what you are doing and wait…", then a note
-// about saving a memory. In a Frizz thread the interrupt is "send now" (⌘⏎, the ↑ beside a queued
-// bubble), which ends the turn to deliver a message: all 6 on this machine (2026-10-13) were a Bash
-// call, then the interrupt receipt, then the message that caused it. Nothing failed and nobody refused
+// about saving a memory. In a Frizz thread the interrupt is "send now" (⌘⏎, the Send now under the
+// queued messages), which ends the turn to deliver a message: all 6 on this machine (2026-10-13) were a
+// Bash call, then the interrupt receipt, then the message that caused it. Nothing failed and nobody refused
 // the call, so its card reads "cancelled" rather than the red "failed" that `is_error` alone gave it,
 // and the paragraph is not its output — it drew under a Bash card as though the command had printed it.
 // (Frizz's own denials never read this way: each `canUseTool` deny carries a message of its own.)
