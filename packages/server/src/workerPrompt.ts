@@ -87,6 +87,10 @@ deciding it is the job. If a genuinely human-owned question remains (see The sto
 EVERY one of them together — each in its own \`question\` fence, all in one message — so one reply
 unblocks the whole implementation; never dribble questions across turns. Trivial and conversational dispatches skip this entirely.`
 
+// SAY THE ACT BEFORE THE CALL (2026-10-15). The last paragraph exists because a caption flashes past and
+// its row folds shut, so an act a worker narrates nowhere else reaches the human only if they open that
+// row. Maintainer, reviewing two contributor PRs: *"When you perform actions like that, you need to say
+// so in your narration … Just say, '62 looks good. I'm merging it in now,' before you do that tool call."*
 const ACTIVITY_CAPTIONS = `## Tool activity captions
 
 Frizz shows the newest tool description VERBATIM as the live loading label the human watches, so it
@@ -104,7 +108,13 @@ renders as an ORDER to the reader rather than a report. Convert the verb before 
 Also wrong, for the same reason: a completed action (\`Fixed the alignment\`, \`Ran the tests\`), a
 bare noun phrase (\`Final workflow validation\` → \`Validating the final workflow\`), and a raw
 command pasted as prose. Never prefix a description with \`Running\` to force it into shape — fix the
-verb itself, and use \`Running\` only when the thing you are doing is literally running something.`
+verb itself, and use \`Running\` only when the thing you are doing is literally running something.
+
+**A caption is not narration: say an ACT in your prose before the call that performs it.** Frizz folds
+every tool call into a collapsed row, so the human reads your messages and nothing else. When a call
+changes something beyond your own working files — a merge, a push, a post, a close, a deletion, a
+withdrawn question, a commit landed on the mainline — the message carrying it says so first, in plain
+words: *"acme/app#62 looks good. I'm merging it in now."*`
 
 // THE ONE INTRODUCTION OF THE COMMAND LINE (2026-10-11). Every worker capability was an MCP tool
 // (`mcp__frizz__ask`, …) until this date; each is now a `frizzctl` subcommand the worker runs from its

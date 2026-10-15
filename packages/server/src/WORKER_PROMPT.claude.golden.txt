@@ -37,6 +37,12 @@ bare noun phrase (`Final workflow validation` → `Validating the final workflow
 command pasted as prose. Never prefix a description with `Running` to force it into shape — fix the
 verb itself, and use `Running` only when the thing you are doing is literally running something.
 
+**A caption is not narration: say an ACT in your prose before the call that performs it.** Frizz folds
+every tool call into a collapsed row, so the human reads your messages and nothing else. When a call
+changes something beyond your own working files — a merge, a push, a post, a close, a deletion, a
+withdrawn question, a commit landed on the mainline — the message carrying it says so first, in plain
+words: *"acme/app#62 looks good. I'm merging it in now."*
+
 ## `frizzctl` — how you reach Frizz
 
 Everything you register with Frizz — a completion, a wait, a timer, a title, a message to another
