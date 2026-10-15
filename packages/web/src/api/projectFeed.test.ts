@@ -110,7 +110,7 @@ test("nothing from the project the page has left reaches the UI", async () => {
   }
 
   try {
-    const { store, setBoard, seedBoard } = await import("../store.ts")
+    const { store, setBoard } = await import("../store.ts")
 
     // 1. THE FEED ANSWERS FOR ITSELF. The router asks "are you already on this project?" and the answer
     //    comes from the module holding the connection — not from a note some component kept, which is
@@ -146,13 +146,10 @@ test("nothing from the project the page has left reaches the UI", async () => {
     assert.equal(store.board, null, "alpha's keyframe must not land on beta's page")
 
     // 3. …AND THE SAME PAYLOAD IS REFUSED AT THE STORE ITSELF, on its own evidence rather than on the
-    //    transport's bookkeeping. This is the backstop for every path not yet imagined: an rpc.board()
-    //    seed in flight across the switch lands into the just-emptied store, where `seedBoard`'s
-    //    "nothing is there yet" guard would otherwise wave it straight through.
+    //    transport's bookkeeping. This is the backstop for every path not yet imagined: a board read
+    //    in flight across the switch lands into the just-emptied store.
     setBoard(board("alpha"))
     assert.equal(store.board, null, "setBoard must refuse a board stamped with another project")
-    seedBoard(board("alpha"))
-    assert.equal(store.board, null, "seedBoard must refuse a board stamped with another project")
     setBoard(board("beta"))
     assert.equal(store.board?.projectName, "beta", "…and must accept this project's own board")
     store.board = null

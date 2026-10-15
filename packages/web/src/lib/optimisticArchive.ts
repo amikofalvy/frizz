@@ -1,6 +1,7 @@
 import { useMemo } from "react"
 import { proxy, useSnapshot } from "valtio"
 import type { ThreadView } from "@frizz/shared"
+import { overlayEach, plainEntries } from "./steering.ts"
 
 // OPTIMISTIC ARCHIVE STATE — "this thread is done", rendered on the rail the instant the operator
 // clicks rather than when the server can prove it. The exact twin of lib/steering.ts, for the other
@@ -79,7 +80,14 @@ export function optimisticallyArchived(t: ThreadView, at: number | undefined, no
 }
 
 // Apply the overlay across a board's threads. A thread with no pending archive is returned BY IDENTITY.
+// The stamps are read by their own keys, not per thread (see useOptimisticallySteered), and with no
+// pending archive the input array itself comes back.
 export function useOptimisticallyArchived(threads: readonly ThreadView[]): ThreadView[] {
   const at = useArchivingAt()
-  return useMemo(() => threads.map((t) => optimisticallyArchived(t, at[t.id])), [threads, at])
+  return useMemo(() => {
+    const stamps = plainEntries(at)
+    if (stamps.size === 0) return threads as ThreadView[]
+    const nowMs = Date.now()
+    return overlayEach(threads, (t) => optimisticallyArchived(t, stamps.get(t.id), nowMs))
+  }, [threads, at])
 }

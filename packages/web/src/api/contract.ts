@@ -19,6 +19,7 @@ import type {
   DropOwnLinkInput,
   DropOwnLinkResult,
   BoardSnapshot,
+  BoardState,
   Settings,
   DispatchInput,
   AdoptThreadInput,
@@ -134,6 +135,8 @@ export interface RpcCallOpts {
 
 export interface Api {
   board(): Promise<BoardSnapshot>
+  // The board and the (seq, boot) it reflects: what a page reads before resuming /ws from that seq.
+  boardState(): Promise<BoardState>
   threadBody(input: { slug: string }): Promise<{ markdown: string }>
   threadTranscript(input: { slug: string }): Promise<TranscriptPage>
   threadTranscriptEarlier(input: TranscriptEarlierInput): Promise<TranscriptPage>
@@ -387,6 +390,7 @@ export type ProcType = "query" | "mutation"
 // needs; the `satisfies` keeps it exhaustive over `Api`.
 export const PROCEDURES = {
   board: "query",
+  boardState: "query",
   threadBody: "query",
   threadTranscript: "query",
   threadSettledQuestions: "query",

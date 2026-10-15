@@ -1,7 +1,7 @@
 import * as RadixDialog from "@radix-ui/react-dialog"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useSnapshot } from "valtio"
-import { store } from "../store.ts"
+import { store, threadBySlug } from "../store.ts"
 import { useBoard } from "../hooks.ts"
 import { rpc } from "../api/rpc.ts"
 import { displayTitle } from "../groups.ts"
@@ -62,7 +62,7 @@ export function ThreadSheet({ id, slug, depth, widthDepth, initiallyOpen }: { id
   // new activity reaches rest while the drawer is open so last_read_at reflects what was actually on
   // screen; mid-turn tailer churn is excluded. Idempotent and fire-and-forget.
   const board = useBoard()
-  const route = resolveThreadRoute(board, slug)
+  const route = resolveThreadRoute(board, slug, threadBySlug)
   const t = route.kind === "found" ? route.thread : undefined
   const projectDir = board?.projectDir
   const atRestNow = t ? t.runtime === "turn-idle" || t.runtime === "exited" || t.runtime === "none" : false

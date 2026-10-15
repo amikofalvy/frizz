@@ -31,7 +31,7 @@ function harness(opts: { probe?: (ref: PrRef) => PrProbe; probeIssue?: (ref: PrR
   let refreshes = 0
   const board: BoardManager = {
     snapshot: async () => snapshot,
-    currentSeq: () => 0,
+    currentSeq: () => 0, deltasSince: () => null, snapshotState: async () => ({ board: ({}) as never, seq: 0 }),
     rebuild: async () => snapshot,
     refresh: () => { refreshes++; return snapshot },
     start: async () => {},

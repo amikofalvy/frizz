@@ -3,7 +3,7 @@ import assert from "node:assert/strict"
 import type { BoardSnapshot, SocketServerMsg, ThreadView } from "@frizz/shared"
 
 // THE CONSOLE'S FEED ACROSS ITS OWN LIFETIME — leaving it, coming back, and the projects that answer
-// late or answer too big. consoleFeed.test.ts pins the merge; this pins when the merged board may be
+// late. consoleFeed.test.ts pins the merge; this pins when the merged board may be
 // SHOWN, because every bug here was a board shown with a project missing from it and nothing saying so.
 
 type Listener = (event: unknown) => void
@@ -71,15 +71,23 @@ class FakeEventSource {
 }
 
 const thread = (id: string): ThreadView => ({ id, title: id, dependsOn: [], needsYou: true }) as unknown as ThreadView
-const keyframe = (projectSlug: string, ids: string[], githubRepo?: string): SocketServerMsg => ({
-  t: "event",
-  event: {
-    type: "board",
-    seq: 1,
-    bootId: "boot-test",
-    board: { projectDir: `/fixture/${projectSlug}`, projectName: projectSlug, projectSlug, githubRepo, threads: ids.map(thread), errors: [], warnings: [] } as BoardSnapshot,
-  },
-})
+const hello: SocketServerMsg = { t: "hello", bootId: "boot-test", seq: 1 }
+const settle = async () => {
+  for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve))
+}
+// A project ANSWERS when its board read lands (board-resume.ts): each feed reads its project's board
+// over HTTP, and the read is held here until the test answers it.
+const pendingReads: { project: string; resolve: (response: Response) => void }[] = []
+const readBoard = (url: string): Promise<Response> =>
+  new Promise((resolve) => pendingReads.push({ project: new URL(url, "http://127.0.0.1:54917").pathname.split("/")[2]!, resolve }))
+const answer = async (projectSlug: string, ids: string[], githubRepo?: string) => {
+  const at = pendingReads.findLastIndex((read) => read.project === projectSlug)
+  assert.ok(at >= 0, `a board read for ${projectSlug} is in flight`)
+  const [read] = pendingReads.splice(at, 1)
+  const board = { projectDir: `/fixture/${projectSlug}`, projectName: projectSlug, projectSlug, githubRepo, threads: ids.map(thread), errors: [], warnings: [] } as BoardSnapshot
+  read!.resolve(new Response(JSON.stringify({ result: { board, seq: 1, bootId: "boot-test" } }), { status: 200 }))
+  await settle()
+}
 const socketFor = (path: string) => FakeWebSocket.instances.filter((s) => new URL(s.url).pathname === path).at(-1)
 
 test("the Console's feed shows a board only once every project in it has answered, across leaving and coming back", async () => {
@@ -102,7 +110,7 @@ test("the Console's feed shows a board only once every project in it has answere
   install("clearTimeout", (() => {}) as unknown as typeof clearTimeout)
   install("setInterval", (() => 0) as unknown as typeof setInterval)
   install("clearInterval", (() => {}) as unknown as typeof clearInterval)
-  install("fetch", (() => new Promise(() => {})) as unknown as typeof fetch)
+  install("fetch", readBoard as unknown as typeof fetch)
 
   const queryClient = { setQueryData: () => {}, invalidateQueries: async () => {} }
 
@@ -126,11 +134,12 @@ test("the Console's feed shows a board only once every project in it has answere
     feed.setConsoleProjects(["alpha", "beta"])
     assert.equal(feed.consoleFeedPending("beta"), true)
     socketFor("/_frizz/alpha/ws")!.open()
-    socketFor("/_frizz/alpha/ws")!.message(keyframe("alpha", ["a"], "o/alpha"))
+    socketFor("/_frizz/alpha/ws")!.message(hello)
+    await answer("alpha", ["a"], "o/alpha")
     assert.equal(store.board, null, "beta has not answered, so the board waits")
-    // Each project's references link to ITS repo, read off its own keyframe; the merged board has none.
+    // Each project's references link to ITS repo, read off its own board; the merged board has none.
     assert.equal(githubRepoFor("alpha"), "o/alpha")
-    assert.equal(githubRepoFor("beta"), null, "a project whose keyframe names no github.com repo links nothing")
+    assert.equal(githubRepoFor("beta"), null, "a project whose board names no github.com repo links nothing")
     // A cold link to one of beta's threads is not MISSING while beta is still on its way: it stays parked,
     // where before it was sent off the Console to a full page.
     store.board = { projectDir: "", projectName: "Console", threads: [], errors: [], warnings: [] } as unknown as BoardSnapshot
@@ -141,9 +150,13 @@ test("the Console's feed shows a board only once every project in it has answere
     store.routeThreadSlug = null
     store.board = null
     socketFor("/_frizz/beta/ws")!.open()
-    socketFor("/_frizz/beta/ws")!.message(keyframe("beta", ["b"]))
+    socketFor("/_frizz/beta/ws")!.message(hello)
+    await answer("beta", ["b"])
     assert.deepEqual(ids(), ["alpha~a", "beta~b"])
     assert.equal(feed.consoleFeedPending(), false)
+    // Each socket, once its project's board landed, named the board's seq to resume from — and was sent
+    // no board: the read over HTTP is the only one.
+    assert.deepEqual(socketFor("/_frizz/beta/ws")!.sent, [{ t: "board", bootId: "boot-test", seq: 1 }])
     // The control: a key whose project is NOT on its way is missing, and goes to its full page as before.
     store.routeThreadSlug = "gamma~c"
     resolveRoutedThread()
@@ -151,7 +164,7 @@ test("the Console's feed shows a board only once every project in it has answere
     assert.equal(replaced.length, 1, "a key no project is bringing is handed to the full page")
     replaced.length = 0
 
-    // 2. A RESTART OF FEEDS THAT ALREADY ANSWERED waits for fresh keyframes. The route re-binds whenever
+    // 2. A RESTART OF FEEDS THAT ALREADY ANSWERED waits for fresh reads. The route re-binds whenever
     //    the feed stops reporting itself as the Console's; the feeds it found had answered a board that
     //    the re-bind threw away, and publishing on their word showed an EMPTY Console that stayed empty
     //    for every project with nothing new to say.
@@ -159,11 +172,14 @@ test("the Console's feed shows a board only once every project in it has answere
     socket.bindConsole()
     feed.setConsoleProjects(["alpha", "beta"])
     assert.equal(store.board, null, "no board until the restarted feeds answer again")
-    assert.notEqual(socketFor("/_frizz/alpha/ws"), alphaBefore, "a fresh connection, so a fresh keyframe")
+    assert.notEqual(socketFor("/_frizz/alpha/ws"), alphaBefore, "a fresh connection, and a fresh read")
     socketFor("/_frizz/alpha/ws")!.open()
-    socketFor("/_frizz/alpha/ws")!.message(keyframe("alpha", ["a"]))
+    socketFor("/_frizz/alpha/ws")!.message(hello)
+    await answer("alpha", ["a"])
+    assert.equal(store.board, null, "the restart's reads are what count, and beta's has not landed")
     socketFor("/_frizz/beta/ws")!.open()
-    socketFor("/_frizz/beta/ws")!.message(keyframe("beta", ["b"]))
+    socketFor("/_frizz/beta/ws")!.message(hello)
+    await answer("beta", ["b"])
     assert.deepEqual(ids(), ["alpha~a", "beta~b"])
 
     // 3. THE GRID TAKES THE FEED BACK. The Console's connections serve nothing there; left open, each one
@@ -187,29 +203,34 @@ test("the Console's feed shows a board only once every project in it has answere
     feed.setConsoleProjects(["alpha", "beta"])
     assert.equal(store.board, null)
     socketFor("/_frizz/alpha/ws")!.open()
-    socketFor("/_frizz/alpha/ws")!.message(keyframe("alpha", ["a"]))
+    socketFor("/_frizz/alpha/ws")!.message(hello)
+    await answer("alpha", ["a"])
     socketFor("/_frizz/beta/ws")!.open()
-    socketFor("/_frizz/beta/ws")!.message(keyframe("beta", ["b"]))
+    socketFor("/_frizz/beta/ws")!.message(hello)
+    await answer("beta", ["b"])
     assert.deepEqual(ids(), ["alpha~a", "beta~b"])
     // A wake while the Console holds the feed never reopens the launching project's connection.
     const before = FakeWebSocket.instances.length
     fire("focus")
     assert.equal(FakeWebSocket.instances.slice(before).filter((s) => new URL(s.url).pathname === "/_frizz/ws").length, 0)
 
-    // 5. A BOARD TOO BIG FOR ITS SOCKET still leaves that socket carrying transcripts. Before, nothing
-    //    marked it ready, so a subscription was never sent and the project's transcripts never pushed.
+    // 5. A HELLO MAKES THE SOCKET READY FOR TRANSCRIPTS, whether or not the board's read has landed:
+    //    a project whose board is slow to read still pushes its transcripts. (A board too big for its
+    //    socket used to be the case that left one unready; no board rides the socket now.)
     const alpha = socketFor("/_frizz/alpha/ws")!
     socket.leaveConsole()
     here.pathname = "/console"
     socket.bindConsole()
     feed.setConsoleProjects(["alpha"])
-    const big = socketFor("/_frizz/alpha/ws")!
-    assert.notEqual(big, alpha)
-    big.open()
+    const slow = socketFor("/_frizz/alpha/ws")!
+    assert.notEqual(slow, alpha)
+    slow.open()
     feed.consoleSubscribeTranscript("alpha~a")
-    assert.deepEqual(big.sent, [], "nothing is sent before the connection is ready")
-    big.message({ t: "payload-too-large", channel: "board", actualBytes: 5_000_000, maxBytes: 4_194_304 } as SocketServerMsg)
-    assert.deepEqual(big.sent, [{ t: "sub", topic: "transcript", slug: "a" }], "the transcript subscription goes out under the real slug")
+    assert.deepEqual(slow.sent, [], "nothing is sent before the connection is ready")
+    slow.message(hello)
+    assert.deepEqual(slow.sent, [{ t: "sub", topic: "transcript", slug: "a" }], "the transcript subscription goes out under the real slug")
+    await answer("alpha", ["a"])
+    assert.deepEqual(slow.sent.at(-1), { t: "board", bootId: "boot-test", seq: 1 }, "and the board's seq once it lands")
   } finally {
     for (const [key, descriptor] of globals) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor)

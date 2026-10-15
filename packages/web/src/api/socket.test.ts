@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import type { BoardSnapshot, SocketServerMsg } from "@frizz/shared"
+import type { BoardSnapshot, BoardState, SocketServerMsg } from "@frizz/shared"
 
 type Listener = (event: unknown) => void
 
@@ -81,7 +81,7 @@ interface FakeTimeout {
   cleared: boolean
 }
 
-test("socket transport bounds oversized frames and only resets reconnect backoff after protocol traffic", async () => {
+test("socket transport bounds oversized frames, only resets reconnect backoff after protocol traffic, and resumes the board it read", async () => {
   const globals = new Map<PropertyKey, PropertyDescriptor | undefined>()
   const install = (key: PropertyKey, value: unknown) => {
     globals.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
@@ -100,6 +100,25 @@ test("socket transport bounds oversized frames and only resets reconnect backoff
   let nextTimer = 0
   const intervals = new Set<number>()
 
+  // The board read over HTTP (rpc.boardState). Each call is answered from `boardState` as it is when
+  // the read is made, so a test moves the server's board by assigning it.
+  const board: BoardSnapshot = {
+    projectDir: "/fixture",
+    projectName: "fixture",
+    projectLabel: "fixture/fixture",
+    threads: [],
+    errors: [],
+    warnings: [],
+  }
+  let boardState: BoardState = { board, seq: 1, bootId: "boot-test" }
+  const reads: string[] = []
+  install("fetch", async (url: string) => {
+    reads.push(String(url))
+    return new Response(JSON.stringify({ result: boardState }), { status: 200, headers: { "content-type": "application/json" } })
+  })
+  const settle = async () => {
+    for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve))
+  }
   install("WebSocket", FakeWebSocket)
   install("EventSource", FakeEventSource)
   install("location", { origin: "http://127.0.0.1:54917", reload: () => {} })
@@ -145,18 +164,10 @@ test("socket transport bounds oversized frames and only resets reconnect backoff
   const warnings: unknown[][] = []
   console.warn = (...args: unknown[]) => { warnings.push(args) }
 
-  const board: BoardSnapshot = {
-    projectDir: "/fixture",
-    projectName: "fixture",
-    projectLabel: "fixture/fixture",
-    threads: [],
-    errors: [],
-    warnings: [],
-  }
-  const boardFrame: SocketServerMsg = {
-    t: "event",
-    event: { type: "board", board, seq: 1, bootId: "boot-test" },
-  }
+  const hello: SocketServerMsg = { t: "hello", bootId: "boot-test", seq: 1 }
+  // What a socket sent, less the board resume it names on every hello (asserted on its own below).
+  const subsSent = (sock: FakeWebSocket) => sock.sent.map((raw) => JSON.parse(raw)).filter((m) => m.t !== "board")
+  const boardSent = (sock: FakeWebSocket) => sock.sent.map((raw) => JSON.parse(raw)).filter((m) => m.t === "board")
   const cache = new Map<string, unknown>()
   const queryClient = {
     setQueryData(key: readonly unknown[], update: unknown) {
@@ -196,6 +207,7 @@ test("socket transport bounds oversized frames and only resets reconnect backoff
     store.socketTranscriptFallbacks = {}
     const backoff = await import(`./socket.ts?backoff-${Date.now()}`)
     backoff.connectSync(queryClient as never)
+    await settle()
     const first = FakeWebSocket.instances[0]
     first.open()
     first.serverClose()
@@ -219,12 +231,13 @@ test("socket transport bounds oversized frames and only resets reconnect backoff
     store.socketTranscriptFallbacks = {}
     const transcript = await import(`./socket.ts?transcript-${Date.now()}`)
     transcript.connectSync(queryClient as never)
+    await settle()
     const transcriptSocket = FakeWebSocket.instances[0]
     transcriptSocket.open()
     transcript.subscribeTranscript("large-thread")
-    assert.deepEqual(transcriptSocket.sent, [], "subscriptions wait for a valid board keyframe")
-    transcriptSocket.message(boardFrame)
-    assert.deepEqual(transcriptSocket.sent.map(JSON.parse), [
+    assert.deepEqual(transcriptSocket.sent, [], "subscriptions wait for the server's hello")
+    transcriptSocket.message(hello)
+    assert.deepEqual(subsSent(transcriptSocket), [
       { t: "sub", topic: "transcript", slug: "large-thread" },
     ])
     transcriptSocket.message({
@@ -243,9 +256,9 @@ test("socket transport bounds oversized frames and only resets reconnect backoff
     assert.equal(FakeEventSource.instances.length, 0)
     assert.equal(timeouts.length, 0, "a logical overflow cannot enter reconnect backoff")
     transcript.subscribeTranscript("large-thread")
-    assert.equal(transcriptSocket.sent.length, 1, "additional mounted views cannot auto-retry a paused slug")
+    assert.equal(subsSent(transcriptSocket).length, 1, "additional mounted views cannot auto-retry a paused slug")
     transcript.retryTranscriptSocket("large-thread")
-    assert.equal(transcriptSocket.sent.length, 2, "the explicit retry sends exactly one subscription")
+    assert.equal(subsSent(transcriptSocket).length, 2, "the explicit retry sends exactly one subscription")
     transcriptSocket.message({
       t: "transcript",
       slug: "large-thread",
@@ -302,7 +315,7 @@ test("socket transport bounds oversized frames and only resets reconnect backoff
     })
     cache.delete(pageKey)
 
-    // A fresh page/module has no stale failure latch: after the payload shrinks, normal keyframe +
+    // A fresh page/module has no stale failure latch: after the payload shrinks, normal hello +
     // transcript traffic resumes without requiring a special server-side recovery state.
     transcriptSocket.close()
     resetTransportFixtures()
@@ -312,17 +325,18 @@ test("socket transport bounds oversized frames and only resets reconnect backoff
     store.socketTranscriptFallbacks = {}
     const reloaded = await import(`./socket.ts?reload-${Date.now()}`)
     reloaded.connectSync(queryClient as never)
+    await settle()
     const reloadedSocket = FakeWebSocket.instances[0]
     reloadedSocket.open()
     reloaded.subscribeTranscript("large-thread")
-    reloadedSocket.message(boardFrame)
+    reloadedSocket.message(hello)
     reloadedSocket.message({
       t: "transcript",
       slug: "large-thread",
       messages: [{ role: "assistant", text: "recovered on reload", tools: [], parts: [] }],
     })
     assert.equal(store.socketTranscriptFallbacks["large-thread"], undefined)
-    assert.equal(reloadedSocket.sent.length, 1)
+    assert.equal(subsSent(reloadedSocket).length, 1)
 
     // Aggregate server read pressure rejects only the affected subscription with a typed, stable state.
     // It never drops the board socket; one human retry sends one new sub and normal truth clears it.
@@ -334,10 +348,11 @@ test("socket transport bounds oversized frames and only resets reconnect backoff
     store.socketTranscriptFallbacks = {}
     const limited = await import(`./socket.ts?limited-${Date.now()}`)
     limited.connectSync(queryClient as never)
+    await settle()
     const limitedSocket = FakeWebSocket.instances[0]
     limitedSocket.open()
     limited.subscribeTranscript("busy-thread")
-    limitedSocket.message(boardFrame)
+    limitedSocket.message(hello)
     limitedSocket.message({
       t: "resource-limited",
       resource: "transcript-read",
@@ -358,7 +373,7 @@ test("socket transport bounds oversized frames and only resets reconnect backoff
     timeouts[0].cleared = true
     timeouts[0].run()
     assert.equal(store.socketTranscriptFallbacks["busy-thread"], undefined)
-    assert.equal(limitedSocket.sent.length, 2, "the automatic retry sends exactly one subscription")
+    assert.equal(subsSent(limitedSocket).length, 2, "the automatic retry sends exactly one subscription")
     limitedSocket.message({
       t: "resource-limited",
       resource: "transcript-read",
@@ -369,7 +384,7 @@ test("socket transport bounds oversized frames and only resets reconnect backoff
     assert.equal(timeouts.length, 2, "a second refusal arms a second retry")
     timeouts[1].cleared = true
     limited.retryTranscriptSocket("busy-thread")
-    assert.equal(limitedSocket.sent.length, 3, "the explicit retry sends exactly one subscription")
+    assert.equal(subsSent(limitedSocket).length, 3, "the explicit retry sends exactly one subscription")
     limitedSocket.message({
       t: "transcript",
       slug: "busy-thread",
@@ -377,11 +392,11 @@ test("socket transport bounds oversized frames and only resets reconnect backoff
     })
     assert.equal(store.socketTranscriptFallbacks["busy-thread"], undefined)
 
-    // THE PROJECT LIST HAS NO KEYFRAME. The server's `projects-changed` is what carries a reorder made
+    // THE PROJECT LIST HAS NO RESUME. The server's `projects-changed` is what carries a reorder made
     // in one tab to every other, and it re-reads the list. So does every live generation after the
     // first: an announcement published while this tab had no socket is never repeated, and without the
     // catch-up the rail would keep its old order until a reload — the bug the event exists to fix. The
-    // first keyframe re-reads nothing, because the rail's own mount read is seconds old.
+    // first hello re-reads nothing, because the rail's own mount read is seconds old.
     limitedSocket.close()
     resetTransportFixtures()
     store.connection = "connecting"
@@ -390,11 +405,12 @@ test("socket transport bounds oversized frames and only resets reconnect backoff
     store.socketTranscriptFallbacks = {}
     const listed = await import(`./socket.ts?projects-${Date.now()}`)
     listed.connectSync(queryClient as never)
+    await settle()
     const readsBefore = projectListReads()
     const listedSocket = FakeWebSocket.instances[0]
     listedSocket.open()
-    listedSocket.message(boardFrame)
-    assert.equal(projectListReads(), readsBefore, "the first keyframe re-reads nothing")
+    listedSocket.message(hello)
+    assert.equal(projectListReads(), readsBefore, "the first hello re-reads nothing")
     listedSocket.message({ t: "event", event: { type: "projects-changed" } })
     assert.equal(projectListReads(), readsBefore + 1, "the announcement re-reads the list once")
     assert.equal(FakeWebSocket.instances.length, 1, "it is not a board frame, so it cannot force a resync")
@@ -403,40 +419,83 @@ test("socket transport bounds oversized frames and only resets reconnect backoff
     const relisted = FakeWebSocket.instances[1]
     relisted.open()
     assert.equal(projectListReads(), readsBefore + 1, "an open socket is not a live feed yet")
-    relisted.message(boardFrame)
+    relisted.message(hello)
     assert.equal(projectListReads(), readsBefore + 2, "a feed back from a drop catches up on what it missed")
 
-    // Board overflow is a one-way, intentional SSE handoff. Closing that socket cannot schedule a
-    // reconnect, and the visible board fallback state remains stable while SSE takes over.
+    // THE BOARD IS READ OVER HTTP AND RESUMED ON THE SOCKET (board-resume.ts). One read as the page
+    // loads, never a board frame on the socket; the socket names the read's (boot, seq) on hello, a
+    // drop keeps them for the next hello, and a `board-resync` re-reads and names the new seq on the
+    // SAME socket. Nothing here may reconnect or fall back to SSE.
     relisted.close()
     resetTransportFixtures()
     FakeEventSource.instances = []
+    store.board = null
     store.connection = "connecting"
-    store.socketTranscripts = false
-    store.socketBoardFallback = null
-    store.socketTranscriptFallbacks = {
-      stale: { kind: "payload-too-large", actualBytes: 9, maxBytes: 8 },
-    }
-    const boardFallback = await import(`./socket.ts?board-${Date.now()}`)
-    boardFallback.connectSync(queryClient as never)
-    const boardSocket = FakeWebSocket.instances[0]
-    boardSocket.open()
-    boardSocket.message({
-      t: "payload-too-large",
-      channel: "board",
-      actualBytes: 4_194_305,
-      maxBytes: 4_194_304,
-    })
-    assert.equal(boardSocket.closeCalls, 1)
-    assert.equal(FakeEventSource.instances.length, 1)
-    assert.equal(FakeEventSource.instances[0].url, "/_frizz/events")
-    assert.deepEqual(store.socketBoardFallback, { actualBytes: 4_194_305, maxBytes: 4_194_304 })
-    assert.deepEqual(store.socketTranscriptFallbacks, {})
-    assert.equal(store.socketTranscripts, false)
-    assert.equal(timeouts.length, 0)
-    // Three downgrades plus the second budget refusal above, which lands on a cleared latch and so is a
-    // new event worth one line — a refusal repeated on a still-latched slug is what must stay silent.
-    assert.equal(warnings.length, 4, "each explicit downgrade logs once without console churn")
+    store.socketTranscriptFallbacks = {}
+    reads.length = 0
+    boardState = { board: { ...board, threads: [] }, seq: 5, bootId: "boot-test" }
+    const resumed = await import(`./socket.ts?resume-${Date.now()}`)
+    resumed.connectSync(queryClient as never)
+    assert.equal(reads.length, 1, "the board is read as the page loads, before the socket opens")
+    assert.match(reads[0], /\/_frizz\/rpc\/boardState$/)
+    await settle()
+    assert.equal(store.board?.projectName, "fixture", "the read is the page's first board")
+    const resumeSocket = FakeWebSocket.instances[0]
+    resumeSocket.open()
+    assert.deepEqual(boardSent(resumeSocket), [], "nothing is named before the server says hello")
+    resumeSocket.message({ t: "hello", bootId: "boot-test", seq: 6 })
+    assert.deepEqual(boardSent(resumeSocket), [{ t: "board", bootId: "boot-test", seq: 5 }], "hello names the board read")
+    assert.equal(reads.length, 1, "and reads nothing more")
+
+    // The server replays the gap; each delta applies in order.
+    const thread = (id: string) => ({ id, title: id, status: "active", runtime: "turn-idle", dependsOn: [] })
+    resumeSocket.message({ t: "event", event: { type: "board-delta", seq: 6, bootId: "boot-test", upserts: [thread("a") as never], removed: [] } })
+    assert.deepEqual(store.board?.threads.map((t) => t.id), ["a"])
+
+    // A drop keeps the board and its seq: the next socket names seq 6 and no read is made.
+    resumeSocket.serverClose()
+    nextReconnect(1_000)
+    const again = FakeWebSocket.instances[1]
+    again.open()
+    again.message({ t: "hello", bootId: "boot-test", seq: 9 })
+    assert.deepEqual(boardSent(again), [{ t: "board", bootId: "boot-test", seq: 6 }], "a reconnect resumes from the seq it held")
+    assert.equal(reads.length, 1)
+    assert.deepEqual(store.board?.threads.map((t) => t.id), ["a"], "and the board stayed on screen through the drop")
+
+    // The ring has rolled past seq 6: the server says so, the board is read again, and the new seq is
+    // named on the same socket.
+    boardState = { board: { ...board, threads: [thread("a"), thread("b"), thread("c")] as never }, seq: 9, bootId: "boot-test" }
+    again.message({ t: "board-resync", reason: "expired" })
+    assert.equal(reads.length, 2)
+    await settle()
+    assert.deepEqual(store.board?.threads.map((t) => t.id), ["a", "b", "c"])
+    assert.deepEqual(boardSent(again).at(-1), { t: "board", bootId: "boot-test", seq: 9 })
+    assert.equal(FakeWebSocket.instances.length, 2, "a resync is not a reconnect")
+
+    // A delta that skips a seq is not applied; the board is read again instead.
+    again.message({ t: "event", event: { type: "board-delta", seq: 11, bootId: "boot-test", upserts: [thread("skipped") as never], removed: [] } })
+    assert.equal(reads.length, 3)
+    assert.ok(!store.board?.threads.some((t) => t.id === "skipped"), "a delta past a gap never lands")
+    await settle()
+    assert.deepEqual(boardSent(again).at(-1), { t: "board", bootId: "boot-test", seq: 9 })
+
+    // A server that restarted: its hello names another boot, so the held seq means nothing there. The
+    // board is read again before anything is named, and the stale seq is never sent.
+    again.serverClose()
+    nextReconnect(1_000)
+    boardState = { board: { ...board, threads: [thread("fresh")] as never }, seq: 2, bootId: "boot-next" }
+    const restarted = FakeWebSocket.instances[2]
+    restarted.open()
+    restarted.message({ t: "hello", bootId: "boot-next", seq: 2 })
+    assert.deepEqual(boardSent(restarted), [], "a seq from another boot is not named")
+    assert.equal(reads.length, 4)
+    await settle()
+    assert.deepEqual(boardSent(restarted), [{ t: "board", bootId: "boot-next", seq: 2 }])
+    assert.deepEqual(store.board?.threads.map((t) => t.id), ["fresh"])
+    assert.equal(FakeEventSource.instances.length, 0, "the board never sends the page to SSE")
+    // The second budget refusal above lands on a cleared latch and so is a new event worth one line —
+    // a refusal repeated on a still-latched slug is what must stay silent.
+    assert.equal(warnings.length, 3, "each explicit downgrade logs once without console churn")
   } finally {
     console.warn = originalWarn
     for (const [key, descriptor] of globals) {

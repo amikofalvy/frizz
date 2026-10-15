@@ -7,7 +7,7 @@ import {
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import watcher from "@parcel/watcher"
-import type { BoardSnapshot, ClaudeModel, ThreadView, RuntimeState, ThreadRecurringPrompt, ProviderError } from "@frizz/shared"
+import type { BoardDelta, BoardSnapshot, ClaudeModel, ThreadView, RuntimeState, ThreadRecurringPrompt, ProviderError } from "@frizz/shared"
 import { standingQuestions, type QuestionFenceFault } from "./question-fences.ts"
 import { AskedQuestionSchema, BoardDiffer, PermissionMode, SnoozeUntil, ThreadSlug, awaitingNeedsInput, formatElapsed, awaitingStatus, awaitingSteps, isDirectSubAgent, splitDoneFrontmatter, needsInputRequired, nameQuestionAnswer, questionAnswerMessage, questionsCancelledWakeMessage, type AskedQuestion, type NamedQuestionAnswer, type PermissionMode as PermissionModeValue, type QuestionAnswer, type QuestionDismissal } from "@frizz/shared"
 import type { Bus } from "./bus.ts"
@@ -2230,12 +2230,74 @@ function parsedSetting<T>(parse: (raw: unknown) => T): { read(raw: unknown): T }
   }
 }
 
+// THE RECENT DELTAS, so a socket can resume a client from the seq of the board it read over HTTP
+// instead of streaming it the whole board (app-socket.ts, the board channel). The ring has to cover two
+// gaps: the one between a page's HTTP read and its socket's resume (a few hundred ms, so a handful of
+// deltas even with workers streaming), and a short reconnect. A streaming worker publishes about 2.3
+// deltas a second (15 over a 6.5s scripted turn, 2026-10-14), so 512 deltas is a minute or more of
+// several workers at once; past that, or across a boot, the client reads the board over HTTP again,
+// which is always correct and only slower. Bounded by count and by the thread views the entries hold
+// (each upsert is a whole ThreadView, ~3KB): a delta that touched every thread — the first build after
+// boot — is kept alone at most, and evicted by the next one.
+export const RECENT_DELTAS = 512
+export const RECENT_DELTA_THREADS = 2048
+
+export class DeltaRing {
+  private recent: BoardDelta[] = []
+  private threads = 0
+  constructor(
+    // The seq of the last delta published, which the ring's newest entry must carry.
+    private readonly currentSeq: () => number,
+    private readonly maxDeltas = RECENT_DELTAS,
+    private readonly maxThreads = RECENT_DELTA_THREADS,
+  ) {}
+
+  // Every delta, in publish order. A seq that does not follow the newest one (it never happens: the
+  // differ counts by one) empties the ring first, so what it holds is always one contiguous run.
+  remember(event: BoardDelta): void {
+    const last = this.recent.at(-1)
+    if (last && event.seq !== last.seq + 1) {
+      this.recent = []
+      this.threads = 0
+    }
+    this.recent.push(event)
+    this.threads += event.upserts.length
+    while (this.recent.length > this.maxDeltas || (this.threads > this.maxThreads && this.recent.length > 1)) {
+      this.threads -= this.recent.shift()!.upserts.length
+    }
+  }
+
+  // The deltas after `seq`, oldest first; [] when `seq` is current. null when they cannot all be
+  // produced: `seq` is older than the ring, or newer than anything published.
+  since(seq: number): BoardDelta[] | null {
+    const current = this.currentSeq()
+    if (!Number.isInteger(seq) || seq < 0 || seq > current) return null
+    if (seq === current) return []
+    const first = this.recent[0]
+    const last = this.recent.at(-1)
+    if (!first || !last || last.seq !== current || first.seq > seq + 1) return null
+    return this.recent.slice(seq + 1 - first.seq)
+  }
+
+  get size(): number {
+    return this.recent.length
+  }
+}
+
 export interface BoardManager {
   snapshot(): Promise<BoardSnapshot>
   // The seq the current snapshot corresponds to — the value a connect keyframe must advertise so the
   // client can adopt it and then apply deltas seq+1, seq+2 … (see the /events handler). Read
   // synchronously right after snapshot() so the two are consistent.
   currentSeq(): number
+  // The board and the seq it reflects, read in ONE synchronous step (no await between them), so a
+  // refresh that lands in a microtask between two reads can never hand a client a board one delta
+  // older or newer than the seq it then resumes from. What the `boardState` query serves.
+  snapshotState(): Promise<{ board: BoardSnapshot; seq: number }>
+  // The deltas published after `seq`, oldest first, from the bounded ring of recent ones; [] when `seq`
+  // is current. null when they cannot all be produced — `seq` is older than the ring, or newer than
+  // anything published — and the caller must then read the board whole.
+  deltasSince(seq: number): BoardDelta[] | null
   // Full: revalidates registered-file migration state.
   rebuild(): Promise<BoardSnapshot>
   // Overlay-only: reuses file-backed caches; cheap + sync. Use for tailer/session changes.
@@ -2584,8 +2646,15 @@ export function createBoard(
   function publish(snapshot: BoardSnapshot): void {
     const d = differ.diff(snapshot)
     if (!d) return
-    bus.publish({ type: "board-delta", seq: d.seq, bootId, upserts: d.upserts, removed: d.removed, ...(d.meta ? { meta: d.meta } : {}) })
+    const event: BoardDelta = { type: "board-delta", seq: d.seq, bootId, upserts: d.upserts, removed: d.removed, ...(d.meta ? { meta: d.meta } : {}) }
+    remember(event)
+    bus.publish(event)
   }
+
+  // The recent deltas, so a socket can resume a client from the board it read over HTTP (DeltaRing).
+  const recent = new DeltaRing(() => differ.currentSeq())
+  const remember = (event: BoardDelta) => recent.remember(event)
+  const deltasSince = (seq: number) => recent.since(seq)
 
   // FULL rebuild: recompute registered-file migration metadata, then assemble.
   async function rebuildOnce(): Promise<BoardSnapshot> {
@@ -2691,6 +2760,14 @@ export function createBoard(
       return cached ?? (await rebuild())
     },
     currentSeq: () => differ.currentSeq(),
+    snapshotState: async () => {
+      if (stopped) throw new ProducerStoppedError("board")
+      if (!cached) await rebuild()
+      // Both read here, in one synchronous step: `cached` and the differ move together inside
+      // refresh()/rebuildOnce(), so whatever ran while the rebuild was awaited, this pair agrees.
+      return { board: cached!, seq: differ.currentSeq() }
+    },
+    deltasSince,
     rebuild,
     refresh,
     interactionChanged,

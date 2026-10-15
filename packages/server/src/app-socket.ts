@@ -2,7 +2,7 @@ import type { IncomingMessage } from "node:http"
 import type { Duplex } from "node:stream"
 import { createHash } from "node:crypto"
 import { WebSocketServer, type WebSocket } from "ws"
-import type { BoardSnapshot, ServerEvent, SocketServerMsg, TranscriptMessage, TranscriptPushPage } from "@frizz/shared"
+import type { BoardDelta, BoardResyncReason, ServerEvent, SocketServerMsg, TranscriptMessage, TranscriptPushPage } from "@frizz/shared"
 import { projectTranscriptSessionPeers, type SessionPeerThread } from "./session-peer.ts"
 import { SocketClientMsg, frizzRoute } from "@frizz/shared"
 import type { Bus } from "./bus.ts"
@@ -14,9 +14,10 @@ import { projectRetiredBackgroundOps, retiredOpsFor, projectTranscriptAgentLifec
 import { isTrustedLocalWebSocketRequest, rejectWebSocketUpgrade } from "./local-origin.ts"
 
 // Stage-2 multiplex: a noServer WebSocket at /ws carrying the board
-// channel (keyframe + deltas + notify — the stage-1 ServerEvent shapes, wrapped in {t:"event"}) AND
-// per-thread transcript PUSH (replacing the client's 1.5s threadTranscript poll). index.ts routes the
-// /ws upgrade here.
+// channel (deltas + notify — the stage-1 ServerEvent shapes, wrapped in {t:"event"}; never the board
+// itself, which a client reads over HTTP and resumes from — see `initializeConnection`) AND per-thread
+// transcript PUSH (replacing the client's 1.5s threadTranscript poll). index.ts routes the /ws upgrade
+// here.
 
 const WS_PATH = frizzRoute("/ws")
 
@@ -120,8 +121,10 @@ export interface AppSocketDeps {
   bus: Pick<Bus, "subscribe">
   bootId: string
   transcriptChange: Pick<Emitter<string[]>, "on">
-  boardSnapshot: () => Promise<BoardSnapshot>
   currentSeq: () => number
+  /** The board deltas published after `seq`, or null when they cannot all be produced (board.ts). */
+  boardDeltasSince: (seq: number) => BoardDelta[] | null
+  maxReplayBytes?: number
   readTranscript: (slug: string) => TranscriptPush
   /**
    * Arm a live watch on a local file for the FILE topic: gate the path exactly as its read is gated,
@@ -139,7 +142,6 @@ export interface AppSocketDeps {
   maxSubscriptionsPerConnection?: number
   maxMessagesPerWindow?: number
   messageWindowMs?: number
-  maxBufferedKeyframeEvents?: number
   maxTranscriptReadsPerOrigin?: number
   maxTranscriptReadsOverall?: number
   transcriptReadWindowMs?: number
@@ -233,6 +235,11 @@ const HEARTBEAT_MS = 10_000
 export const APP_SOCKET_MAX_MESSAGE_BYTES = 1_048_576
 export const APP_SOCKET_MAX_LOGICAL_FRAME_BYTES = 4 * 1_024 * 1_024
 export const APP_SOCKET_MAX_OUTPUT_BUFFER_BYTES = 4 * 1_024 * 1_024
+// The most a resume replays before it answers `board-resync` instead. A replay goes out in one burst, so
+// it has to stay well inside the output buffer above (past it the socket is closed as a slow consumer,
+// and the reconnect would replay the same burst again); past ~1 MiB of deltas, reading the board over
+// gzipped HTTP is also simply the cheaper way to catch up.
+export const APP_SOCKET_MAX_REPLAY_BYTES = 1 * 1_024 * 1_024
 export const APP_SOCKET_MAX_CONNECTIONS = 64
 export const APP_SOCKET_MAX_SUBSCRIPTIONS = 32
 // One open document per reader, and the readers stack (a drawer over a drawer over the split viewer):
@@ -240,7 +247,6 @@ export const APP_SOCKET_MAX_SUBSCRIPTIONS = 32
 export const APP_SOCKET_MAX_FILE_WATCHES = 16
 export const APP_SOCKET_MAX_MESSAGES_PER_WINDOW = 120
 export const APP_SOCKET_MESSAGE_WINDOW_MS = 1_000
-export const APP_SOCKET_MAX_BUFFERED_KEYFRAME_EVENTS = 256
 export const APP_SOCKET_MAX_TRANSCRIPT_READS_PER_ORIGIN = 16
 export const APP_SOCKET_MAX_TRANSCRIPT_READS_OVERALL = 64
 export const APP_SOCKET_TRANSCRIPT_READ_WINDOW_MS = 1_000
@@ -250,7 +256,8 @@ export const APP_SOCKET_MAX_TRANSCRIPT_CACHE_BYTES = 32 * 1_024 * 1_024
 // `ws` defaults perMessageDeflate to OFF, so every frame went out raw while the SAME board went over
 // HTTP gzipped by the compression middleware. Measured 2026-09-04 on the maintainer's own board: 914 KB
 // raw, 158 KB gzip — a 5.8x difference, paid on the handshake keyframe of every page load and again on
-// every board push after it. Loopback bandwidth is cheap, but the browser still has to receive and the
+// every board push after it. (The board has not ridden the socket since 2026-10-14; a long transcript
+// window and a bulk delta still do.) Loopback bandwidth is cheap, but the browser still has to receive and the
 // server still has to write 914 KB, and on a relayed/remote origin it is the whole cost.
 //
 // The threshold keeps the small frames raw: a per-frame deflate on a 200-byte tail event costs more in
@@ -284,12 +291,12 @@ export function createAppSocketServer(deps: AppSocketDeps): AppSocketServer {
   }
   const maxLogicalFrameBytes = deps.maxLogicalFrameBytes ?? APP_SOCKET_MAX_LOGICAL_FRAME_BYTES
   const maxOutputBufferBytes = deps.maxOutputBufferBytes ?? APP_SOCKET_MAX_OUTPUT_BUFFER_BYTES
+  const maxReplayBytes = deps.maxReplayBytes ?? APP_SOCKET_MAX_REPLAY_BYTES
   const maxConnections = boundedCount(deps.maxConnections, APP_SOCKET_MAX_CONNECTIONS)
   const maxSubscriptions = deps.maxSubscriptionsPerConnection ?? APP_SOCKET_MAX_SUBSCRIPTIONS
   const maxFileWatches = boundedCount(deps.maxFileWatchesPerConnection, APP_SOCKET_MAX_FILE_WATCHES)
   const maxMessagesPerWindow = deps.maxMessagesPerWindow ?? APP_SOCKET_MAX_MESSAGES_PER_WINDOW
   const messageWindowMs = deps.messageWindowMs ?? APP_SOCKET_MESSAGE_WINDOW_MS
-  const maxBufferedKeyframeEvents = deps.maxBufferedKeyframeEvents ?? APP_SOCKET_MAX_BUFFERED_KEYFRAME_EVENTS
   const maxTranscriptReadsPerOrigin = boundedCount(
     deps.maxTranscriptReadsPerOrigin,
     APP_SOCKET_MAX_TRANSCRIPT_READS_PER_ORIGIN,
@@ -320,7 +327,6 @@ export function createAppSocketServer(deps: AppSocketDeps): AppSocketServer {
       return () => clearImmediate(immediate)
     })
   const terminationTimers = new WeakMap<WebSocket, NodeJS.Timeout>()
-  const keyframes = new Set<Promise<void>>()
   let closing = false
   let closePromise: Promise<void> | null = null
   let connectionCount = 0
@@ -432,8 +438,8 @@ export function createAppSocketServer(deps: AppSocketDeps): AppSocketServer {
 
   // How a channel sheds when this peer's queued output would breach the cap.
   //  • "close" — the board channel. Its frames are an ORDERED delta stream: a dropped frame tears the
-  //    client's incremental base, so the only sound shed is to drop the connection and let the reconnect
-  //    handshake re-send a keyframe.
+  //    client's incremental base, so the only sound shed is to drop the connection; the client's next
+  //    socket resumes from the last seq it applied, and the ring replays the rest.
   //  • "skip"  — the transcript channel. Its frames are IDEMPOTENT FULL SNAPSHOTS, so a backed-up peer
   //    loses nothing by not queueing this generation: the slug stays dirty and the NEWER snapshot goes
   //    out once the peer drains. Closing here is actively harmful — the client's recovery is to reconnect
@@ -913,66 +919,92 @@ export function createAppSocketServer(deps: AppSocketDeps): AppSocketServer {
       closeSocket(ws, 1012, "server restarting")
       return
     }
-    // Board channel: SUBSCRIBE FIRST + buffer, capture the keyframe, then flush — the same ordering
-    // guarantee as the /events SSE handler (app.ts). A publish that fires while we assemble the keyframe is
-    // buffered; its seq is ≤ the keyframe's, so the client's dup-guard drops it. No delta is lost.
-    let flushed = false
-    let boardDisabled = false
-    const buffer: ServerEvent[] = []
+    // THE BOARD CHANNEL CARRIES DELTAS, NEVER A BOARD. The client reads the board over HTTP (the
+    // `boardState` query) and then names the (boot, seq) it holds with a {t:"board"} message; from then
+    // on this connection forwards every delta after that seq — the ones it missed first, from the
+    // board's ring of recent deltas, then live ones — and nothing before. `boardSeq` is the last seq
+    // this connection has delivered, null while the client has not asked (or must read the board
+    // again). The bus is subscribed for the connection's whole life, so the notify/invalidation events
+    // flow from the first frame; only board deltas wait for the client's seq.
+    //
+    // Everything here is synchronous, from the ring read to the live subscription: no publish can land
+    // between the replay and the first live delta, and the seq check below would drop a duplicate if
+    // one did. A board too big for one frame is therefore never a reason to leave the socket — the
+    // only multi-megabyte board message there ever was is gone (it went out as the connect keyframe
+    // until 2026-10-14, and past 4 MiB sent the tab to SSE).
+    let boardSeq: number | null = null
     let unsubscribeBus = () => {}
-    const sendBoardEvent = (event: ServerEvent): boolean => {
-      if (boardDisabled) return false
-      const result = sendMsg(ws, { t: "event", event })
-      if (result.kind === "oversized") {
-        boardDisabled = true
-        try {
-          unsubscribeBus()
-        } catch {
-          // The typed downgrade is already terminal for this connection's board channel.
-        }
-        sendPayloadTooLarge(ws, {
-          t: "payload-too-large",
-          channel: "board",
-          actualBytes: result.actualBytes,
-          maxBytes: maxLogicalFrameBytes,
-        })
-        return false
+    const resyncBoard = (reason: BoardResyncReason): void => {
+      boardSeq = null
+      const frame = encodeMsg({ t: "board-resync", reason })
+      if (!frame) {
+        closeSocket(ws, 1011, "serialization failed")
+        return
       }
-      return result.kind === "sent"
+      // A small control frame: never held to the logical data limit it may be reporting.
+      sendEncoded(ws, frame, false)
+    }
+    const sendBoardDelta = (event: BoardDelta, encoded?: EncodedMessage): void => {
+      if (boardSeq === null || event.seq <= boardSeq) return
+      if (event.seq !== boardSeq + 1) {
+        // Not reachable from the ring, which is contiguous; refusing it beats delivering a hole.
+        resyncBoard("expired")
+        return
+      }
+      boardSeq = event.seq
+      const frame = encoded ?? encodeMsg({ t: "event", event })
+      if (!frame) {
+        closeSocket(ws, 1011, "serialization failed")
+        return
+      }
+      const result = sendEncoded(ws, frame)
+      // One delta bigger than a frame (a bulk change to every thread) is skipped by reading the
+      // board over HTTP again; the board read there already includes it.
+      if (result.kind === "oversized") resyncBoard("oversized")
+    }
+    const sendOtherEvent = (event: ServerEvent): void => {
+      // Notify and invalidation events are small by construction (a notify's body is one capped
+      // line). One that is not is dropped: it carries no state a client could miss, and the
+      // payload-too-large notice for the board channel would send a client to SSE for nothing.
+      sendMsg(ws, { t: "event", event })
+    }
+    const resumeBoard = (bootId: string, seq: number): void => {
+      boardSeq = null
+      if (bootId !== deps.bootId) return resyncBoard("boot")
+      const missed = deps.boardDeltasSince(seq)
+      if (!missed) return resyncBoard(seq > deps.currentSeq() ? "ahead" : "expired")
+      // Encoded before anything is sent, so a replay too big to burst is answered with a resync rather
+      // than started and cut off.
+      const frames: EncodedMessage[] = []
+      let bytes = 0
+      for (const event of missed) {
+        const frame = encodeMsg({ t: "event", event })
+        if (!frame) {
+          closeSocket(ws, 1011, "serialization failed")
+          return
+        }
+        bytes += frame.bytes
+        if (bytes > maxReplayBytes) return resyncBoard("expired")
+        frames.push(frame)
+      }
+      boardSeq = seq
+      for (let i = 0; i < missed.length; i++) {
+        sendBoardDelta(missed[i]!, frames[i])
+        if (boardSeq === null) return
+      }
     }
     try {
       unsubscribeBus = deps.bus.subscribe((event) => {
-        if (flushed) {
-          sendBoardEvent(event)
-          return
-        }
-        if (buffer.length >= maxBufferedKeyframeEvents) {
-          closeSocket(ws, 1013, "keyframe backlog")
-          return
-        }
-        buffer.push(event)
+        if (event.type === "board-delta") sendBoardDelta(event)
+        else if (event.type !== "board") sendOtherEvent(event)
       })
     } catch {
       closeSocket(ws, 1011, "board unavailable")
       return
     }
-
-    const keyframe = (async () => {
-      try {
-        const board = await deps.boardSnapshot()
-        if (closing) return
-        sendBoardEvent({ type: "board", board, seq: deps.currentSeq(), bootId: deps.bootId })
-      } catch {
-        // board not ready: skip the keyframe. The client has no base yet, so the next board-delta makes it
-        // resync (reconnect) — which retries this keyframe. A transient snapshot failure self-heals on the
-        // reconnect; this mirrors the /events SSE handler's identical behavior (app.ts).
-      }
-      flushed = true
-      for (const event of buffer) if (!sendBoardEvent(event)) break
-      buffer.length = 0
-    })()
-    keyframes.add(keyframe)
-    void keyframe.finally(() => keyframes.delete(keyframe)).catch(() => {})
+    // The first frame: which server this is and where its board stands. It is also what tells the
+    // client the protocol is live, so it can replay its subscriptions.
+    sendMsg(ws, { t: "hello", bootId: deps.bootId, seq: deps.currentSeq() })
 
     const heartbeat = setInterval(() => sendMsg(ws, { t: "hb" }), HEARTBEAT_MS)
     heartbeat.unref?.()
@@ -1011,6 +1043,10 @@ export function createAppSocketServer(deps: AppSocketDeps): AppSocketServer {
         return
       }
       const msg = parsed.data
+      if (msg.t === "board") {
+        resumeBoard(msg.bootId, msg.seq)
+        return
+      }
       if (msg.topic === "file") {
         if (msg.t === "sub") subscribeFile(ws, msg.path)
         else unsubscribeFile(ws, msg.path)
@@ -1151,9 +1187,7 @@ export function createAppSocketServer(deps: AppSocketDeps): AppSocketServer {
       }))
       lastSig.clear()
       closePromise = (async () => {
-        // A keyframe may already be awaiting a board rebuild. Drain it before its dependencies close;
-        // the `closing` check above prevents it from reading currentSeq or sending after the await.
-        await Promise.allSettled([...keyframes, ...socketDrains])
+        await Promise.allSettled(socketDrains)
         try {
           wss.close()
         } catch {

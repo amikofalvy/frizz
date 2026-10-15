@@ -4,6 +4,7 @@ import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-quer
 import type { BoardSnapshot, InteractionRecord, ThreadView, TranscriptMessage } from "@frizz/shared"
 import { boardThreadsNow, store, threadBySlug, threadSnapshotBySlug } from "./store.ts"
 import { queued } from "./groups.ts"
+import { partitionBoard } from "./lib/boardPartition.ts"
 import { rpc } from "./api/rpc.ts"
 import { retryTranscriptSocket, subscribeFile, subscribeTranscript, unsubscribeFile, unsubscribeTranscript } from "./api/socket.ts"
 import { mergeOptimistic, preserveMessageIdentity, isTranscriptStale, newestRenderedAt } from "./lib/transcript-sync.ts"
@@ -80,9 +81,9 @@ export function asThreads(threads: readonly unknown[]): ThreadView[] {
 // the identity of what it derives and recomputes only when that moves; memo boundaries below it compare
 // rows by identity. Nothing here defers or batches anything — the work is simply not done.
 //
-// WHAT IS LEFT at 1,000 is valtio's own: a change to any thread rebuilds the snapshot of the threads
-// ARRAY, one slot per thread, 1.3-3.1ms each time (a send makes two such changes inside its click). That
-// is the price of holding every Done thread in the one reactive array, and no reader can avoid it.
+// What was left at 1,000 was valtio's own: a change to any thread rebuilt the snapshot of the threads
+// ARRAY, one slot per thread, 1.3-3.1ms each time (a send makes two such changes inside its click). The
+// array is a plain value now, replaced copy-on-write, and a snapshot shares it (store.ts plainArray).
 //
 // TWO RULES FOR A COMPONENT THAT STILL USES useBoard():
 //   - Find a thread with threadBySlug (store.ts), never `board.threads.find`: it reads one row.
@@ -108,7 +109,8 @@ export function queuedThreadsNow(): readonly ThreadView[] {
   const threads = allThreadsNow()
   if (threads === queuedFrom) return queuedNow
   queuedFrom = threads
-  const next = threads.filter(queued)
+  // A settled thread is archived, so never queued: only the live ones are asked (lib/boardPartition).
+  const next = partitionBoard(threads).live.filter(queued)
   if (next.length !== queuedNow.length || next.some((t, i) => t !== queuedNow[i])) queuedNow = next
   return queuedNow
 }

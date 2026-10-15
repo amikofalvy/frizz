@@ -21,6 +21,7 @@ import {
 // `needsAction` (the queue's ask definition) moved there too, so the server can count a project's asks.
 export { futureSnoozedUntil, isActivelyRunning, isSnoozed, needsAction, sectionOf, type SectionKey }
 import { canRetry } from "./lib/status.ts"
+import { partitionBoard, settledThread } from "./lib/boardPartition.ts"
 
 // Shared listing logic: the queue definition (needsAction), the sidebar's status-keyed sections
 // (sectionThreads), and the interaction-recency ordering both surfaces use.
@@ -248,7 +249,8 @@ export function queued(t: ThreadView): boolean {
 // already have open), so this is a plain partition rather than a second opinion about rest. A session
 // stops being external the moment you STEER it — the first message promotes it to an ordinary thread.
 export function externalThreads(threads: readonly ThreadView[]): ThreadView[] {
-  return threads.filter((t) => t.kind === "session" && t.foreign === true)
+  // A settled thread is never foreign, so only the live ones are asked (lib/boardPartition).
+  return partitionBoard(threads).live.filter((t) => t.kind === "session" && t.foreign === true)
 }
 
 // ── SIDEBAR SECTIONS (session-first) ───────────────────────────────────────────────────────────────
@@ -740,7 +742,10 @@ export function partitionActive(active: readonly ThreadView[]): { running: Threa
 export type SectionedThreads = Record<SectionKey, ThreadView[]> & { pinned: ThreadView[] }
 export function sectionThreads(threads: readonly ThreadView[], direction: QueueDirection = "fifo"): SectionedThreads {
   const out: SectionedThreads = { pinned: [], active: [], snoozed: [], inactive: [] }
-  for (const t of threads) {
+  // Only the threads that can still move are classified; every SETTLED thread is a Done row
+  // (lib/boardPartition), and on a long-lived board that is nearly all of them.
+  const { live, settled } = partitionBoard(threads)
+  for (const t of live) {
     if (t.kind === "session" && t.foreign === true) continue // foreign sessions never row (nor strip — dropped)
     if (isPinned(t)) {
       out.pinned.push(t)
@@ -752,8 +757,46 @@ export function sectionThreads(threads: readonly ThreadView[], direction: QueueD
   // Pin order, oldest pin first: the band is a shelf the human arranged, so nothing about the threads'
   // own activity may reorder it. Slug tiebreak keeps two same-instant pins stable across renders.
   out.pinned.sort((a, b) => (a.pinnedAt ?? "").localeCompare(b.pinnedAt ?? "") || a.id.localeCompare(b.id))
+  // The Done band in BOARD order, as the sort below has always received it (its ties keep that order).
+  // Almost always the settled list itself; a live thread classified Done (archived with a delivery in
+  // flight, say) is rare enough to merge by walking the board.
+  if (out.inactive.length === 0) out.inactive = settled as ThreadView[]
+  else {
+    const liveDone = new Set(out.inactive)
+    out.inactive = threads.filter((t) => liveDone.has(t) || settledThread(t))
+  }
   out.active = orderActive(out.active, direction)
   out.snoozed = orderByInteraction(out.snoozed)
-  out.inactive = orderByInteraction(out.inactive)
+  out.inactive = orderDone(out.inactive)
+  return out
+}
+
+// THE DONE BAND'S ORDER, KEPT while its members are the same objects. The band holds every thread the
+// project ever finished and almost never changes, but sectionThreads runs on every board delta — a
+// worker streaming its turn moves one thread, and the Done band was sorted again each time: a key and a
+// Date.parse per thread, then the sort, ~2.4ms of every delta at 5,000 threads (CPU profile, production
+// bundle). The band arrives in board order, which a delta never reorders, so "the same members" is one
+// identity check per slot; a thread archived, reopened or replaced misses and sorts afresh.
+//
+// The same-objects rule is what makes the reuse exact: a Done row's sort key (lastActiveAt) reads only
+// the thread itself, never the clock. Two entries, because the rail and the phone board each section
+// the same board with their own overlays in between.
+const doneOrders: { input: readonly ThreadView[]; out: ThreadView[] }[] = []
+function orderDone(input: ThreadView[]): ThreadView[] {
+  for (const hit of doneOrders) {
+    if (hit.input === input) return hit.out
+    if (hit.input.length !== input.length) continue
+    let same = true
+    for (let i = 0; i < input.length; i++) {
+      if (hit.input[i] !== input[i]) {
+        same = false
+        break
+      }
+    }
+    if (same) return hit.out
+  }
+  const out = orderByInteraction(input)
+  doneOrders.unshift({ input, out })
+  doneOrders.length = Math.min(doneOrders.length, 2)
   return out
 }

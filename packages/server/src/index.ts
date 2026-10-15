@@ -705,7 +705,7 @@ export async function startServer(opts: StartOptions = {}): Promise<StartedServe
     bus: c.bus,
     bootId: c.bootId,
     transcriptChange: c.transcriptChange,
-    boardSnapshot: () => c.board.snapshot(),
+    boardDeltasSince: (seq: number) => c.board.deltasSince(seq),
     currentSeq: () => c.board.currentSeq(),
     readTranscript: makeTranscriptReader(
       c.project,

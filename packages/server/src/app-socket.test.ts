@@ -4,8 +4,9 @@ import { createServer, type Server } from "node:http"
 import { once } from "node:events"
 import type { AddressInfo } from "node:net"
 import { WebSocket, type ClientOptions } from "ws"
-import type { BoardSnapshot, SocketServerMsg, TranscriptMessage } from "@frizz/shared"
+import type { BoardDelta, SocketServerMsg, ThreadView, TranscriptMessage } from "@frizz/shared"
 import { Bus, Emitter } from "./bus.ts"
+import { DeltaRing } from "./board.ts"
 import {
   APP_SOCKET_MAX_MESSAGE_BYTES,
   createAppSocketServer,
@@ -53,14 +54,6 @@ test("registry: removeConn clears a connection from every slug (no leak)", () =>
 
 // ── in-process /ws protocol ─────────────────────────────────────────────────────────────────────────
 
-const board: BoardSnapshot = {
-  projectDir: "/x",
-  projectName: "x",
-  projectLabel: "x/x",
-  threads: [],
-  errors: [],
-  warnings: [],
-}
 const msg = (text: string): TranscriptMessage => ({ role: "assistant", text, tools: [], parts: [] })
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
@@ -81,19 +74,31 @@ interface Harness {
   transcriptChange: Emitter<string[]>
   transcripts: Map<string, TranscriptMessage[]>
   appSocket: ReturnType<typeof createAppSocketServer>
+  // The board's delta stream as board.ts runs it: publish one, and it is remembered by the real ring
+  // (DeltaRing) and put on the bus. `seq()` is the last one published; it starts at 7.
+  publishDelta: (upserts?: ThreadView[], removed?: string[]) => BoardDelta
+  seq: () => number
   close: () => Promise<void>
 }
 
-async function startHarness(overrides: Partial<AppSocketDeps> = {}): Promise<Harness> {
+async function startHarness(overrides: Partial<AppSocketDeps> = {}, ringSize = 512): Promise<Harness> {
   const bus = new Bus()
   const transcriptChange = new Emitter<string[]>()
   const transcripts = new Map<string, TranscriptMessage[]>()
+  let seq = 7
+  const ring = new DeltaRing(() => seq, ringSize)
+  const publishDelta = (upserts: ThreadView[] = [], removed: string[] = []): BoardDelta => {
+    const event: BoardDelta = { type: "board-delta", seq: ++seq, bootId: "boot-1", upserts, removed }
+    ring.remember(event)
+    bus.publish(event)
+    return event
+  }
   const appSocket = createAppSocketServer({
     bus,
     bootId: "boot-1",
     transcriptChange,
-    boardSnapshot: async () => board,
-    currentSeq: () => 7,
+    currentSeq: () => seq,
+    boardDeltasSince: (since) => ring.since(since),
     readTranscript: (slug) => ({ messages: transcripts.get(slug) ?? [] }),
     ...overrides,
   })
@@ -110,6 +115,8 @@ async function startHarness(overrides: Partial<AppSocketDeps> = {}): Promise<Har
     transcriptChange,
     transcripts,
     appSocket,
+    publishDelta,
+    seq: () => seq,
     close: () =>
       new Promise<void>((r) => {
         void appSocket.close().finally(() => server.close(() => r()))
@@ -184,59 +191,226 @@ async function rejectedClient(port: number, options: ClientOptions = {}): Promis
   return (await rejectedClientDetails(port, options)).status
 }
 
-test("protocol: connect sends a board keyframe with seq + bootId", async () => {
+function view(id: string, over: Partial<ThreadView> = {}): ThreadView {
+  return { id, title: id, status: "active", runtime: "turn-idle", dependsOn: [], ...over } as unknown as ThreadView
+}
+const resume = (ws: WebSocket, seq: number, bootId = "boot-1") => ws.send(JSON.stringify({ t: "board", bootId, seq }))
+const deltaSeq = (m: SocketServerMsg): number => {
+  assert.equal(m.t, "event", JSON.stringify(m))
+  if (m.t !== "event" || m.event.type !== "board-delta") return assert.fail(`not a board delta: ${JSON.stringify(m)}`)
+  return m.event.seq
+}
+
+// THE BOARD CHANNEL CARRIES DELTAS, NEVER A BOARD. A page reads the board over HTTP (`boardState`,
+// which names its seq), then tells the socket which (boot, seq) it holds; the socket replays every
+// delta after that seq from the board's ring and then streams live ones. When the ring cannot cover
+// the gap it sends a small `board-resync` and the page reads the board over HTTP again. These pin the
+// promise that matters: a client is never handed a board that misses a delta.
+
+test("board: connect says hello with the boot and seq, and sends no board", async () => {
   const h = await startHarness()
   try {
     const c = await connectClient(h.port)
-    const first = await c.next()
-    assert.equal(first.t, "event")
-    if (first.t === "event") {
-      assert.equal(first.event.type, "board")
-      if (first.event.type === "board") {
-        assert.equal(first.event.seq, 7)
-        assert.equal(first.event.bootId, "boot-1")
-        assert.deepEqual(first.event.board, board)
-      }
-    }
+    assert.deepEqual(await c.next(), { t: "hello", bootId: "boot-1", seq: 7 })
+    await c.expectNone(50)
     c.ws.close()
   } finally {
     await h.close()
   }
 })
 
-test("protocol: an oversized initial board produces one typed downgrade without reconnecting or reserializing", async () => {
-  let snapshots = 0
-  let boardSerializations = 0
-  const h = await startHarness({
-    maxLogicalFrameBytes: 64,
-    boardSnapshot: async () => {
-      snapshots++
-      return board
-    },
-    serializeMessage: (serverMsg) => {
-      if (serverMsg.t === "event" && serverMsg.event.type === "board") boardSerializations++
-      return JSON.stringify(serverMsg)
-    },
-  })
+test("board: no delta reaches a client before it names its seq", async () => {
+  const h = await startHarness()
   try {
     const c = await connectClient(h.port)
-    const failure = await c.next()
-    assert.deepEqual(failure, {
-      t: "payload-too-large",
-      channel: "board",
-      actualBytes: Buffer.byteLength(JSON.stringify({
-        t: "event",
-        event: { type: "board", board, seq: 7, bootId: "boot-1" },
-      }), "utf8"),
-      maxBytes: 64,
-    })
-    assert.equal(c.ws.readyState, WebSocket.OPEN, "a logical overflow is not a slow-client close")
-
+    await c.next() // hello
+    h.publishDelta([view("a")])
     h.bus.publish({ type: "notify", slug: "foo", kind: "turn-done", title: "Foo" })
+    const notify = await c.next()
+    assert.ok(notify.t === "event" && notify.event.type === "notify", "the notify channel needs no seq")
     await c.expectNone(50)
-    assert.equal(snapshots, 1)
-    assert.equal(boardSerializations, 1, "the failed keyframe is serialized exactly once")
     c.ws.close()
+  } finally {
+    await h.close()
+  }
+})
+
+test("board: resuming replays exactly the missed deltas, in order, then streams live ones", async () => {
+  const h = await startHarness()
+  try {
+    const c = await connectClient(h.port)
+    await c.next() // hello
+    // The page read the board at seq 7; three deltas landed before it resumed.
+    for (const id of ["a", "b", "c"]) h.publishDelta([view(id)])
+    resume(c.ws, 7)
+    assert.deepEqual([deltaSeq(await c.next()), deltaSeq(await c.next()), deltaSeq(await c.next())], [8, 9, 10])
+    h.publishDelta([view("d")])
+    assert.equal(deltaSeq(await c.next()), 11)
+    await c.expectNone(50)
+    c.ws.close()
+  } finally {
+    await h.close()
+  }
+})
+
+test("board: a delta published between the HTTP read and the socket connecting is replayed, not lost", async () => {
+  const h = await startHarness()
+  try {
+    // The page's HTTP read saw seq 7. Before its socket even opened, a delta landed: it was on the bus
+    // with nobody to receive it, so only the ring can deliver it.
+    const read = h.seq()
+    const missed = h.publishDelta([view("landed-in-the-gap", { title: "new" })])
+    const c = await connectClient(h.port)
+    assert.deepEqual(await c.next(), { t: "hello", bootId: "boot-1", seq: missed.seq })
+    resume(c.ws, read)
+    const got = await c.next()
+    assert.equal(deltaSeq(got), missed.seq)
+    if (got.t === "event" && got.event.type === "board-delta") assert.deepEqual(got.event.upserts, missed.upserts)
+    await c.expectNone(50)
+    c.ws.close()
+  } finally {
+    await h.close()
+  }
+})
+
+test("board: a client already current gets nothing until the next delta, and never a delta twice", async () => {
+  const h = await startHarness()
+  try {
+    const c = await connectClient(h.port)
+    await c.next() // hello
+    resume(c.ws, 7)
+    await c.expectNone(50)
+    h.publishDelta([view("a")])
+    assert.equal(deltaSeq(await c.next()), 8)
+    // A second resume from an older seq (a client that re-read the board) replays from there, and the
+    // live stream picks up after it without repeating what the replay carried.
+    h.publishDelta([view("b")])
+    assert.equal(deltaSeq(await c.next()), 9)
+    resume(c.ws, 8)
+    assert.equal(deltaSeq(await c.next()), 9)
+    h.publishDelta([view("c")])
+    assert.equal(deltaSeq(await c.next()), 10)
+    await c.expectNone(50)
+    c.ws.close()
+  } finally {
+    await h.close()
+  }
+})
+
+test("board: a seq from another boot is answered with a resync, and no deltas", async () => {
+  const h = await startHarness()
+  try {
+    const c = await connectClient(h.port)
+    await c.next() // hello
+    resume(c.ws, 7, "boot-0")
+    assert.deepEqual(await c.next(), { t: "board-resync", reason: "boot" })
+    h.publishDelta([view("a")])
+    await c.expectNone(50)
+    // Resuming with the right boot afterwards works on the same socket.
+    resume(c.ws, 7)
+    assert.equal(deltaSeq(await c.next()), 8)
+    c.ws.close()
+  } finally {
+    await h.close()
+  }
+})
+
+test("board: a seq the server has not reached yet is answered with a resync", async () => {
+  const h = await startHarness()
+  try {
+    const c = await connectClient(h.port)
+    await c.next() // hello
+    resume(c.ws, 99)
+    assert.deepEqual(await c.next(), { t: "board-resync", reason: "ahead" })
+    h.publishDelta([view("a")])
+    await c.expectNone(50)
+    c.ws.close()
+  } finally {
+    await h.close()
+  }
+})
+
+test("board: a reconnect after the ring has rolled over is answered with a resync, and the re-read seq resumes", async () => {
+  const h = await startHarness({}, 4)
+  try {
+    const first = await connectClient(h.port)
+    await first.next() // hello
+    resume(first.ws, 7)
+    h.publishDelta([view("a")])
+    assert.equal(deltaSeq(await first.next()), 8)
+    const closed = once(first.ws, "close")
+    first.ws.close()
+    await closed
+
+    // Offline long enough for the ring (4 deltas here) to move past seq 8.
+    for (let i = 0; i < 6; i++) h.publishDelta([view(`b${i}`)])
+    const again = await connectClient(h.port)
+    assert.deepEqual(await again.next(), { t: "hello", bootId: "boot-1", seq: 14 })
+    resume(again.ws, 8)
+    assert.deepEqual(await again.next(), { t: "board-resync", reason: "expired" })
+    await again.expectNone(30)
+    // The client read the board again (at 14); the ring still covers that.
+    h.publishDelta([view("c")])
+    resume(again.ws, 14)
+    assert.equal(deltaSeq(await again.next()), 15)
+    // And one seq inside the ring replays from there.
+    resume(again.ws, 12)
+    assert.deepEqual([deltaSeq(await again.next()), deltaSeq(await again.next()), deltaSeq(await again.next())], [13, 14, 15])
+    again.ws.close()
+  } finally {
+    await h.close()
+  }
+})
+
+test("board: a gap too big to replay in one burst is answered with a resync, not a partial replay", async () => {
+  const h = await startHarness({ maxReplayBytes: 1_000 })
+  try {
+    const c = await connectClient(h.port)
+    await c.next() // hello
+    for (let i = 0; i < 8; i++) h.publishDelta([view(`t${i}`, { title: "y".repeat(200) })])
+    resume(c.ws, 7)
+    assert.deepEqual(await c.next(), { t: "board-resync", reason: "expired" })
+    await c.expectNone(30)
+    // A gap that fits replays as usual.
+    resume(c.ws, 13)
+    assert.deepEqual([deltaSeq(await c.next()), deltaSeq(await c.next())], [14, 15])
+    c.ws.close()
+  } finally {
+    await h.close()
+  }
+})
+
+test("board: a delta bigger than a frame becomes a resync, never a skipped seq", async () => {
+  const h = await startHarness({ maxLogicalFrameBytes: 512 })
+  try {
+    const c = await connectClient(h.port)
+    await c.next() // hello
+    resume(c.ws, 7)
+    h.publishDelta([view("huge", { title: "x".repeat(2_000) })])
+    assert.deepEqual(await c.next(), { t: "board-resync", reason: "oversized" })
+    assert.equal(c.ws.readyState, WebSocket.OPEN, "a big delta is not a reason to drop the socket")
+    // Nothing after it streams until the client names a seq again: a delta past the gap would be a hole.
+    h.publishDelta([view("small")])
+    await c.expectNone(50)
+    resume(c.ws, 9)
+    h.publishDelta([view("next")])
+    assert.equal(deltaSeq(await c.next()), 10)
+    c.ws.close()
+  } finally {
+    await h.close()
+  }
+})
+
+test("board: a malformed board message is rejected like any other", async () => {
+  const h = await startHarness()
+  try {
+    for (const bad of [{ t: "board", bootId: "boot-1", seq: -1 }, { t: "board", bootId: "", seq: 1 }, { t: "board", seq: 1 }, { t: "board", bootId: "boot-1", seq: 1.5 }]) {
+      const c = await connectClient(h.port)
+      await c.next() // hello
+      const closed = once(c.ws, "close") as Promise<[number, Buffer]>
+      c.ws.send(JSON.stringify(bad))
+      assert.equal((await closed)[0], 1008, JSON.stringify(bad))
+    }
   } finally {
     await h.close()
   }
@@ -246,9 +420,9 @@ test("resource control: process-wide connection capacity rejects before board wo
   let snapshots = 0
   const h = await startHarness({
     maxConnections: 2,
-    boardSnapshot: async () => {
+    currentSeq: () => {
       snapshots++
-      return board
+      return 7
     },
   })
   try {
@@ -262,7 +436,7 @@ test("resource control: process-wide connection capacity rejects before board wo
       origin: `http://127.0.0.1:${h.port}`,
     })
     assert.deepEqual(denied, { status: 503, body: "WebSocket capacity reached\n" })
-    assert.equal(snapshots, 2, "a capacity rejection cannot reach board snapshot work")
+    assert.equal(snapshots, 2, "a capacity rejection cannot reach board work")
     assert.equal(h.appSocket.connectionCount, 2)
 
     const aClosed = once(a.ws, "close")
@@ -272,7 +446,7 @@ test("resource control: process-wide connection capacity rejects before board wo
     assert.equal(h.appSocket.connectionCount, 1)
 
     const recovery = await connectClient(h.port)
-    assert.equal((await recovery.next()).t, "event")
+    assert.equal((await recovery.next()).t, "hello")
     assert.equal(h.appSocket.connectionCount, 2)
     assert.equal(snapshots, 3)
     b.ws.close()
@@ -285,9 +459,9 @@ test("resource control: process-wide connection capacity rejects before board wo
 test("security: /ws rejects missing, hostile, prefix, port, Host, and forwarded origins before reading the board", async () => {
   let snapshots = 0
   const h = await startHarness({
-    boardSnapshot: async () => {
+    currentSeq: () => {
       snapshots++
-      return board
+      return 7
     },
   })
   const validOrigin = `http://127.0.0.1:${h.port}`
@@ -311,11 +485,11 @@ test("security: /ws rejects missing, hostile, prefix, port, Host, and forwarded 
       origin: validOrigin,
       headers: { "x-forwarded-proto": "http" },
     }), 403)
-    assert.equal(snapshots, 0, "untrusted upgrades cannot reach the project keyframe")
+    assert.equal(snapshots, 0, "untrusted upgrades cannot reach the board")
     assert.equal(h.appSocket.registry.connCount, 0)
 
     const valid = await connectClient(h.port)
-    assert.equal((await valid.next()).t, "event")
+    assert.equal((await valid.next()).t, "hello")
     assert.equal(snapshots, 1)
     valid.ws.close()
   } finally {
@@ -352,7 +526,7 @@ test("security: /ws enforces strict bounded text frames and contains malformed o
     assert.equal((await hugeClosed)[0], 1009)
 
     const recovery = await connectClient(h.port)
-    assert.equal((await recovery.next()).t, "event")
+    assert.equal((await recovery.next()).t, "hello")
     recovery.ws.close()
   } finally {
     await h.close()
@@ -461,7 +635,7 @@ test("security: a valid-frame flood and a slow outbound consumer are shed withou
 
     simulateSlow = false
     const recovery = await connectClient(h.port)
-    assert.equal((await recovery.next()).t, "event")
+    assert.equal((await recovery.next()).t, "hello")
     recovery.ws.close()
   } finally {
     await h.close()
@@ -503,7 +677,7 @@ test("resource control: transcript backpressure skips the generation instead of 
   try {
     h.transcripts.set("t", [msg("first")])
     const c = await connectClient(h.port)
-    await c.next() // keyframe
+    await c.next() // hello
     c.ws.send(JSON.stringify({ t: "sub", topic: "transcript", slug: "t" }))
     const first = await c.next()
     assert.equal(first.t, "transcript")
@@ -542,9 +716,10 @@ test("protocol: bus board-delta + notify are forwarded as {t:'event'}", async ()
   const h = await startHarness()
   try {
     const c = await connectClient(h.port)
-    await c.next() // keyframe
+    await c.next() // hello
+    resume(c.ws, 7)
 
-    h.bus.publish({ type: "board-delta", seq: 8, bootId: "boot-1", upserts: [], removed: [] })
+    h.publishDelta()
     const delta = await c.next()
     assert.equal(delta.t, "event")
     if (delta.t === "event") assert.equal(delta.event.type, "board-delta")
@@ -565,7 +740,7 @@ test("protocol: sub pushes the current transcript immediately", async () => {
   h.transcripts.set("foo", [msg("v1")])
   try {
     const c = await connectClient(h.port)
-    await c.next() // keyframe
+    await c.next() // hello
 
     c.ws.send(JSON.stringify({ t: "sub", topic: "transcript", slug: "foo" }))
     const push = await c.next()
@@ -868,7 +1043,7 @@ test("protocol: a transcript frame exactly at the logical byte limit is delivere
   })
   try {
     const c = await connectClient(h.port)
-    await c.next() // keyframe is much smaller than the transcript boundary fixture
+    await c.next() // hello
     c.ws.send(JSON.stringify({ t: "sub", topic: "transcript", slug: "boundary" }))
     assert.deepEqual(await c.next(), frame)
     assert.equal(c.ws.readyState, WebSocket.OPEN)
@@ -900,7 +1075,7 @@ test("protocol: a one-byte-over Unicode transcript pauses only that slug and an 
   })
   try {
     const c = await connectClient(h.port)
-    await c.next() // keyframe
+    await c.next() // hello
     c.ws.send(JSON.stringify({ t: "sub", topic: "transcript", slug: "unicode" }))
     assert.deepEqual(await c.next(), {
       t: "payload-too-large",
@@ -938,7 +1113,7 @@ test("protocol: transcriptChange pushes to subscribers, dedups unchanged, respec
   h.transcripts.set("foo", [msg("v1")])
   try {
     const c = await connectClient(h.port)
-    await c.next() // keyframe
+    await c.next() // hello
     c.ws.send(JSON.stringify({ t: "sub", topic: "transcript", slug: "foo" }))
     await c.next() // immediate v1 push (also seeds the dedup signature)
 
@@ -1099,7 +1274,7 @@ test("protocol: a late second subscriber does NOT starve the first of a pending 
   h.transcripts.set("foo", [msg("v1")])
   try {
     const a = await connectClient(h.port)
-    await a.next() // keyframe
+    await a.next() // hello
     a.ws.send(JSON.stringify({ t: "sub", topic: "transcript", slug: "foo" }))
     const aFirst = await a.next()
     assert.equal(aFirst.t, "transcript")
@@ -1110,7 +1285,7 @@ test("protocol: a late second subscriber does NOT starve the first of a pending 
 
     // B subscribes in the gap → gets v2 immediately, but must NOT seed lastSig away from A's v1.
     const b = await connectClient(h.port)
-    await b.next() // keyframe
+    await b.next() // hello
     b.ws.send(JSON.stringify({ t: "sub", topic: "transcript", slug: "foo" }))
     const bFirst = await b.next()
     assert.equal(bFirst.t, "transcript")
@@ -1134,7 +1309,7 @@ test("protocol: lastSig is reclaimed on last-unsub and on close (no leak)", asyn
   h.transcripts.set("foo", [msg("v1")])
   try {
     const c = await connectClient(h.port)
-    await c.next() // keyframe
+    await c.next() // hello
     c.ws.send(JSON.stringify({ t: "sub", topic: "transcript", slug: "foo" }))
     await c.next() // push seeds lastSig[foo] (sole subscriber)
     assert.equal(h.appSocket.lastSigSize, 1)
@@ -1161,7 +1336,7 @@ test("protocol: a change for a slug nobody subscribes is ignored", async () => {
   h.transcripts.set("bar", [msg("x")])
   try {
     const c = await connectClient(h.port)
-    await c.next() // keyframe
+    await c.next() // hello
     h.transcriptChange.emit(["bar"]) // no subscribers
     await c.expectNone()
     c.ws.close()
@@ -1175,7 +1350,7 @@ test("protocol: closing the socket removes it from the registry (leak-guard)", a
   h.transcripts.set("foo", [msg("v1")])
   try {
     const c = await connectClient(h.port)
-    await c.next() // keyframe
+    await c.next() // hello
     c.ws.send(JSON.stringify({ t: "sub", topic: "transcript", slug: "foo" }))
     await c.next() // push
     assert.equal(h.appSocket.registry.hasSubscribers("foo"), true)
@@ -1191,7 +1366,7 @@ test("protocol: closing the socket removes it from the registry (leak-guard)", a
   }
 })
 
-test("protocol: a non-/ws upgrade is rejected (no keyframe)", async () => {
+test("protocol: a non-/ws upgrade is rejected", async () => {
   const h = await startHarness()
   try {
     const ws = new WebSocket(`ws://127.0.0.1:${h.port}/nope`)
@@ -1210,43 +1385,19 @@ test("protocol: a non-/ws upgrade is rejected (no keyframe)", async () => {
   }
 })
 
-test("protocol: close rejects new upgrades and drains an in-flight board keyframe", async () => {
-  let markSnapshotStarted!: () => void
-  const snapshotStarted = new Promise<void>((resolve) => { markSnapshotStarted = resolve })
-  let releaseSnapshot!: () => void
-  const snapshotGate = new Promise<void>((resolve) => { releaseSnapshot = resolve })
-  let currentSeqReads = 0
-  const h = await startHarness({
-    boardSnapshot: async () => {
-      markSnapshotStarted()
-      await snapshotGate
-      return board
-    },
-    currentSeq: () => {
-      currentSeqReads++
-      return 7
-    },
-  })
+test("protocol: close rejects new upgrades and closes every open socket", async () => {
+  const h = await startHarness()
   const client = await connectClient(h.port)
+  await client.next() // hello
   const clientClosed = once(client.ws, "close")
-  await snapshotStarted
-
   try {
-    let closeSettled = false
     const firstClose = h.appSocket.close()
     assert.equal(h.appSocket.close(), firstClose, "close is one idempotent drain promise")
-    const closing = firstClose.then(() => { closeSettled = true })
-    await new Promise<void>((resolve) => setImmediate(resolve))
-    assert.equal(closeSettled, false, "the socket cannot outlive its in-flight board dependency")
     assert.equal(await rejectedClient(h.port), 503, "new upgrades are rejected as soon as close begins")
-
-    releaseSnapshot()
-    await closing
+    await firstClose
     await clientClosed
-    assert.equal(currentSeqReads, 0, "a snapshot settling after close cannot read the board sequence")
     assert.equal(h.appSocket.registry.connCount, 0)
   } finally {
-    releaseSnapshot()
     await h.close()
   }
 })
@@ -1279,7 +1430,7 @@ test("file topic: a change on a subscribed file is pushed as file-changed with t
   const h = await startHarness({ watchFile: fake.watchFile })
   try {
     const c = await connectClient(h.port)
-    await c.next() // keyframe
+    await c.next() // hello
     c.ws.send(JSON.stringify({ t: "sub", topic: "file", path: "/repo/README.md" }))
     await waitFor(() => fake.armed.has("/repo/README.md"), "the watch to arm")
     assert.equal(h.appSocket.fileWatchCount, 1)

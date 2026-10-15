@@ -51,3 +51,13 @@ test("resolveThreadRoute preserves owned, foreign, and legacy ownership", () => 
     thread: thread({ id: "legacy", kind: "legacy" }),
   })
 })
+
+test("resolveThreadRoute looks the row up with the finder it is handed, and classifies what it finds", () => {
+  const foreign = thread({ id: "f", foreign: true })
+  const asked: string[] = []
+  const find = (_b: BoardSnapshot, slug: string) => (asked.push(slug), slug === "f" ? foreign : undefined)
+  const b = board([thread()])
+  assert.deepEqual(resolveThreadRoute(b, "f", find), { kind: "found", ownership: "foreign", thread: foreign })
+  assert.deepEqual(resolveThreadRoute(b, "owned", find), { kind: "missing" }, "the finder's answer, not a walk of the board")
+  assert.deepEqual(asked, ["f", "owned"])
+})

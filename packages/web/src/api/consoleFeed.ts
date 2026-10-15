@@ -1,13 +1,14 @@
 import type { QueryClient } from "@tanstack/react-query"
-import type { BoardSnapshot, ServerEvent, SocketClientMsg, SocketServerMsg, ThreadView } from "@frizz/shared"
+import type { BoardSnapshot, BoardState, ServerEvent, SocketClientMsg, SocketServerMsg, ThreadView } from "@frizz/shared"
 import { applyBoardDelta, deltaAction } from "@frizz/shared"
-import { store, openThread, setBoardPendingCheck } from "../store.ts"
+import { store, openThread, plainThreads, setBoardPendingCheck } from "../store.ts"
 import { isConsolePath, projectApiBase, projectHref } from "../lib/base-path.ts"
 import { setProjectGithubRepo } from "../lib/githubAutolink.ts"
 import { localFileQueryKey } from "../lib/localFileQuery.ts"
 import { splitThreadKey, threadKey } from "../lib/threadKey.ts"
 import { noteServerBootId } from "./boot.ts"
 import { refreshProjectList } from "./board-stream.ts"
+import { BoardResume } from "./board-resume.ts"
 import { invalidateInteractionQueries } from "./interaction-cache.ts"
 import { rpcFor } from "./rpc.ts"
 import { writeTranscriptPush } from "./transcript-push.ts"
@@ -21,10 +22,12 @@ import { writeTranscriptPush } from "./transcript-push.ts"
 // a slug is unique only within its project, and the merged board is the one place two projects' threads
 // sit side by side.
 //
-// Each project keeps its OWN sequence. A delta is checked against the keyframe of the project it came
-// from, a gap resyncs that project's connection alone, and a keyframe replaces that project's threads
-// and no one else's. A board is admitted only from the connection opened for its project (the board
-// says which it is, `projectSlug`), which is the door api/socket.ts keeps for a page, kept per project.
+// Each project keeps its OWN sequence. Its board is read over HTTP and its socket resumes from that
+// board's seq, exactly as a project page's does (board-resume.ts); a delta is checked against the board
+// of the project it came from, a gap re-reads that project's board alone, and a read replaces that
+// project's threads and no one else's. A board is admitted only for the project it was read for (the
+// board says which it is, `projectSlug`), which is the door api/socket.ts keeps for a page, kept per
+// project.
 //
 // Transcripts ride the same connections: a subscription goes to the socket of the thread's project with
 // the real slug, and a push is written to the cache under the key (transcript-push.ts) — the entry the
@@ -32,14 +35,11 @@ import { writeTranscriptPush } from "./transcript-push.ts"
 // project page; it calls api/socket.ts, which hands a Console page's calls to here.
 //
 // What this does NOT have is the SSE fallback. Browsers allow about six connections per host over
-// HTTP/1.1 and the Console would need one EventSource per project, so a project whose board is too big
-// for its socket is polled over HTTP instead (BOARD_POLL_MS), and its transcripts still push: the server
-// shuts only that connection's BOARD channel (app-socket.ts), and keeps its transcripts and heartbeat.
-// What such a project loses is the bus — its desktop notifications and its question-card invalidations —
-// because those ride the board channel the server has closed.
+// HTTP/1.1 and the Console would need one EventSource per project. It needs none for a big board any
+// more: the board never rides the socket, so no board is too big for it. (Until 2026-10-14 a board past
+// the 4 MiB frame limit shut that project's board channel and was polled over HTTP every 5s instead.)
 
 const HEARTBEAT_TIMEOUT = 35_000
-const BOARD_POLL_MS = 5_000
 // The same drip api/socket.ts replays with: the server budgets transcript reads per origin per project.
 const REPLAY_BATCH = 6
 const REPLAY_MS = 700
@@ -50,7 +50,7 @@ const feeds = new Map<string, ProjectFeed>()
 let health: ReturnType<typeof setInterval> | null = null
 /** Is the Console holding the feed? Set by startConsoleFeed, cleared by stopConsoleFeed. */
 let active = false
-// The merged board BEFORE it is shown. The Console's first paint waits for every project's first keyframe
+// The merged board BEFORE it is shown. The Console's first paint waits for every project's first board
 // (or PUBLISH_DEADLINE_MS, whichever is sooner): a board painted from the first project to answer would
 // reorder its queue under the operator as each other project's threads arrived, and the card at the top —
 // the one they were about to read — would be replaced by an older one a beat later.
@@ -66,11 +66,12 @@ function emptyUnion(): BoardSnapshot {
 }
 
 /** A project's thread under its key. `dependsOn` names threads of the same project, so it is keyed too. */
+// A plain value on the merged board, like every thread on a project's (store.ts plainThreads).
 export function keyThread(project: string, t: ThreadView): ThreadView {
-  return { ...t, id: threadKey(project, t.id), dependsOn: t.dependsOn.map((slug) => threadKey(project, slug)) }
+  return plainThreads([{ ...t, id: threadKey(project, t.id), dependsOn: t.dependsOn.map((slug) => threadKey(project, slug)) }])[0]
 }
 
-/** Replace ONE project's threads on the merged board with this keyframe's. */
+/** Replace ONE project's threads on the merged board with this board's. */
 export function mergeKeyframe(union: BoardSnapshot, project: string, board: BoardSnapshot): void {
   const prefix = threadKey(project, "")
   const kept = union.threads.filter((t) => !t.id.startsWith(prefix))
@@ -95,15 +96,17 @@ export function dropProject(union: BoardSnapshot, project: string): void {
 
 class ProjectFeed {
   private ws: WebSocket | null = null
+  // The seq of the board this project's threads on the merged board reflect, and the boot it counts in.
+  // Kept across a dropped socket: the next hello resumes from them.
   private seq = -1
-  /** Has this project's first keyframe landed? The Console's first paint waits for every project's. */
+  private boot: string | null = null
+  /** Has this project's first board landed? The Console's first paint waits for every project's. */
   keyframed = false
   private confirmed = false
   private protocolReady = false
   private failures = 0
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private replayTimer: ReturnType<typeof setTimeout> | null = null
-  private pollTimer: ReturnType<typeof setInterval> | null = null
   private closed = false
   lastMsg = 0
   /** Real slug → number of interested surfaces. Ref-counted exactly as api/socket.ts's `subs`. */
@@ -113,7 +116,24 @@ class ProjectFeed {
   private readonly budgetTimers = new Map<string, ReturnType<typeof setTimeout>>()
   state: "connecting" | "open" | "closed" = "connecting"
 
-  constructor(readonly project: string) {}
+  private readonly resume: BoardResume
+
+  constructor(readonly project: string) {
+    this.resume = new BoardResume({
+      read: () => rpcFor(this.project).boardState(),
+      adopt: (state) => this.adopt(state),
+      held: () => (this.boot !== null && this.seq >= 0 ? { bootId: this.boot, seq: this.seq } : null),
+      send: (bootId, seq) => {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify({ t: "board", bootId, seq } satisfies SocketClientMsg))
+      },
+    })
+  }
+
+  /** Read the board and open the socket together: the read is the long pole, so it does not wait for hello. */
+  start(): void {
+    this.resume.prefetch()
+    this.connect()
+  }
 
   connect(): void {
     if (this.closed || this.ws) return
@@ -143,7 +163,7 @@ class ProjectFeed {
       if (this.ws !== sock) return
       this.ws = null
       this.protocolReady = false
-      this.seq = -1
+      this.resume.dropped()
       if (this.closed) return
       this.failures++
       this.setState(this.failures > 3 ? "closed" : "connecting")
@@ -170,17 +190,11 @@ class ProjectFeed {
     }, delay)
   }
 
-  /** Drop the socket WITHOUT the close handler's recovery, then open a fresh one for a new keyframe. */
-  resync(): void {
-    this.dropSocket()
-    this.connect()
-  }
-
   /**
-   * Start over for a new start of the feed: a fresh connection, and so a fresh keyframe, and this
+   * Start over for a new start of the feed: a fresh connection, a fresh read of the board, and this
    * project counted as not yet answered. A feed that outlived its start would otherwise report the
-   * keyframe it delivered to a board that has since been thrown away — and the new start would publish
-   * without it.
+   * board it delivered to a merged board that has since been thrown away — and the new start would
+   * publish without it.
    */
   restart(): void {
     this.keyframed = false
@@ -188,7 +202,12 @@ class ProjectFeed {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
     this.reconnectTimer = null
     this.state = "connecting"
-    this.resync()
+    this.dropSocket()
+    this.seq = -1
+    this.boot = null
+    this.resume.reset()
+    this.resume.prefetch()
+    this.connect()
   }
 
   /** The watchdog's and the wake signals' reconnect: a socket gone quiet past the heartbeat is dead. */
@@ -209,7 +228,7 @@ class ProjectFeed {
     const sock = this.ws
     this.ws = null
     this.protocolReady = false
-    this.seq = -1
+    this.resume.dropped()
     if (!sock) return
     sock.onopen = null
     sock.onmessage = null
@@ -225,10 +244,10 @@ class ProjectFeed {
   close(): void {
     this.closed = true
     this.dropSocket()
+    this.resume.reset()
     for (const timer of [this.reconnectTimer, this.replayTimer]) if (timer) clearTimeout(timer)
     for (const timer of this.budgetTimers.values()) clearTimeout(timer)
-    if (this.pollTimer) clearInterval(this.pollTimer)
-    this.reconnectTimer = this.replayTimer = this.pollTimer = null
+    this.reconnectTimer = this.replayTimer = null
     this.budgetTimers.clear()
     const board = store.board ?? staged
     if (board) dropProject(board, this.project)
@@ -238,6 +257,14 @@ class ProjectFeed {
 
   private handle(msg: SocketServerMsg): boolean {
     switch (msg.t) {
+      case "hello":
+        noteServerBootId(msg.bootId)
+        this.becomeReady()
+        this.resume.hello(msg.bootId)
+        return true
+      case "board-resync":
+        this.resume.resync()
+        return true
       case "event":
         return this.handleEvent(msg.event)
       case "transcript": {
@@ -250,13 +277,8 @@ class ProjectFeed {
         void qc?.invalidateQueries({ queryKey: localFileQueryKey(msg.path) })
         return true
       case "payload-too-large":
-        if (msg.channel === "board") {
-          console.warn(`[frizz] ${this.project}'s live board exceeded the socket limit; polling it instead`, { actualBytes: msg.actualBytes, maxBytes: msg.maxBytes })
-          this.pollBoard()
-          // The connection is still this project's transcript channel; only its board was shut. So it is
-          // ready for subscriptions now, as a keyframe would have made it.
-          this.becomeReady()
-        } else {
+        // The board channel never sends one now (the board is read over HTTP); a transcript's still can.
+        if (msg.channel === "transcript") {
           store.socketTranscriptFallbacks[threadKey(this.project, msg.slug)] = { kind: "payload-too-large", actualBytes: msg.actualBytes, maxBytes: msg.maxBytes }
         }
         return false
@@ -276,27 +298,33 @@ class ProjectFeed {
         // THE DOOR, per project: a board that names another project did not come from the connection
         // this feed opened for `project`, and nothing it says belongs under this project's keys.
         if (event.board.projectSlug && event.board.projectSlug !== this.project) return false
-        this.adoptKeyframe(event.board)
-        this.seq = typeof event.seq === "number" ? event.seq : -1
-        this.becomeReady()
+        if (this.adoptKeyframe(event.board)) {
+          this.seq = typeof event.seq === "number" ? event.seq : -1
+          this.boot = event.bootId ?? null
+        }
         return true
       case "board-delta":
         noteServerBootId(event.bootId)
+        if (this.boot !== null && event.bootId !== this.boot) {
+          this.resume.resync()
+          return true
+        }
         switch (deltaAction(this.seq, event.seq)) {
           case "apply": {
             const board = store.board ?? staged
             if (!board) {
-              this.resync()
+              this.resume.resync()
               return true
             }
             mergeDelta(board, this.project, event)
             this.seq = event.seq
+            this.resume.progressed()
             return true
           }
           case "ignore":
             return true
           case "resync":
-            this.resync()
+            this.resume.resync()
             return true
         }
         return true
@@ -320,26 +348,27 @@ class ProjectFeed {
     this.resubscribe()
   }
 
-  private adoptKeyframe(board: BoardSnapshot): void {
-    if (!isConsolePath() || !active) return
+  /** This project's board read over HTTP. Never steps the merged board back past a delta already applied. */
+  private adopt(state: BoardState): boolean {
+    noteServerBootId(state.bootId)
+    if (this.closed) return false
+    if (state.board.projectSlug && state.board.projectSlug !== this.project) return false
+    if (this.boot === state.bootId && this.seq >= state.seq) return true
+    if (!this.adoptKeyframe(state.board)) return false
+    this.seq = state.seq
+    this.boot = state.bootId
+    return true
+  }
+
+  private adoptKeyframe(board: BoardSnapshot): boolean {
+    if (!isConsolePath() || !active) return false
     mergeKeyframe(store.board ?? (staged ??= emptyUnion()), this.project, board)
     // The repo this project's `#123` and commit hashes link to. The merged board carries no project's
-    // repo, so this keyframe — the project's own — is the one place that knows it (lib/githubAutolink.ts).
+    // repo, so this board — the project's own — is the one place that knows it (lib/githubAutolink.ts).
     setProjectGithubRepo(this.project, board.githubRepo)
     this.keyframed = true
     maybePublish()
-  }
-
-  /** A board too big for the socket: read it over HTTP on a clock, and keep the socket for transcripts. */
-  private pollBoard(): void {
-    if (this.pollTimer) return
-    const read = () => {
-      rpcFor(this.project).board().then((board) => {
-        if (!this.closed && board.projectSlug === this.project) this.adoptKeyframe(board)
-      }).catch(() => {})
-    }
-    read()
-    this.pollTimer = setInterval(read, BOARD_POLL_MS)
+    return true
   }
 
   private send(msg: SocketClientMsg): void {
@@ -416,7 +445,7 @@ class ProjectFeed {
 }
 
 /**
- * Show the merged board once every project has answered — its first keyframe, or a connection given up
+ * Show the merged board once every project has answered — its first board, or a connection given up
  * on — or once the deadline says to stop waiting for the stragglers (`force`).
  */
 function maybePublish(force = false): void {
@@ -476,11 +505,11 @@ export function setConsoleProjects(projects: readonly string[]): void {
     if (feeds.has(project)) continue
     const feed = new ProjectFeed(project)
     feeds.set(project, feed)
-    feed.connect()
+    feed.start()
   }
   installHealth()
   reportConnection()
-  // No project to wait for (none is open) publishes the empty board now; otherwise each keyframe asks.
+  // No project to wait for (none is open) publishes the empty board now; otherwise each board read asks.
   maybePublish()
 }
 

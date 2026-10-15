@@ -112,8 +112,10 @@ export const RELAY_MAX_FRAME_BODY = 512 * 1024
  * The largest slice of a nested WebSocket message carried in ONE frame, in UTF-16 code units.
  *
  * A board's own frames go up to 4 MiB (`APP_SOCKET_MAX_LOGICAL_FRAME_BYTES`) — four times what a
- * Cloudflare WebSocket message may be — so a big board's snapshot would be DROPPED rather than
- * delivered, and a visitor would see a board that simply stops updating with nothing to point at.
+ * Cloudflare WebSocket message may be — so a long transcript window or a big board delta would be
+ * DROPPED rather than delivered, and a visitor would see a thread that simply stops updating with
+ * nothing to point at. (The whole thread list no longer rides the socket: since 2026-10-14 it is read
+ * over HTTP, which the relay streams as chunked bodies, and the socket carries deltas from its seq.)
  *
  * Deliberately far below the 1 MiB ceiling, because the frame is JSON and the ratio is not 1:1. A code
  * unit costs up to 3 bytes in UTF-8, and JSON escaping turns a control character — which terminal

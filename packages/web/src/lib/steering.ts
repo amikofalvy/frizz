@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { proxy, useSnapshot } from "valtio"
 import type { ThreadView, TranscriptMessage } from "@frizz/shared"
+import { partitionBoard } from "./boardPartition.ts"
 
 // OPTIMISTIC STEER STATE — "your message is in, this thread is working again", rendered the instant
 // the operator commits rather than when the server can prove it.
@@ -367,7 +368,55 @@ export function useTurnHeldForTranscript(t: ThreadView | undefined, messages: re
 // Apply the overlay across a board's threads. A thread with no live steer is returned BY IDENTITY, so
 // the memoized rows still skip re-rendering; the memo re-runs when the board changes or when a stamp
 // is set/expired (markSteered's expiry timer is what guarantees the cap actually repaints).
+//
+// The stamps are copied out of the tracked snapshot ONCE, by their own keys, before the walk. Reading
+// `at[t.id]` per thread recorded every slug on the board as a dependency of the reading component — a
+// read through useSnapshot's tracking view for each of 5,000 threads, almost all of them Done and never
+// steered, on every board delta (2.2ms of a send's click on a 5,000-thread board, CPU profile). Reading
+// the keys records the key set instead, which re-runs this on exactly the same changes. With no thread
+// changed by the overlay the input array itself comes back, so a memo below it keyed on the list sees
+// the board's own array.
 export function useOptimisticallySteered(threads: readonly ThreadView[]): ThreadView[] {
   const { at, answered } = useSnapshot(steering) as { at: Record<string, number>; answered: Record<string, readonly string[]> }
-  return useMemo(() => threads.map((t) => optimisticallySteered(t, at[t.id], undefined, answered[t.id])), [threads, at, answered])
+  return useMemo(() => {
+    const stamps = plainEntries(at)
+    const answers = plainEntries(answered)
+    const nowMs = Date.now()
+    // With no steer stamped, a thread changes only for a delivery in flight, which a settled thread
+    // never has: only the live ones are asked. A stamp can name any thread, so then every one is.
+    if (stamps.size === 0) return overlayLive(threads, (t) => optimisticallySteered(t, undefined, nowMs))
+    return overlayEach(threads, (t) => optimisticallySteered(t, stamps.get(t.id), nowMs, answers.get(t.id)))
+  }, [threads, at, answered])
+}
+
+/** A tracked record's entries as a plain map, read by its own keys only. */
+export function plainEntries<V>(record: Record<string, V>): Map<string, V> {
+  const out = new Map<string, V>()
+  for (const key of Object.keys(record)) out.set(key, record[key])
+  return out
+}
+
+/** overlayEach over the threads that can still move (lib/boardPartition); a settled one is kept as itself. */
+export function overlayLive(threads: readonly ThreadView[], fn: (t: ThreadView) => ThreadView): ThreadView[] {
+  let out: ThreadView[] | undefined
+  for (const i of partitionBoard(threads).liveAt) {
+    const t = threads[i]!
+    const next = fn(t)
+    if (next === t) continue
+    out ??= threads.slice()
+    out[i] = next
+  }
+  return out ?? (threads as ThreadView[])
+}
+
+/** `threads.map(fn)`, except that when `fn` returns every thread by identity the input array comes back. */
+export function overlayEach(threads: readonly ThreadView[], fn: (t: ThreadView) => ThreadView): ThreadView[] {
+  let out: ThreadView[] | undefined
+  for (let i = 0; i < threads.length; i++) {
+    const t = threads[i]
+    const next = fn(t)
+    if (next !== t && !out) out = threads.slice(0, i)
+    if (out) out.push(next)
+  }
+  return out ?? (threads as ThreadView[])
 }

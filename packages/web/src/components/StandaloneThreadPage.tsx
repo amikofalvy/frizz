@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react"
 import { useSnapshot } from "valtio"
-import { seedBoard, store } from "../store.ts"
+import { store, threadBySlug } from "../store.ts"
 import { useBoard } from "../hooks.ts"
 import { rpc } from "../api/rpc.ts"
 import { displayTitle, queued } from "../groups.ts"
@@ -63,13 +63,9 @@ export function StandaloneThreadPage({ slug }: { slug: string }) {
   const snap = useSnapshot(store)
   const fileOpen = snap.filePanels.some((panel) => !panel.closing)
   const board = useBoard()
-  const route = resolveThreadRoute(board, slug)
+  const route = resolveThreadRoute(board, slug, threadBySlug)
   const thread = route.kind === "found" ? route.thread : undefined
   const projectDir = board?.projectDir
-
-  useEffect(() => {
-    rpc.board().then(seedBoard).catch(() => {})
-  }, [])
 
   // SPLIT MODE for the file reader: while this page is mounted (and the window is wide enough for two
   // real columns), a click on a local file renders beside the thread instead of as a sheet over it —

@@ -1,21 +1,24 @@
 import type { QueryClient } from "@tanstack/react-query"
-import type { ServerEvent } from "@frizz/shared"
+import type { BoardState, ServerEvent } from "@frizz/shared"
 import { deltaAction } from "@frizz/shared"
 import { store, setBoard, applyDelta, openThread } from "../store.ts"
 import { noteServerBootId } from "./boot.ts"
 import { basePath, projectHref, projectSlug } from "../lib/base-path.ts"
 
-// The transport-agnostic board/notify handler — the stage-1 delta/seq/boot state machine, extracted so
-// BOTH transports drive it identically: SSE (sse.ts, the fallback) and the /ws multiplex (socket.ts).
-// A full "board" frame is the connect keyframe + the resync frame; "board-delta" frames carry only the
+// The transport-agnostic board/notify handler — the delta/seq/boot state machine, shared so BOTH
+// transports drive it identically: SSE (sse.ts, the fallback) and the /ws multiplex (socket.ts).
+// The board arrives whole one of two ways: read over HTTP (`adopt`, what the socket path does — see
+// board-resume.ts) or as SSE's connect keyframe (a "board" event). "board-delta" frames carry only the
 // threads that changed and must arrive in order (deltaAction). A seq gap can't be trusted, so the owner
-// resyncs by RECONNECTING its transport (SSE re-opens EventSource; the socket re-opens the WebSocket) —
-// the fresh connect handshake re-sends a full keyframe with the current seq. `resync` is injected so this
-// module stays ignorant of the transport.
+// resyncs — the socket by reading the board over HTTP again, SSE by reconnecting for a new keyframe.
+// `resync` is injected so this module stays ignorant of the transport.
 export class BoardStream {
-  // The seq of the last board frame we adopted/applied. -1 = no keyframe yet. A full "board" keyframe
-  // sets it; each delta must be exactly currentSeq+1 (see deltaAction) or we resync.
+  // The seq of the last board frame we adopted/applied. -1 = no board yet. A whole board sets it; each
+  // delta must be exactly currentSeq+1 (see deltaAction) or we resync.
   private currentSeq = -1
+  // The boot the held board and its seq belong to. A seq means nothing across a server restart.
+  private boot: string | null = null
+  private readonly applied: () => void
   private readonly resync: () => void
   private readonly interactionsInvalidated: (
     event: Extract<ServerEvent, { type: "interactions-invalidated" }>,
@@ -28,16 +31,39 @@ export class BoardStream {
       event: Extract<ServerEvent, { type: "interactions-invalidated" }>,
     ) => void = () => {},
     projectsChanged: () => void = () => {},
+    applied: () => void = () => {},
   ) {
     this.resync = resync
     this.interactionsInvalidated = interactionsInvalidated
     this.projectsChanged = projectsChanged
+    this.applied = applied
   }
 
-  // Drop the adopted seq — call on (re)connect so any stray delta arriving before the next keyframe
-  // forces a resync rather than applying against a torn base.
+  // Forget the held board's seq — for a board that no longer applies (another project), so any stray
+  // delta arriving before the next whole board forces a resync rather than applying against it.
   reset(): void {
     this.currentSeq = -1
+    this.boot = null
+  }
+
+  /** What a socket names to resume from: the boot and seq of the board held, or null. */
+  held(): { bootId: string; seq: number } | null {
+    return this.boot !== null && this.currentSeq >= 0 ? { bootId: this.boot, seq: this.currentSeq } : null
+  }
+
+  /**
+   * Adopt a board read over HTTP. A read can land after the socket has already carried this stream past
+   * it (a delta applied while the read was in flight): the held board is then the newer one, and
+   * replacing it would show the board going backwards until the replay caught up. False when the
+   * store's door refused the board (it names another project, or this is the Console).
+   */
+  adopt(state: BoardState): boolean {
+    noteServerBootId(state.bootId)
+    if (this.boot === state.bootId && this.currentSeq >= state.seq) return true
+    if (!setBoard(state.board)) return false
+    this.boot = state.bootId
+    this.currentSeq = state.seq
+    return true
   }
 
   handle(event: ServerEvent): void {
@@ -48,16 +74,25 @@ export class BoardStream {
         // Keyframe: adopt its seq. A pre-restart server omits seq → -1 (it only ever sends full frames,
         // never deltas, so seq tracking is moot against it — we just keep taking whole boards).
         this.currentSeq = typeof event.seq === "number" ? event.seq : -1
+        this.boot = event.bootId ?? null
         break
       case "board-delta":
         noteServerBootId(event.bootId)
+        // A delta from another boot than the held board's counts from another start: its seq says
+        // nothing about this board. Never sent by a socket that resumed us, so a guard, not a path.
+        if (this.boot !== null && event.bootId && event.bootId !== this.boot) {
+          this.resync()
+          break
+        }
         switch (deltaAction(this.currentSeq, event.seq)) {
           case "apply":
-            if (applyDelta(event)) this.currentSeq = event.seq
-            else this.resync() // no base board yet (shouldn't happen once a keyframe landed) — fetch one
+            if (applyDelta(event)) {
+              this.currentSeq = event.seq
+              this.applied()
+            } else this.resync() // no base board yet — fetch one
             break
           case "ignore":
-            break // a buffered duplicate the connect keyframe already covers
+            break // a delta the held board already includes (a replay overlapping a read)
           case "resync":
             this.resync() // a delta was dropped (seq gap) — incremental state is untrustworthy; get a keyframe
             break

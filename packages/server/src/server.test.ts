@@ -41,7 +41,7 @@ function dispatcherHarness(settings = defaultSettings()) {
   const spawned: { slug: string; cmd: string[]; cwd: string; env?: Record<string, string>; promptText?: string; promptMode?: number }[] = []
   const board: BoardManager = {
     snapshot: async () => ({}) as never,
-    currentSeq: () => 0,
+    currentSeq: () => 0, deltasSince: () => null, snapshotState: async () => ({ board: ({}) as never, seq: 0 }),
     rebuild: async () => ({}) as never,
     refresh: () => ({}) as never,
     start: async () => {},
@@ -467,7 +467,7 @@ function codexDispatcherHarness(codexAppServer?: Partial<CodexAppServerBridge>) 
   const backendFor = (kind?: string): AgentBackend => (kind === "codex" ? codexBackend : claudeBackend)
   const board: BoardManager = {
     snapshot: async () => ({}) as never,
-    currentSeq: () => 0,
+    currentSeq: () => 0, deltasSince: () => null, snapshotState: async () => ({ board: ({}) as never, seq: 0 }),
     rebuild: async () => ({}) as never,
     refresh: () => ({}) as never,
     start: async () => {},

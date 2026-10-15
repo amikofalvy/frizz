@@ -586,7 +586,7 @@ test("/_frizz/events ends when its response body is cancelled, and an aborted re
   let unsubscribed = 0
   const app = originTestApp(port, undefined, {}, "/tmp/origin-test-state", {
     bus: { subscribe: () => () => { unsubscribed++ } },
-    board: { snapshot: async () => ({}), currentSeq: () => 0 },
+    board: { snapshotState: async () => ({ board: {}, seq: 0 }) },
   } as unknown as Partial<AppContext>)
 
   const controller = new AbortController()

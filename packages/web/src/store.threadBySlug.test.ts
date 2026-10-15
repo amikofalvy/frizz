@@ -32,7 +32,7 @@ function counting(threads: readonly ThreadView[]): { board: BoardSnapshot; touch
 test("the live board answers with its own live row, by one indexed read", () => {
   setBoard("a", "b", "c")
   const live = store.board as BoardSnapshot
-  assert.equal(threadBySlug(live, "b"), live.threads[1], "the live row itself, so a caller can still write through it")
+  assert.equal(threadBySlug(live, "b"), live.threads[1], "the live row itself")
   assert.equal(threadBySlug(live, "c")?.id, "c")
   assert.equal(threadBySlug(live, "nope"), undefined)
   assert.equal(threadBySlug(live, null), undefined)
