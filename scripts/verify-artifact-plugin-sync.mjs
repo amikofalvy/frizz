@@ -59,6 +59,14 @@ const captured = () => {
   const path = join(root, "bin", "capture.jsonl")
   return existsSync(path) ? readFileSync(path, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []
 }
+// The stand-in records a `startup` row for EVERY process that runs it, and a dispatch runs it twice.
+// This temp HOME holds no Claude credential, so the dispatch preflight confirms the local "signed-out"
+// with `claude auth status --json` (readClaudePreflightAuth in backend/auth-status.ts) before it
+// starts anything. The stand-in does not answer that, so the probe times out after 5s and fails open.
+// It is not the worker, carries no plugin and runs no session, so it is excluded by its exact argv and
+// nothing else: any other start, a worker restarted with `--resume` included, still counts.
+const isAuthProbe = (row) => JSON.stringify(row.argv) === JSON.stringify(["auth", "status", "--json"])
+const workerStarts = (rows) => rows.filter((row) => row.kind === "startup" && !isAuthProbe(row))
 const capturedWhen = async (predicate, ms = 30_000) => {
   const deadline = Date.now() + ms
   for (;;) {
@@ -145,8 +153,11 @@ try {
   const { slug, sessionId } = await api.mutate("dispatch", { title: "plugin sync", prompt: "first turn" })
   check(!!slug, "claude dispatch succeeded through the bundled artifact", `${slug} / ${sessionId}`)
   let rows = await capturedWhen((r) => r.some((row) => row.kind === "user-input"))
-  // Both spellings: the SDK passes `--flag value` or `--flag=value` depending on its version.
-  const argv = rows.find((row) => row.kind === "startup")?.argv ?? []
+  // Both spellings: the SDK passes `--flag value` or `--flag=value` depending on its version. The SDK
+  // puts a `local` plugin on argv under its default `pluginDelivery: "argv"`, which Frizz uses; were it
+  // switched to "initialize", argv would carry `--await-initialize` instead and this would read
+  // undefined and fail, which is the wanted answer until the check reads the initialize request.
+  const argv = workerStarts(rows)[0]?.argv ?? []
   const pluginArg = argv.includes("--plugin-dir")
     ? argv[argv.indexOf("--plugin-dir") + 1]
     : argv.find((arg) => arg.startsWith("--plugin-dir="))?.slice("--plugin-dir=".length)
@@ -177,7 +188,8 @@ try {
   check(JSON.stringify(order) === JSON.stringify(["first turn", "reload", "second turn"]),
     "the worker re-read its plugin between the turns, ahead of the follow-up", JSON.stringify(order))
   check(brokerRecord()?.daemonPid === daemonPid && alive(daemonPid), "in the same process it has been in all along", `daemonPid=${daemonPid}`)
-  check(rows.filter((row) => row.kind === "startup").length === 1, "and the CLI was started exactly once")
+  check(workerStarts(rows).length === 1, "and the worker's CLI was started exactly once (the dispatch preflight's auth probe aside)",
+    `${workerStarts(rows).length} worker start(s), ${rows.filter((row) => row.kind === "startup" && isAuthProbe(row)).length} auth probe(s)`)
   check(!/exited before it became ready/.test(first.out() + second.out()), "no daemon failure in either server's output")
 } catch (error) {
   check(false, "harness completed without throwing", String(error?.stack ?? error?.message ?? error))
