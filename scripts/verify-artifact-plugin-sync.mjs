@@ -120,9 +120,12 @@ try {
   const artifact = buildFrizzArtifact(SOURCE, join(root, "artifacts"))
   log("artifact", artifact.digest)
   const generationOne = join(artifact.runtimeDir, "cc-worker")
-  // The next version's plugin: the same closure with one more skill, at its own immutable path.
+  // The next version's plugin: the same closure with one more skill, at its own immutable path. Its
+  // board comes too: a package keeps `runtime/board` beside `runtime/cc-worker`, the plugin imports it,
+  // and staging refuses a plugin without it.
   const generationTwo = join(root, "generation-2", "runtime", "cc-worker")
   cpSync(generationOne, generationTwo, { recursive: true })
+  cpSync(join(artifact.runtimeDir, "board"), join(root, "generation-2", "runtime", "board"), { recursive: true })
   mkdirSync(join(generationTwo, "skills", "added-by-the-update"), { recursive: true })
   writeFileSync(join(generationTwo, "skills", "added-by-the-update", "SKILL.md"), "---\nname: added-by-the-update\ndescription: Exists only in the second generation.\n---\n")
 
