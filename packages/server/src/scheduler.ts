@@ -2910,7 +2910,8 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     exits?: string[]
   }
   const prWatchPolledAt = new Map<string, number>() // refKey → last fetch, shared across threads
-  /** refKey → the first poll of an unbroken run in which GitHub said the PR or issue does not exist. */
+  /** refKey → the first poll of an unbroken run in which GitHub said the PR or issue does not exist. Any
+   *  other outcome breaks the run, a deferred or failed read included: neither is a second NOT_FOUND. */
   const prWatchMissingSince = new Map<string, number>()
   /** The poll's key for a row — the ref, prefixed for an issue (see the refs loop in evalPrWatches). */
   const watchKey = (w: Pick<PrWatchRow, "kind" | "owner" | "repo" | "number">): string =>
@@ -3114,6 +3115,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
             recordReviewSuccess(key, "issue-watch registry")
           } else if (result.status === "error") recordReviewFailure(key, "issue-watch registry", result, nowMs)
         } catch (err) {
+          prWatchMissingSince.delete(key)
           recordReviewFailure(key, "issue-watch registry", {
             status: "error",
             failure: { kind: "network", message: err instanceof Error ? err.message : String(err) },
@@ -3150,6 +3152,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
           recordReviewSuccess(key, "pr-watch registry")
         } else if (result.status === "error") recordReviewFailure(key, "pr-watch registry", result, nowMs)
       } catch (err) {
+        prWatchMissingSince.delete(key)
         recordReviewFailure(key, "pr-watch registry", {
           status: "error",
           failure: { kind: "network", message: err instanceof Error ? err.message : String(err) },
@@ -3529,7 +3532,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   function trackMissing(key: string, result: GithubReviewFetchResult, nowMs: number): void {
     if (result.status === "error" && result.failure.kind === "not-found") {
       if (!prWatchMissingSince.has(key)) prWatchMissingSince.set(key, nowMs)
-    } else if (result.status === "ok") prWatchMissingSince.delete(key)
+    } else prWatchMissingSince.delete(key)
   }
 
   /** The next report number for a watcher — ONE derivation, used both for the delivery id and for the

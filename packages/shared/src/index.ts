@@ -2217,7 +2217,7 @@ export function prWatchExpiredWakeMessage(ref: string, kind: "pull" | "issue" = 
  *  which on a PR or issue runs to a year. */
 export function prWatchGoneWakeMessage(ref: string, kind: "pull" | "issue", forMinutes: number): string {
   const noun = kind === "issue" ? "issue" : "PR"
-  const tool = kind === "issue" ? "mcp__frizz__watch_issue" : "mcp__frizz__watch_pr"
+  const tool = kind === "issue" ? "frizzctl watch-issue add" : "frizzctl watch-pr add"
   return (
     `⏰ ${ref} can no longer be read — GitHub has answered that it does not exist for ${forMinutes}m. ` +
     `It was deleted, transferred to another repository, or this machine's \`gh\` login lost access to it.` +

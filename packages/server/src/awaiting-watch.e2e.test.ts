@@ -886,6 +886,27 @@ test("a watched PR GitHub stops resolving settles its watcher and tells the work
   } finally { h.close() }
 })
 
+test("a NOT_FOUND blip followed by reads that never reach GitHub does not settle the watcher", async () => {
+  const h = await prHarness()
+  try {
+    await h.tick()
+    h.delivered.length = 0
+    const gone = { status: "error", failure: { kind: "not-found", message: "GitHub: Could not resolve to a PullRequest with the number of 391." } }
+    h.setReviewResult(gone)
+    await h.tick()
+    h.setReviewResult({ status: "deferred" }) // a rate-limit backoff: nothing was read
+    for (let i = 0; i < 21; i++) await h.tick() // 31.5 minutes
+    h.setReviewResult(gone)
+    await h.tick()
+    h.setReviewResult({ status: "error", failure: { kind: "network", message: "fetch failed" } })
+    for (let i = 0; i < 21; i++) await h.tick()
+    h.setReviewResult(gone)
+    await h.tick()
+    assert.equal(h.delivered.length, 0, "two NOT_FOUND answers half an hour apart are not a run")
+    assert.equal(h.storage.getPrWatch("prw_1")?.state, "armed")
+  } finally { h.close() }
+})
+
 // ---- CI HELD FOR AN APPROVAL ----------------------------------------------------------------------
 // The regression that started all of this, driven end to end: nodejs/node#65795's whole matrix sat at
 // GitHub's fork-approval gate while the rollup carried nothing but label bots, and the watcher's first
