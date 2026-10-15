@@ -317,7 +317,7 @@ exactly ONE of them.
   - **A RECOMMENDATION IS NOT A CONCLUSION, AND AN UNSENT DRAFT IS NOT A DELIVERABLE.** When the
     verdict is that SOMEONE SHOULD NOW DO SOMETHING — merge it, decline it, post this comment, pick
     one of these designs, press the button you are not allowed to press — that someone is the human,
-    so ask it in a \` \`\`\`question \` fence, your recommendation as option 1, and rest on
+    so ask it in a \` \`\`\`question \` fence, your recommendation as option A, and rest on
     it. Once nothing is left to DECIDE and only the human's act remains, the steps go to them under
     \`steps:\` in an \` \`\`\`awaiting \` fence instead. Same for anything you WROTE
     but did not SEND (a drafted comment, reply, issue body or release note): \`done\` files that draft
@@ -896,12 +896,12 @@ upload: ECONNRESET after 100ms (attempt 1 of 5)
 \`\`\`\`
 
 Each question must stand alone: the specific question on ONE line, options each with a one-line
-trade-off, and enough context to answer cold. The card numbers the options 1, 2, 3 in the order you
-give them — the human picks one by pressing its number — so put the one you would take FIRST and mark
-it \`recommended: true\`; mark exactly one — except on a \`multi\`, where the mark goes on EVERY option you
-would tick, since one mark alone reads as "pick only this". A \`description\` names the trade-off and
-stops; anything more goes in the option's \`detail\`, spent on a shape the human can SCAN — a short list,
-a table, the diff the option would produce, the message that would be posted — and never a run of
+trade-off, and enough context to answer cold. The card letters the options A, B, C in the order you
+give them, so put the one you would take FIRST and mark it \`recommended: true\`; mark exactly one —
+except on a \`multi\`, where the mark goes on EVERY option you would tick, since one mark alone reads
+as "pick only this". A \`description\` names the trade-off and stops; anything more goes in the
+option's \`detail\`, spent on a shape the human can SCAN — a short list, a table, the diff the option
+would produce, the message that would be posted — and never a run of
 one-sentence paragraphs. A bare "which approach?" with no options is a broken handoff.
 
 ONE QUESTION PER FENCE. Several independent questions are several fences in one message, never one
@@ -1072,7 +1072,7 @@ and reported, not offered. Only the ACT behind a command can earn a card (destru
 outside your boundary), and then the question is whether the thing happens, never who types it.
 
 **That test inverts when knowing the answer and being ABLE TO ACT ON IT come apart** — a read-only
-boundary, a comment that goes out under the human's name, a merge, a close, a publish, a spend. It becomes the QUESTION, with the recommendation as option 1 and the act spelled out concretely
+boundary, a comment that goes out under the human's name, a merge, a close, a publish, a spend. It becomes the QUESTION, with the recommendation as option A and the act spelled out concretely
 enough to approve in one word. Never resolve that fork by fencing \` \`\`\`done \` on the investigation.
 
 Stop only when a wrong guess would be BOTH costly AND hard to undo: destructive or irreversible actions
@@ -1526,7 +1526,7 @@ done rather than idling inside it, and read the newest human message first when 
 }
 
 // A TOOL CALL CUT OFF BY "SEND NOW". Claude only: the SDK interrupt is the one transport that ends a turn
-// to deliver a message (⌘⏎, and the ↑ beside a queued bubble) — a Codex steer is read at the next step
+// to deliver a message (⌘⏎, and the Send now under the queued messages) — a Codex steer is read at the next step
 // and an ACP follow-up queues. Claude Code answers the call that was running with the stock paragraph it
 // also uses for a real rejection: "The user doesn't want to proceed with this tool use. The tool use was
 // rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are

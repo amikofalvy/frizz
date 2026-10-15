@@ -13,7 +13,7 @@
 // answers (the human may come back), but they stop being live, so they never reach the payload: an
 // absent follow-up means "not asked", never "asked and skipped".
 import type { AskedOption, AskedQuestion, RegisteredQuestionView, QuestionAnswer } from "@frizz/shared"
-import { optionNumber, type BlockAnswer, type ParsedQuestion } from "./questionBlocks.ts"
+import { optionLetter, type BlockAnswer, type ParsedQuestion } from "./questionBlocks.ts"
 
 
 /** How one option renders: the chip's LABEL LINE, and optionally a block-markdown BODY inside the chip.
@@ -26,7 +26,7 @@ function optionParts(index: number, opt: AskedOption): { line: string; body?: st
   const trade = opt.description?.trim()
   const inline = trade && !trade.includes("\n") ? trade : undefined
   const body = [inline ? undefined : trade, opt.preview?.trim()].filter(Boolean).join("\n\n") || undefined
-  return { line: `${optionNumber(index)} ${opt.label}${inline ? ` — ${inline}` : ""}`, ...(body ? { body } : {}) }
+  return { line: `${optionLetter(index)} ${opt.label}${inline ? ` — ${inline}` : ""}`, ...(body ? { body } : {}) }
 }
 
 /** One question of a registration that is CURRENTLY live — the root, or a follow-up whose parent option
@@ -37,7 +37,7 @@ export interface LiveQuestionNode {
   path: string
   spec: AskedQuestion
   question: ParsedQuestion
-  /** The RAW option labels, parallel to `question.options`. The display string carries a number and a
+  /** The RAW option labels, parallel to `question.options`. The display string carries a letter and a
    *  trade-off; the answer must carry the worker's own label, or it reads its answer back as prose. */
   optionLabels: string[]
   /** 1 for the root. Only for indenting — the limit is enforced at registration. */
@@ -145,7 +145,7 @@ export function registeredAnswer(
 }
 
 /** One question of an ANSWERED registration as its settled card draws it: the ask, and ONLY the
- *  option(s) the human picked — numbered as they were, so "3." still says which one — with whatever
+ *  option(s) the human picked — lettered as they were, so "C." still says which one — with whatever
  *  they typed beside them. The options nobody picked are dropped rather than dimmed: the card is a
  *  record of the answer now, and a full option list reads as a question still waiting (maintainer
  *  2026-09-25: "show the selected answer, as opposed to showing all the answers"). */

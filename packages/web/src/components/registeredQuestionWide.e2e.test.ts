@@ -3,8 +3,7 @@ import test from "node:test"
 
 // Runtime coverage for a REGISTERED `multi` over a LONG option list. The `ask` tool's option count
 // carried `.max(8)` until 2026-09-03 (maintainer: "allow arbitrary numbers of options"), so nothing past
-// eight had ever reached the card. Options were lettered until 2026-10-07, which ran past `Z.` into `AA.`;
-// they are numbered now, and only 1–9 are keys, so rows 10 and on carry a number no key picks. The
+// eight had ever reached the card. Options are lettered, so past `Z.` they run into `AA.`. The
 // fixture's `?wide=1` is thirty options; this drives the real card end
 // to end — every chip toggled, the prompt box's Send, the payload the worker would receive — so the answer that
 // picks the whole list is OBSERVED rather than inferred from the schema alone. Skipped unless a Vite
@@ -26,20 +25,20 @@ async function launch() {
 const CARD = "[data-question-id='qst_0006ffff']"
 const OPTION = `${CARD} [data-question-option]`
 
-test("a registered multi over thirty options numbers every row past the 1–9 keys, toggles every chip, and sends all thirty", { skip: !baseUrl, timeout: 60_000 }, async () => {
+test("a registered multi over thirty options letters every row past Z, toggles every chip, and sends all thirty", { skip: !baseUrl, timeout: 60_000 }, async () => {
   const { browser, page, errors } = await launch()
   try {
     await page.goto(`${baseUrl}/registered-question-fixture.html?wide=1`, { waitUntil: "networkidle0" })
     await page.waitForSelector(OPTION)
 
-    // All thirty rows render, in order, each with its plain number: `1.`…`30.`.
+    // All thirty rows render, in order, lettered `A.`…`Z.` and then `AA.`…`AD.`.
     const rows = await page.$$eval(OPTION, (ns) => ns.map((n) => (n.textContent ?? "").replace(/\s+/g, " ").trim()))
     assert.equal(rows.length, 30)
-    assert.match(rows[0], /^1\. ?Finding 1\b/)
-    assert.match(rows[8], /^9\. ?Finding 9\b/)
-    assert.match(rows[25], /^26\. ?Finding 26\b/)
-    assert.match(rows[26], /^27\. ?Finding 27\b/)
-    assert.match(rows[29], /^30\. ?Finding 30\b/)
+    assert.match(rows[0], /^A\. ?Finding 1\b/)
+    assert.match(rows[8], /^I\. ?Finding 9\b/)
+    assert.match(rows[25], /^Z\. ?Finding 26\b/)
+    assert.match(rows[26], /^AA\. ?Finding 27\b/)
+    assert.match(rows[29], /^AD\. ?Finding 30\b/)
 
     // The card's writes are echoed onto the window by the fixture; collect them before anything is sent.
     await page.evaluate(() => {

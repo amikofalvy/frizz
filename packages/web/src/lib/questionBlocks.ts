@@ -610,13 +610,15 @@ export function recommendedIndex(recommendation: string | undefined, options: st
   return idx === -1 ? null : idx
 }
 
-// THE identifier every frizz-built option carries: `1.`, `2.`, `3.` (letters until 2026-10-07). Numbers
-// because a number is a KEY: the card binds 1–9 to its options, and the identifier on screen is the key
-// that picks it (requested 2026-10-07, so an option can be picked straight from the keyboard). A
-// worker-written fence keeps whatever it wrote — its text is the worker's — and the card shows its
-// POSITION in its gutter regardless (see splitOptionId).
-export function optionNumber(index: number): string {
-  return `${index + 1}.`
+// THE identifier every frizz-built option carries: `A.`, `B.`, … then `AA.` past 26. Options were
+// numbered, with the digit keys bound to them, from 2026-10-07 until 2026-10-15, when the maintainer had
+// both rolled back: letters read better for multiple choice, and the key mode never made clear which
+// question a digit would answer. A worker-written fence keeps whatever it wrote — its text is the
+// worker's — and a live card shows its POSITION in the gutter regardless (see splitOptionId).
+export function optionLetter(index: number): string {
+  let n = index, out = ""
+  do { out = String.fromCharCode(65 + (n % 26)) + out; n = Math.floor(n / 26) - 1 } while (n >= 0)
+  return `${out}.`
 }
 
 // Split an option line into its leading identifier and the rest ("2. SQLite — …" → "2" + "SQLite — …",

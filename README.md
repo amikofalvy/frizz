@@ -43,7 +43,7 @@ $ npx frizz
 A browser tab opens on the dashboard at `http://127.0.0.1:9393/`. Add a **project** there — any folder: a repo, a jj checkout, or a folder of scripts. Frizz has no opinion about version control and does not require Git. Each project gets its own board at `/project/<name>`, and from then on running `npx frizz` inside that folder opens its board. Frizz always listens on port 9393 (19393 if something else holds it), and one server serves every project on the machine, so a second run joins the server already running rather than starting another. Runs on macOS, Linux, and Windows.
 
 <p align="center">
-  <img src="assets/board.png" alt="The Frizz board: the project rail down the left, the composer and the queue of threads beside it, and on the right a card where an agent is asking an answerable question with numbered options, with its snooze clock and done check in the card's header." width="100%">
+  <img src="assets/board.png" alt="The Frizz board: the project rail down the left, the composer and the queue of threads beside it, and on the right a card where an agent is asking an answerable question with lettered options, with its snooze clock and done check in the card's header." width="100%">
 </p>
 
 <br/>
@@ -84,15 +84,15 @@ The queue is strict about what earns a card, which is what keeps it a real todo 
 **Threads are built to run without you.** A worker keeps going until it reaches something only you can settle — a product call, a fork where guessing wrong is expensive to undo, an irreversible action — and then it hands back an answerable *question* rather than a wall of text for you to re-read and interpret.
 
 <p align="center">
-  <img src="assets/question.png" alt="A question card titled Question: 'Should the settings store use SQLite or a JSON file?' with two options numbered 1 and 2, the first tagged RECOMMENDED, and a third row numbered 3 for typing something else, above the prompt box and its Send button." width="100%">
+  <img src="assets/question.png" alt="A question card titled Question: 'Should the settings store use SQLite or a JSON file?' with two options lettered A and B, the first tagged RECOMMENDED, and a third row lettered C for typing something else, above the prompt box and its Send button." width="100%">
 </p>
 
-Options are numbered: press an option's number or click it to pick it, then Enter to send it, along with anything typed in the prompt box below. A worker marks its own recommendation when it has one. There is always a row for writing something else instead.
+Options are lettered: click one to pick it, then Enter to send it, along with anything typed in the prompt box below. A worker marks its own recommendation when it has one. There is always a row for writing something else instead.
 
 When the answer isn't one thing, the same card takes several: check any combination and add a note.
 
 <p align="center">
-  <img src="assets/question-multi.png" alt="A question card titled Select multiple: 'Which of these findings should I fix in this pass?' with three numbered checkbox options, the first two ticked, and a fourth numbered row for adding a note, above the prompt box, whose Send button is lit." width="100%">
+  <img src="assets/question-multi.png" alt="A question card titled Select multiple: 'Which of these findings should I fix in this pass?' with three lettered checkbox options, the first two ticked, and a fourth lettered row for adding a note, above the prompt box, whose Send button is lit." width="100%">
 </p>
 
 ### GitHub

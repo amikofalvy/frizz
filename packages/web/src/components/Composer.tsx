@@ -7,7 +7,6 @@ import { joinComposerValue, splitComposerValue } from "../lib/imagePaths.ts"
 import { splitProseByTokens } from "../lib/composerContext.ts"
 import { shouldInterruptSubmitComposerEnter, shouldRestoreOptionEnterNewline, shouldSubmitComposerEnter } from "../lib/composerKeyboard.ts"
 import { queueComposerHandlesOptionEnter } from "../lib/queueComposerKeyboard.ts"
-import { focusQuestionFrom } from "../lib/questionKeys.ts"
 import { composerRail, SEND_SPLIT_WIDTH } from "../lib/iconRhythm.ts"
 import type { SendMode } from "../lib/sendMode.ts"
 import { SendSplitButton } from "./SendSplitButton.tsx"
@@ -670,9 +669,7 @@ export function Composer({
       // Mid-IME-composition Esc is the IME's own cancel — leave it to the editor, don't blur.
       e.preventDefault()
       e.stopPropagation()
-      // With a question open on this composer's own surface (its drawer, its queue card), the climb out
-      // lands ON the question, so the next key is a number that answers it (lib/questionKeys.ts).
-      if (!focusQuestionFrom(el)) el.blur()
+      el.blur()
     }
     // Arrow keys just move the caret — no boundary semantics (the nav walk they used to drive is gone).
   }

@@ -26,7 +26,7 @@ import { FRIZZ_CLI, FRIZZ_MCP, WORKER_DISALLOWED_TOOLS, claudeWorkerEnv, frizzMc
 // Re-exported here because this is where callers have always reached for them.
 export { WORKER_MAX_WEB_SEARCHES, WORKER_MAX_SUBAGENTS, WORKER_MAX_CONCURRENT_SUBAGENTS } from "./backend/types.ts"
 import { resolveWorkerPluginDir } from "./worker-plugin-dir.ts"
-import { WORKER_PLUGIN_SIBLINGS, pluginContentDigest, stageStablePluginDir } from "./stable-plugin-path.ts"
+import { pluginContentDigest, stageStablePluginDir } from "./stable-plugin-path.ts"
 import { buildWorkerPrompt } from "./workerPrompt.ts"
 import { codexSandbox, CODEX_FIRST_OUTPUT_TITLE_DEVELOPER_INSTRUCTIONS } from "./backend/codex.ts"
 import type { CodexAppServerBridge } from "./backend/codex-app-server.ts"
@@ -832,8 +832,8 @@ export function launchableWorkerPluginDir(
 ): string {
   if (env.FRIZZ_WORKER_PLUGIN_DIR !== source) return source
   try {
-    if (pluginIdentity?.source !== source) pluginIdentity = { source, version: pluginContentDigest(source, WORKER_PLUGIN_SIBLINGS) }
-    return stageStablePluginDir({ source, version: pluginIdentity.version, siblings: WORKER_PLUGIN_SIBLINGS, ...roots }).stablePath
+    if (pluginIdentity?.source !== source) pluginIdentity = { source, version: pluginContentDigest(source) }
+    return stageStablePluginDir({ source, version: pluginIdentity.version, ...roots }).stablePath
   } catch (error) {
     // Once: the condition belongs to the install, and this runs on every dispatch.
     if (!stagingFailureReported) {

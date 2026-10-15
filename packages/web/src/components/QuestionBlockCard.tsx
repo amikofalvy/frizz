@@ -14,13 +14,12 @@
 // It lives in its own module rather than in ChatView so BOTH producers can reach it: the interaction
 // surface (InteractionCards.tsx) is imported BY ChatView, so a question card defined inside ChatView
 // could only have been shared through a module cycle.
-import { Fragment, type ReactNode, useEffect, useId, useLayoutEffect, useMemo, useRef } from "react"
+import { Fragment, type ReactNode, useId, useLayoutEffect, useMemo, useRef } from "react"
 import { AlertTriangle, Check, CircleHelp, KeyRound, ListChecks } from "lucide-react"
 import { SECRET_ANSWER_MASK } from "@frizz/shared"
 import { useInlineMarkdownHtml, useMarkdownHtml } from "../lib/useMarkdown.ts"
 import { shouldSubmitStagedEnter } from "../lib/composerKeyboard.ts"
-import { parseQuestionBlock, splitOptionId, type BlockAnswer, type ParsedQuestion, type QuestionKind } from "../lib/questionBlocks.ts"
-import { registerQuestionKeys, type QuestionKeyResult } from "../lib/questionKeys.ts"
+import { optionLetter, parseQuestionBlock, splitOptionId, type BlockAnswer, type ParsedQuestion, type QuestionKind } from "../lib/questionBlocks.ts"
 import { LinkedHtml } from "./LinkedHtml.tsx"
 import { SecretCaption } from "./SecretCaption.tsx"
 import { QUEUE_WRAP, TranscriptCard } from "./TranscriptCard.tsx"
@@ -124,40 +123,6 @@ export function QuestionBlockCard({
     // hidden). `offsetHeight - clientHeight` is the vertical border delta measured at height:auto.
     ta.style.height = `${ta.scrollHeight + ta.offsetHeight - ta.clientHeight}px`
   }, [freetext])
-  // NUMBER KEYS (lib/questionKeys.ts): key n picks option n, the key one past the last option takes the
-  // caret to the free-text row. Registered once per mount; `keysRef` hands the router the latest render's
-  // controller, so a pick never acts on the answer as it stood when the card mounted.
-  const keysRef = useRef({ interactive, isMulti, chosen, chosenSet, freetext, count: parsed.options.length })
-  keysRef.current = { interactive, isMulti, chosen, chosenSet, freetext, count: parsed.options.length }
-  const answerable = !!interactive
-  useEffect(() => {
-    const grid = gridRef.current
-    if (!grid || !answerable) return
-    return registerQuestionKeys(grid, {
-      press: (n): QuestionKeyResult => {
-        const k = keysRef.current
-        if (!k.interactive || k.count === 0) return false
-        if (n === k.count + 1 && taRef.current) {
-          taRef.current.focus()
-          return "text"
-        }
-        if (n > k.count) return false
-        k.interactive.onChip(n - 1, parsed.options[n - 1] ?? "")
-        return k.isMulti ? "toggled" : "picked"
-      },
-      keyed: () => keysRef.current.count > 0,
-      row: (n) => {
-        const k = keysRef.current
-        if (!k.interactive || k.count === 0) return null
-        if (n === k.count + 1) return taRef.current?.parentElement ?? null
-        return n <= k.count ? grid.querySelectorAll<HTMLElement>(":scope > [data-question-option]")[n - 1] ?? null : null
-      },
-      answered: () => {
-        const k = keysRef.current
-        return k.isMulti ? k.chosenSet.length > 0 || !!k.freetext.trim() : k.chosen !== null || !!k.freetext.trim()
-      },
-    })
-  }, [answerable, parsed])
   // THE KIND LINE, as every block type wears it since 2026-10-13 (TranscriptCard's KindLabel): a 12px
   // glyph and the kind's word, muted, over a rule — the ask itself stays the body. The glyph is back on
   // every question. It was dropped on 2026-08-31 because a full-strength 16px HelpCircle in the corner
@@ -222,7 +187,7 @@ export function QuestionBlockCard({
             }
           }}
           data-question-grid
-          className="group/qgrid mt-2 grid grid-cols-1 gap-1.5 outline-none"
+          className="mt-2 grid grid-cols-1 gap-1.5 outline-none"
         >
           {parsed.options.map((opt, i) => (
             <Fragment key={i}>
@@ -287,7 +252,7 @@ export function QuestionBlockCard({
             <div className={`relative col-span-full${parsed.options.length > 0 ? " flex items-baseline" : ""}`}>
             {parsed.options.length > 0 && (
               <span className="pointer-events-none relative z-10 ml-[13px] -mr-[29px] flex">
-                <OptionNumber n={parsed.options.length + 1} live />
+                <OptionId id={optionLetter(parsed.options.length).slice(0, -1)} live />
               </span>
             )}
             {parsed.secret ? (
@@ -300,7 +265,8 @@ export function QuestionBlockCard({
                   type="password"
                   data-secret-answer
                   data-surface="questionAnswer"
-                  // Escape climbs out to the options, as in the box below, and the drawer stays open.
+                  // Escape climbs out to the options (where Enter sends), as in the box below, and the
+                  // drawer stays open.
                   data-claims-escape
                   autoComplete="off"
                   autoCorrect="off"
@@ -335,7 +301,7 @@ export function QuestionBlockCard({
               rows={1}
               // Its own surface tag — deliberately NOT the queue card's `queueComposer`, which is the
               // separate free-form prompt box at the bottom of the card. Escape climbs out onto this
-              // question's own options grid (where the number keys answer it) and stops here rather than
+              // question's own options grid (where Enter sends the answers) and stops here rather than
               // reaching App's window handler. Stopping it is not what keeps an enclosing thread drawer
               // open — Radix's DismissableLayer takes Escape on the document in the CAPTURE phase, ahead
               // of this bubble-phase handler — so the box CLAIMS the key, the way the prompt box and the
@@ -349,7 +315,7 @@ export function QuestionBlockCard({
                 e.stopPropagation()
                 if (e.key === "Escape") {
                   e.preventDefault()
-                  // Climb out onto this question's own options, where the number keys answer it.
+                  // Climb out onto this question's own options, where Enter sends the answers.
                   gridRef.current?.focus()
                   return
                 }
@@ -422,7 +388,7 @@ export function QuestionBlockCard({
                     <div aria-hidden className="pointer-events-none absolute inset-0 flex items-baseline border border-transparent py-1.5 pr-3 text-[12px] leading-snug text-muted-80">
                       {/* 12 + the 1px border = the 13px every option row's numeral starts at; 8px on to the text. */}
                       <span className="ml-3 mr-2 flex">
-                        <OptionNumber n={parsed.options.length + 1} />
+                        <OptionId id={optionLetter(parsed.options.length).slice(0, -1)} />
                       </span>
                       <span className="min-w-0 truncate">{isMulti ? "Add a note…" : "Something else…"}</span>
                     </div>
@@ -515,7 +481,7 @@ function Chip({
 }: {
   /** The option line as the producer wrote it, identifier included ("2. SQLite — …"). */
   label: string
-  /** Position in the option list: the KEY that picks it is `index + 1`. */
+  /** Position in the option list: lettered in the gutter when the label carries no identifier. */
   index: number
   /** Block markdown rendered INSIDE the chip, under the label line, ALWAYS — the multi-line trade-off,
    *  the diff, the message that would be posted. Part of the answer, so it shows before anything is
@@ -534,13 +500,12 @@ function Chip({
 }) {
   // Inline-only: the label line is one line, so no `<p>`/list block chrome. Raw `label` used to leak
   // `**bold**`/backticks. The body below it is the opposite — FULL markdown, blocks and all.
-  // The identifier comes OFF the label line and goes into the gutter, as the number whose key picks it. A
-  // live card's key is always the POSITION (the router presses `index + 1`), so its number must be too — a
-  // worker's fence numbered from 2, or lettered, still answers to 1. Only a READ-ONLY card shows the
-  // label's own number: a settled card keeps just the picked options, and "3" must still say which one.
-  const { id, rest } = splitOptionId(label)
-  const labelHtml = useInlineMarkdownHtml(rest)
-  const n = disabled && id && /^\d+$/.test(id) ? Number(id) : index + 1
+  // The identifier comes OFF the label line and goes into the gutter. It is the label's OWN identifier
+  // whenever it has one — a settled card keeps just the picked options, and "C." must still say which
+  // one — else the option's position, lettered.
+  const split = splitOptionId(label)
+  const id = split.id ?? optionLetter(index).slice(0, -1)
+  const labelHtml = useInlineMarkdownHtml(split.rest)
   const bodyHtml = useMarkdownHtml(bodyMd ?? "")
   const labelId = useId()
   return (
@@ -580,12 +545,11 @@ function Chip({
         type="button"
         disabled={disabled}
         aria-labelledby={labelId}
-        aria-keyshortcuts={disabled || n > 9 ? undefined : String(n)}
         onClick={onClick}
         onMouseDown={(e) => e.preventDefault()}
         className="absolute inset-0 rounded-md outline-none"
       />
-      <OptionNumber n={n} live={!disabled} selected={selected} />
+      <OptionId id={id} live={!disabled} selected={selected} />
       {multi && (
         <span
           aria-hidden
@@ -625,28 +589,27 @@ function Chip({
   )
 }
 
-// Where an option's TEXT starts: the row's 12px padding, the 16px number, the row's 8px gap. The free-text
-// row lays its number over its own padding, so it insets its text by the same sum to line up (and places
-// the number at 13px, not 12: it sits outside the box's 1px border, a chip's inside it).
+// Where an option's TEXT starts: the row's 12px padding, the 16px identifier, the row's 8px gap. The
+// free-text row lays its identifier over its own padding, so it insets its text by the same sum to line
+// up (and places it at 13px, not 12: it sits outside the box's 1px border, a chip's inside it).
 const OPTION_TEXT_INSET = "pl-9"
 
-// An option's number in its gutter: plain muted text, `1.`, the key that picks it on a live card
-// (questionKeys). It was drawn as a KEYCAP — a bordered, bottom-lipped square — from 2026-10-07 until
-// the maintainer had it rolled back on 2026-10-15; the number and its key stayed, the key drawing went.
-// What the keycap also said survives as tone: on a live card the numbers of the focused options grid
-// step up to full strength (the question holding the keyboard says so), and a picked row's number does
-// too. The row is `items-baseline`, so the digit stands on the label's baseline at every zoom. Set
-// RIGHT in its 16px gutter, as an ordered list sets its markers: `9.` and `10.` share the period's
-// column, and the ink gap to the label is the row's 8px rather than the ~12px a centred `1.` left.
-function OptionNumber({ n, live = false, selected = false }: { n: number; live?: boolean; selected?: boolean }) {
+// An option's identifier in its gutter: plain muted text, `A.`. Options were numbered from 2026-10-07,
+// with the digit keys bound to them and the number drawn as a keycap, and the maintainer had all of it
+// rolled back on 2026-10-15: letters read better for multiple choice, and nothing showed which question
+// a digit would answer. A picked row's letter steps up to full tone. Set RIGHT in its 16px gutter, as an
+// ordered list sets its markers, so the ink gap to the label is the row's 8px; `justify-end` lets a
+// wider `AA.` (past 26 options) overflow into the row's padding rather than into the label. The row is
+// `items-baseline`, so the letter stands on the label's baseline at every zoom.
+function OptionId({ id, live = false, selected = false }: { id: string; live?: boolean; selected?: boolean }) {
   return (
     <span
       aria-hidden
-      className={`w-4 shrink-0 text-right text-[11px] tabular-nums transition-colors ${
-        selected ? "text-fg" : live ? "text-muted group-focus-visible/qgrid:text-fg" : "text-muted"
+      className={`flex w-4 shrink-0 justify-end whitespace-nowrap text-[11px] transition-colors ${
+        selected && live ? "text-fg" : "text-muted"
       }`}
     >
-      {n}.
+      {id}.
     </span>
   )
 }
