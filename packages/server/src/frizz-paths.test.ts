@@ -163,7 +163,8 @@ test("isPromptAttachmentPath matches only <data>/projects/<id>/attachments/…",
   const data = frizzPaths({ home }).data
   const attachments = join(data, "projects", "029a30af-f126-40e3-b04c-d80e74e3e090", "attachments")
   assert.equal(isPromptAttachmentPath(join(attachments, "1787867365865-f12df6c2-Screenshot-2026-08-27-at-14-49-15.png"), home), true)
-  assert.equal(isPromptAttachmentPath(join(attachments, "nested", "shot.png"), home), true)
+  // Today's shape: the uploaded name as it was, in a folder of its own.
+  assert.equal(isPromptAttachmentPath(join(attachments, "1792105500220-26dbc79a", "Screenshot 2026-10-15 at 9.41.23 AM.png"), home), true)
   // A screenshot the worker took, a file elsewhere in the tree, the attachments dir itself, and a
   // path that only ESCAPES into the tree via `..` all stay ordinary image reads.
   assert.equal(isPromptAttachmentPath("/tmp/frizz-shots/out.png", home), false)

@@ -3374,8 +3374,9 @@ function UserBubble({ text, rawText, queued, held, deliveryUnconfirmed, delivery
       {/* Below the words, mirroring the composer (prose in the textarea, chips along its bottom edge) —
           and OUTSIDE the bubble, on the dark page, so BlockImage/BlockFile carry their normal styling
           instead of a light-bubble fork, and so the delegated open-local-file click can't collide with a
-          queued bubble's click-to-unqueue. No basename caption: an upload's hash-prefixed filename is
-          noise the human already knows, and a failed load falls back to the path text anyway. */}
+          queued bubble's click-to-unqueue. No basename caption under a picture: it is the name of the
+          file the human just dropped, which they already know, and a failed load falls back to the path
+          text anyway. */}
       {attachments.length > 0 && (
         <div className="mt-1 flex flex-col items-end gap-1.5">
           {attachments.filter((a) => a.kind === "image").map((a, i) => <BlockImage key={`i${i}-${a.path}`} path={a.path} hideCaption />)}

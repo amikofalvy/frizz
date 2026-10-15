@@ -28,7 +28,7 @@ test("a file dropped anywhere on a thread's queue card, drawer or full-screen pa
     writeFileSync(path, `${name}\n`)
     return path
   }
-  const onCard = file("on-card.txt")
+  const onCard = file("On the card.txt")
   const onDrawer = file("on-drawer.txt")
   const onDrawerBox = file("on-drawer-box.txt")
   const onFull = file("on-full.txt")
@@ -74,8 +74,9 @@ test("a file dropped anywhere on a thread's queue card, drawer or full-screen pa
       hint: box.textContent?.includes("Drop file to attach") ?? false,
       dashed: getComputedStyle(box).borderTopStyle === "dashed",
     }))
-    // The attached files' names, in order. A real upload is stored under a unique prefix.
-    const chips = (surface: string) => page.$$eval(`${surface} [data-composer-box] button[aria-label^="Remove "]`, (els) => els.map((e) => (e.getAttribute("aria-label") ?? "").replace(/^Remove (?:\d+-[0-9a-f]+-)?/, "")))
+    // The attached files' names, in order — exactly as dropped, spaces and case included: an upload
+    // keeps its own name, in a folder of its own (server app.ts /attach).
+    const chips = (surface: string) => page.$$eval(`${surface} [data-composer-box] button[aria-label^="Remove "]`, (els) => els.map((e) => (e.getAttribute("aria-label") ?? "").replace(/^Remove /, "")))
     const waitForChips = (surface: string, count: number) => page.waitForFunction(
       (sel, n) => document.querySelectorAll(sel).length === n,
       { timeout: 15_000 },
@@ -106,7 +107,7 @@ test("a file dropped anywhere on a thread's queue card, drawer or full-screen pa
     // In its transcript, well above its docked prompt box (the card is taller than the window).
     await dropAt(await point(card, (r) => ({ x: r.left + r.width / 2, y: Math.min(r.top + r.height / 3, innerHeight / 2) })), card, onCard)
     await waitForChips(card, 1)
-    assert.deepEqual(await chips(card), ["on-card.txt"])
+    assert.deepEqual(await chips(card), ["On the card.txt"])
 
     // 2. THE DRAWER, in the middle of its transcript and then on its header. The queue is still mounted
     // under it, so the hint has to say which SURFACE is under the pointer.
@@ -128,7 +129,7 @@ test("a file dropped anywhere on a thread's queue card, drawer or full-screen pa
     await waitForChips(drawer, 2)
     await new Promise((r) => setTimeout(r, 400))
     assert.deepEqual(await chips(drawer), ["on-drawer.txt", "on-drawer-box.txt"])
-    assert.deepEqual(await chips(card), ["on-card.txt"], "…and nothing went to the other thread's card")
+    assert.deepEqual(await chips(card), ["On the card.txt"], "…and nothing went to the other thread's card")
 
     // 3. THE FULL-SCREEN PAGE of the rested thread, in the middle of its transcript.
     await page.goto(`${boardUrl}/thread/${slug}/full`, { waitUntil: "networkidle2" })
@@ -137,7 +138,7 @@ test("a file dropped anywhere on a thread's queue card, drawer or full-screen pa
     await dropAt(await point(`${full} [data-drawer-transcript-scroll]`, (r) => ({ x: r.left + r.width / 2, y: r.top + r.height / 3 })), full, onFull)
     await waitForChips(full, 2)
     await new Promise((r) => setTimeout(r, 400))
-    assert.deepEqual(await chips(full), ["on-card.txt", "on-full.txt"])
+    assert.deepEqual(await chips(full), ["On the card.txt", "on-full.txt"])
     assert.deepEqual(await hinted(full), { hint: false, dashed: false }, "the hint clears on drop")
 
     // 4. …AND ANYWHERE ELSE ON THAT PAGE. It is this one thread's page, and at this width its column is
@@ -149,7 +150,7 @@ test("a file dropped anywhere on a thread's queue card, drawer or full-screen pa
     await dropAt(await point("[data-focus-rail]", (r) => ({ x: r.left + r.width / 2, y: r.top + r.height / 2 })), full, onFullRail)
     await waitForChips(full, 4)
     await new Promise((r) => setTimeout(r, 400))
-    assert.deepEqual(await chips(full), ["on-card.txt", "on-full.txt", "on-full-gutter.txt", "on-full-rail.txt"], "each drop is one upload, wherever on the page it landed")
+    assert.deepEqual(await chips(full), ["On the card.txt", "on-full.txt", "on-full-gutter.txt", "on-full-rail.txt"], "each drop is one upload, wherever on the page it landed")
     // Off the window altogether: the hover ends, as it does when a drag leaves a card.
     await page.mouse.dragEnter({ x: Math.round(column.left / 2), y: 450 }, files([onFull]))
     await page.mouse.dragOver({ x: Math.round(column.left / 2), y: 450 }, files([onFull]))

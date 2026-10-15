@@ -2,7 +2,7 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { mkdirSync, mkdtempSync, writeFileSync, symlinkSync, existsSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { basename, dirname, join } from "node:path"
 import { createApp, resolveLocalImage, type AppOptions } from "./app.ts"
 import type { AppContext } from "./context.ts"
 
@@ -531,7 +531,7 @@ test("symlink to a real image resolves and renders → 200; a dangling symlink �
   assert.equal(resolveLocalImage(dangling).status, 404) // realpath throws on a dangling link → clean 404
 })
 
-test("/_frizz/attach accepts the allowlist (docs, office, data, archives), rejects extensionless/unknown/oversized, and writes a sanitized name", async () => {
+test("/_frizz/attach accepts the allowlist (docs, office, data, archives), rejects extensionless/unknown/oversized, and keeps the uploaded name", async () => {
   const port = 49_231
   const stateDir = mkdtempSync(join(tmpdir(), "frizz-attach-"))
   const app = originTestApp(port, undefined, {}, stateDir)
@@ -543,14 +543,40 @@ test("/_frizz/attach accepts the allowlist (docs, office, data, archives), rejec
       body: JSON.stringify(body),
     })
 
-  // A document (PDF): accepted, path sanitized (spaces/dots → dashes) and timestamp-prefixed, on disk.
-  const pdf = await attach({ name: "My Report v2.pdf", data: b64("%PDF-1.4 hello") })
-  assert.equal(pdf.status, 200)
-  const pdfPath = (await pdf.json() as { path: string }).path
-  // Separator-agnostic: the path is built with path.join, so it comes back `\attachments\…` on win32.
-  assert.match(pdfPath, /[\\/]attachments[\\/]\d+-[0-9a-f]{8}-My-Report-v2\.pdf$/)
-  assert.ok(existsSync(pdfPath))
+  const pathOf = async (body: unknown) => {
+    const res = await attach(body)
+    assert.equal(res.status, 200)
+    return (await res.json() as { path: string }).path
+  }
+
+  // A document (PDF): accepted and on disk under the name it was uploaded with — spaces, dots and case
+  // intact — in a folder of its own. Separator-agnostic: path.join gives `\attachments\…` on win32.
+  const pdfPath = await pathOf({ name: "My Report v2.PDF", data: b64("%PDF-1.4 hello") })
+  assert.match(pdfPath, /[\\/]attachments[\\/]\d+-[0-9a-f]{8}[\\/]My Report v2\.PDF$/)
   assert.equal(readFileSync(pdfPath, "utf8"), "%PDF-1.4 hello")
+
+  // The same name twice: two paths, both still called what was uploaded, neither overwriting the other.
+  const again = await pathOf({ name: "My Report v2.PDF", data: b64("second") })
+  assert.notEqual(again, pdfPath)
+  assert.equal(basename(again), "My Report v2.PDF")
+  assert.equal(readFileSync(pdfPath, "utf8"), "%PDF-1.4 hello")
+
+  // A macOS screenshot's narrow no-break space reads as the plain space it looks like, which is the
+  // only space the transcript's path grammar takes; a newline or a backtick, which would break the
+  // message line the path rides on, becomes a dash.
+  assert.equal(basename(await pathOf({ name: "Screenshot 2026-10-15 at 9.41.23 AM.png", data: b64("\x89PNG") })), "Screenshot 2026-10-15 at 9.41.23 AM.png")
+  assert.equal(basename(await pathOf({ name: "a`b\u0000c.md", data: b64("x") })), "a-b-c.md")
+
+  // A client path never leaves the folder: only its last segment is kept.
+  const escaped = await pathOf({ name: "../../../etc/evil.md", data: b64("x") })
+  assert.equal(basename(escaped), "evil.md")
+  assert.equal(basename(dirname(dirname(escaped))), "attachments")
+  assert.equal(basename(await pathOf({ name: "..\\..\\.png", data: b64("x") })), "file.png")
+
+  // A name past the filesystem's 255-byte limit is cut, keeping its extension.
+  const long = basename(await pathOf({ name: `${"é".repeat(200)}.csv`, data: b64("x") }))
+  assert.ok(Buffer.byteLength(long) <= 255)
+  assert.match(long, /^é+\.csv$/)
 
   // A text/code file and an image are both allowed.
   assert.equal((await attach({ name: "notes.md", data: b64("# hi") })).status, 200)
