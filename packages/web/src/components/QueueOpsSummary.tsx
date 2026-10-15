@@ -2,9 +2,13 @@ import { useEffect, useRef, useState, type ReactNode, type RefObject } from "rea
 import { ExternalLink, FileText } from "lucide-react"
 import type { BgShellView, ThreadView } from "@frizz/shared"
 import { CHILD_RESTED_DOT_CLASS, CHILD_STALE_DOT_CLASS, type TranscriptShellRecord } from "../lib/childOps.ts"
+import { useNowMs } from "../lib/liveClock.ts"
 import { isRunningOperation } from "../lib/operationIndicators.ts"
 import { queueOpsCounts, type QueueOpsCount, type QueueOpsKind } from "../lib/queueOpsCounts.ts"
+import { threadOps } from "../lib/threadOps.ts"
+import { commandWatchName, commandWatchStatus, commandWatchTitle, timerWatchStatus, timerWatchTitle } from "./AwaitingBackgroundCard.tsx"
 import { BackgroundOpsStrip } from "./ChatView.tsx"
+import { ChildOpRow } from "./ChildOpRow.tsx"
 import { QueueSubAgentLines } from "./QueueSubAgentLines.tsx"
 import { useSurfaceOpsThread } from "./ThreadSurface.tsx"
 import { Popover, PopoverAnchor, PopoverContent } from "./ui/Popover.tsx"
@@ -55,6 +59,8 @@ const PANEL_LABEL: Record<QueueOpsKind, string> = {
   shell: "Background shells running for this thread",
   pr: "Pull requests this thread is watching",
   issue: "Issues this thread is watching",
+  command: "Command watches this thread is waiting on",
+  timer: "Timers this thread has set",
   file: "Files saved for this thread",
   link: "Links saved for this thread",
 }
@@ -116,6 +122,8 @@ export function QueueOpsSummary({ thread: given, transcriptShells = [] }: { thre
         >
           {group.key === "agent"
             ? <QueueSubAgentLines slug={thread.id} subAgents={thread.subAgents ?? []} className="" />
+            : group.key === "command" || group.key === "timer"
+            ? <WaitPanelRows thread={thread} kind={group.key} />
             : <BackgroundOpsStrip slug={thread.id} includeAgents={false} only={group.key} transcriptShells={transcriptShells} className="" />}
         </OpsCount>
       ))}
@@ -229,6 +237,8 @@ function CountMark({ kind, states }: { kind: QueueOpsKind; states: readonly (str
     case "shell": return <Dot hue="shell" states={states} />
     case "pr":
     case "issue": return <Dot hue="github" states={states} />
+    case "command":
+    case "timer": return <Dot hue="github" states={states} />
     case "file": return <FileText aria-hidden className="h-[1em] w-[1em] text-muted-45" />
     case "link": return <ExternalLink aria-hidden className="h-[1em] w-[1em] text-muted-45" />
   }
@@ -237,4 +247,42 @@ function CountMark({ kind, states }: { kind: QueueOpsKind; states: readonly (str
 function Dot({ hue, states }: { hue: "agent" | "shell" | "github"; states: readonly (string | undefined)[] }) {
   if (states.some(isRunningOperation)) return <span className={`frizz-live-dot frizz-live-dot--${hue}`} />
   return <span className={states.includes("rested") ? CHILD_RESTED_DOT_CLASS : CHILD_STALE_DOT_CLASS} />
+}
+
+// A COMMAND WATCH'S AND A TIMER'S PANEL — the strip's own ⤷ rows, as a PR's panel draws, so every
+// panel on the line speaks one row. Their readings are the awaiting card's (CommandWatchRow, TimerRow):
+// a command watch's cadence beside how long it has watched, as a PR row's check count sits beside its
+// age, and a timer's countdown alone — beside it, the time since it was set would read as a second clock.
+// Neither has a drawer to open or a registration the human may drop, so neither is a button or has a ×.
+function WaitPanelRows({ thread, kind }: { thread: ThreadView; kind: "command" | "timer" }) {
+  const now = useNowMs()
+  const { commands, timers } = threadOps(thread)
+  return (
+    <div className="flex flex-col gap-0.5">
+      {kind === "command"
+        ? commands.map((watch) => (
+            <ChildOpRow
+              key={watch.id}
+              kind="COMMAND"
+              label={commandWatchName(watch.command?.command ?? watch.target)}
+              state="running"
+              density="sheet"
+              startedAt={watch.createdAt}
+              counter={commandWatchStatus(watch)}
+              title={commandWatchTitle(watch, now)}
+            />
+          ))
+        : timers.map((watch) => (
+            <ChildOpRow
+              key={watch.id}
+              kind="TIMER"
+              label={watch.timer?.prompt?.split("\n")[0] || watch.target}
+              state="running"
+              density="sheet"
+              counter={timerWatchStatus(watch, now)}
+              title={timerWatchTitle(watch)}
+            />
+          ))}
+    </div>
+  )
 }

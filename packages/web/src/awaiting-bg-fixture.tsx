@@ -147,6 +147,20 @@ const thread = {
         { id: "github:demo:acme/app#394", kind: "github", target: "acme/app#394", state: "armed", createdAt: ago(1) },
       ]
     : []),
+    // ?all=1 holds a command watch and a timer too, so every kind the card and the counts over the prompt
+    // box can name is on screen at once.
+    ...(wantAll
+      ? [
+          {
+            id: "command:demo:cmw_1a2b3c4d5e6f", kind: "command", target: "cmw_1a2b3c4d5e6f", state: "armed", createdAt: ago(9),
+            command: { command: "npm view acme@4.2.0 version", every: "5m", expiresAt: new Date(Date.now() + 6 * 3_600_000).toISOString(), runs: 2, lastRun: { at: ago(4), outcome: "exit", exitCode: 1, output: "npm ERR! 404 No match found for version 4.2.0" } },
+          },
+          {
+            id: "timer:demo:tmr_a1b2c3d4e5f6", kind: "timer", target: "tmr_a1b2c3d4e5f6", state: "armed", createdAt: ago(3),
+            timer: { fireAt: new Date(Date.now() + 47 * 60_000).toISOString(), prompt: "Re-check the release run and the registry." },
+          },
+        ]
+      : []),
   ],
   // The standing fence. Only seeded with ?title or ?steps, because a fence body renders as the card's
   // opening prose and the default fixture is deliberately the no-prose shape.

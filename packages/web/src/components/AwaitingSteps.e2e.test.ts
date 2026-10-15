@@ -68,6 +68,29 @@ test("a steps card's one box stages an answer the prompt box sends", {
     }))
     assert.deepEqual(untitled, { kind: "Awaiting human", title: false }, "the kind line already says what the card is for")
 
+    // ---- a steps card lists none of the thread's live work; the counts over the prompt box do ----
+    // (maintainer 2026-10-15: "you don't need to show all the other shit that it's awaiting … it's also
+    // weird that the to-do item is separated from the 'I have completed this' checkbox by a bunch of shit")
+    await page.goto(`${baseUrl}/awaiting-bg-fixture.html?steps=titled&all=1`, { waitUntil: "networkidle0" })
+    await page.waitForSelector(`${CARD} [data-awaiting-steps] li`)
+    const busy = await page.$eval(CARD, (el) => ({
+      rows: el.querySelectorAll("[data-wait-row]").length,
+      next: el.querySelector("[data-awaiting-steps]")?.nextElementSibling?.hasAttribute("data-steps-complete"),
+      text: (el as HTMLElement).innerText,
+      counts: [...document.querySelectorAll("[data-ops-count]")].map((c) => c.getAttribute("data-ops-count")),
+    }))
+    assert.equal(busy.rows, 0, "no wait rows on the card")
+    assert.equal(busy.next, true, "the box sits right under the steps it confirms")
+    assert.doesNotMatch(busy.text, /acme\/app#39|npm view|Re-check the release/, "nothing the thread is waiting on is named on the card")
+    assert.deepEqual(busy.counts, ["agent", "shell", "pr", "command", "timer"], "every wait is counted over the prompt box instead")
+    for (const [kind, row] of [["command", /WATCH\s*npm view acme@4\.2\.0 version[\s\S]*every 5m/], ["timer", /TIMER\s*Re-check the release run/]] as const) {
+      await page.hover(`[data-ops-count="${kind}"]`)
+      await page.waitForSelector(`[data-queue-ops-panel="${kind}"]`)
+      assert.match(await page.$eval(`[data-queue-ops-panel="${kind}"]`, (p) => (p as HTMLElement).innerText), row, `the ${kind} count opens its row`)
+      await page.mouse.move(0, 0)
+      await page.waitForFunction((k) => !document.querySelector(`[data-queue-ops-panel="${k}"]`), {}, kind)
+    }
+
     // ---- 1. the statement ----
     await page.goto(`${baseUrl}/awaiting-bg-fixture.html?steps=titled`, { waitUntil: "networkidle0" })
     await page.waitForSelector(`${CARD} [data-awaiting-steps] li`)
