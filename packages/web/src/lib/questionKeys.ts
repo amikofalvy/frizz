@@ -1,7 +1,7 @@
 // NUMBER KEYS ANSWER THE QUESTION IN FRONT OF YOU (requested 2026-10-07: options are numbered rather than
 // lettered so the identifier on screen is the key that picks it). Every interactive QuestionBlockCard
 // registers its options grid here; ONE window listener routes a bare 1–9 to the right grid. The card
-// draws each option's number as a keycap, so the key on screen is the key that picks it.
+// draws each option's number in its gutter, so the number on screen is the key that picks it.
 //
 // A DIGIT NEVER STAGES A PICK THE OPERATOR CANNOT SEE. Every route below ends at the same gate: the row
 // the key names (option n, or the free-text row one past the last option) must be on screen and

@@ -4,8 +4,8 @@ import test from "node:test"
 // Runtime coverage for a REGISTERED `multi` over a LONG option list. The `ask` tool's option count
 // carried `.max(8)` until 2026-09-03 (maintainer: "allow arbitrary numbers of options"), so nothing past
 // eight had ever reached the card. Options were lettered until 2026-10-07, which ran past `Z.` into `AA.`;
-// they are numbered now, and only 1–9 are keys, so rows 10 and on carry a plain `10.` rather than a
-// keycap. The fixture's `?wide=1` is thirty options; this drives the real card end
+// they are numbered now, and only 1–9 are keys, so rows 10 and on carry a number no key picks. The
+// fixture's `?wide=1` is thirty options; this drives the real card end
 // to end — every chip toggled, the prompt box's Send, the payload the worker would receive — so the answer that
 // picks the whole list is OBSERVED rather than inferred from the schema alone. Skipped unless a Vite
 // URL serving the fixtures is provided (same pattern as the other *.e2e.test.ts here): start `vite` in
@@ -32,10 +32,11 @@ test("a registered multi over thirty options numbers every row past the 1–9 ke
     await page.goto(`${baseUrl}/registered-question-fixture.html?wide=1`, { waitUntil: "networkidle0" })
     await page.waitForSelector(OPTION)
 
-    // All thirty rows render, in order: keycaps `1`…`9`, then plain `10.`…`30.` (no key names them).
+    // All thirty rows render, in order, each with its plain number: `1.`…`30.`.
     const rows = await page.$$eval(OPTION, (ns) => ns.map((n) => (n.textContent ?? "").replace(/\s+/g, " ").trim()))
     assert.equal(rows.length, 30)
-    assert.match(rows[0], /^1 ?Finding 1\b/)
+    assert.match(rows[0], /^1\. ?Finding 1\b/)
+    assert.match(rows[8], /^9\. ?Finding 9\b/)
     assert.match(rows[25], /^26\. ?Finding 26\b/)
     assert.match(rows[26], /^27\. ?Finding 27\b/)
     assert.match(rows[29], /^30\. ?Finding 30\b/)

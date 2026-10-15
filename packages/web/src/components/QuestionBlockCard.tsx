@@ -277,17 +277,17 @@ export function QuestionBlockCard({
               below the multi-column options, and is an auto-growing textarea (see taRef effect above)
               rather than a one-line input, so a long "something else…" answer stays fully visible. */}
           {interactive && (
-            // The free-text row takes the next number's keycap when the question has options, laid over
-            // the box's left padding so the box itself keeps its own border and focus treatment. It sits
+            // The free-text row takes the next number when the question has options, laid over the box's
+            // left padding so the box itself keeps its own border and focus treatment. It sits
             // on the BASELINE of the box's first line (a textarea is a baseline item in Chrome and
             // Safari), the same rule the option rows use, so the browser places the digit and the text on
             // one line at every zoom. A hand-set `top-[7px]` measured 0.8px high at 110% zoom and 0.4px
-            // low at 600%: the two snapped to device pixels independently. The -mr cancels the cap's
+            // low at 600%: the two snapped to device pixels independently. The -mr cancels the number's
             // 13px + 16px, so the box still starts at the row's left edge.
             <div className={`relative col-span-full${parsed.options.length > 0 ? " flex items-baseline" : ""}`}>
             {parsed.options.length > 0 && (
               <span className="pointer-events-none relative z-10 ml-[13px] -mr-[29px] flex">
-                <OptionKey n={parsed.options.length + 1} live />
+                <OptionNumber n={parsed.options.length + 1} live />
               </span>
             )}
             {parsed.secret ? (
@@ -422,7 +422,7 @@ export function QuestionBlockCard({
                     <div aria-hidden className="pointer-events-none absolute inset-0 flex items-baseline border border-transparent py-1.5 pr-3 text-[12px] leading-snug text-muted-80">
                       {/* 12 + the 1px border = the 13px every option row's numeral starts at; 8px on to the text. */}
                       <span className="ml-3 mr-2 flex">
-                        <OptionKey n={parsed.options.length + 1} live={false} />
+                        <OptionNumber n={parsed.options.length + 1} />
                       </span>
                       <span className="min-w-0 truncate">{isMulti ? "Add a note…" : "Something else…"}</span>
                     </div>
@@ -534,8 +534,8 @@ function Chip({
 }) {
   // Inline-only: the label line is one line, so no `<p>`/list block chrome. Raw `label` used to leak
   // `**bold**`/backticks. The body below it is the opposite — FULL markdown, blocks and all.
-  // The identifier comes OFF the label line and goes into the gutter, as the keycap that picks it. A live
-  // card's key is always the POSITION (the router presses `index + 1`), so its keycap must be too — a
+  // The identifier comes OFF the label line and goes into the gutter, as the number whose key picks it. A
+  // live card's key is always the POSITION (the router presses `index + 1`), so its number must be too — a
   // worker's fence numbered from 2, or lettered, still answers to 1. Only a READ-ONLY card shows the
   // label's own number: a settled card keeps just the picked options, and "3" must still say which one.
   const { id, rest } = splitOptionId(label)
@@ -585,7 +585,7 @@ function Chip({
         onMouseDown={(e) => e.preventDefault()}
         className="absolute inset-0 rounded-md outline-none"
       />
-      <OptionKey n={n} live={!disabled} selected={selected} />
+      <OptionNumber n={n} live={!disabled} selected={selected} />
       {multi && (
         <span
           aria-hidden
@@ -625,36 +625,28 @@ function Chip({
   )
 }
 
-// Where an option's TEXT starts: the row's 12px padding, the 16px keycap, the row's 8px gap. The
-// free-text row lays its keycap over its own padding, so it insets its text by the same sum to line up
-// (and places the cap at 13px, not 12: the cap sits outside the box's 1px border, a chip's inside it).
+// Where an option's TEXT starts: the row's 12px padding, the 16px number, the row's 8px gap. The free-text
+// row lays its number over its own padding, so it insets its text by the same sum to line up (and places
+// the number at 13px, not 12: it sits outside the box's 1px border, a chip's inside it).
 const OPTION_TEXT_INSET = "pl-9"
 
-// An option's number in its gutter. LIVE (an answerable card) it is a KEYCAP — a key-shaped mark reads as
-// "press this" with nothing to explain, and the key on screen is the key the card binds (questionKeys).
-// Read-only it is the plain number: a settled card answers no key. Past 9 there is no key to name, so
-// those stay plain too. On a touch screen there is no keyboard to point at, so the cap drops its border
-// and fill and reads as a plain number. The SELECTED cap fills with the accent, the same fill the multi
-// checkbox uses, so a keyboard pick shows where it landed. Inside the focused options grid every cap
-// steps up a tone: the question that holds the keyboard says so. The row is `items-baseline`, so the
-// digit stands on the label's baseline and the browser does the aligning, with the same result at every
-// zoom (measured in sans at 1x, 1.1x, 2x, 2.2x and 6x: the digit's foot on the label's baseline in every
-// row, the free-text row included). Leave the cap's own padding alone: a `pt-px` that lifts the cap half
-// a pixel rounded up in the option rows and down in the free-text row, 1px apart.
-function OptionKey({ n, live, selected = false }: { n: number; live: boolean; selected?: boolean }) {
-  if (!live || n > 9) {
-    return <span aria-hidden className="w-4 shrink-0 text-center text-[11px] tabular-nums text-muted">{n}.</span>
-  }
+// An option's number in its gutter: plain muted text, `1.`, the key that picks it on a live card
+// (questionKeys). It was drawn as a KEYCAP — a bordered, bottom-lipped square — from 2026-10-07 until
+// the maintainer had it rolled back on 2026-10-15; the number and its key stayed, the key drawing went.
+// What the keycap also said survives as tone: on a live card the numbers of the focused options grid
+// step up to full strength (the question holding the keyboard says so), and a picked row's number does
+// too. The row is `items-baseline`, so the digit stands on the label's baseline at every zoom. Set
+// RIGHT in its 16px gutter, as an ordered list sets its markers: `9.` and `10.` share the period's
+// column, and the ink gap to the label is the row's 8px rather than the ~12px a centred `1.` left.
+function OptionNumber({ n, live = false, selected = false }: { n: number; live?: boolean; selected?: boolean }) {
   return (
     <span
       aria-hidden
-      className={`pointer-events-none flex size-4 shrink-0 items-center justify-center rounded-[4px] border border-b-2 text-[10.5px] font-medium leading-none tabular-nums transition-colors ${
-        selected
-          ? "border-accent bg-accent-fill text-on-accent"
-          : "border-border-strong bg-panel text-muted group-focus-visible/qgrid:border-control-strong group-focus-visible/qgrid:text-fg"
-      } pointer-coarse:border-transparent pointer-coarse:bg-transparent pointer-coarse:font-normal ${selected ? "pointer-coarse:text-fg" : "pointer-coarse:text-muted"}`}
+      className={`w-4 shrink-0 text-right text-[11px] tabular-nums transition-colors ${
+        selected ? "text-fg" : live ? "text-muted group-focus-visible/qgrid:text-fg" : "text-muted"
+      }`}
     >
-      {n}
+      {n}.
     </span>
   )
 }

@@ -137,7 +137,7 @@ const GATES: RegisteredQuestionView = {
 }
 
 // A `multi` over a LONG list — thirty options, past the `.max(8)` the schema carried until 2026-09-03
-// and past the 9 the keys can name, so rows 10…30 read as plain `10.`…`30.` beside the 1–9 keycaps.
+// and past the 9 the keys can name, so rows 10…30 carry numbers no key picks.
 // What is worth looking at is that the run stays one even column and the free-text row still follows
 // the last option.
 const WIDE: RegisteredQuestionView = {

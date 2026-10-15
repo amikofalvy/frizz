@@ -50,7 +50,7 @@ function questionFor(optionField: InteractionField | undefined, notesField: Inte
       // is the short header chip, used only when a producer supplied no description.
       contextMd: anchor.description ?? anchor.label,
       // Numbered exactly as a registered question's options are (`1. …`). Not decoration: the card
-      // draws the identifier as the keycap that picks it, and an operator answering in the composer
+      // draws the identifier as the number whose key picks it, and an operator answering in the composer
       // refers to options by number.
       options: options.map((option, index) => `${optionNumber(index)} ${option.label}`),
       // A tool call has no notion of a recommended option — that is a frizz fence convention — so the

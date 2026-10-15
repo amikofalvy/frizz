@@ -720,7 +720,7 @@ test("optionNumber: frizz-built options are numbered from 1, the key that picks 
   assert.deepEqual([0, 1, 8, 9, 25].map(optionNumber), ["1.", "2.", "9.", "10.", "26."])
 })
 
-test("splitOptionId: the identifier comes off the label for the keycap, the rest stays verbatim", () => {
+test("splitOptionId: the identifier comes off the label for the gutter, the rest stays verbatim", () => {
   assert.deepEqual(splitOptionId("2. SQLite — transactional"), { id: "2", rest: "SQLite — transactional" })
   assert.deepEqual(splitOptionId("12) Twelve"), { id: "12", rest: "Twelve" })
   // A worker's lettered fence: the letter comes off too; the card shows the option's position instead.

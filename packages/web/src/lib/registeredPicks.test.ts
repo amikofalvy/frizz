@@ -26,7 +26,7 @@ test("picks hydrate by registration identity, separate from display numbers, tex
   assert.equal(remount.get(key), "an unselected typed draft")
   assert.equal(remount.get(draftKey.questionPick("/two", "same-thread", "qst_one", "root")), "")
   assert.equal(remount.get(draftKey.questionPick("/one", "same-thread", "qst_two", "root")), "")
-  assert.deepEqual(JSON.parse(remount.get(picks)).chosen, { index: 1, label: "Hold it" }, "persist the immutable option slot, not a keycap")
+  assert.deepEqual(JSON.parse(remount.get(picks)).chosen, { index: 1, label: "Hold it" }, "persist the immutable option slot, not its number")
   assert.deepEqual(decodeQuestionPick({ ...spec, options: [...spec.options!].reverse() }, remount.get(picks)), { chosen: null, chosenSet: [] })
   remount.clear(picks)
   assert.equal(new DraftStore(storage).get(picks), "")

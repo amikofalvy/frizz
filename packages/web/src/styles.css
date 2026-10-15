@@ -1539,8 +1539,8 @@ html[data-code-wrap="off"] {
   z-index: 1;
 }
 
-/* KEYS. A `<kbd>` is the keycap the question card already draws beside each option (OptionKey in
-   QuestionBlockCard.tsx): panel fill, a strong hairline with a heavier bottom lip, muted sans at
+/* KEYS. A `<kbd>` is drawn as the keycap the question card drew beside each option until 2026-10-15
+   (its options carry a plain number now): panel fill, a strong hairline with a heavier bottom lip, muted sans at
    10.5px on the option's 12px. Here in `em`, so it tracks whatever prose it sits in.
 
    It must not make its LINE taller, for the reason the code chip above gives. As the UA draws it, in
