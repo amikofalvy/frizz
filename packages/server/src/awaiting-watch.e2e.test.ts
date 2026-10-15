@@ -808,6 +808,26 @@ test("a PR the merge queue drops wakes its worker, names the merge group's failu
   } finally { h.close() }
 })
 
+// The shape of bytecodealliance/wasmtime#14375's merge group (2026-09-22): one job failed and the queue
+// cancelled the rest, every cancellation ahead of the failure in rollup order.
+test("a merge group that failed fast names the job that failed, not only the ones it cancelled", async () => {
+  const h = await prHarness()
+  try {
+    h.setQueued({ position: 1 })
+    h.setMergeExits([])
+    await h.tick()
+    h.delivered.length = 0
+    h.setQueued(null)
+    h.setMergeExits([dropped(h.justNow(), { rollup: [
+      ...Array.from({ length: 12 }, (_, i) => ({ status: "COMPLETED", conclusion: "CANCELLED", name: `Test ASAN (${i + 1}/12)` })),
+      { status: "COMPLETED", conclusion: "FAILURE", name: "Test MSVC x86_64 (1/8)" },
+    ] })])
+    await h.tick()
+    assert.equal(h.delivered.length, 1)
+    assert.match(h.delivered[0], /REMOVED from the merge queue \(failed checks: Test MSVC x86_64 \(1\/8\), Test ASAN \(1\/12\), .*, \+5 more\)\./)
+  } finally { h.close() }
+})
+
 test("a watcher armed before exits were read still hears about the bounce it slept through, and no older one", async () => {
   const h = await prHarness()
   try {

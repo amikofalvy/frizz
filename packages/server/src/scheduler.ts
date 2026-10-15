@@ -299,7 +299,15 @@ export function failedCheckNames(rollup: RollupEntry[], runs: WorkflowRun[] = []
 export function mergeExitClause(exit: GithubPrMergeExit, queued: { position?: number } | null | undefined): string {
   const by = exit.actor && !/^github-merge-queue(\[bot\])?$/.test(exit.actor) ? ` by @${exit.actor}` : ""
   const reason = exit.reason?.toLowerCase().replace(/_/g, " ")
-  const failed = exit.kind === "dequeued" ? failedCheckNames((exit.rollup ?? []) as RollupEntry[]) : { names: [], omitted: 0 }
+  // The jobs that FAILED before the ones that were CANCELLED, which `failedCheckNames` counts as failed
+  // too. A merge group fails fast — one job goes red and the queue cancels the rest — so in rollup order
+  // the cancellations fill the cap and the cause is counted in "+N more": bytecodealliance/wasmtime#14375
+  // (2026-09-22) had 26 cancelled jobs and 1 failure, listed 14th.
+  const rollup = (exit.rollup ?? []) as RollupEntry[]
+  const cancelled = (c: RollupEntry) => c?.conclusion === "CANCELLED"
+  const failed = exit.kind === "dequeued"
+    ? failedCheckNames([...rollup.filter((c) => !cancelled(c)), ...rollup.filter(cancelled)])
+    : { names: [], omitted: 0 }
   const detail = failed.names.length
     ? `${reason ?? "failed checks"}: ${failed.names.join(", ")}${failed.omitted ? `, +${failed.omitted} more` : ""}`
     : reason
