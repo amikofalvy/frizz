@@ -1,13 +1,10 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { createRoot } from "react-dom/client"
-import { useSnapshot } from "valtio"
 import type { BoardSnapshot, RegisteredQuestionView, ThreadView as ThreadViewModel, TranscriptMessage } from "@frizz/shared"
 import { TodosView } from "./components/TodosView.tsx"
 import { ThreadView } from "./components/ChatView.tsx"
 import { RegisteredAnswerSheet } from "./components/RegisteredAnswerSheet.tsx"
 import { RegisteredAnsweringProvider } from "./components/RegisteredQuestionCards.tsx"
-import { SettingsDrawer } from "./components/SettingsDrawer.tsx"
-import { CommandPalette } from "./components/CommandPalette.tsx"
 import { TooltipProvider } from "./components/Tooltip.tsx"
 import { store } from "./store.ts"
 import "./styles.css"
@@ -32,16 +29,11 @@ import "./styles.css"
 //                 stand down (the registered card carries its own).
 //   ?table=1    — an option whose body carries a TABLE, a blockquote and a code fence: the blocks whose
 //                 opaque panel fills clashed with a selected chip's accent tint (screenshot 2026-09-02).
-//   ?wide=1     — a `multi` over THIRTY options: no count cap (2026-09-03), and numbering past the 1–9 keys.
+//   ?wide=1     — a `multi` over THIRTY options: no count cap (2026-09-03), and lettering past Z into AA.
 //   ?placed=1   — PER-QUESTION PLACEMENT (2026-09-11): two questions open at one rest; the handoff carries
 //                 an empty ```question qst_… marker for ONE of them, mid-prose. That card must render in
 //                 the marker's slot, its sibling at the tail, and ONE "Send answers" at the tail must send
 //                 both — the marker's card carries no Send of its own.
-//   ?keys=1     — the NUMBER KEYS (lib/questionKeys.ts): TWO queue cards, the first asking the settings
-//                 store and the land-it tree, the second the commit gates, with the real Settings drawer
-//                 and ⌘K palette mounted off the store (`window.fixtureStore` opens them). What it is for
-//                 is WHICH question a bare digit answers, and above all that it never answers one the
-//                 operator cannot see.
 //   ?font=sans  — the other of the two fonts this app renders in; mono is the default and the wider.
 //
 // THE QUESTION FENCE (2026-10-13) — a thread dispatched after QUESTION_FENCE_RETIRED_AT asks by writing a
@@ -137,7 +129,7 @@ const GATES: RegisteredQuestionView = {
 }
 
 // A `multi` over a LONG list — thirty options, past the `.max(8)` the schema carried until 2026-09-03
-// and past the 9 the keys can name, so rows 10…30 carry numbers no key picks.
+// and past Z, so rows 27…30 are lettered AA…AD.
 // What is worth looking at is that the run stays one even column and the free-text row still follows
 // the last option.
 const WIDE: RegisteredQuestionView = {
@@ -260,13 +252,11 @@ const SETTLED_FENCED = { ...FENCED, settledAt: ago(0.5), answer: { questionId: F
 const landMs = Number(params.get("land") ?? "")
 
 const placed = params.get("placed") === "1"
-const keys = params.get("keys") === "1"
 const questions = fenceMode === "placed" ? [{ ...GATES, askedAt: ago(1) }, FENCED]
   : fenceMode === "pending" || fenceMode === "settled" ? []
   : fenceMode === "claimed" ? [{ ...FENCED, askedAt: ago(10) }]
   : fenceMode === "sheet" ? [FENCED]
   : params.get("danger") === "1" ? [GATE]
-  : keys ? [SETTINGS, TREE]
   : placed ? [SETTINGS, GATES]
   : params.get("wide") === "1" ? [WIDE]
   : params.get("tree") === "1" ? [TREE]
@@ -344,11 +334,7 @@ const thread = {
   ...(fenceMode ? { spawnedAt: "2026-10-13T09:00:00Z", pendingQuestion: false } : {}),
 } as unknown as ThreadViewModel
 
-// ?keys=1's second card: the same rest, asking only the commit gates.
-const gatesThread = { ...thread, id: "registered-question-gates", title: "Pick the commit gates", questions: [GATES], lastActivityAt: ago(2) } as ThreadViewModel
-
-store.board = { projectDir: "/fixture/frizz", threads: keys ? [thread, gatesThread] : [thread] } as BoardSnapshot
-Object.assign(window, { fixtureStore: store })
+store.board = { projectDir: "/fixture/frizz", threads: [thread] } as BoardSnapshot
 // ?fence=pending&land=<ms>: the server registers the fence's row a beat after the transcript has it.
 if (fenceMode === "pending" && Number.isFinite(landMs) && landMs > 0) {
   setTimeout(() => {
@@ -365,7 +351,7 @@ window.fetch = async (input, init) => {
   }
   // The writes the card makes, echoed onto the window so a probe can assert the exact payload the
   // worker would receive — above all that an answer RESTATES the question and carries the option's own
-  // label rather than the numbered chip text. Since 2026-10-11 the answers leave through the prompt
+  // label rather than the lettered chip text. Since 2026-10-11 the answers leave through the prompt
   // box's Send, on `followUp` (with whatever was typed there); `answerQuestions` is the send of a
   // surface with no prompt box, and stays stubbed for it.
   if (url.pathname === "/_frizz/rpc/followUp") {
@@ -383,25 +369,10 @@ window.fetch = async (input, init) => {
   if (url.pathname === "/_frizz/rpc/threadSettledQuestions") {
     return new Response(JSON.stringify({ result: { questions: fenceMode === "settled" ? [SETTLED_FENCED, SETTLED_GATES] : [] } }), { headers: { "content-type": "application/json" } })
   }
-  // The Settings drawer (?keys=1) reads the machine's settings; any plausible object will do.
-  if (url.pathname === "/_frizz/rpc/settingsGet") {
-    return new Response(JSON.stringify({ result: { permissionMode: "auto", notifications: false, projectRail: false } }), { headers: { "content-type": "application/json" } })
-  }
   if (url.pathname.startsWith("/_frizz/rpc/")) {
     return new Response(JSON.stringify({ result: null }), { headers: { "content-type": "application/json" } })
   }
   return originalFetch(input, init)
-}
-
-// Settings and the palette mount the way App mounts them: off the store flags.
-function Overlays() {
-  const snap = useSnapshot(store)
-  return (
-    <>
-      {snap.showSettings && <SettingsDrawer />}
-      <CommandPalette />
-    </>
-  )
 }
 
 createRoot(document.getElementById("root")!).render(
@@ -420,7 +391,6 @@ createRoot(document.getElementById("root")!).render(
           <TodosView />
         </div>
       )}
-      {keys && <Overlays />}
     </TooltipProvider>
   </QueryClientProvider>,
 )

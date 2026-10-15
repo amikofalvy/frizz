@@ -82,12 +82,10 @@ export function railRevealDelta(
 }
 
 // The queue cards on the board, as the reading rule above measures them, by the BORDERED ROOT rather than
-// the slot (the slot is the fade wrapper and also spans the root's bottom scroll-reserve margin). Shared by
-// the rail (Sidebar) and the number keys (lib/questionKeys.ts), so the card a bare digit answers is the
-// card the rail marks.
+// the slot (the slot is the fade wrapper and also spans the root's bottom scroll-reserve margin). Read by
+// the rail (Sidebar).
 //
-// A LEAVING card is left out by default: a digit must not answer a question on a card that is already
-// dissolving. The rail asks for it (`includeLeaving`), because a fading card still holds its full height
+// A LEAVING card is left out by default. The rail asks for it (`includeLeaving`), because a fading card still holds its full height
 // under the reader's eyes until it unmounts, and leaving it out handed the rail to whatever else was on
 // screen for the length of the fade: on every send from a card with one above it, the marker went to the
 // card ABOVE for ~200ms and then to the card below (27 of 27 recordings, 2026-10-13). Which row the

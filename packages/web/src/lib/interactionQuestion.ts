@@ -22,7 +22,7 @@ import {
   type InteractionValue,
   type InteractionValues,
 } from "@frizz/shared"
-import { optionNumber, type BlockAnswer, type ParsedQuestion } from "./questionBlocks.ts"
+import { optionLetter, type BlockAnswer, type ParsedQuestion } from "./questionBlocks.ts"
 
 export interface InteractionQuestion {
   /** The neutral model the shared card renders. */
@@ -49,10 +49,10 @@ function questionFor(optionField: InteractionField | undefined, notesField: Inte
       // The question itself is the field's description (the provider's full question text); the label
       // is the short header chip, used only when a producer supplied no description.
       contextMd: anchor.description ?? anchor.label,
-      // Numbered exactly as a registered question's options are (`1. …`). Not decoration: the card
-      // draws the identifier as the number whose key picks it, and an operator answering in the composer
-      // refers to options by number.
-      options: options.map((option, index) => `${optionNumber(index)} ${option.label}`),
+      // Lettered exactly as a registered question's options are (`A. …`). Not decoration: the card
+      // draws the identifier in each option's gutter, and an operator answering in the composer refers
+      // to options by letter.
+      options: options.map((option, index) => `${optionLetter(index)} ${option.label}`),
       // A tool call has no notion of a recommended option — that is a frizz fence convention — so the
       // badge simply does not appear rather than being faked.
       recommendedIdxs: [],
@@ -98,7 +98,7 @@ export function interactionQuestions(record: Pick<InteractionRecord, "payload">)
 // transcript (TranscriptToolCall.ask/askAnswers). The pending copy of the same call rendered through
 // producer 2 above while it was answerable; this is its durable, read-only afterlife — the record that
 // keeps a question on screen after the operator steered past it instead of answering (or answered it,
-// in which case the choice renders settled). Options are numbered exactly as producer 2 numbers them,
+// in which case the choice renders settled). Options are lettered exactly as producer 2 letters them,
 // and the option's one-line description rides the line the way a fence option carries its trade-off.
 export interface SettledAskView {
   /** The neutral model the shared card renders. */
@@ -128,7 +128,7 @@ export function settledAskView(q: AskQuestion, answer: string | null | undefined
       kind: q.multiSelect ? "multi" : "question",
       danger: false,
       contextMd: q.question,
-      options: q.options.map((option, index) => `${optionNumber(index)} ${option.label}${option.description ? ` — ${option.description}` : ""}`),
+      options: q.options.map((option, index) => `${optionLetter(index)} ${option.label}${option.description ? ` — ${option.description}` : ""}`),
       recommendedIdxs: [],
     },
     chosenIdxs,

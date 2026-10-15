@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { splitQuestionBlocks, splitMessageQuestions, questionFenceIdsIn, followUpParentsIn, hasQuestionBlock, parseQuestionBlock, composeBlockAnswer, optionId, optionNumber, recommendedIndex, splitOptionId } from "./questionBlocks.ts"
+import { splitQuestionBlocks, splitMessageQuestions, questionFenceIdsIn, followUpParentsIn, hasQuestionBlock, parseQuestionBlock, composeBlockAnswer, optionId, optionLetter, recommendedIndex, splitOptionId } from "./questionBlocks.ts"
 
 // ---- splitQuestionBlocks ----
 
@@ -716,14 +716,14 @@ test("a marker a worker QUOTES — showing the form, or pasting the contract's o
   assert.deepEqual(splitQuestionBlocks(indented).map((s) => s.kind), ["prose"])
 })
 
-test("optionNumber: frizz-built options are numbered from 1, the key that picks them", () => {
-  assert.deepEqual([0, 1, 8, 9, 25].map(optionNumber), ["1.", "2.", "9.", "10.", "26."])
+test("optionLetter: frizz-built options are lettered from A, and run on to AA past Z", () => {
+  assert.deepEqual([0, 1, 8, 25, 26, 27, 51, 52].map(optionLetter), ["A.", "B.", "I.", "Z.", "AA.", "AB.", "AZ.", "BA."])
 })
 
 test("splitOptionId: the identifier comes off the label for the gutter, the rest stays verbatim", () => {
   assert.deepEqual(splitOptionId("2. SQLite — transactional"), { id: "2", rest: "SQLite — transactional" })
   assert.deepEqual(splitOptionId("12) Twelve"), { id: "12", rest: "Twelve" })
-  // A worker's lettered fence: the letter comes off too; the card shows the option's position instead.
+  // A worker's numbered fence: the number comes off too; a live card shows the option's position instead.
   assert.deepEqual(splitOptionId("b. lowercase"), { id: "B", rest: "lowercase" })
   assert.deepEqual(splitOptionId("AA. Past twenty-six"), { id: "AA", rest: "Past twenty-six" })
   // No identifier, or a word that merely starts like one, is left alone.

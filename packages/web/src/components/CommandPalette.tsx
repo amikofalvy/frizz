@@ -39,9 +39,7 @@ export function CommandPalette() {
   }
 
   return (
-    // A modal dialog: assistive tech reads it as one, and the number keys (lib/questionKeys.ts) treat
-    // an open `aria-modal` dialog with no question in it as owning the keyboard — with the input blurred
-    // (a click on the scrim's padding, a heading), a digit must not answer a card behind the palette.
+    // A modal dialog, so assistive tech reads it as one.
     <div
       role="dialog"
       aria-modal="true"

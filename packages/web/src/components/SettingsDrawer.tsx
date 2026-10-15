@@ -104,9 +104,7 @@ export function SettingsDrawer({ offerUpdate = false }: {
       className={`${SHEET_SCRIM_CLASS} z-50 flex justify-end ${shown ? "opacity-100" : "opacity-0"}`}
       onMouseDown={(e) => e.target === e.currentTarget && close()}
     >
-      {/* A real modal dialog, not just a panel that looks like one: assistive tech reads it as one, and
-          the number keys (lib/questionKeys.ts) treat an open `aria-modal` dialog with no question in it
-          as owning the keyboard, so a digit cannot answer a card behind the scrim. */}
+      {/* A real modal dialog, not just a panel that looks like one, so assistive tech reads it as one. */}
       <div
         role="dialog"
         aria-modal="true"
