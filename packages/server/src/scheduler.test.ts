@@ -2963,6 +2963,31 @@ test("issue-watch: the expiry wake names the issue tool, not watch_pr", async ()
   assert.match(h.resumes[0].message, /`frizzctl watch-issue add`/)
 })
 
+test("issue-watch: an issue GitHub stops resolving settles its watcher after the grace period, naming the issue tool", async () => {
+  const h = harness()
+  h.watch("r", "acme/app#7", "issue")
+  h.storage.upsertSession(row("r"))
+  h.tele.set("r", { ...tele(awaiting([{ kind: "issue", value: "acme/app#7" }])), lastActivityAt: iso(h.clock.ms) })
+  h.review.result = { status: "ok", issue: issueSnap(), activity: [] }
+  const s = h.make()
+  await s.tick()
+  h.review.result = { status: "error", failure: { kind: "not-found", message: "GitHub: Could not resolve to an Issue with the number of 7." } }
+  for (let i = 0; i < 30; i++) {
+    h.clock.ms += 61_000
+    await s.tick()
+  }
+  assert.equal(h.resumes.length, 0, "under 30m of NOT_FOUND is not an ending")
+  assert.equal(h.storage.listPrWatches("r", { armedOnly: true }).length, 1)
+  h.clock.ms += 61_000
+  await s.tick()
+  await s.tick()
+  assert.equal(h.resumes.length, 1)
+  assert.match(h.resumes[0].message, /^⏰ acme\/app#7 can no longer be read/)
+  assert.match(h.resumes[0].message, /nothing on that issue will wake you now/)
+  assert.match(h.resumes[0].message, /`frizzctl watch-issue add`/)
+  assert.equal(h.storage.listPrWatches("r", { armedOnly: true }).length, 0, "the watcher settles with it")
+})
+
 // ---- SOURCE 10: THE INTERRUPT NOTE (interrupt-ended.ts) ----
 // The router queues it once the tailer confirms the children ended; the scheduler's only job is to hand
 // it over WITHOUT the mid-turn hold — the worker is busy precisely because the interrupt just opened a
