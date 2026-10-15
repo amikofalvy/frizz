@@ -10,9 +10,10 @@ import { lastAssistantIndex } from "../lib/lastAssistant.ts"
 import { useOpsHeldForTranscript } from "../lib/opsAhead.ts"
 import { placeQuestions, registeredStandingAt, type QuestionPlacement } from "../lib/questionShadow.ts"
 import { useTranscriptHeldForBoard } from "../lib/restAhead.ts"
+import { heldRunOf, type HeldRun } from "../lib/restReply.ts"
 import { SendScopeContext, useComposerSendHandle, useComposerSendPresent, useSendScope, type SendScope } from "../lib/sendScope.tsx"
 import { settledQuestionPositions, type SettledPlacement } from "../lib/settledQuestions.ts"
-import { QueueDismissContext, ThreadSlugContext, type SurfaceExit } from "../lib/threadContexts.ts"
+import { HeldRunContext, QueueDismissContext, ThreadSlugContext, type SurfaceExit } from "../lib/threadContexts.ts"
 import { transcriptBackgroundShells, withoutLiveTranscriptBackgroundTools } from "../lib/transcriptShells.ts"
 import { showsRestingCard } from "./AwaitingBackgroundCard.tsx"
 import { RegisteredAnsweringProvider, openQuestionsOf, useArrivedQuestions, useFenceQuestions, useRefusedFences, useSettledQuestions, type FenceQuestionRow, type SettledQuestion } from "./RegisteredQuestionCards.tsx"
@@ -168,6 +169,8 @@ export interface ThreadSurfaceState {
   promptBoxSends: boolean
   /** A file is being dragged over the surface right now. */
   fileOver: boolean
+  /** The messages sent to the queue, as one run with one status line (HeldRunContext). */
+  heldRun: HeldRun
   /** The rest is `<ThreadSurface>`'s wiring, not a caller's. */
   exit: SurfaceExit | null
   sendScope: SendScope
@@ -270,6 +273,8 @@ export function useThreadSurface(source: ThreadSurfaceSource, options: ThreadSur
   const paired = useMemo(() => pairAllAnswers(messages), [messages])
   const inFlightAnswers = useMemo(() => unrenderedAnswers(messages, thread?.answersInFlight), [messages, thread?.answersInFlight])
   const opsThread = useOpsHeldForTranscript(thread, messages)
+  const run = useMemo(() => heldRunOf(messages), [messages])
+  const heldRun = useMemo<HeldRun>(() => ({ last: run.last, count: run.count }), [run.last, run.count])
   const transcript = useMemo<ThreadTranscript>(
     () => ({
       thread,
@@ -305,7 +310,7 @@ export function useThreadSurface(source: ThreadSurfaceSource, options: ThreadSur
   const cancel = exit?.cancel
   // Stable while the two callbacks are, so the fence buttons reading it do not re-render every frame.
   const stableExit = useMemo<SurfaceExit | null>(() => (dismiss && cancel ? { dismiss, cancel } : null), [dismiss, cancel])
-  return { slug, answering, transcript, promptBoxSends, fileOver: drop.over, exit: stableExit, sendScope, zone: drop.handlers, box }
+  return { slug, answering, transcript, promptBoxSends, fileOver: drop.over, heldRun, exit: stableExit, sendScope, zone: drop.handlers, box }
 }
 
 /** The surface's root element, inside everything the shell provides. Every other prop is the root
@@ -335,11 +340,13 @@ export function ThreadSurface({
         <SendScopeContext.Provider value={surface.sendScope}>
           <RegisteredAnsweringProvider thread={surface.transcript.thread}>
             <ThreadTranscriptContext.Provider value={surface.transcript}>
-              <ThreadSurfaceBoxContext.Provider value={surface.box}>
-                <div {...root} {...(pageZone ? null : zone)} data-thread-surface={surface.slug}>
-                  {children}
-                </div>
-              </ThreadSurfaceBoxContext.Provider>
+              <HeldRunContext.Provider value={surface.heldRun}>
+                <ThreadSurfaceBoxContext.Provider value={surface.box}>
+                  <div {...root} {...(pageZone ? null : zone)} data-thread-surface={surface.slug}>
+                    {children}
+                  </div>
+                </ThreadSurfaceBoxContext.Provider>
+              </HeldRunContext.Provider>
             </ThreadTranscriptContext.Provider>
           </RegisteredAnsweringProvider>
         </SendScopeContext.Provider>

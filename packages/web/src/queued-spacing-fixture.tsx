@@ -22,6 +22,9 @@ const SLUG = "queued-spacing"
 const PARAMS = new URLSearchParams(location.search)
 const QUEUED = PARAMS.get("queued") !== "0"
 const INTERLEAVE = PARAMS.get("interleave") === "1"
+// ?held=1 — the tail was sent TO THE QUEUE (the Send menu's "Send to queue"): Frizz holds each message
+// until the agent rests, rather than handing it to the agent's next step.
+const HELD = PARAMS.get("held") === "1"
 // The app picks its prose face in `index.html` before first paint, and a fixture that leaves it unset
 // renders the MONO default — so a reading fitted here would only ever be right in one of the two faces
 // this app ships. `?font=sans` (the default here, matching the maintainer's own window) / `?font=mono`.
@@ -91,7 +94,7 @@ const messages: TranscriptMessage[] = [
           deliveryId: "d-q3",
           at: "2026-07-18T17:19:00.000Z",
         },
-      ] as unknown as TranscriptMessage[])
+      ] as unknown as TranscriptMessage[]).map((m) => (HELD && m.role === "user" ? { ...m, deliveryState: "held" as const } : m))
     : []),
 ] as unknown as TranscriptMessage[]
 

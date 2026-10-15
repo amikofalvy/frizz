@@ -1902,12 +1902,26 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
             {/* Queued (optimistic) messages pinned UNDER everything, as the drawer pins them — they are
                 stuck behind whatever the tail says (maintainer 2026-07-09: "queued messages render
                 underneath everything until they become un-queued and show up in the logs"). */}
-            {visible.map((m, i) => (m.queued ? (
-              <Fragment key={`q${visibleStart + i}`}>
-                <VSpace />
-                <Message m={m} dense paired={paired[visibleStart + i]} />
-              </Fragment>
-            ) : null))}
+            {/* Each bubble in a `flex flex-col` of its own, as the flow above wraps its rows: the bubble's
+                `self-end` is what puts it flush right, and in this block container it had nothing to
+                align against — the queued tail stopped 15% short of the card's right edge. After the
+                first, each takes the pitch of the run it continues (messageGap). */}
+            {(() => {
+              let previous: ChatMessage | null = null
+              return visible.map((m, i) => {
+                if (!m.queued) return null
+                const gap = previous ? messageGap(previous, m) : STEP
+                previous = m
+                return (
+                  <Fragment key={`q${visibleStart + i}`}>
+                    <VSpace h={gap} />
+                    <div className="flex flex-col">
+                      <Message m={m} dense paired={paired[visibleStart + i]} />
+                    </div>
+                  </Fragment>
+                )
+              })
+            })()}
           </>
         )}
       </div>

@@ -58,3 +58,23 @@ export function withRestReplyInline(messages: ChatMessage[], sentAt: string | un
 export function inQueuedTail(message: Pick<ChatMessage, "queued" | "restReply">): boolean {
   return message.queued === true && message.restReply !== true
 }
+
+/** The messages SENT TO THE QUEUE share one status line, drawn under the last of them (ChatView HeldLine):
+ *  they wait for the same rest and one "Send now" releases them all, so a line under each said the same
+ *  thing again and pushed the run apart (maintainer 2026-10-15). `last` is that message's deliveryId,
+ *  null when nothing in the tail is held. */
+export interface HeldRun {
+  last: string | null
+  count: number
+}
+
+export function heldRunOf(messages: readonly Pick<ChatMessage, "queued" | "restReply" | "deliveryState" | "deliveryId">[]): HeldRun {
+  let last: string | null = null
+  let count = 0
+  for (const m of messages) {
+    if (!inQueuedTail(m) || m.deliveryState !== "held" || !m.deliveryId) continue
+    last = m.deliveryId
+    count++
+  }
+  return { last, count }
+}

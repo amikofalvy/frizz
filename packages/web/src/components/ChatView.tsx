@@ -26,7 +26,7 @@ import { splitFenceBlocks, type FenceKind } from "../lib/fenceBlocks.ts"
 import { showsRegisteredDoneCard } from "../lib/registeredDone.ts"
 import { RestedCard, showsRestedCard } from "./RestedCard.tsx"
 import { ProviderErrorCard, providerErrorVisible } from "./ProviderErrorCard.tsx"
-import { answersNote, parseAnswersCard, type PairedAnswer } from "../lib/answersMessage.ts"
+import { answersNote, isAnswersMessage, parseAnswersCard, type PairedAnswer } from "../lib/answersMessage.ts"
 import { questionsByAnchor } from "../lib/questionAnchor.ts"
 import { fenceStandsFor, placedRestEnds, resolveQuestionName } from "../lib/questionShadow.ts"
 import { FrizzWake } from "./FrizzWake.tsx"
@@ -35,7 +35,7 @@ import { parseSentContext, splitProseByTokens, tokenLabel, type SentContextItem 
 import { AnswersCard } from "./AnswersCard.tsx"
 import { DividerQuotedTitle, WAKE_DIVIDER_WIDE_ONLY, WakeDivider } from "./WakeDivider.tsx"
 import { usePromptBoxSends } from "../lib/sendScope.tsx"
-import { QueueDismissContext, ThreadSlugContext } from "../lib/threadContexts.ts"
+import { HeldRunContext, QueueDismissContext, ThreadSlugContext } from "../lib/threadContexts.ts"
 import { lastAssistantIndex } from "../lib/lastAssistant.ts"
 import { ThreadSurface, useThreadMessages, useThreadSurface, useThreadTranscript, type ThreadTranscript } from "./ThreadSurface.tsx"
 import { useIsMobile } from "../lib/mobile.ts"
@@ -115,7 +115,7 @@ import { withoutRedundantRestDividers } from "../lib/restDividers.ts"
 import { coalesceToolActivityMessages, editedFileCount, historicalToolActivityMessages, isPictureTool, isSettledAsk, isToolActivityException, liveRuntimeStartedAt, liveToolActivityRun, liveToolActivityTail, settledToolActivityLabel, thinkingToolActivityLabel, toolActivityLabel, type ToolActivityMessage } from "../lib/toolActivity.ts"
 import { CodexDirectiveCard, MermaidDiagram } from "./CodexRichOutput.tsx"
 import { LightboxGallery } from "./Lightbox.tsx"
-import { META_CARD_STEP, PICTURE_STEP, STEP, TIME_BREAK_ABOVE, TIME_BREAK_BELOW, USER_TAIL_EXTRA, VSpace } from "./rhythm.tsx"
+import { HUMAN_RUN_STEP, META_CARD_STEP, PICTURE_STEP, STEP, TIME_BREAK_ABOVE, TIME_BREAK_BELOW, USER_TAIL_EXTRA, VSpace } from "./rhythm.tsx"
 
 // Answer types moved to lib/questionBlocks.ts (shared by the queue card, the thread view, and the
 // answering controller). Re-exported here so existing importers keep working.
@@ -909,12 +909,15 @@ function VirtualizedThreadTranscript({
     // message, above the runtime status and the queued sends that are stuck behind it.
     next.push({ key: "interactions", kind: "interactions" })
     if (hasRuntimeRow) next.push({ key: "runtime-status", kind: "runtime-status" })
-    let queuedGap = hasRuntimeRow || messageRows.length > 0 ? STEP : 0
+    let previousQueued: ChatMessage | null = null
     messages.forEach((message, messageIndex) => {
       if (!inQueuedTail(message)) return
       const key = `queued:${message.deliveryId ?? message.sourceId ?? messageIndex}`
-      next.push({ key, kind: "queued", message, messageIndex, gap: queuedGap })
-      queuedGap = STEP
+      // The first one clears whatever stands above the tail; each after it takes the pitch of the
+      // run it continues (messageGap — the human's own sends stack at HUMAN_RUN_STEP).
+      const gap = previousQueued ? messageGap(previousQueued, message) : hasRuntimeRow || messageRows.length > 0 ? STEP : 0
+      next.push({ key, kind: "queued", message, messageIndex, gap })
+      previousQueued = message
     })
     return next
   }, [beforeCursor, earlierError, hasEarlier, hasRuntimeRow, loadingEarlier, messageRows, messages, questionGroups, settledByRow, transportFallback])
@@ -1640,7 +1643,7 @@ export function ThreadHeader({ slug, onStatusApplied, onClose, showReturnToQueue
 // that draws them — lives in ./rhythm.tsx, and is re-exported here because every caller already reaches
 // for it through ChatView. It moved out so the frizz wake renderer can charge the same STEP between the
 // two hairlines of a two-part delivery: ChatView imports that renderer, so it cannot import ChatView.
-export { STEP, META_CARD_STEP, PICTURE_STEP, USER_TAIL_EXTRA, VSpace } from "./rhythm.tsx"
+export { STEP, META_CARD_STEP, PICTURE_STEP, USER_TAIL_EXTRA, HUMAN_RUN_STEP, VSpace } from "./rhythm.tsx"
 // Adjacent tool activity must read at the SAME tight run whether it's batched in one message or split
 // across messages (the tailer chunks a burst of tool calls arbitrarily). The boundary between two
 // messages joins that run iff the FIRST ends with a tool band AND the SECOND begins with one (tool-tail
@@ -1754,6 +1757,8 @@ export function TimeBreakHead({ at, kind, flush = false }: { at: string; kind: T
 // THE between-message gap, in one function. Both spacing implementations (this file's plain column and
 // the virtualized row builder) call it, so neither can drift from the other.
 export function messageGap(previous: ChatMessage, next: ChatMessage): number {
+  // Two things the human sent in a row stack as one utterance — see HUMAN_RUN_STEP.
+  if (humanSend(previous) && humanSend(next)) return HUMAN_RUN_STEP
   // The tight run needs a CARD on at least one side of the seam — that is the whole of it. Two bare
   // label rows fall through to the ordinary STEP, which is what stops a `Ran N tool calls` / thought /
   // shimmer column from painting as one block of grey. See META_CARD_STEP.
@@ -1769,6 +1774,15 @@ export function messageGap(previous: ChatMessage, next: ChatMessage): number {
   // USER_TAIL_EXTRA. Measured against the NEXT rendered message, so a user message followed by another
   // user message keeps the plain step between them.
   return base + (previous.role === "user" && next.role !== "user" ? USER_TAIL_EXTRA : 0)
+}
+// Did the HUMAN send this, as the transcript draws it — their bubble or their answers card? `role` alone
+// does not say: a Frizz wake, another thread's message and a sub-agent's report all ride in as user
+// turns and draw as hairlines (Message's user branch). A wake that carries answers is the exception,
+// because Message draws it as the human's answers card.
+function humanSend(m: ChatMessage): boolean {
+  if (m.role !== "user" || m.kind === "event" || m.kind === "reasoning" || m.providerError) return false
+  if (m.sessionPeer || m.peerFrom || m.agentInstruction) return false
+  return !m.wake || isAnswersMessage(m)
 }
 // Matches exactly when Message returns null (an empty/thinking-only assistant turn) — such a message
 // takes no slot, so the adjacency-spacer walk must SKIP it (else two spacers stack into a double gap).
@@ -3212,28 +3226,48 @@ function FailedSendRow({ deliveryId, text, rawText, error }: { deliveryId: strin
 // the operator can do about it. "Send now" hands it over as the steer it would have been (no interrupt:
 // the forced send stays on the ↑ beside the bubble and on ⌘/Ctrl-Enter); "Take back" drops it and puts
 // the words back in the prompt box. `text` is the WHOLE message — for answers sent with a note, both.
-function HeldLine({ deliveryId, text, rawText }: { deliveryId: string; text: string; rawText: string }) {
+//
+// ONE LINE PER RUN, NOT PER MESSAGE (lib/restReply heldRunOf). Every held message waits for the same
+// rest and "Send now" releases all of them, so the line under each one said the same thing three times
+// and pushed the bubbles apart (maintainer 2026-10-15). It draws once, under the last; `count` is how
+// many it speaks for. With several, "Take back" leaves the line — it can only ever take back one message, and
+// on a line under all of them it would read as taking back the lot. Each bubble still takes itself
+// back on a click, which its hover lift offers.
+function HeldLine({ deliveryId, text, rawText, count }: { deliveryId: string; text: string; rawText: string; count: number }) {
   const slug = useContext(ThreadSlugContext)
   const { unqueue, pending: takingBack } = useUnqueueFollowUp(slug)
   const { releaseHeld, pending: sending } = useDeliverQueuedNow(slug)
   const action = "underline decoration-border underline-offset-2 outline-none transition-colors hover:text-fg focus-visible:text-fg disabled:opacity-50"
   return (
-    <div data-held-line className="mt-1 flex items-baseline justify-end gap-2 text-[11.5px] leading-[16px] text-muted">
+    <div data-held-line data-held-count={count} className="mt-1 flex items-baseline justify-end gap-2 text-[11.5px] leading-[16px] text-muted">
       <span>Queued until the agent rests</span>
       {slug && (
         <>
           <span aria-hidden className="text-muted-60">·</span>
-          <button type="button" data-held-send-now className={action} disabled={sending || takingBack} onMouseDown={(e) => e.preventDefault()} onClick={releaseHeld} title="Send it now — the agent reads it at its next step">
+          <button type="button" data-held-send-now className={action} disabled={sending || takingBack} onMouseDown={(e) => e.preventDefault()} onClick={releaseHeld} title={count > 1 ? "Send them now — the agent reads them at its next step" : "Send it now — the agent reads it at its next step"}>
             Send now
           </button>
-          <span aria-hidden className="text-muted-60">·</span>
-          <button type="button" data-held-take-back className={action} disabled={sending || takingBack} onClick={(e) => unqueue({ deliveryId, text, rawText, from: e.currentTarget })} title="Put it back in the prompt box">
-            Take back
-          </button>
+          {count === 1 && (
+            <>
+              <span aria-hidden className="text-muted-60">·</span>
+              <button type="button" data-held-take-back className={action} disabled={sending || takingBack} onClick={(e) => unqueue({ deliveryId, text, rawText, from: e.currentTarget })} title="Put it back in the prompt box">
+                Take back
+              </button>
+            </>
+          )}
         </>
       )}
     </div>
   )
+}
+
+// How many held messages the line under this one speaks for: the surface's run (HeldRunContext) draws
+// it under its last message only, and 0 under the rest. Outside a surface each draws its own.
+function useHeldLineCount(deliveryId: string | undefined, held: boolean): number {
+  const run = useContext(HeldRunContext)
+  if (!held || !deliveryId) return 0
+  if (!run) return 1
+  return run.last === deliveryId ? run.count : 0
 }
 
 // ANSWERS SENT WITH A NOTE — the prompt box's one Send (2026-10-11) carries the staged answers and the
@@ -3241,6 +3275,7 @@ function HeldLine({ deliveryId, text, rawText }: { deliveryId: string; text: str
 // bubble under it. The note of a message that answered both registered and fenced questions is itself
 // an answers message (the fenced ones, composed in the browser), so it draws the same way, recursively.
 function AnswersWithNote({ m, text, answers, note }: { m: ChatMessage; text: string; answers: PairedAnswer[]; note: string }) {
+  const heldLine = useHeldLineCount(m.deliveryId, m.deliveryState === "held")
   const body = (noteText: string, depth: number): ReactNode => {
     if (!noteText) return null
     const inner = depth < 2 ? parseAnswersCard(noteText) : null
@@ -3255,12 +3290,13 @@ function AnswersWithNote({ m, text, answers, note }: { m: ChatMessage; text: str
     <div data-frizz-msg={m.sourceId} data-answers-with-note className="flex w-full flex-col gap-2 self-end">
       <AnswersCard answers={answers} queued={m.queued} />
       {body(note, 0)}
-      {m.deliveryState === "held" && m.deliveryId && <div className="self-end"><HeldLine deliveryId={m.deliveryId} text={text} rawText={m.text} /></div>}
+      {heldLine > 0 && m.deliveryId && <div className="self-end"><HeldLine deliveryId={m.deliveryId} text={text} rawText={m.text} count={heldLine} /></div>}
     </div>
   )
 }
 
 function UserBubble({ text, rawText, queued, held, deliveryUnconfirmed, deliveryFailed, deliveryError, deliveryId, sourceId }: { text: string; rawText?: string; queued?: boolean; held?: boolean; deliveryUnconfirmed?: boolean; deliveryFailed?: boolean; deliveryError?: string; deliveryId?: string; sourceId?: string }) {
+  const heldLine = useHeldLineCount(deliveryId, Boolean(held))
   // TAKE IT BACK. A still-queued send is the one bubble in the transcript that isn't history yet, so
   // it alone is clickable: the click unqueues it at the provider and hands the words back to the
   // prompt box (see lib/unqueueFollowUp.ts). Three gates, all of them load-bearing:
@@ -3401,7 +3437,7 @@ function UserBubble({ text, rawText, queued, held, deliveryUnconfirmed, delivery
       {deliveryFailed && deliveryId && (
         <FailedSendRow deliveryId={deliveryId} text={text} rawText={rawText ?? text} error={deliveryError} />
       )}
-      {held && deliveryId && <HeldLine deliveryId={deliveryId} text={text} rawText={rawText ?? text} />}
+      {heldLine > 0 && deliveryId && <HeldLine deliveryId={deliveryId} text={text} rawText={rawText ?? text} count={heldLine} />}
       {/* No "click to unqueue" hint: the hover lift above already says the bubble is live, and a
           label spelling that out is noise on every queued send. Only the IN-FLIGHT retraction gets a
           line, because "did my click land?" isn't something the hover state can answer. It reserves no

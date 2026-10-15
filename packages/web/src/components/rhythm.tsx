@@ -47,6 +47,13 @@ export const PICTURE_STEP = 22
 // the human split across sends, and spacing them apart internally would break up the very thing this
 // exists to set off.
 export const USER_TAIL_EXTRA = 3
+// The pitch between two consecutive things the HUMAN sent — the run USER_TAIL_EXTRA closes. They are
+// one utterance split across sends, so they stack like one: at STEP each bubble stood as far from the
+// next as from the agent's prose, and three messages typed while the agent worked read as three
+// separate turns (maintainer 2026-10-15: "they have a weird amount of space between them, even though
+// they're all queued and you sent them all yourself"). Charged in the flow AND in the queued tail, so
+// a run keeps its pitch when it lands.
+export const HUMAN_RUN_STEP = 6
 
 // The air around a TIME BREAK (lib/timeBreaks), which takes the place of the gap between two messages.
 // Above: PICTURE_STEP's 22, because the reading marks a seam in TIME — a pause, a new day — and it has
