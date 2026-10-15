@@ -10,10 +10,12 @@ import { createInteractionStore, type InteractionStore } from "../interaction-st
 import { createAcpBridge, type AcpBridge } from "./acp-bridge.ts"
 import { daemonAcpHost, liveAcpDaemonRecord, liveAcpDaemonSessionIds, stopAcpDaemon, type AcpHost } from "./acp-host.ts"
 import { spawnAcpChild } from "./acp-rpc.ts"
-import { acpTranscriptPath, parseAcpRecord, projectAcpTranscript, type AcpRecord } from "./acp-transcript.ts"
+import { acpTranscriptPath, parseAcpRecord, projectAcpTranscript, readAcpTranscriptFile, type AcpRecord } from "./acp-transcript.ts"
 import { newTailState } from "../tailer.ts"
 import { createAcpBackend } from "./acp-transcript.ts"
 import type { FrizzCli } from "./types.ts"
+import { acpUserRecordProjector } from "../transcript.ts"
+import { humanGapNote, shellDoneMessage, stripWakeTrailer, wakeDeliveryToken } from "@frizz/shared"
 
 // The bridge against the REAL fake agent over REAL stdio and a REAL InteractionStore: what the tailer
 // will fold and the drawer will project is read back from the transcript file the bridge wrote.
@@ -205,6 +207,31 @@ test("acp-bridge: a follow-up during a turn queues and runs after it; one after 
     assert.equal(delivered.state, "delivered")
     await untilIdle(r, "s1")
     assert.equal(records(r, "s1").filter((x) => x.kind === "turn-end").length, 3)
+  } finally { await teardown(r) }
+})
+
+// The bridge records every follow-up verbatim and `synthetic: false` — it cannot tell Frizz from the
+// human — so the drawer has to. A wake goes in exactly as context.ts's scheduler resume sends it, a
+// human follow-up exactly as the router sends one after a long gap, and the file the bridge wrote is
+// read back through the transcript layer's own ACP reader.
+test("acp-bridge: a scheduler wake and a gap-noted follow-up through the real bridge render as a wake and as the human's words", async () => {
+  const r = rig()
+  try {
+    await r.bridge.spawnDispatch({ threadSlug: "t1", sessionId: "s1", cwd: r.stateDir, agentId: "fake", prompt: "CONTRACT…\n\nbuild it", userText: "build it" })
+    await untilIdle(r, "s1")
+    const shell = shellDoneMessage({ taskId: "b1", label: "build", status: "completed" })
+    const wake = `${shell}\n\n${wakeDeliveryToken("w1")}`
+    assert.equal((await r.bridge.followUp({ threadSlug: "t1", sessionId: "s1", cwd: r.stateDir, agentId: "fake", text: wake, deliveryId: "w1" })).state, "delivered")
+    await untilIdle(r, "s1")
+    const note = humanGapNote(Date.now(), new Date(Date.now() - 3 * 3_600_000).toISOString())!
+    const human = `ship it\n\n${note}`
+    await r.bridge.followUp({ threadSlug: "t1", sessionId: "s1", cwd: r.stateDir, agentId: "fake", text: human, deliveryId: "d2" })
+    await untilIdle(r, "s1")
+    const users = readAcpTranscriptFile(acpTranscriptPath(r.stateDir, "s1"), "s1", acpUserRecordProjector).filter((m) => m.role === "user")
+    assert.deepEqual(users.map((m) => m.text), ["build it", wake, human], "the stored text keeps every byte the worker read")
+    assert.deepEqual(users.map((m) => m.displayText ?? m.text), ["build it", stripWakeTrailer(shell), "ship it"])
+    assert.deepEqual(users.map((m) => m.wake), [undefined, true, undefined], "only the scheduler's delivery is Frizz speaking")
+    assert.ok(users.every((m) => !(m.displayText ?? m.text).includes("frizz-wake")), "a delivery token reached a bubble")
   } finally { await teardown(r) }
 })
 

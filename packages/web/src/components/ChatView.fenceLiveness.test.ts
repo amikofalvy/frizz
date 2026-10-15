@@ -53,7 +53,7 @@ test("a fence the resting card states never reaches the card either", () => {
   assert.match(helper, /restingCardShown = false/, "it takes the resting-card reason")
   assert.match(helper, /entry\.messageIndex === awaitingCut\) stated\.add\(entry\.message\)/, "…and marks the last message as stated")
   assert.match(helper, /messageRendersNothing\(message, stale\.has\(message\), stated\.has\(message\)\)/, "…as its own reason, not one more stale member")
-  assert.equal(chat.match(/rendersNothingIn\([a-zA-Z]+, awaitingCut, restingShown\)/g)?.length, 3, "every rendersNothingIn call passes it")
+  assert.equal(chat.match(/rendersNothingIn\([a-zA-Z]+, awaitingCut, restingShown\)/g)?.length, 2, "every rendersNothingIn call passes it")
   assert.match(todos, /const \{ lastAgentIdx, hidesAwaiting, [^}]*\} = surface\.transcript/, "the queue card's walk asks the surface")
   assert.equal(todos.match(/message(?:RendersNothing|HasRenderableText)\(m, \.\.\.hidesAwaiting\(globalIdx\)\)/g)?.length, 2, "the queue card's predicates take both reasons")
   assert.doesNotMatch(todos, /isStaleAwaiting|showsRestingCard\(/, "…and derive neither for themselves")
@@ -64,15 +64,15 @@ test("a fence the resting card states never reaches the card either", () => {
 // messages mounted above it — the layout shift the maintainer refreshed into (2026-08-28).
 test("the queue card holds its tail cards until the transcript window has loaded", () => {
   const todos = readFileSync(new URL("./TodosView.tsx", import.meta.url), "utf8")
-  // Its tail is the drawer's ladder since 2026-10-09, and the ladder sits inside the same hold as the
-  // gates above it.
-  assert.match(todos, /\{!q\.isLoading && \(\n\s*<>\n\s*<InteractionStack[^\n]*\n[\s\S]*?<RuntimeStatusLadder/)
-  // The thread view's eager branch is what renders while ITS window loads (count === 0 on both production
-  // callers), and it drew the same ladder alone at the top of an empty pane. Same hold, both halves of it —
-  // the spacer gate and the ladder — or the slot opens before the rung.
-  assert.match(source, /const tailReady = !q\.isLoading/)
-  assert.match(source, /\{tailReady && runtimeStatusRung\(runtimeStatus\) !== null && \(/, "the plain path's spacer gate waits for the transcript")
-  assert.match(source, /\{tailReady && \(\n\s*<RuntimeStatusLadder/, "…and so does the ladder it opens for")
+  // Its tail is the drawer's slot since 2026-10-09, and the slot sits inside the same hold as the gates
+  // above it.
+  assert.match(todos, /\{!q\.isLoading && \(\n\s*<>\n\s*<InteractionStack[^\n]*\n[\s\S]*?<RuntimeStatusSlot/)
+  // The thread view holds it by construction: the slot is a row of the virtualized transcript, which is
+  // mounted only once the window has messages, and the empty state drawn before then has no slot at all.
+  assert.match(source, /\{count > 0 \? \(\n\s*<VirtualizedThreadTranscript/)
+  const empty = source.slice(source.indexOf("AN EMPTY TRANSCRIPT, the one thing this branch draws"), source.indexOf("data-transcript-overlay"))
+  assert.ok(empty.length > 0, "the empty-state branch must be found")
+  assert.doesNotMatch(empty, /RuntimeStatus/, "the empty state draws no slot under its Loading… line")
 })
 
 // THE CARD NEVER LEARNS ABOUT STALENESS. It used to: a `stale` branch stripped the frame and printed the
@@ -178,11 +178,12 @@ test("every transcript surface cuts staleness at the same index", () => {
   // sits past every message while running, so each fence in the window is stale; at rest it is the last
   // assistant message, which the resting card at the tail keys on too. This replaced the 2026-08-28 rule
   // that kept the card at the last REST while the worker ran past it (lib/restAnchor, deleted with it).
-  // The cut is the thread surface's, computed once for the queue card and both of the thread view's
-  // columns (it was written out in each until 2026-10-13, and this reversal had to be applied to each).
+  // The cut is the thread surface's, computed once for the queue card and the thread view (it was written
+  // out in each surface, and in each of the thread view's two columns, until 2026-10-13, and this
+  // reversal had to be applied to each).
   assert.equal(shell.match(/const awaitingCut = running \? messages\.length : lastAgentIdx/g)?.length, 1, "the cut sits past every message while running")
   assert.doesNotMatch(source + todos, /const awaitingCut = /, "no surface computes a cut of its own")
-  assert.equal(source.match(/\{ (?:lastAgentIdx, )?awaitingCut, restingShown, [^}]*\} = (?:surface\.transcript|useThreadTranscript\(\))/g)?.length, 2, "both columns read it from the surface")
+  assert.equal(source.match(/\{ [^}]*awaitingCut, restingShown, [^}]*\} = transcript\n/g)?.length, 1, "the thread view reads it from the surface")
   assert.doesNotMatch(source, /lastRest\(|restAnchor\.ts|restedAt/, "the rest anchor is gone; nothing keeps a card at a rest the worker ran past")
   assert.equal(source.match(/staleAwaiting=\{/g)?.length, 1, "the renderer is handed the surface's answer, at ThreadMessage alone")
   assert.doesNotMatch(source, /staleAwaiting=\{lastAgentIdx/, "no surface may still cut at the last message")

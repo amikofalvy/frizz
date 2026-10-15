@@ -131,7 +131,7 @@ createRoot(document.getElementById("root")!).render(
       ) : (
         <div className="relative h-screen bg-bg text-fg text-sm">
           <div className="mx-auto flex h-screen w-[760px] max-w-full flex-col border-x border-border">
-            <ThreadView slug={SLUG} virtualized />
+            <ThreadView slug={SLUG} />
           </div>
         </div>
       )}

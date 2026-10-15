@@ -196,7 +196,7 @@ export function StandaloneThreadPage({ slug }: { slug: string }) {
               ) : route.kind === "missing" ? (
                 <MissingThread slug={slug} />
               ) : (
-                <ThreadViewSurface slug={slug} virtualized showReturnToQueue />
+                <ThreadViewSurface slug={slug} showReturnToQueue />
               )}
             </main>
             {/* No thread, no rail — but the page still has to read as centered, so the region holds

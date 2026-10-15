@@ -41,7 +41,7 @@ import { repoCarriedEditedFiles } from "./repo-files.ts"
 import { stripDeliveryMarkers } from "./delivery-marker.ts"
 import { RELAYED_MARKER, relayNotificationBlock } from "./completion-relay.ts"
 import { CODEX_FIRST_FINAL_TITLE_TRANSPORT, CODEX_LEGACY_FIRST_FINAL_TITLE_TRANSPORT, parseCodexLine, createCodexBackend, extractCodexFrizzTitle } from "./backend/codex.ts"
-import { projectAcpTranscript, readAcpTranscriptFile } from "./backend/acp-transcript.ts"
+import { projectAcpTranscript, readAcpTranscriptFile, type AcpUserRecordProjector } from "./backend/acp-transcript.ts"
 import { discoverTranscriptDir, discoverTranscriptId, DISCOVERY_GRACE_MS } from "./discover.ts"
 import { isClaudeAuthErrorText, isMonitorTimeoutEvent, parseSignalFence } from "./tailer.ts"
 import { ENCRYPTED_PAYLOAD, redactCredentialStructure, redactToolPayload } from "./credential-redaction.ts"
@@ -340,6 +340,14 @@ function createCorrectionSink(out: TranscriptMessage[]): CorrectionSink {
     for (const part of corrections) refuse(part.body)
     return corrections.length === merged.length
   }
+}
+
+// The ACP projector's user arm, which lives in acp-transcript.ts and so cannot import pushUserRecord
+// itself (this file imports it). Every reader that renders an ACP transcript passes this, so an ACP
+// wake, correction or gap-noted follow-up is projected exactly as a Claude or Codex one is.
+export const acpUserRecordProjector: AcpUserRecordProjector = (out) => {
+  const dropCorrection = createCorrectionSink(out)
+  return (sourceId, text, at) => pushUserRecord(out, sourceId, text, at, dropCorrection)
 }
 
 // The rest a correction answers is the newest assistant PROSE message, because that is the only fence
@@ -4342,7 +4350,7 @@ function projectSnapshot(snapshot: FixedTranscriptSnapshot): TranscriptMessage[]
   if (snapshot.backend === "codex") return retireStaleQueuedBubbles(projectCodexTranscript(snapshot.raw, prefix))
   // Same whole-file shape for an ACP transcript: frizz writes it, it is small, and its records are
   // already NormalizedEvents (acp-transcript.ts), so there is no claude fold to retain.
-  if (snapshot.backend === "acp") return retireStaleQueuedBubbles(projectAcpTranscript(snapshot.raw, prefix))
+  if (snapshot.backend === "acp") return retireStaleQueuedBubbles(projectAcpTranscript(snapshot.raw, prefix, acpUserRecordProjector))
 
   const { entry } = retainedFoldEntry(snapshot.path, prefix, snapshot.fileKey, snapshot.size)
   // Reads ONLY the appended delta — the reason the whole-file buffer is no longer materialised.
@@ -4700,7 +4708,7 @@ export function readThreadTranscript(
     if (row.backend === "acp") {
       const path = backendFor?.("acp")?.transcriptPath(row.session_id)
       const acpLedger = parseDeliveryLedger(row.delivery_ledger)
-      return projectDeliveryLedger(path ? readAcpTranscriptFile(path, row.session_id) : [], acpLedger)
+      return projectDeliveryLedger(path ? readAcpTranscriptFile(path, row.session_id, acpUserRecordProjector) : [], acpLedger)
     }
     if (row.backend === "codex") {
       const backend = backendFor?.("codex") ?? defaultCodexBackend()

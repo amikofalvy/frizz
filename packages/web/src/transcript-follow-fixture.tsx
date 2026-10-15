@@ -166,13 +166,13 @@ function Harness() {
   if (surface === "drawer") {
     return (
       <div className="mx-auto my-8 flex h-[640px] w-[460px] flex-col overflow-hidden rounded-lg border border-border bg-panel shadow-2xl">
-        <ThreadView slug={SLUG} virtualized />
+        <ThreadView slug={SLUG} />
       </div>
     )
   }
   return (
     <div className="mx-auto flex h-screen w-full max-w-[900px] flex-col overflow-hidden border-x border-border bg-panel">
-      <ThreadView slug={SLUG} virtualized />
+      <ThreadView slug={SLUG} />
     </div>
   )
 }

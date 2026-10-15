@@ -1,17 +1,20 @@
 import { createContext, useContext, useEffect, useMemo, useRef, type ComponentPropsWithRef, type ReactElement, type RefObject } from "react"
 import { questionFencesLive } from "@frizz/shared"
-import type { RegisteredQuestionView, ThreadView } from "@frizz/shared"
+import type { BgShellView, RegisteredQuestionView, ThreadView } from "@frizz/shared"
 import type { ChatMessage } from "../hooks.ts"
 import { useLiveAnswering, type LiveAnswering } from "../lib/answering.ts"
 import { pairAllAnswers, unrenderedAnswers, type PairedAnswer } from "../lib/answersMessage.ts"
+import type { TranscriptShellRecord } from "../lib/childOps.ts"
 import { useFileDropZone, useFileIntakeHandle, type FileDropZone, type SurfaceFileDrop } from "../lib/fileDrop.ts"
 import { lastAssistantIndex } from "../lib/lastAssistant.ts"
 import { placeQuestions, registeredStandingAt, type QuestionPlacement } from "../lib/questionShadow.ts"
+import { useTranscriptHeldForBoard } from "../lib/restAhead.ts"
 import { SendScopeContext, useComposerSendHandle, useComposerSendPresent, useSendScope, type SendScope } from "../lib/sendScope.tsx"
 import { settledQuestionPositions, type SettledPlacement } from "../lib/settledQuestions.ts"
 import { QueueDismissContext, ThreadSlugContext, type SurfaceExit } from "../lib/threadContexts.ts"
+import { transcriptBackgroundShells, withoutLiveTranscriptBackgroundTools } from "../lib/transcriptShells.ts"
 import { showsRestingCard } from "./AwaitingBackgroundCard.tsx"
-import { RegisteredAnsweringProvider, useFenceQuestions, type FenceQuestionRow, type SettledQuestion } from "./RegisteredQuestionCards.tsx"
+import { RegisteredAnsweringProvider, openQuestionsOf, useArrivedQuestions, useFenceQuestions, useRefusedFences, useSettledQuestions, type FenceQuestionRow, type SettledQuestion } from "./RegisteredQuestionCards.tsx"
 
 // THE THREAD SURFACE — the one shell around a thread, wherever it is drawn. A thread is drawn in three
 // places: its queue card (TodosView's QueueCard), its drawer and its full-screen page (both ChatView).
@@ -57,6 +60,40 @@ export interface ThreadSurfaceSource {
   settledQuestions: readonly SettledQuestion[]
 }
 
+/** WHAT A SURFACE DRAWS OF THE TRANSCRIPT IT LOADED — the `messages`, `openQuestions` and
+ *  `settledQuestions` of its ThreadSurfaceSource, and the shells the line of counts over its prompt box
+ *  lists. The queue card and the thread view each built this list until 2026-10-14, from the same steps
+ *  in two orders, so the thread view's model read the running background calls the card's had taken out.
+ *  In order, every step keeping the indices, so an index into `messages` addresses the server's list:
+ *
+ *   1. less a rest the board has not reached yet (lib/restAhead), so the reply and the Working row's
+ *      departure land in one render;
+ *   2. less every background call still running, which leaves the conversation for the line of counts —
+ *      read off first, as `transcriptShells` (lib/transcriptShells);
+ *   3. the registered questions it draws: an open one once the message that asked it has arrived
+ *      (useArrivedQuestions), an answered one where its card stood (useSettledQuestions);
+ *   4. with every question fence the server refused marked on its message (useRefusedFences).
+ *
+ *  What a surface does on top of this is its own: the queue card freezes the list it loaded while it
+ *  leaves (before this), and the thread view draws a send that ends a rest where it will land (after). */
+export interface ThreadMessages {
+  messages: ChatMessage[]
+  openQuestions: readonly RegisteredQuestionView[]
+  settledQuestions: readonly SettledQuestion[]
+  transcriptShells: readonly (BgShellView & TranscriptShellRecord)[]
+}
+
+export function useThreadMessages(thread: ThreadView | undefined, loaded: ChatMessage[]): ThreadMessages {
+  const settledQuestions = useSettledQuestions(thread)
+  const boardQuestions = useMemo(() => openQuestionsOf(thread, settledQuestions), [thread, settledQuestions])
+  const held = useTranscriptHeldForBoard(thread, loaded)
+  const transcriptShells = useMemo(() => transcriptBackgroundShells(held), [held])
+  const shown = useMemo(() => withoutLiveTranscriptBackgroundTools(held), [held])
+  const openQuestions = useArrivedQuestions(boardQuestions, held)
+  const messages = useRefusedFences(shown, thread, openQuestions, settledQuestions)
+  return { messages, openQuestions, settledQuestions, transcriptShells }
+}
+
 export interface ThreadSurfaceOptions {
   /** THE SURFACE LEAVES THE PAGE WHEN ITS THREAD IS HANDED BACK — the queue card, which dissolves on a
    *  reply, an answer, Mark as done or a snooze, and comes back when the server declines. Absent on a
@@ -73,6 +110,8 @@ export interface ThreadSurfaceOptions {
  *  each copy for the same line. */
 export interface ThreadTranscript {
   thread: ThreadView | undefined
+  /** The list every index below addresses: the surface's own (ThreadSurfaceSource.messages). */
+  messages: readonly ChatMessage[]
   running: boolean
   /** The last thing the agent SAID (lib/lastAssistant), or -1. */
   lastAgentIdx: number
@@ -219,6 +258,7 @@ export function useThreadSurface(source: ThreadSurfaceSource, options: ThreadSur
   const transcript = useMemo<ThreadTranscript>(
     () => ({
       thread,
+      messages,
       running,
       lastAgentIdx,
       awaitingCut,
@@ -234,7 +274,7 @@ export function useThreadSurface(source: ThreadSurfaceSource, options: ThreadSur
       inFlightAnswers,
       answeringForMessage,
     }),
-    [thread, running, lastAgentIdx, awaitingCut, restingShown, openQuestions, fencesLive, fenceQuestions, shadowedByMessage, placement, settledPlacement, paired, inFlightAnswers, answeringForMessage],
+    [thread, messages, running, lastAgentIdx, awaitingCut, restingShown, openQuestions, fencesLive, fenceQuestions, shadowedByMessage, placement, settledPlacement, paired, inFlightAnswers, answeringForMessage],
   )
 
   // The surface is the zone and its prompt box the intake (lib/fileDrop). Files given while no box is

@@ -80,11 +80,11 @@ const settle = async () => {
 const pendingReads: { project: string; resolve: (response: Response) => void }[] = []
 const readBoard = (url: string): Promise<Response> =>
   new Promise((resolve) => pendingReads.push({ project: new URL(url, "http://127.0.0.1:54917").pathname.split("/")[2]!, resolve }))
-const answer = async (projectSlug: string, ids: string[]) => {
+const answer = async (projectSlug: string, ids: string[], githubRepo?: string) => {
   const at = pendingReads.findLastIndex((read) => read.project === projectSlug)
   assert.ok(at >= 0, `a board read for ${projectSlug} is in flight`)
   const [read] = pendingReads.splice(at, 1)
-  const board = { projectDir: `/fixture/${projectSlug}`, projectName: projectSlug, projectSlug, threads: ids.map(thread), errors: [], warnings: [] } as BoardSnapshot
+  const board = { projectDir: `/fixture/${projectSlug}`, projectName: projectSlug, projectSlug, githubRepo, threads: ids.map(thread), errors: [], warnings: [] } as BoardSnapshot
   read!.resolve(new Response(JSON.stringify({ result: { board, seq: 1, bootId: "boot-test" } }), { status: 200 }))
   await settle()
 }
@@ -118,6 +118,7 @@ test("the Console's feed shows a board only once every project in it has answere
     const { store, resolveRoutedThread } = await import("../store.ts")
     const socket = await import("./socket.ts")
     const feed = await import("./consoleFeed.ts")
+    const { githubRepoFor } = await import("../lib/githubAutolink.ts")
     feed.initConsoleFeed(queryClient as never)
     const ids = () => store.board?.threads.map((t) => t.id).sort() ?? null
 
@@ -134,8 +135,11 @@ test("the Console's feed shows a board only once every project in it has answere
     assert.equal(feed.consoleFeedPending("beta"), true)
     socketFor("/_frizz/alpha/ws")!.open()
     socketFor("/_frizz/alpha/ws")!.message(hello)
-    await answer("alpha", ["a"])
+    await answer("alpha", ["a"], "o/alpha")
     assert.equal(store.board, null, "beta has not answered, so the board waits")
+    // Each project's references link to ITS repo, read off its own board; the merged board has none.
+    assert.equal(githubRepoFor("alpha"), "o/alpha")
+    assert.equal(githubRepoFor("beta"), null, "a project whose board names no github.com repo links nothing")
     // A cold link to one of beta's threads is not MISSING while beta is still on its way: it stays parked,
     // where before it was sent off the Console to a full page.
     store.board = { projectDir: "", projectName: "Console", threads: [], errors: [], warnings: [] } as unknown as BoardSnapshot
@@ -184,6 +188,7 @@ test("the Console's feed shows a board only once every project in it has answere
     here.pathname = "/"
     socket.leaveConsole()
     assert.ok(consoleSockets.every((s) => s.readyState === FakeWebSocket.CLOSED), "the Console's connections close")
+    assert.equal(githubRepoFor("alpha"), null, "…and take their projects' repos with them")
     assert.equal(socket.feedIsConsole(), false)
     const launcher = socketFor("/_frizz/ws")!
     assert.equal(launcher.readyState, FakeWebSocket.CONNECTING, "the grid holds what a cold load of it would")

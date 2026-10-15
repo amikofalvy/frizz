@@ -15,8 +15,8 @@ import "./styles.css"
 //   (default)      — the final fence RESTATES the registration ⇒ one card, and one Send answers.
 //   ?different=1   — the final fence asks ANOTHER question ⇒ two cards, each answerable: the fold
 //                    never hides a question the human has not seen elsewhere.
-//   ?view=thread   — the thread page instead of the queue card (the surface of the report); add
-//                    ?virtualized=1 for its virtualized transcript path. Same expectations.
+//   ?view=thread   — the thread page instead of the queue card (the surface of the report). Same
+//                    expectations.
 //   ?font=sans     — the other of the two fonts this app renders in.
 const params = new URLSearchParams(location.search)
 document.documentElement.dataset.font = params.get("font") === "sans" ? "sans" : "mono"
@@ -131,7 +131,7 @@ createRoot(document.getElementById("root")!).render(
     <TooltipProvider>
       {params.get("view") === "thread" ? (
         <div className="mx-auto h-screen w-[min(760px,100%)]">
-          <ThreadView slug={thread.id} virtualized={params.get("virtualized") === "1"} />
+          <ThreadView slug={thread.id} />
         </div>
       ) : (
         <div className="mx-auto w-[min(680px,calc(100%-32px))] py-8">

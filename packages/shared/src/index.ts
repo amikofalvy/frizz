@@ -1692,6 +1692,20 @@ export function isInterruptEndedWake(text: string): boolean {
   return text.trimStart().startsWith(INTERRUPT_ENDED_LEAD)
 }
 
+/** The interrupt note read back for the chat: which sub-agents it names. The lead and the closing
+ *  paragraph are instructions to the worker (check what each left behind, re-dispatch it), so only the
+ *  list is returned. */
+export function parseInterruptEndedWake(text: string): { agents: InterruptEndedSubAgent[] } | null {
+  if (!isInterruptEndedWake(text)) return null
+  const agents: InterruptEndedSubAgent[] = []
+  for (const line of text.trimStart().slice(INTERRUPT_ENDED_LEAD.length).split("\n")) {
+    const item = /^- (?:`([^`]+)` — )?(.+)$/.exec(line)
+    if (item) agents.push({ ...(item[1] ? { taskId: item[1] } : {}), label: item[2] })
+    else if (agents.length) break
+  }
+  return agents.length ? { agents } : null
+}
+
 // ---- THE BUILT-IN SIGN-OFF NUDGE (scheduler SOURCE 9) --------------------------------------------
 // The rules arrive when they are ABOUT TO BE USED, rather than 200k tokens earlier in a system prompt
 // the agent has long since stopped attending to. Maintainer 2026-08-11: "the agent seems to often
@@ -2698,9 +2712,23 @@ export function commandRunClause(run: Pick<CommandWatchRun, "outcome" | "exitCod
   return "could not be started"
 }
 
-const COMMAND_WATCH_PASSED_HEAD = /^✅ Your command watch `(cmw_[a-z0-9]+)` PASSED\b/
+/** Appended to every refusal to run a command watch (the server's gate, and the cancellation wake that
+ *  carries its reason): the one thing the worker should do instead. */
+export const COMMAND_WATCH_FALLBACK = "Run the check in a background shell instead."
+
+const COMMAND_WATCH_PASSED_HEAD = /^✅ Your command watch `(cmw_[a-z0-9]+)` PASSED — its command exited 0 on check (\d+) \(\d+ checks? over ([^)]+)\):/
 const COMMAND_WATCH_EXPIRED_HEAD = /^⏰ Your command watch `(cmw_[a-z0-9]+)` has expired and is no longer armed\b/
-const COMMAND_WATCH_CANCELLED_HEAD = /^⚠️ Frizz cancelled your command watch `(cmw_[a-z0-9]+)`/
+const COMMAND_WATCH_CANCELLED_HEAD = /^⚠️ Frizz cancelled your command watch `(cmw_[a-z0-9]+)` and will not run it again: (.*)$/m
+
+// Each wake's closing paragraph is addressed to the worker about its own registration — carry on, register
+// it again, run it in a shell — so the chat leaves it out. Named once here so the parser cuts exactly what
+// the composer wrote.
+const COMMAND_WATCH_PASSED_TRAILER = "The watch is settled and runs no more. Carry on with whatever you were waiting on it for."
+const COMMAND_WATCH_EXPIRED_TRAILER =
+  "If you still mean to wait, find out why it never passed, then register it again with `frizzctl watch-command add` " +
+  "and a fresh `--for`. If you do not, and it was the only thing you were waiting on, end in a proper terminal " +
+  "state instead of parking on it again."
+const COMMAND_WATCH_CANCELLED_TRAILER = "Nothing about it will wake you now. If you still need the wait, run the check in a background shell instead."
 
 /** The wake a command watch sends when a check exits 0 — the one piece of news it exists to deliver. */
 export function commandWatchPassedWakeMessage(input: { id: string; command: string; output: string; runs: number; armedMs: number }): string {
@@ -2713,7 +2741,7 @@ export function commandWatchPassedWakeMessage(input: { id: string; command: stri
     "",
     output ? `Its output ended:\n\n${codeBlock(output)}` : "It printed nothing.",
     "",
-    "The watch is settled and runs no more. Carry on with whatever you were waiting on it for.",
+    COMMAND_WATCH_PASSED_TRAILER,
   ].join("\n")
 }
 
@@ -2730,9 +2758,7 @@ export function commandWatchExpiredWakeMessage(input: { id: string; command: str
       ? `Its last check ${commandRunClause(last)}${tail ? `, ending:\n\n${codeBlock(tail)}` : " and printed nothing."}`
       : "It never completed a check.",
     "",
-    "If you still mean to wait, find out why it never passed, then register it again with `frizzctl watch-command add` " +
-      "and a fresh `--for`. If you do not, and it was the only thing you were waiting on, end in a proper terminal " +
-      "state instead of parking on it again.",
+    COMMAND_WATCH_EXPIRED_TRAILER,
   ].join("\n")
 }
 
@@ -2744,19 +2770,58 @@ export function commandWatchCancelledWakeMessage(input: { id: string; command: s
     "",
     codeBlock(input.command, "sh"),
     "",
-    "Nothing about it will wake you now. If you still need the wait, run the check in a background shell instead.",
+    COMMAND_WATCH_CANCELLED_TRAILER,
   ].join("\n")
 }
 
-/** A command watch's wake, read back — which of the three it is and the watch's id — or null. */
-export function parseCommandWatchWake(text: string): { kind: "passed" | "expired" | "cancelled"; id: string } | null {
-  const first = text.trim()
-  const passed = COMMAND_WATCH_PASSED_HEAD.exec(first)
-  if (passed) return { kind: "passed", id: passed[1] }
-  const expired = COMMAND_WATCH_EXPIRED_HEAD.exec(first)
-  if (expired) return { kind: "expired", id: expired[1] }
-  const cancelled = COMMAND_WATCH_CANCELLED_HEAD.exec(first)
-  return cancelled ? { kind: "cancelled", id: cancelled[1] } : null
+/** A command watch's wake, read back for the chat's divider. Plain text throughout: the divider draws it
+ *  in the quiet aside every expandable wake uses, not as Markdown. */
+export interface CommandWatchWake {
+  kind: "passed" | "expired" | "cancelled"
+  id: string
+  /** The command the watch ran, as registered — the divider names the watch by it. */
+  command: string
+  /** How it ended, in a sentence or two: when it passed, how its last check ended, or why Frizz stopped
+   *  it. Never the closing instructions to the worker. */
+  summary: string
+  /** What the deciding check printed, when it printed anything. */
+  output?: string
+}
+
+/** A command watch's wake, read back — which of the three it is, the watch's id, its command and what a
+ *  reader is owed about how it ended — or null. */
+export function parseCommandWatchWake(text: string): CommandWatchWake | null {
+  const t = text.trim()
+  const passed = COMMAND_WATCH_PASSED_HEAD.exec(t)
+  const expired = passed ? null : COMMAND_WATCH_EXPIRED_HEAD.exec(t)
+  const cancelled = passed || expired ? null : COMMAND_WATCH_CANCELLED_HEAD.exec(t)
+  const head = passed ?? expired ?? cancelled
+  if (!head) return null
+  // The command is the ```sh block under the head line. codeBlock fences it one backtick longer than any
+  // run inside it, so the first line that is exactly the opening fence is the close.
+  const block = /\n\n(`{3,})sh\n([\s\S]*?)\n\1(?=\n|$)/.exec(t)
+  if (!block) return null
+  const command = block[2]
+  if (cancelled) {
+    // The reason is the server gate's refusal, which ends in the same instruction the trailer repeats.
+    let reason = cancelled[2].trim()
+    if (reason.endsWith(COMMAND_WATCH_FALLBACK)) reason = reason.slice(0, -COMMAND_WATCH_FALLBACK.length).trim()
+    return { kind: "cancelled", id: cancelled[1], command, summary: `Frizz stopped it: ${unfence(reason).replace(/\.$/, "")}.` }
+  }
+  let rest = t.slice(block.index + block[0].length).trim()
+  const trailer = passed ? COMMAND_WATCH_PASSED_TRAILER : COMMAND_WATCH_EXPIRED_TRAILER
+  if (rest.endsWith(trailer)) rest = rest.slice(0, -trailer.length).trim()
+  // What the check printed is the fenced block the sentence before it introduces ("Its output ended:").
+  const printed = /\n\n(`{3,})\n([\s\S]*?)\n\1$/.exec(rest)
+  const said = (printed ? rest.slice(0, printed.index) : rest).trim()
+  const output = printed ? { output: printed[2] } : {}
+  if (passed) return { kind: "passed", id: passed[1], command, summary: `Exited 0 on check ${passed[2]}, ${passed[3]} after it was armed. ${said}`, ...output }
+  return { kind: "expired", id: expired![1], command, summary: said, ...output }
+}
+
+/** Inline code spans read as plain words outside Markdown: `default` → default. */
+function unfence(text: string): string {
+  return text.replace(/`([^`]+)`/g, "$1")
 }
 
 // ---- THE WORKER'S REGISTERED QUESTIONS (2026-08-26) ------------------------------------------------

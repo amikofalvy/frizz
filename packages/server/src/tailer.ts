@@ -1463,6 +1463,19 @@ function noteUserRecordForQuestions(state: FoldState, text: string, at: string):
   if (carriesQuestionFenceCorrection(text)) state.questionCorrectedAt = at
 }
 
+// The LEGACY question flag (a ```question fence on the final message — what queues a thread spawned
+// before QUESTION_FENCE_RETIRED_AT) is discharged by the same thing that discharges a registered question:
+// the human typing since the agent asked. A shell's completion, a timer, a PR watch, a Goal prompt — every
+// wake isHumanSpeaking lets through — answers nothing, and clearing on one put the thread in the Active
+// rail, its question card still on screen, for as long as the worker took over the wake. Read off
+// restFromAt rather than this record alone, so a message QUEUED ahead of a wake (merged with it into
+// one record ending in the wake's token) still counts, and one queued before the question was asked does
+// not. The next assistant message recomputes the flag either way.
+function settleLegacyQuestion(state: FoldState): void {
+  if (!state.lastAssistantHasQuestion || state.restFromAt === undefined) return
+  if (state.lastAssistantAt === undefined || Date.parse(state.restFromAt) >= Date.parse(state.lastAssistantAt)) state.lastAssistantHasQuestion = false
+}
+
 /** Does this user record deliver a ```question fence correction — alone, or as one wake of a merged delivery? */
 function carriesQuestionFenceCorrection(text: string): boolean {
   if (!text.includes(QUESTION_FENCE_CORRECTION_LEAD)) return false
@@ -2613,25 +2626,26 @@ export function applyRecord(state: TailState, rec: Record): void {
     // while the same record flipped the turn in-flight. The thread then drew its ```question card AND the
     // working shimmer, in the Active rail instead of the queue (maintainer 2026-08-24: "this needs to be
     // structurally impossible"). isHumanSpeaking asks the question the CHAT asks, off the SHARED
-    // classifier, so the two projections cannot drift again.
+    // classifier, so the two projections cannot drift again — but the chat draws Frizz's own deliveries
+    // too, so it is only the first gate. The question asks the narrower one below the row-order key.
     state.lastAssistantAllDone = false
     state.lastFence = undefined
     const humanSpoke = isHumanSpeaking(rec, userText, systemUserRec, compactSummaryRec)
-    if (humanSpoke) state.lastAssistantHasQuestion = false
     // Any user record supersedes a usage-limit pause: the conversation has moved past the point where
     // it was cut off, whether by the human or by the "continue" the wake scheduler delivered. This is
     // precisely what makes the auto-resume one-shot — the delivered message erases the very fault that
     // selected the thread. If the window is still dry, the provider simply writes a NEW limit record
     // (with a NEW, later reset instant), so a re-fire can never tighten into a loop.
     state.limitFault = undefined
-    // `lastUserAt` is the ROW-ORDER key — bump it ONLY for a genuine HUMAN interaction. A tool_result
-    // is agent activity; a system record (peer/notification), an injected pulse and the runtime's own
-    // interrupt receipt are machine motion the human didn't cause — none of them may jump the row to the
-    // top (the one part of the earlier over-fix that WAS a real bug). Same predicate as the question
-    // gate above, deliberately: "did the human take a turn" has exactly one answer per record.
+    // `lastUserAt` is the ROW-ORDER key — bump it only for a turn the chat draws. A tool_result is agent
+    // activity; a system record (peer/notification), an injected pulse and the runtime's own interrupt
+    // receipt are machine motion the human didn't cause — none of them may jump the row to the top (the
+    // one part of the earlier over-fix that WAS a real bug). Frizz's own deliveries DO move it, on
+    // purpose: every "the agent spoke last" guard reads it to know a wake is still unanswered.
     if (humanSpoke && typeof rec.timestamp === "string") {
       state.lastUserAt = rec.timestamp
       noteUserRecordForQuestions(state, userMessageText(rec.message?.content), rec.timestamp)
+      settleLegacyQuestion(state)
       // SET ONCE. This is what names an external session whose harness never named it, so it has to be
       // the turn the conversation STARTED on, not the newest one.
       if (state.firstUserText === undefined) {
@@ -2775,21 +2789,23 @@ export function applyEvent(state: FoldState, ev: NormalizedEvent): void {
       // A human/peer/notification turn re-opens the turn (the model is about to respond → in-flight)
       // and supersedes the agent's own claims about itself — the excusal fence and the ALLDONE
       // sentinel only signal as the FINAL message, and a re-invoked agent is neither done nor parked.
-      // Only a GENUINE human turn bumps lastUserAt — a synthetic one (peer msg / notification /
-      // tool-result echo) is machine motion the human didn't cause, so it never jumps the row.
+      // Only a non-synthetic turn bumps lastUserAt — a synthetic one (peer msg / notification /
+      // tool-result echo) is machine motion the human didn't cause, so it never jumps the row. Frizz's
+      // own deliveries are not synthetic and do move it, exactly as in applyRecord.
       state.sawRecords = true
       state.turn = "in-flight"
       state.lastAssistantAllDone = false
       state.lastFence = undefined
       if (!ev.synthetic) {
-        // …and the QUESTION is the human's to discharge, so it rides the same gate as the row-order
-        // key rather than clearing unconditionally. Codex's twin of the claude defect in applyRecord:
-        // a synthetic turn that nobody typed was answering the agent's question on the human's behalf,
-        // which put the row back in the Active rail with its ```question card still on screen.
-        state.lastAssistantHasQuestion = false
+        // …and the QUESTION is the human's to discharge, so it never clears unconditionally. Codex's
+        // twin of the claude defect in applyRecord: a synthetic turn that nobody typed was answering the
+        // agent's question on the human's behalf, which put the row back in the Active rail with its
+        // ```question card still on screen. A wake is not synthetic, so settleLegacyQuestion asks the
+        // narrower question.
         if (typeof ev.at === "string") {
           state.lastUserAt = ev.at
           noteUserRecordForQuestions(state, typeof ev.text === "string" ? ev.text : "", ev.at)
+          settleLegacyQuestion(state)
         }
         // Keep the delivery-confirmation pair atomic. A genuine non-text user event may still bump
         // row activity, but its newer timestamp must never retain text from an older human turn.

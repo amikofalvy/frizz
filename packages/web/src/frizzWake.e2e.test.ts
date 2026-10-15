@@ -93,8 +93,8 @@ test("a batch of held wakes draws one hairline per wake, and the fallback card r
         // row can do without leave whole, and what stays is the news and the PR it is about.
         const reads = (start: string) => result.hairlines.some((line) => line.reads.startsWith(start))
         const readings = width < 500
-          ? ["Wait over · expand ·", "« Running the update harness against the built shell and server » finished ·", "comment #756 ·", "review comment #587 ·", "CI passed #761 · 2h ago", "PR merged #756 ·", "Watcher expired #777 ·", "Watch expired ·", "Weekly limit reset ·", "Fable 5 → Opus ·", "1 question cancelled ·", "Timer · expand ·"]
-          : ["Wait over — its work finished · Click to expand ·", "Background task « Running the update harness against the built shell and server » finished ·", "New comment from @colinhacks on nubjs/nub#756 ·", "New review comment from @pullfrog on nubjs/nub#587 ·", "CI passed on nubjs/nub#761 · 7 checks green ·", "PR merged on nubjs/nub#756 ·", "Watcher expired on nubjs/nub#777 ·", "Watch expired on a background shell ·", "Weekly usage limit reset — resuming ·", "Fable 5 limit — switched to Opus ·", "1 question cancelled — the worker decides it itself ·", "Timer · Click to expand ·"]
+          ? ["Wait over · expand ·", "« Running the update harness against the built shell and server » finished ·", "comment #756 ·", "review comment #587 ·", "CI passed #761 · 2h ago", "PR merged #756 ·", "Watcher expired #777 ·", "Watch expired ·", "Weekly limit reset ·", "Fable 5 → Opus ·", "1 question cancelled ·", "Timer · expand ·", "Passed · expand ·", "Expired · expand ·", "Stopped · expand ·", "« Audit the auth flow » stopped ·", "« Fix the cache collision » stopped ·"]
+          : ["Wait over — its work finished · Click to expand ·", "Background task « Running the update harness against the built shell and server » finished ·", "New comment from @colinhacks on nubjs/nub#756 ·", "New review comment from @pullfrog on nubjs/nub#587 ·", "CI passed on nubjs/nub#761 · 7 checks green ·", "PR merged on nubjs/nub#756 ·", "Watcher expired on nubjs/nub#777 ·", "Watch expired on a background shell ·", "Weekly usage limit reset — resuming ·", "Fable 5 limit — switched to Opus ·", "1 question cancelled — the worker decides it itself ·", "Timer · Click to expand ·", "Watch « node screen-unlocked.mjs » passed · Click to expand ·", "Watch « gh run view 18273645 --exit-status » stopped by Frizz · Click to expand ·", "Sub-agent « Audit the auth flow » stopped by the interrupt ·", "Sub-agent « Survey the dev server readouts » stopped by the interrupt ·"]
         for (const reading of readings) assert.ok(reads(reading), `${width}px ${font}: no hairline reads "${reading}…", got ${result.hairlines.map((line) => line.reads).join(" | ")}`)
         // THE REPORTED DELIVERY: a park ending beside the shell that ended it. Two hairlines, in the
         // order they were queued, and none of the envelope — not its lead, not the scheduler's reason
@@ -123,6 +123,32 @@ test("a batch of held wakes draws one hairline per wake, and the fallback card r
         assert.doesNotMatch(result.unread.text, /Frizz held|###|Frizz sends this because/)
         assert.match(result.ownWatch[0], /^Watch expired on a background shell/)
         assert.match(result.ownWatch[1], /^Watch expired on a sub-agent/)
+        // A COMMAND WATCH SETTLING and the INTERRUPT NOTE, both of which drew the fallback card until
+        // 2026-10-14 and with it their instructions to the worker: hairlines now, with none of those words
+        // anywhere — and the command watch's disclosure keeps the reader's half, the whole command and
+        // what its check printed.
+        const settled = await page.evaluate(() => ["w22", "w23", "w24", "w25", "w26"].map((id) => {
+          const el = document.querySelector(`[data-frizz-msg="${id}"]`)!
+          return { id, divider: el.matches("[data-wake-divider]") || !!el.querySelector("[data-wake-divider]"), card: !!el.querySelector(".md-body"), text: el.textContent ?? "" }
+        }))
+        for (const wake of settled) {
+          assert.ok(wake.divider && !wake.card, `${wake.id} is a hairline`)
+          assert.doesNotMatch(wake.text, /Your command watch|frizzctl|Carry on|wake you|background shell instead|did not return|re-dispatch|NOT RUNNING/, wake.id)
+        }
+        const disclosed = async (id: string) => {
+          await page.click(`[data-frizz-msg="${id}"] [data-wake-divider]`)
+          const text = await page.$eval(`[data-frizz-msg="${id}"]`, (el) => el.textContent ?? "")
+          await page.click(`[data-frizz-msg="${id}"] [data-wake-divider]`)
+          return text
+        }
+        const passed = await disclosed("w22")
+        assert.match(passed, /\/Users\/colin\/\.local\/share\/nub\/node\/26\.11\.1\/bin\/node \/Users\/colin\/Documents\/frizz\/\.frizz\/threads\/a74bbfc8\/screen-unlocked\.mjs/)
+        assert.match(passed, /Exited 0 on check 49, 2h 14m after it was armed\./)
+        assert.match(passed, /newest: keywardd: screen unlocked/)
+        assert.match(await disclosed("w23"), /Its last check exited 1, ending:npm error code E404/)
+        assert.match(await disclosed("w24"), /Frizz stopped it: this thread runs in default permission mode\.$/)
+        // Several children are several hairlines, one each, in the order the note named them.
+        assert.deepEqual(await page.$$eval('[data-frizz-msg="w26"] [data-wake-divider]', (els) => els.map((el) => el.querySelector("[title]")?.getAttribute("title"))), ["Survey the dev server readouts", "Fix the cache collision", "Review the diff"])
         assert.deepEqual(result.headings, ["What it carries"])
         assert.ok(result.codes.includes("shells: [bc3rwp1k7]"))
         assert.equal(result.bold, "finished")

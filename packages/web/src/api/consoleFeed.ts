@@ -3,6 +3,7 @@ import type { BoardSnapshot, BoardState, ServerEvent, SocketClientMsg, SocketSer
 import { applyBoardDelta, deltaAction } from "@frizz/shared"
 import { store, openThread, plainThreads, setBoardPendingCheck } from "../store.ts"
 import { isConsolePath, projectApiBase, projectHref } from "../lib/base-path.ts"
+import { setProjectGithubRepo } from "../lib/githubAutolink.ts"
 import { localFileQueryKey } from "../lib/localFileQuery.ts"
 import { splitThreadKey, threadKey } from "../lib/threadKey.ts"
 import { noteServerBootId } from "./boot.ts"
@@ -250,6 +251,7 @@ class ProjectFeed {
     this.budgetTimers.clear()
     const board = store.board ?? staged
     if (board) dropProject(board, this.project)
+    setProjectGithubRepo(this.project, null)
     for (const slug of this.subs.keys()) delete store.socketTranscriptFallbacks[threadKey(this.project, slug)]
   }
 
@@ -361,6 +363,9 @@ class ProjectFeed {
   private adoptKeyframe(board: BoardSnapshot): boolean {
     if (!isConsolePath() || !active) return false
     mergeKeyframe(store.board ?? (staged ??= emptyUnion()), this.project, board)
+    // The repo this project's `#123` and commit hashes link to. The merged board carries no project's
+    // repo, so this board — the project's own — is the one place that knows it (lib/githubAutolink.ts).
+    setProjectGithubRepo(this.project, board.githubRepo)
     this.keyframed = true
     maybePublish()
     return true
@@ -440,7 +445,7 @@ class ProjectFeed {
 }
 
 /**
- * Show the merged board once every project has answered — its first keyframe, or a connection given up
+ * Show the merged board once every project has answered — its first board, or a connection given up
  * on — or once the deadline says to stop waiting for the stragglers (`force`).
  */
 function maybePublish(force = false): void {

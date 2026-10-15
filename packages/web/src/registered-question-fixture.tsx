@@ -60,8 +60,7 @@ import "./styles.css"
 //                     kind its live card wore ("Select multiple").
 //   ?fence=sheet    — the PHONE's answering sheet on the fenced question (open it at a phone width): the
 //                     context draws under the question there too.
-//   ?view=thread    — the thread page (ChatView) instead of the queue card; add &virtualized=1 for its
-//                     virtualized transcript path.
+//   ?view=thread    — the thread page (ChatView) instead of the queue card.
 const params = new URLSearchParams(location.search)
 document.documentElement.dataset.font = params.get("font") === "sans" ? "sans" : "mono"
 const ago = (min: number) => new Date(Date.now() - min * 60_000).toISOString()
@@ -414,7 +413,7 @@ createRoot(document.getElementById("root")!).render(
         </RegisteredAnsweringProvider>
       ) : params.get("view") === "thread" ? (
         <div className="mx-auto h-screen w-[min(760px,100%)]">
-          <ThreadView slug={thread.id} virtualized={params.get("virtualized") === "1"} />
+          <ThreadView slug={thread.id} />
         </div>
       ) : (
         <div className="mx-auto w-[min(680px,calc(100%-32px))] py-8">
