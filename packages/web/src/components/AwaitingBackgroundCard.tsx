@@ -809,6 +809,29 @@ export function BgShellRow({ shell, slug, now, testId, onDismiss, watched }: {
 // drawer, no transcript, no external page — so it renders without a chevron, hover, or focus stop
 // rather than as a disabled control.
 export function TimerRow({ watch, now }: { watch: ThreadWatchView; now: number }) {
+  const prompt = watch.timer?.prompt
+  return (
+    <WaitRow
+      testKind="timer"
+      testId={watch.target}
+      mark={<Clock size={12} className={`${ON_CAP} text-muted-60`} />}
+      name={prompt || watch.target}
+      oneLine
+      title={timerWatchTitle(watch)}
+      status={timerWatchStatus(watch, now)}
+    />
+  )
+}
+
+/** A timer row's tooltip — the whole prompt, since the row shows only its first line. Shared with the
+ *  timers' panel over the prompt box (QueueOpsSummary). */
+export function timerWatchTitle(watch: ThreadWatchView): string {
+  const prompt = watch.timer?.prompt
+  return [prompt, watch.timer?.fireAt ? `One-off timer, set for ${watch.timer.fireAt}` : watch.target].filter(Boolean).join("\n\n")
+}
+
+/** A timer row's status, counting down. Shared with the timers' panel over the prompt box. */
+export function timerWatchStatus(watch: ThreadWatchView, now: number): string {
   const fireMs = Date.parse(watch.timer?.fireAt ?? "")
   // "in 34m", counting down live off the card's shared clock — under a "Timers" heading the verb is
   // implied, and "fires in 33m" was the widest status in the rail for it (maintainer 2026-10-08: "pretty
@@ -818,20 +841,7 @@ export function TimerRow({ watch, now }: { watch: ThreadWatchView; now: number }
   // for its own gap ("Checking…"). That gap is usually a scheduler tick, but it can run to minutes: a
   // timer wake is not exempt from the quiet window after a handoff (wake-store.ts), and the row settles
   // only once the delivery is confirmed.
-  const status = !Number.isFinite(fireMs) ? "armed" : fireMs > now ? `in ${formatCompactElapsed(fireMs - now)}` : "firing…"
-  const prompt = watch.timer?.prompt
-  return (
-    <WaitRow
-      testKind="timer"
-      testId={watch.target}
-      mark={<Clock size={12} className={`${ON_CAP} text-muted-60`} />}
-      name={prompt || watch.target}
-      oneLine
-      // The whole prompt lives here, since the row shows only its first line.
-      title={[prompt, watch.timer?.fireAt ? `One-off timer, set for ${watch.timer.fireAt}` : watch.target].filter(Boolean).join("\n\n")}
-      status={status}
-    />
-  )
+  return !Number.isFinite(fireMs) ? "armed" : fireMs > now ? `in ${formatCompactElapsed(fireMs - now)}` : "firing…"
 }
 
 // ---- THE ARMED COMMAND WATCHES --------------------------------------------------------------------
@@ -860,28 +870,37 @@ export function commandWatchName(command: string): string {
 }
 
 export function CommandWatchRow({ watch, now }: { watch: ThreadWatchView; now: number }) {
-  const spec = watch.command
-  const command = spec?.command ?? watch.target
-  const last = spec?.lastRun
-  const lastLine = spec && last
-    ? `${spec.runs} check${spec.runs === 1 ? "" : "s"} so far. The last, ${compactElapsedSince(last.at, now)} ago, ${commandRunClause(last)}.`
-    : null
   return (
     <WaitRow
       testKind="command"
       testId={watch.target}
       mark={<RefreshCw size={12} className={`${ON_CAP} text-muted-60`} />}
-      name={commandWatchName(command)}
+      name={commandWatchName(watch.command?.command ?? watch.target)}
       oneLine
-      title={[
-        command,
-        spec ? `Re-run every ${spec.every} until it exits 0.` : null,
-        lastLine,
-        last?.output.trim() || null,
-      ].filter(Boolean).join("\n\n")}
-      status={spec ? `every ${spec.every}` : "armed"}
+      title={commandWatchTitle(watch, now)}
+      status={commandWatchStatus(watch)}
     />
   )
+}
+
+/** A command watch row's tooltip — the full command, its cadence, and what the last check printed.
+ *  Shared with the command watches' panel over the prompt box (QueueOpsSummary). */
+export function commandWatchTitle(watch: ThreadWatchView, now: number): string {
+  const spec = watch.command
+  const last = spec?.lastRun
+  const lastLine = spec && last
+    ? `${spec.runs} check${spec.runs === 1 ? "" : "s"} so far. The last, ${compactElapsedSince(last.at, now)} ago, ${commandRunClause(last)}.`
+    : null
+  return [
+    spec?.command ?? watch.target,
+    spec ? `Re-run every ${spec.every} until it exits 0.` : null,
+    lastLine,
+    last?.output.trim() || null,
+  ].filter(Boolean).join("\n\n")
+}
+
+export function commandWatchStatus(watch: ThreadWatchView): string {
+  return watch.command ? `every ${watch.command.every}` : "armed"
 }
 
 // ---- THE LIVE SUB-AGENTS -------------------------------------------------------------------------
@@ -1252,11 +1271,19 @@ export function AwaitingBackgroundCard({ thread, fence, onSnooze, onSnoozeFailed
   // Live-ticking, so a shell's "running · 4m" keeps counting while the board sends nothing (a quiet
   // child pushes no delta). One clock read for the whole card rather than one per row.
   const now = useNowMs()
+  // A STEPS CARD LISTS NO WORK — no rows, no PR refs, no sentence counting them — so its box sits right
+  // under the steps it confirms (maintainer 2026-10-15: "you don't need to show all the other shit that
+  // it's awaiting. It's already visible above the prompt box … All that really matters is what the human
+  // is supposed to do next. it's also weird that the to-do item is separated from the 'I have completed
+  // this' checkbox by a bunch of shit"). The line of counts over the prompt box carries every kind these
+  // rows did (lib/queueOpsCounts), and the full-screen rail lists them all; a question rest leaves its
+  // work to the same places (awaitingDefersToQuestions).
+  const listsWork = steps.length === 0
   // The fence's own `shells:` ride along at rest too. The board already rows them then, so this is
   // idle in that case — it is what keeps the card whole where the board has forgotten the fence (a
   // bg-snoozed thread, see AwaitingWaitOptions).
-  const groups = awaitingWaitGroups(work, now, { hints })
-  const unrowed = unrowedWatchRefs(work, hints)
+  const groups = listsWork ? awaitingWaitGroups(work, now, { hints }) : []
+  const unrowed = listsWork ? unrowedWatchRefs(work, hints) : []
   // THE SNOOZE IS THE ONE THING THAT VARIES WITH THE RUNTIME, and the maintainer ruled it the only
   // thing that may (2026-09-04: "you can remove the snooze button and stuff because the interactive
   // elements obviously are no longer interactive, you should not be changing whether or not you
@@ -1346,7 +1373,7 @@ export function AwaitingBackgroundCard({ thread, fence, onSnooze, onSnoozeFailed
           same things above them is one fact written twice ("this looks busy and shitty"). It stays as
           the honest fallback for the one reachable gap — a declared wait whose rows all failed to
           resolve — because a card with a heading and nothing under it says less than a sentence. */}
-      {groups.length === 0 && hasUnrowedWork(work) && (
+      {listsWork && groups.length === 0 && hasUnrowedWork(work) && (
         <p className={CARD_BODY}>
           {waiting ? (
             // The subject never counts a watcher: a watcher is PARKED ON rather than dispatched, and

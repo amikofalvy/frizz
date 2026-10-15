@@ -22,7 +22,7 @@ test("a watch is listed while it is armed and its thread is not archived — by 
   ]
   const live = threadOps(thread(watches))
   assert.deepEqual([live.prs, live.issues, live.timers].map((rows) => rows.map((row) => row.id)), [["pr"], ["issue"], ["timer"]])
-  assert.deepEqual(counted(thread(watches)), [{ key: "pr", n: 1 }, { key: "issue", n: 1 }])
+  assert.deepEqual(counted(thread(watches)), [{ key: "pr", n: 1 }, { key: "issue", n: 1 }, { key: "timer", n: 1 }])
 
   const archived = threadOps(thread(watches, "archived"))
   assert.deepEqual([archived.prs, archived.issues, archived.timers, archived.commands].map((rows) => rows.length), [0, 0, 0, 0], "an archived thread watches nothing")

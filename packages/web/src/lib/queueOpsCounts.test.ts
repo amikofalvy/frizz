@@ -17,3 +17,13 @@ test("the counts take the drawer's transcript shells, once each", () => {
   assert.deepEqual(queueOpsCounts(thread([BOARD_SHELL]), [codex]).map(({ key, n }) => ({ key, n })), [{ key: "shell", n: 2 }])
   assert.deepEqual(queueOpsCounts(thread([]), [codex]).map(({ key, n }) => ({ key, n })), [{ key: "shell", n: 1 }], "a Codex shell the board never reports still counts")
 })
+
+// Every wait the thread has is counted, because the steps card lists none of them and points here: a
+// kind with no count would be a wait shown nowhere on the queue card or in the drawer.
+test("the counts name a command watch and a timer, each by its own kind", () => {
+  const watch = (kind: string, target: string, state = "armed") => ({ id: `${kind}:${target}`, kind, target, state, createdAt: "2026-10-15T10:00:00.000Z" })
+  const t = { id: "t", state: "rested", subAgents: [], links: [], bgShells: [], watches: [
+    watch("command", "cmw_a"), watch("command", "cmw_b"), watch("timer", "tmr_a"), watch("timer", "tmr_b", "fired"),
+  ] } as unknown as ThreadView
+  assert.deepEqual(queueOpsCounts(t).map(({ key, n }) => ({ key, n })), [{ key: "command", n: 2 }, { key: "timer", n: 1 }])
+})

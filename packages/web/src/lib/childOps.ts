@@ -67,7 +67,8 @@ export const CHILD_STALE_SHELL_TITLE = "stale — its process has exited, but no
 // removed: it put a mark on nearly every row of a settled transcript while saying nothing the row's own
 // runtime reading did not already say.
 
-export const CHILD_OPEN_TITLE = { AGENT: "Open sub-agent transcript", SHELL: "Open background shell output", GITHUB: "Open this pull request on GitHub" } as const
+// A command watch and a timer have nothing to open; their rows are never buttons, so their titles are unused.
+export const CHILD_OPEN_TITLE = { AGENT: "Open sub-agent transcript", SHELL: "Open background shell output", GITHUB: "Open this pull request on GitHub", COMMAND: "", TIMER: "" } as const
 
 // ── HOW MUCH the child has done — the quiet counter beside its current step ──────────────────────
 //
@@ -176,7 +177,7 @@ export const CHILD_DISMISS_TITLE = {
   settled: "Clear — stop tracking this finished operation",
 } as const
 export const CHILD_DISMISS_VERB = { running: "Stop", settled: "Clear" } as const
-export const CHILD_DISMISS_NOUN = { AGENT: "sub-agent", SHELL: "background shell", GITHUB: "PR watcher" } as const
+export const CHILD_DISMISS_NOUN = { AGENT: "sub-agent", SHELL: "background shell", GITHUB: "PR watcher", COMMAND: "command watch", TIMER: "timer" } as const
 
 // ── LIVENESS FILTERS — the surfaces' policies, in ONE place ──────────────────────────────────────
 //

@@ -4377,7 +4377,8 @@ export function BackgroundOpsStrip({
   // so the shells' panel must not list the watched PRs and the files' must not list the links. The
   // kinds are the counts' own (lib/queueOpsCounts.ts), split by the same tests, so a count and the
   // panel it opens cannot disagree. Absent ⇒ every row, the reading the sub-agent drawer's strip wants.
-  only?: Exclude<QueueOpsKind, "agent">
+  // The command watches' and timers' panels draw their rows themselves (QueueOpsSummary WaitPanelRows).
+  only?: Exclude<QueueOpsKind, "agent" | "command" | "timer">
   // Codex deliberate background execs are transcript-native; its board telemetry is still empty. A
   // CLAUDE shell shows up here AND in the board's telemetry — `launchId` is what lets the two rows
   // reconcile into one (see mergeBackgroundShells).
