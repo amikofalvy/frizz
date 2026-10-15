@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { proxy, useSnapshot } from "valtio"
 import type { ThreadView, TranscriptMessage } from "@frizz/shared"
+import { partitionBoard } from "./boardPartition.ts"
 
 // OPTIMISTIC STEER STATE — "your message is in, this thread is working again", rendered the instant
 // the operator commits rather than when the server can prove it.
@@ -363,6 +364,9 @@ export function useOptimisticallySteered(threads: readonly ThreadView[]): Thread
     const stamps = plainEntries(at)
     const answers = plainEntries(answered)
     const nowMs = Date.now()
+    // With no steer stamped, a thread changes only for a delivery in flight, which a settled thread
+    // never has: only the live ones are asked. A stamp can name any thread, so then every one is.
+    if (stamps.size === 0) return overlayLive(threads, (t) => optimisticallySteered(t, undefined, nowMs))
     return overlayEach(threads, (t) => optimisticallySteered(t, stamps.get(t.id), nowMs, answers.get(t.id)))
   }, [threads, at, answered])
 }
@@ -372,6 +376,19 @@ export function plainEntries<V>(record: Record<string, V>): Map<string, V> {
   const out = new Map<string, V>()
   for (const key of Object.keys(record)) out.set(key, record[key])
   return out
+}
+
+/** overlayEach over the threads that can still move (lib/boardPartition); a settled one is kept as itself. */
+export function overlayLive(threads: readonly ThreadView[], fn: (t: ThreadView) => ThreadView): ThreadView[] {
+  let out: ThreadView[] | undefined
+  for (const i of partitionBoard(threads).liveAt) {
+    const t = threads[i]!
+    const next = fn(t)
+    if (next === t) continue
+    out ??= threads.slice()
+    out[i] = next
+  }
+  return out ?? (threads as ThreadView[])
 }
 
 /** `threads.map(fn)`, except that when `fn` returns every thread by identity the input array comes back. */
