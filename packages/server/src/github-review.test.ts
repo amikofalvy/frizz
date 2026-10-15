@@ -301,7 +301,45 @@ test("a response with no usable pull request yields no snapshot, so the poll kee
   }
   // A PR with a state and nothing else is still usable — every other field degrades to empty on its own.
   const bare = parseGithubPrSnapshot({ state: "MERGED" })
-  assert.deepEqual(bare, { state: "MERGED", mergedAt: null, rollup: [], checkSuites: [], labels: [], reviewRequests: [] })
+  assert.deepEqual(bare, { state: "MERGED", mergedAt: null, rollup: [], checkSuites: [], labels: [], reviewRequests: [], mergeExits: [] })
+})
+
+// LEAVING THE MERGE QUEUE (2026-10-14). The fixture is a real PR's timeline, anonymized and
+// trimmed: bounced at 20:26:52Z for `failed_checks` while its own checks and merge state stayed green,
+// then re-queued by hand. `beforeCommit` is the merge group's commit — the head SHA of the failed
+// `merge_group` workflow run — so its rollup is where the failing jobs are named.
+test("the snapshot carries the merge-queue exits, with the merge group's own checks", () => {
+  const snapshot = parseGithubPrSnapshot({
+    state: "OPEN",
+    isDraft: false,
+    mergeQueueEntry: { position: 2 },
+    timelineItems: { nodes: [
+      {
+        __typename: "RemovedFromMergeQueueEvent", id: "RFMQE_example1",
+        createdAt: "2026-10-14T20:26:52Z", reason: "failed_checks", actor: { login: "github-merge-queue" },
+        beforeCommit: { statusCheckRollup: { contexts: { nodes: [
+          { __typename: "CheckRun", name: "integration (shard 1)", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { workflow: { name: "Validation" } } } },
+          { __typename: "CheckRun", name: "lint", status: "COMPLETED", conclusion: "SUCCESS" },
+        ] } } },
+      },
+      { __typename: "AutoMergeDisabledEvent", id: "AMDE_1", createdAt: "2026-10-14T21:00:00Z", reason: "Manually disabled by user", reasonCode: "manually_disabled", actor: { login: "alice" } },
+      { __typename: "AddedToMergeQueueEvent", id: "ATMQE_1" }, // not asked for, and never read as an exit
+      { __typename: "RemovedFromMergeQueueEvent", id: "RFMQE_merged", createdAt: "2026-10-14T21:02:00Z", reason: "merged" }, // the merge itself
+      { __typename: "RemovedFromMergeQueueEvent", createdAt: "2026-10-14T21:05:00Z" }, // no id: cannot be marked reported
+    ] },
+  })
+  assert.ok(snapshot)
+  assert.equal(snapshot.isDraft, false)
+  assert.deepEqual(snapshot.queued, { position: 2 })
+  assert.deepEqual(snapshot.mergeExits.map(({ rollup, ...e }) => e), [
+    { id: "dequeued:RFMQE_example1", kind: "dequeued", at: "2026-10-14T20:26:52Z", reason: "failed_checks", actor: "github-merge-queue" },
+    { id: "auto-merge-off:AMDE_1", kind: "auto-merge-off", at: "2026-10-14T21:00:00Z", reason: "manually_disabled", actor: "alice" },
+  ])
+  assert.equal(snapshot.mergeExits[0].rollup?.length, 2)
+  assert.equal(snapshot.mergeExits[1].rollup, undefined, "auto-merge going off has no merge group to read")
+
+  assert.equal(parseGithubPrSnapshot({ state: "OPEN", mergeQueueEntry: null })?.queued, null, "out of the queue")
+  assert.equal(parseGithubPrSnapshot({ state: "OPEN" })?.queued, undefined, "not asked is not the same answer")
 })
 
 test("the batched query asks for the status half too, so no PR needs a second trip", async () => {
@@ -315,7 +353,7 @@ test("the batched query asks for the status half too, so no PR needs a second tr
     now: () => Date.parse("2026-09-04T17:00:00Z"),
   })
   const result = await fetcher(ref(65796))
-  for (const field of ["state", "mergedAt", "mergeable", "reviewDecision", "labels", "reviewRequests", "statusCheckRollup", "checkSuites", "oid"]) {
+  for (const field of ["state", "mergedAt", "mergeable", "reviewDecision", "labels", "reviewRequests", "statusCheckRollup", "checkSuites", "oid", "isDraft", "mergeQueueEntry", "REMOVED_FROM_MERGE_QUEUE_EVENT", "AUTO_MERGE_DISABLED_EVENT", "beforeCommit"]) {
     assert.ok(body.query.includes(field), `the query no longer asks for ${field}`)
   }
   assert.equal(result.status, "ok")
@@ -464,4 +502,20 @@ test("createGithubReviewFetcher: an issue GitHub cannot return is an error namin
   const result = await fetcher({ owner: "acme", repo: "app", number: 9, kind: "issue" })
   assert.equal(result.status, "error")
   assert.match(result.status === "error" ? result.failure.message : "", /Could not resolve to an Issue/)
+})
+
+// A PR OR ISSUE THAT NO LONGER EXISTS is named by GitHub per alias — the shape below is verbatim from
+// colinhacks/zod, 2026-10-14 — so it is one ref's answer, never the batch's.
+test("a number GitHub cannot resolve is not-found for that ref alone", async () => {
+  const fetcher = createGithubReviewFetcher({
+    getToken: async () => "t",
+    request: async () => response({
+      data: { ref0: { pullRequest: null }, ref1: { pullRequest: { state: "OPEN", reviews: { nodes: [] }, comments: { nodes: [] } } }, rateLimit: { cost: 1, remaining: 4_999, resetAt: "2026-10-14T18:00:00Z", limit: 5_000 } },
+      errors: [{ type: "NOT_FOUND", path: ["ref0", "pullRequest"], message: "Could not resolve to a PullRequest with the number of 999999." }],
+    }),
+    now: () => Date.parse("2026-10-14T17:00:00Z"),
+  })
+  const [gone, fine] = await Promise.all([fetcher(ref(999999)), fetcher(ref(6382))])
+  assert.deepEqual(gone, { status: "error", failure: { kind: "not-found", message: "GitHub: Could not resolve to a PullRequest with the number of 999999." } })
+  assert.equal(fine.status, "ok", "the PR beside it in the batch still reads")
 })

@@ -437,7 +437,8 @@ exactly ONE of them.
   - \`prs:\` — pull requests you REGISTERED with \`frizzctl watch-pr add\`, written \`owner/repo#N\`.
     Register FIRST: this line states the wait, it does not create one. That watcher wakes you on CI
     turning green or red, on every later review, approval or comment, when a label moves, when the PR
-    starts conflicting with its base, and when a reviewer is requested — for as long as the PR lives.
+    starts conflicting with its base or turns back into a draft, when a reviewer is requested, and when
+    it drops out of the merge queue or loses auto-merge without merging — for as long as the PR lives.
     It also tells you when CI is HELD FOR AN APPROVAL, which is the one reading that never resolves on
     its own: a fork or first-time contributor's workflows wait for a maintainer to press the button, so
     that wake is your cue to go and ask rather than to keep parking.

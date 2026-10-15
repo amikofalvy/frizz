@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 import { createHash, randomUUID } from "node:crypto"
-import { awaitingNeedsInput, needsInputRequired, DONE_FENCE_CORRECTION_LEAD, doneOverOpenQuestionsBody, type DoneBlockingQuestion, questionFencesLive, PARK_CORRECTION_NAMES_LEAD, PARK_CORRECTION_NEEDS_INPUT_LEAD, PARK_CORRECTION_RETIRED_LEAD, interruptEndedSubAgentsMessage, type InterruptEndedSubAgent, parkExpiredWakeMessage, parkFinishedWakeMessage, prWatchExpiredWakeMessage, ownWatchExpiredWakeMessage, commandWatchPassedWakeMessage, commandWatchExpiredWakeMessage, commandWatchCancelledWakeMessage, questionAnswerMessage, questionsCancelledWakeMessage, type QuestionAnswer, type QuestionDismissal, RETIRED_AWAITING_REPLACEMENT, retiredAwaitingKindsIn, compactionPromptMessage, limitResumeSteer, limitModelSwitchSteer, formatGithubWakeSteer, GithubWakeItem, type GithubWatchStatus, type GithubIssueStatus, prWatchWakeMessage, issueWatchWakeMessage, shellDoneMessage, restPromptMessage, schedulePromptMessage, timerPromptMessage, signoffNudgeMessage, type SignoffLiveOps, liveOpsLines, mergedWakeMessage, wakeDeliveryToken, wakeTimeHeader, stripWakeTimeHeader, type QuotaSnapshot } from "@frizz/shared"
+import { awaitingNeedsInput, needsInputRequired, DONE_FENCE_CORRECTION_LEAD, doneOverOpenQuestionsBody, type DoneBlockingQuestion, questionFencesLive, PARK_CORRECTION_NAMES_LEAD, PARK_CORRECTION_NEEDS_INPUT_LEAD, PARK_CORRECTION_RETIRED_LEAD, interruptEndedSubAgentsMessage, type InterruptEndedSubAgent, parkExpiredWakeMessage, parkFinishedWakeMessage, prWatchExpiredWakeMessage, ownWatchExpiredWakeMessage, commandWatchPassedWakeMessage, commandWatchExpiredWakeMessage, commandWatchCancelledWakeMessage, questionAnswerMessage, questionsCancelledWakeMessage, type QuestionAnswer, type QuestionDismissal, RETIRED_AWAITING_REPLACEMENT, retiredAwaitingKindsIn, compactionPromptMessage, limitResumeSteer, limitModelSwitchSteer, formatGithubWakeSteer, GithubWakeItem, type GithubWatchStatus, type GithubIssueStatus, prWatchWakeMessage, prWatchGoneWakeMessage, issueWatchWakeMessage, shellDoneMessage, restPromptMessage, schedulePromptMessage, timerPromptMessage, signoffNudgeMessage, type SignoffLiveOps, liveOpsLines, mergedWakeMessage, type OffMergePath, wakeDeliveryToken, wakeTimeHeader, stripWakeTimeHeader, type QuotaSnapshot } from "@frizz/shared"
 import { autonomousGoalOf, questionFenceCorrection, QUESTION_FENCES_REGISTER_FROM, standingQuestions, syncQuestionFences, type QuestionFaultBook } from "./question-fences.ts"
 import { GITHUB_ISSUE_STATUS_SETTING, GITHUB_STATUS_SETTING, liveActivityOf, parkExpiresAt, parkIsHonoured, parkOnHuman, readAwaitingPark, unaccountedItems } from "./awaiting.ts"
 import type { CommandWatchRow, PrWatchRow, SessionRow, Storage, ThreadQuestionRow } from "./storage.ts"
@@ -24,6 +24,7 @@ import {
   type GithubReviewActivity,
   type GithubReviewFetchResult,
   type GithubIssueSnapshot,
+  type GithubPrMergeExit,
 } from "./github-review.ts"
 import { isNoisePrActivity } from "./pr-watch-noise.ts"
 
@@ -88,6 +89,12 @@ export interface PrStatus {
    *  Absent on the `gh` fallback, which does not ask for them. */
   labels?: string[]
   reviewRequests?: string[]
+  isDraft?: boolean
+  /** In the merge queue now (`{position}`), not in it (`null`), or not asked (absent). */
+  queued?: { position?: number } | null
+  /** Exits from the merge path that were not a merge — the queue dropping the PR, auto-merge going off.
+   *  Absent on the `gh` fallback, which does not read the timeline. */
+  mergeExits?: GithubPrMergeExit[]
 }
 
 export interface WorkflowRun {
@@ -284,6 +291,49 @@ export function failedCheckNames(rollup: RollupEntry[], runs: WorkflowRun[] = []
     push(run.workflowName ?? run.name)
   }
   return { names: names.slice(0, cap), omitted: Math.max(0, names.length - cap) }
+}
+
+/** Least specific first: the paragraph for a later one says everything an earlier one's does. */
+const OFF_MERGE_PATHS: readonly OffMergePath[] = ["auto-merge-off", "dequeued", "queue-failed"]
+function mostSpecificOffMergePath(paths: (OffMergePath | undefined)[]): OffMergePath | undefined {
+  return paths.reduce<OffMergePath | undefined>(
+    (best, p) => (p && (best === undefined || OFF_MERGE_PATHS.indexOf(p) > OFF_MERGE_PATHS.indexOf(best)) ? p : best),
+    undefined,
+  )
+}
+
+/** One clause of the state line for a merge-path exit — what happened, who did it when it was not GitHub
+ *  itself, GitHub's reason, and for a queue that failed the PR, the merge-group checks that failed. The
+ *  names are the point: they ran on the `gh-readonly-queue/…` commit, so nothing on the PR names them. */
+export function mergeExitClause(exit: GithubPrMergeExit, queued: { position?: number } | null | undefined): string {
+  const by = exit.actor && !/^github-merge-queue(\[bot\])?$/.test(exit.actor) ? ` by @${exit.actor}` : ""
+  const reason = exit.reason?.toLowerCase().replace(/_/g, " ")
+  const failed = mergeGroupFailures(exit)
+  const detail = failed.names.length
+    ? `${reason ?? "failed checks"}: ${failed.names.join(", ")}${failed.omitted ? `, +${failed.omitted} more` : ""}`
+    : reason
+  const what = exit.kind === "dequeued" ? "REMOVED from the merge queue" : "auto-merge turned OFF"
+  const back = queued ? `, and is back in the queue${queued.position ? ` at position ${queued.position}` : ""}` : ""
+  return `${what}${by}${detail ? ` (${detail})` : ""}${back}`
+}
+
+/** Which next step an exit calls for — see `OffMergePath`. A queue exit counts as failed on GitHub's own
+ *  reason or on a failed check in its merge group (a PR removed by hand while a job was red). */
+export function offMergePathOf(exit: GithubPrMergeExit): OffMergePath {
+  if (exit.kind !== "dequeued") return "auto-merge-off"
+  return exit.reason?.toLowerCase() === "failed_checks" || mergeGroupFailures(exit).names.length > 0 ? "queue-failed" : "dequeued"
+}
+
+function mergeGroupFailures(exit: GithubPrMergeExit): { names: string[]; omitted: number } {
+  // The jobs that FAILED before the ones that were CANCELLED, which `failedCheckNames` counts as failed
+  // too. A merge group fails fast — one job goes red and the queue cancels the rest — so in rollup order
+  // the cancellations fill the cap and the cause is counted in "+N more": bytecodealliance/wasmtime#14375
+  // (2026-09-22) had 26 cancelled jobs and 1 failure, listed 14th.
+  const rollup = (exit.rollup ?? []) as RollupEntry[]
+  const cancelled = (c: RollupEntry) => c?.conclusion === "CANCELLED"
+  return exit.kind === "dequeued"
+    ? failedCheckNames([...rollup.filter((c) => !cancelled(c)), ...rollup.filter(cancelled)])
+    : { names: [], omitted: 0 }
 }
 
 // ---- WHAT A WATCHED PR'S CHECKS LOOK LIKE FROM OUTSIDE ------------------------------------------
@@ -1012,6 +1062,9 @@ const CONTEXT_SUPERSEDED = "the exact awaiting fence or session was superseded"
 /** How often a registered watcher re-reads GitHub, per PR. The fence poller's floor, for the same
  *  reason: this is somebody else's API and the answer changes on a human's timescale. */
 const PR_WATCH_POLL_MS = 60_000
+/** How long GitHub must keep answering NOT_FOUND for a watched PR or issue before its watcher settles and
+ *  tells its worker. Long enough that no blip ends a watch; short against a `for:` that can run a year. */
+const PR_WATCH_GONE_MS = 30 * 60_000
 
 /** How many `gh` children the STATUS FALLBACK may have in flight at once (2026-09-04).
  *
@@ -2862,7 +2915,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   /** WHAT THE WATCHER'S LATEST REPORT SAYS, structurally — the inputs its message was built from — so a
    *  poll that finds more news while that report is still waiting can mint one that says all of it
    *  (see the re-mint in evalPrWatches). Written at every mint; read only while a report is undelivered. */
-  interface PrWatchHeld { items: GithubWakeItem[]; omitted: number; checks?: PrWatchChecks; changes?: string[] }
+  interface PrWatchHeld { items: GithubWakeItem[]; omitted: number; checks?: PrWatchChecks; changes?: string[]; offMergePath?: OffMergePath }
   /** `merge`, `labels` and `reviewers` are the PR's own state as of the last poll, and they are a
    *  BASELINE before they are a trigger: absent (a watcher armed before 2026-09-04, or a poll that fell
    *  back to `gh`, which does not fetch them) means "not known", so the next poll records them and says
@@ -2878,8 +2931,16 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     reviewers?: string[]
     /** Issue watchers only: who was assigned as of the last poll, the same baseline rule as `labels`. */
     assignees?: string[]
+    draft?: boolean
+    /** Merge-path exits already reported (`GithubPrMergeExit.id`). Kept apart from `seen`, whose cap
+     *  evicts its oldest ids first: the poll re-reads the same last few exits every minute, and an exit
+     *  evicted while still in that window would be announced a second time. */
+    exits?: string[]
   }
   const prWatchPolledAt = new Map<string, number>() // refKey → last fetch, shared across threads
+  /** refKey → the first poll of an unbroken run in which GitHub said the PR or issue does not exist. Any
+   *  other outcome breaks the run, a deferred or failed read included: neither is a second NOT_FOUND. */
+  const prWatchMissingSince = new Map<string, number>()
   /** The poll's key for a row — the ref, prefixed for an issue (see the refs loop in evalPrWatches). */
   const watchKey = (w: Pick<PrWatchRow, "kind" | "owner" | "repo" | "number">): string =>
     `${w.kind === "issue" ? "issue:" : ""}${w.owner}/${w.repo}#${w.number}`
@@ -2905,7 +2966,10 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       }
       : undefined
     const changes = Array.isArray(h.changes) ? h.changes.filter((x: unknown): x is string => typeof x === "string") : undefined
-    return { items, omitted: Number(h.omitted) || 0, ...(checks ? { checks } : {}), ...(changes?.length ? { changes } : {}) }
+    return {
+      items, omitted: Number(h.omitted) || 0, ...(checks ? { checks } : {}), ...(changes?.length ? { changes } : {}),
+      ...((OFF_MERGE_PATHS as readonly unknown[]).includes(h.offMergePath) ? { offMergePath: h.offMergePath as OffMergePath } : {}),
+    }
   }
 
   /** A list of strings off a cursor, or `undefined` for "this poll never knew" — which is a third state
@@ -2928,11 +2992,14 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     merge: string | undefined,
     labels: string[] | undefined,
     reviewers: string[] | undefined,
+    draft: boolean | undefined,
   ): string[] {
     const out: string[] = []
     if (merge === "conflicting" && cursor.merge !== undefined && cursor.merge !== "conflicting") {
       out.push("now CONFLICTS with the base branch")
     }
+    // Back to a draft is the other way a PR stops being mergeable without any of its checks moving.
+    if (draft === true && cursor.draft === false) out.push("converted back to a DRAFT")
     if (labels && cursor.labels) {
       const added = labels.filter((l) => !cursor.labels!.includes(l))
       const removed = cursor.labels.filter((l) => !labels.includes(l))
@@ -2956,6 +3023,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       const labels = readCursorList(parsed.labels)
       const reviewers = readCursorList(parsed.reviewers)
       const assignees = readCursorList(parsed.assignees)
+      const exits = readCursorList(parsed.exits)
       return {
         seen,
         checks: typeof parsed.checks === "string" ? parsed.checks : undefined,
@@ -2965,6 +3033,8 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         ...(labels ? { labels } : {}),
         ...(reviewers ? { reviewers } : {}),
         ...(assignees ? { assignees } : {}),
+        ...(typeof parsed.draft === "boolean" ? { draft: parsed.draft } : {}),
+        ...(exits ? { exits } : {}),
       }
     } catch {
       return { seen: [] }
@@ -3054,7 +3124,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     /** The PR's own state, which `GithubWatchStatus` does not carry — it is a CI projection, and these
      *  are triggers rather than a readout. `undefined` for a ref the `gh` fallback served, which does not
      *  ask for them; that is the "not known" the baseline rule turns on. */
-    const meta = new Map<string, { labels?: string[]; reviewRequests?: string[] }>()
+    const meta = new Map<string, Pick<PrStatus, "labels" | "reviewRequests" | "isDraft" | "queued" | "mergeExits">>()
     await Promise.all([...refs].map(async ([key, ref]) => {
       prWatchPolledAt.set(key, nowMs)
       if (ref.kind === "issue") {
@@ -3063,6 +3133,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         // the next poll simply asks again.
         try {
           const result = normalizeReviewResult(await fetchGithubReview(ref))
+          trackMissing(key, result, nowMs)
           if (result.status === "ok") {
             activity.set(key, result.activity)
             if (result.issue) {
@@ -3072,6 +3143,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
             recordReviewSuccess(key, "issue-watch registry")
           } else if (result.status === "error") recordReviewFailure(key, "issue-watch registry", result, nowMs)
         } catch (err) {
+          prWatchMissingSince.delete(key)
           recordReviewFailure(key, "issue-watch registry", {
             status: "error",
             failure: { kind: "network", message: err instanceof Error ? err.message : String(err) },
@@ -3097,6 +3169,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       let deferred = false
       try {
         const result = normalizeReviewResult(await fetchGithubReview(ref))
+        trackMissing(key, result, nowMs)
         if (result.status === "deferred") deferred = true
         if (result.status === "ok") {
           activity.set(key, result.activity)
@@ -3107,6 +3180,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
           recordReviewSuccess(key, "pr-watch registry")
         } else if (result.status === "error") recordReviewFailure(key, "pr-watch registry", result, nowMs)
       } catch (err) {
+        prWatchMissingSince.delete(key)
         recordReviewFailure(key, "pr-watch registry", {
           status: "error",
           failure: { kind: "network", message: err instanceof Error ? err.message : String(err) },
@@ -3120,8 +3194,10 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       try {
         const pr = snapshot ?? (deferred ? undefined : await prStatusFallback(() => fetchPr(ref)))
         if (pr) {
+          // Read, by either transport, so whatever GitHub's GraphQL said about it, it is not gone.
+          prWatchMissingSince.delete(key)
           status.set(key, githubWatchStatus(pr, new Date(nowMs).toISOString()))
-          meta.set(key, { labels: pr.labels, reviewRequests: pr.reviewRequests })
+          meta.set(key, { labels: pr.labels, reviewRequests: pr.reviewRequests, isDraft: pr.isDraft, queued: pr.queued, mergeExits: pr.mergeExits })
           publishGithubStatus(key, pr, nowMs)
           recordStatusSuccess(key)
         }
@@ -3139,6 +3215,19 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       // archived thread can be reopened, and the watch is still the worker's own outstanding intent.
       if (!row || row.state === "archived" || row.archived === 1) continue
       const key = watchKey(w)
+      // GONE: deleted, transferred, or no longer visible. Settled and said once, like a merge or a close —
+      // the one other ending a watcher can reach, and the one it had no way to say.
+      const missingSince = prWatchMissingSince.get(key)
+      if (missingSince !== undefined && nowMs - missingSince >= PR_WATCH_GONE_MS) {
+        deps.storage.settlePrWatch(w.id, nowMs)
+        const waiting = undeliveredPrWatchReport(row.slug, w.id)
+        if (waiting) outbox.supersede(waiting.id, nowMs, "replaced by the watcher's not-found report")
+        const kind = w.kind === "issue" ? "issue" as const : "pull" as const
+        enqueuePrWatchWake(row, w.id, nextReport(readPrWatchCursor(w.cursor)), prWatchGoneWakeMessage(
+          `${w.owner}/${w.repo}#${w.number}`, kind, Math.round(PR_WATCH_GONE_MS / 60_000),
+        ), `${kind === "issue" ? "issue" : "pr"}-watch ${key} not found`, nowMs)
+        continue
+      }
       if (w.kind === "issue") {
         evalIssueWatch(row, w, issues.get(key), activity.get(key), nowMs)
         continue
@@ -3274,7 +3363,22 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       // said: a PR's existing labels are not news, and announcing them would spend a turn re-telling the
       // worker what it did itself.
       const prMeta = meta.get(key)
-      const changes = firstPoll ? [] : prStateChanges(cursor, st?.merge, prMeta?.labels, prMeta?.reviewRequests)
+      const changes = firstPoll ? [] : prStateChanges(cursor, st?.merge, prMeta?.labels, prMeta?.reviewRequests, prMeta?.isDraft)
+      // LEAVING THE MERGE PATH WITHOUT MERGING (2026-10-14). These are timeline EVENTS, not a reading, so
+      // they take the review activity's rule rather than the baseline's: news when not yet reported and
+      // newer than the registration — on every poll, not only the first, so a watcher armed before this
+      // landed still hears about the bounce it slept through.
+      const reportedExits = new Set(cursor.exits ?? [])
+      const freshExits = (prMeta?.mergeExits ?? []).filter((e) => {
+        if (reportedExits.has(e.id)) return false
+        const at = Date.parse(e.at ?? "")
+        return Number.isFinite(at) && at > w.created_at
+      })
+      changes.push(...freshExits.map((e) => mergeExitClause(e, prMeta?.queued)))
+      // WHICH road it left, because the next step differs: only a queue that FAILED the PR has a merge group
+      // whose failed checks the PR head does not show. A conflict, a removal by hand, or auto-merge going
+      // off in a repo with no queue has none, and saying "those failures" there points at nothing.
+      const offMergePath = prMeta?.queued ? undefined : mostSpecificOffMergePath(freshExits.map(offMergePathOf))
 
       const nextCursor: PrWatchCursor = {
         seen: acts ? [...new Set([...cursor.seen, ...acts.map((a) => a.id)])].slice(-REVIEW_SEEN_CAP) : cursor.seen,
@@ -3287,6 +3391,10 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         ...(st?.merge ? { merge: st.merge } : cursor.merge ? { merge: cursor.merge } : {}),
         ...(prMeta?.labels ? { labels: prMeta.labels } : cursor.labels ? { labels: cursor.labels } : {}),
         ...(prMeta?.reviewRequests ? { reviewers: prMeta.reviewRequests } : cursor.reviewers ? { reviewers: cursor.reviewers } : {}),
+        ...(typeof prMeta?.isDraft === "boolean" ? { draft: prMeta.isDraft } : typeof cursor.draft === "boolean" ? { draft: cursor.draft } : {}),
+        ...(prMeta?.mergeExits || cursor.exits
+          ? { exits: [...new Set([...(prMeta?.mergeExits ?? []).map((e) => e.id), ...(cursor.exits ?? [])])].slice(0, 20) }
+          : {}),
       }
       if (!checksChanged && fresh.length === 0 && changes.length === 0) {
         // Nothing to say, but the baseline moved: record what was seen so the FIRST poll's backlog is
@@ -3330,6 +3438,11 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
           const merged = [...new Set(all)]
           return merged.length ? { changes: merged } : {}
         })()),
+        // The most specific exit in either report decides the paragraph: each says what the ones below it do.
+        ...((() => {
+          const off = mostSpecificOffMergePath([offMergePath, held?.offMergePath])
+          return off ? { offMergePath: off } : {}
+        })()),
       }
       const review = carried.items.length > 0
         ? formatGithubWakeSteer({ ref: key, items: carried.items, omitted: carried.omitted })
@@ -3340,8 +3453,9 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         target: key,
         ...(carried.checks ? { checks: carried.checks } : {}),
         ...(carried.changes?.length ? { changes: carried.changes } : {}),
+        ...(carried.offMergePath ? { offMergePath: carried.offMergePath } : {}),
         ...(review ? { review } : {}),
-      }), `pr-watch ${key}${carried.checks ? ` CI ${carried.checks.verdict}` : ""}${carried.changes?.length ? " state" : ""}${review ? " review" : ""}`, nowMs)
+      }), `pr-watch ${key}${carried.checks ? ` CI ${carried.checks.verdict}` : ""}${carried.offMergePath ? " left merge path" : carried.changes?.length ? " state" : ""}${review ? " review" : ""}`, nowMs)
       deps.storage.setPrWatchCursor(w.id, JSON.stringify({ ...nextCursor, report, held: carried }))
     }
   }
@@ -3448,6 +3562,12 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       ...(review ? { review } : {}),
     }), `issue-watch ${target}${carried.changes?.length ? " state" : ""}${review ? " comment" : ""}`, nowMs)
     deps.storage.setPrWatchCursor(w.id, JSON.stringify({ ...nextCursor, report, held: carried }))
+  }
+
+  function trackMissing(key: string, result: GithubReviewFetchResult, nowMs: number): void {
+    if (result.status === "error" && result.failure.kind === "not-found") {
+      if (!prWatchMissingSince.has(key)) prWatchMissingSince.set(key, nowMs)
+    } else prWatchMissingSince.delete(key)
   }
 
   /** The next report number for a watcher — ONE derivation, used both for the delivery id and for the

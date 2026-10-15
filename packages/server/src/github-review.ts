@@ -28,6 +28,7 @@ const ROLLUP_PAGE_SIZE = 100
 const ROLLUP_MAX_PAGES = 10
 const CHECK_SUITE_CAP = 50
 const LABEL_CAP = 30
+const MERGE_EXIT_CAP = 5
 const REVIEW_REQUEST_CAP = 20
 
 export interface GithubReviewRef {
@@ -70,6 +71,9 @@ export type GithubReviewFailureKind =
   | "http"
   | "graphql"
   | "shape"
+  // GitHub resolved the repository but not the number: the PR or issue was deleted, transferred, or is
+  // not visible to this token. Read off the error's own `path`, so it names exactly one ref in a batch.
+  | "not-found"
 
 export interface GithubReviewFailure {
   kind: GithubReviewFailureKind
@@ -98,6 +102,31 @@ export interface GithubPrSnapshot {
   labels: string[]
   /** Reviewers with a request outstanding — a user's login, or a team's name. */
   reviewRequests: string[]
+  /** Absent when the response did not say. A PR turned back into a draft cannot merge. */
+  isDraft?: boolean
+  /** Whether the PR sits in a merge queue right now, and where. Absent when the response did not say. */
+  queued?: { position?: number } | null
+  /** The PR's latest exits from the merge path that were NOT a merge — see `GithubPrMergeExit`. */
+  mergeExits: GithubPrMergeExit[]
+}
+
+/** A PR leaving the road to its merge without merging: GitHub's merge queue dropping it, or auto-merge
+ *  being switched off. Neither moves anything else the watcher reads — the PR's own checks stay green and
+ *  its merge state stays clean, because the checks that failed ran on the merge group's commit, not on the
+ *  head — so a worker parked on a queued PR slept straight through its PR bouncing out of the queue
+ *  (2026-10-14: removed for `failed_checks`, noticed by a human 2h25m later). These are read off the PR's
+ *  timeline, so each is an event with an id the cursor can mark.
+ *
+ *  `rollup` is the merge group's own check rollup, `dequeued` only. GitHub names that commit
+ *  `beforeCommit` on the event, and it is the `gh-readonly-queue/…` commit the queue tested — measured
+ *  against that PR, whose event's `beforeCommit` was the head SHA of the failed `merge_group` run. */
+export interface GithubPrMergeExit {
+  id: string
+  kind: "dequeued" | "auto-merge-off"
+  at?: string
+  reason?: string
+  actor?: string
+  rollup?: unknown[]
 }
 
 /** THE ISSUE ITSELF, from the same query — the issue twin of `GithubPrSnapshot`, and everything the
@@ -291,7 +320,40 @@ export function parseGithubPrSnapshot(pr: unknown): GithubPrSnapshot | undefined
       const r = n.requestedReviewer as Record<string, unknown> | undefined
       return r?.login ?? r?.name
     }),
+    ...(typeof p.isDraft === "boolean" ? { isDraft: p.isDraft } : {}),
+    ...("mergeQueueEntry" in p
+      ? { queued: p.mergeQueueEntry && typeof p.mergeQueueEntry === "object"
+        ? (Number.isFinite(p.mergeQueueEntry.position) ? { position: p.mergeQueueEntry.position as number } : {})
+        : null }
+      : {}),
+    mergeExits: parseMergeExits(p.timelineItems?.nodes),
   }
+}
+
+function parseMergeExits(nodes: unknown): GithubPrMergeExit[] {
+  return (Array.isArray(nodes) ? nodes : []).flatMap((node: unknown): GithubPrMergeExit[] => {
+    if (!node || typeof node !== "object") return []
+    const n = node as Record<string, any>
+    const kind = n.__typename === "RemovedFromMergeQueueEvent" ? "dequeued" as const
+      : n.__typename === "AutoMergeDisabledEvent" ? "auto-merge-off" as const
+      : undefined
+    if (!kind || typeof n.id !== "string" || !n.id) return []
+    // `reasonCode` first: it is the stable word (`manually_disabled`), where `reason` is GitHub's prose.
+    const reason = typeof n.reasonCode === "string" && n.reasonCode ? n.reasonCode : typeof n.reason === "string" && n.reason ? n.reason : undefined
+    // A queue that MERGES a PR also records it as removed, with this reason — 29 of the 31 removals on
+    // the last 100 bevyengine/bevy PRs. That is the merge, which the PR's own state reports.
+    if (kind === "dequeued" && reason?.toLowerCase() === "merged") return []
+    const actor = typeof n.actor?.login === "string" && n.actor.login ? n.actor.login as string : undefined
+    const contexts = n.beforeCommit?.statusCheckRollup?.contexts?.nodes
+    return [{
+      id: `${kind}:${n.id}`,
+      kind,
+      ...(typeof n.createdAt === "string" ? { at: n.createdAt as string } : {}),
+      ...(reason ? { reason } : {}),
+      ...(actor ? { actor } : {}),
+      ...(kind === "dequeued" && Array.isArray(contexts) ? { rollup: rollupEntries(contexts) } : {}),
+    }]
+  })
 }
 
 /** The comments on an ISSUE, in the `GithubReviewActivity` shape the watcher's cursor and steer already
@@ -361,7 +423,15 @@ function buildQuery(refs: GithubReviewRef[]): { query: string; variables: Record
     fields.push(`
       ref${index}: repository(owner: $owner${index}, name: $repo${index}) {
         pullRequest(number: $number${index}) {
-          state mergedAt mergeable reviewDecision
+          state mergedAt mergeable reviewDecision isDraft
+          mergeQueueEntry { position }
+          timelineItems(last: ${MERGE_EXIT_CAP}, itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT, AUTO_MERGE_DISABLED_EVENT]) { nodes {
+            __typename
+            ... on RemovedFromMergeQueueEvent { id createdAt reason actor { login }
+              beforeCommit { statusCheckRollup { contexts(first: ${ROLLUP_PAGE_SIZE}) { nodes {${ROLLUP_NODE_FIELDS}
+              } } } } }
+            ... on AutoMergeDisabledEvent { id createdAt reason reasonCode actor { login } }
+          } }
           reviews(last: 50) { nodes { id url state submittedAt body author { login __typename } } }
           comments(last: 50) { nodes { id url createdAt body author { login __typename } } }
           labels(first: ${LABEL_CAP}) { nodes { name } }
@@ -652,8 +722,18 @@ export function createGithubReviewFetcher(deps: GithubReviewFetcherDeps = {}): G
       }
     }
     const continuations: RollupContinuation[] = []
+    const notFound = new Map<string, string>()
+    for (const error of Array.isArray((body as any)?.errors) ? (body as any).errors : []) {
+      const alias = Array.isArray(error?.path) ? error.path[0] : undefined
+      if (error?.type === "NOT_FOUND" && typeof alias === "string") notFound.set(alias, typeof error.message === "string" ? error.message : "not found")
+    }
     refs.forEach((ref, index) => {
       const repository = (body as any)?.data?.[`ref${index}`]
+      const missing = notFound.get(`ref${index}`)
+      if (missing && !(ref.kind === "issue" ? repository?.issue : repository?.pullRequest)) {
+        results.set(refKey(ref), { status: "error", failure: { kind: "not-found", message: `GitHub: ${missing}` } })
+        return
+      }
       if (ref.kind === "issue") {
         const issue = repository?.issue
         if (!issue || typeof issue !== "object") {
