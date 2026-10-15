@@ -1,6 +1,6 @@
 import { createRoot } from "react-dom/client"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { COMMAND_WATCH_FALLBACK, commandWatchCancelledWakeMessage, commandWatchExpiredWakeMessage, commandWatchPassedWakeMessage, formatGithubWakeSteer, interruptEndedSubAgentsMessage, limitModelSwitchSteer, limitResumeSteer, mergedWakeMessage, ownWatchExpiredWakeMessage, parkExpiredWakeMessage, parkFinishedWakeMessage, PR_WATCH_ARMED_TRAILER, prWatchExpiredWakeMessage, prWatchWakeMessage, questionsCancelledWakeMessage, restPromptMessage, shellDoneMessage, timerPromptMessage } from "@frizz/shared"
+import { COMMAND_WATCH_FALLBACK, commandWatchCancelledWakeMessage, commandWatchExpiredWakeMessage, commandWatchPassedWakeMessage, formatGithubWakeSteer, interruptEndedSubAgentsMessage, limitModelSwitchSteer, limitResumeSteer, mergedWakeMessage, ownWatchExpiredWakeMessage, parkExpiredWakeMessage, parkFinishedWakeMessage, PR_WATCH_ARMED_TRAILER, prWatchExpiredWakeMessage, prWatchGoneWakeMessage, prWatchWakeMessage, questionsCancelledWakeMessage, restPromptMessage, shellDoneMessage, timerPromptMessage } from "@frizz/shared"
 import type { ChatMessage } from "./hooks.ts"
 import { Message } from "./components/ChatView.tsx"
 import "./styles.css"
@@ -140,6 +140,9 @@ const messages: ChatMessage[] = [
   // A REGISTERED WATCHER whose own `for:` ran out. The ref is the only thing on the line a reader can
   // act on, so it is the link.
   wake("w19", prWatchExpiredWakeMessage("nubjs/nub#777")),
+  // …and a watcher that settled because GitHub stopped resolving its PR: deleted, transferred, or out
+  // of the `gh` login's sight. The same line with its own sentence.
+  wake("w19a", prWatchGoneWakeMessage("nubjs/nub#777", "pull", 30)),
   // …and the same lapse on one of the worker's OWN waits, a `frizzctl watch` on a shell or a
   // sub-agent. It had no parser and was the other wake still drawing the verbatim card on 2026-10-11.
   wake("w19b", ownWatchExpiredWakeMessage("shell", "bzvtnt3ig")),
