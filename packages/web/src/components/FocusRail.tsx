@@ -263,13 +263,27 @@ export function FocusRail({ thread }: { thread: ThreadView }) {
     // `thread-rail` exists only on this page, so on the fullscreen door's view transition it has no
     // old counterpart and plays the enter animation in styles.css (slides in from the right).
     //
-    // The vertical centering is the CHILD's `my-auto`, never `justify-center` on this scroll container:
-    // centering the flex line clips whatever overflows it ABOVE the scroll origin, so a rail taller
-    // than the window lost its top padding and its first rows to pixels no scrollbar could reach
-    // (maintainer 2026-09-02, a 22-file list opening flush at the window edge). Auto margins center
-    // identically while there is room and collapse to zero when there is not.
+    // ANCHORED TO THE TOP whenever it lists anything, the rule the queue column and the sidebar follow
+    // (maintainer 2026-10-13: "Anchor both to the top"; TodosView, Sidebar.tsx). It was centred in the
+    // window, and a centred column turns every height change into a move of everything in it: a
+    // background shell starting under a running sub-agent moved the Sub-agents group up 26px, and the
+    // shell finishing moved it back (layout sweep, 2026-10-14). Top-anchored, a group coming or going
+    // moves only the groups below it.
+    //
+    // ON THE LINE THE TRANSCRIPT OPENS ON: the first heading's top is the thread header's bottom edge
+    // (48px) plus the transcript's own 20px top padding (ChatView paddingStart), 68px, which is the
+    // queue's rule of starting a column level with its neighbour's first content (Sidebar.tsx, 52px).
+    // `pt-14` is 56px, and the table's own `mt-3` (WaitGrid) is the other 12. Measured at 1400x900:
+    // heading top 68, header bottom 48. The rail is hidden below the `split` width, so 1200px and
+    // narrower have no reading to take.
+    //
+    // The EMPTY state keeps its centring, as the queue's do: one line of quiet text in the middle of an
+    // empty pane, with nothing beside it to shove. That centring is the child's `my-auto`, never
+    // `justify-center` on this scroll container: centering the flex line clips whatever overflows it
+    // ABOVE the scroll origin (maintainer 2026-09-02, a 22-file list opening flush at the window edge),
+    // where auto margins collapse to zero when there is no room.
     <aside data-focus-rail aria-label="Thread activity" className="flex h-full shrink-0 flex-col overflow-y-auto px-4 [view-transition-name:thread-rail]" style={{ width: RAIL_WIDTH }}>
-      <div className="my-auto py-6">
+      <div className={groups.length === 0 ? "my-auto py-6" : "pb-6 pt-14"}>
         {groups.length === 0
           ? <div className="text-[11.5px] text-muted-50">Nothing running, watched or edited yet.</div>
           : <WaitGrid groups={groups} divider={false} />}
