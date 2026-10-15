@@ -115,7 +115,7 @@ export interface NormalizedTail {
   restFromAt?: string
   // When Frizz last delivered a ```question fence correction — see FoldState.questionCorrectedAt.
   questionCorrectedAt?: string
-  lastUserText?: string // latest genuine human message (used to confirm wake-token delivery)
+  lastUserText?: string // the newest drawn user turn's text, Frizz's deliveries included (confirms wake-token delivery)
   // The FIRST genuine human turn. Read by the board to NAME an external session whose harness has not
   // named it — see foreignThreadView. Optional everywhere: a transcript with no human turn has none.
   firstUserText?: string
@@ -190,7 +190,9 @@ export interface FoldState {
   // A generated signal or provider-native title is final for automatic naming (manual titles are
   // guarded separately by storage's title_auto CAS).
   autoTitleSource?: "fallback" | "frizz" | "native"
-  lastUserAt?: string // ISO8601 of the newest GENUINE (non-synthetic) human turn — the listing sort key
+  // ISO8601 of the newest non-synthetic user turn — the human's, or a delivery of Frizz's (a wake, an
+  // answer, a steer). The row-order key; `restFromAt` below is when the HUMAN last typed.
+  lastUserAt?: string
   // WHEN THE HUMAN LAST TYPED A MESSAGE TO THIS THREAD (shared isHumanTypedMessage) — the boundary an
   // open question stands across (question-fences.ts standingQuestions). Unlike `lastUserAt` it does NOT
   // move for anything Frizz delivers: a wake of any kind, a correction, a Goal prompt, an answer's
@@ -209,7 +211,7 @@ export interface FoldState {
   // inside a merged delivery). Every fault in a message older than this has been told to the worker, so
   // SOURCE 14 reports only the ones after it.
   questionCorrectedAt?: string
-  lastUserText?: string // exact text of that genuine human turn when the backend records it
+  lastUserText?: string // exact text of that same turn when the backend records it — a wake's carries its delivery token
   // The FIRST genuine human turn, kept forever — set once and never overwritten. It is what names an
   // EXTERNAL session (one of the human's own terminals) when its harness has not named it: both
   // Claude Code's and Codex's own resume pickers fall back to exactly this, verified by driving each

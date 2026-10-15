@@ -8,7 +8,7 @@ import { dirname, join } from "node:path"
 import { createStorage, type Storage, type SessionRow } from "./storage.ts"
 import { Bus } from "./bus.ts"
 import type { CodexModel, ServerEvent } from "@frizz/shared"
-import { AwaitingHint, QUESTION_FENCE_RETIRED_AT } from "@frizz/shared"
+import { AwaitingHint, QUESTION_FENCE_RETIRED_AT, shellDoneMessage, wakeDeliveryToken } from "@frizz/shared"
 import { permMarkerPath, type Project } from "./project.ts"
 import { degradeIfAwaitingAnswer, deriveNeedsYou } from "./board.ts"
 import { parseLine, applyRecord, applyEvent, computeTurn, newTailState, createTailer, shellProbeTtlMs, defaultBrokerDaemonAlive, hasQuestionBlock, isClaudeAuthErrorText, isRealUserMessage, parseSignalFence, markerDecision, pendingCallDeadline, unwrapShellCommand, FOREIGN_FRESH_MS, parseWindowsShellHolderReport, probeShellsAlive, probeShellVerdicts, findShellProcesses, windowsShellHolderCommand, type ShellLaunch, type ShellVerdict } from "./tailer.ts"
@@ -409,6 +409,55 @@ test("applyEvent: a synthetic turn cannot answer the agent's question; a genuine
   assert.equal(s.lastAssistantHasQuestion, true, "a peer message / notification answers nothing")
   applyEvent(s, { kind: "user-message", at: "2026-07-01T00:00:09.000Z", text: "B", synthetic: false })
   assert.equal(s.lastAssistantHasQuestion, false, "the human answered — the row leaves the queue")
+})
+
+// A wake is a user turn the chat draws, so it passed the gate above — and cleared the legacy ```question
+// flag of a thread dispatched before QUESTION_FENCE_RETIRED_AT, which then sat in the Active rail with its
+// question on screen for as long as the worker took over a shell's completion. Only the human typing
+// answers it; the wake still moves the row-order key and its delivery-confirmation text.
+test("a Frizz wake cannot answer a legacy ```question; the human typing does, on both folds", () => {
+  const ask = "```question\nA or B?\n```"
+  const wake = `${shellDoneMessage({ taskId: "bzvt", label: "the suite", status: "completed" })}\n\n${wakeDeliveryToken("w1")}`
+  const s = newTailState("t", "sid", "/x")
+  applyRecord(s, { type: "user", timestamp: "2026-07-01T00:00:00.000Z", message: { content: "move the settings" } })
+  applyRecord(s, { type: "assistant", timestamp: "2026-07-01T00:00:01.000Z", message: { stop_reason: "end_turn", content: [{ type: "text", text: ask }] } })
+  applyRecord(s, { type: "user", timestamp: "2026-07-01T00:00:05.000Z", message: { content: wake } })
+  assert.equal(s.lastAssistantHasQuestion, true, "a shell's completion answers nothing")
+  assert.equal(s.lastUserAt, "2026-07-01T00:00:05.000Z", "the wake still moves the row-order key")
+  applyRecord(s, { type: "user", timestamp: "2026-07-01T00:00:09.000Z", message: { content: "B" } })
+  assert.equal(s.lastAssistantHasQuestion, false, "the human answered")
+
+  const c = newTailState("c", "sid", "/x")
+  applyEvent(c, { kind: "user-message", at: "2026-07-01T00:00:00.000Z", text: "move the settings", synthetic: false })
+  applyEvent(c, { kind: "assistant-text", at: "2026-07-01T00:00:01.000Z", text: ask, final: true })
+  applyEvent(c, { kind: "user-message", at: "2026-07-01T00:00:05.000Z", text: wake, synthetic: false })
+  assert.equal(c.lastAssistantHasQuestion, true, "a shell's completion answers nothing (normalized)")
+  assert.equal(c.lastUserAt, "2026-07-01T00:00:05.000Z")
+  assert.equal(c.lastUserText, wake, "delivery confirmation still sees the wake's token")
+  applyEvent(c, { kind: "user-message", at: "2026-07-01T00:00:09.000Z", text: "B", synthetic: false })
+  assert.equal(c.lastAssistantHasQuestion, false, "the human answered (normalized)")
+})
+
+// The runtime merges a message queued behind a running turn into the record that delivers it, and one
+// queued AHEAD of a wake reads as part of that wake. The queue's own record is what says the human typed —
+// and when: a message written before the question existed is not a reply to it.
+test("a message queued ahead of a wake answers a legacy ```question; one queued before it was asked does not", () => {
+  const ask = "```question\nA or B?\n```"
+  const wake = `${shellDoneMessage({ taskId: "bzvt", label: "the suite", status: "completed" })}\n\n${wakeDeliveryToken("w1")}`
+  const enqueue = (timestamp: string, content: string) => ({ type: "queue-operation", operation: "enqueue", timestamp, sessionId: "sid", content })
+  const s = newTailState("t", "sid", "/x")
+  applyRecord(s, { type: "user", timestamp: "2026-07-01T00:00:00.000Z", message: { content: "move the settings" } })
+  applyRecord(s, { type: "assistant", timestamp: "2026-07-01T00:00:01.000Z", message: { stop_reason: "end_turn", content: [{ type: "text", text: ask }] } })
+  applyRecord(s, enqueue("2026-07-01T00:00:02.000Z", "B"))
+  applyRecord(s, { type: "user", timestamp: "2026-07-01T00:00:05.000Z", message: { content: `B\n${wake}` } })
+  assert.equal(s.lastAssistantHasQuestion, false, "the human typed B after the question")
+
+  const v = newTailState("v", "sid", "/x")
+  applyRecord(v, { type: "user", timestamp: "2026-07-01T00:00:00.000Z", message: { content: "move the settings" } })
+  applyRecord(v, enqueue("2026-07-01T00:00:01.000Z", "also bump the version"))
+  applyRecord(v, { type: "assistant", timestamp: "2026-07-01T00:00:02.000Z", message: { stop_reason: "end_turn", content: [{ type: "text", text: ask }] } })
+  applyRecord(v, { type: "user", timestamp: "2026-07-01T00:00:05.000Z", message: { content: "also bump the version" } })
+  assert.equal(v.lastAssistantHasQuestion, true, "typed before the question existed: still owed")
 })
 
 test("applyEvent: a compaction is harness motion — it advances the clock but moves no turn, preview or fence", () => {
