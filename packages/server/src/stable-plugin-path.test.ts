@@ -1,9 +1,11 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, renameSync, symlinkSync, writeFileSync } from "node:fs"
+import { spawnSync } from "node:child_process"
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { isAbsolute, join } from "node:path"
-import { defaultPluginStageRoot, defaultStablePluginRoot, ensureSymlink, pluginContentDigest, pluginFingerprint, stageStablePluginDir } from "./stable-plugin-path.ts"
+import { dirname, isAbsolute, join, resolve } from "node:path"
+import { fileURLToPath } from "node:url"
+import { WORKER_PLUGIN_SIBLINGS, defaultPluginStageRoot, defaultStablePluginRoot, ensureSymlink, pluginContentDigest, pluginFingerprint, stageStablePluginDir } from "./stable-plugin-path.ts"
 
 const tmp = (prefix: string) => mkdtempSync(join(tmpdir(), prefix))
 
@@ -127,6 +129,24 @@ test("staging leaves no pending scratch behind", () => {
   assert.deepEqual(readdirSync(defaultPluginStageRoot(home)).sort(), ["0.1.1"], "only the version directory survives")
 })
 
+// A sibling the plugin imports from is staged beside it, so `../../../board/x.mjs` from a staged shim
+// lands on the staged board. A version staged by a server that predates siblings has the plugin alone,
+// and must be completed rather than accepted as staged.
+test("staging carries the plugin's siblings, and completes a version staged without them", () => {
+  const dir = tmp("frizz-stage-")
+  const home = join(dir, "home")
+  const source = plugin(join(dir, "src"), "v1")
+  mkdirSync(join(dir, "src", "board"))
+  writeFileSync(join(dir, "src", "board", "config.mjs"), "export const board = 1\n")
+
+  const old = stageStablePluginDir({ source, version: "0.1.1", home })
+  assert.ok(!existsSync(join(dirname(old.stagedPath), "board")), "the fixture: a version staged with no siblings")
+
+  const result = stageStablePluginDir({ source, version: "0.1.1", home, siblings: ["board"] })
+  assert.equal(readFileSync(join(dirname(result.stagedPath), "board", "config.mjs"), "utf8"), "export const board = 1\n")
+  assert.deepEqual(readdirSync(defaultPluginStageRoot(home)).sort(), ["0.1.1"], "and no pending scratch survives")
+})
+
 // The version becomes a directory name under the user's home; it is never allowed to escape it.
 test("stageStablePluginDir rejects a version that could escape the stage root", () => {
   const dir = tmp("frizz-stage-")
@@ -165,6 +185,13 @@ test("pluginContentDigest is the content's identity: same bytes, same digest, wh
   const renamed = plugin(join(dir, "three"), "v1")
   renameSync(join(renamed, "hooks", "stop.mjs"), join(renamed, "hooks", "halt.mjs"))
   assert.notEqual(pluginContentDigest(one), pluginContentDigest(renamed), "and so is the same bytes under another name")
+
+  mkdirSync(join(dir, "one", "board"))
+  writeFileSync(join(dir, "one", "board", "config.mjs"), "// a\n")
+  const withBoard = pluginContentDigest(one, ["board"])
+  assert.notEqual(withBoard, pluginContentDigest(one), "a sibling staged with the plugin is part of its identity")
+  writeFileSync(join(dir, "one", "board", "config.mjs"), "// b\n")
+  assert.notEqual(pluginContentDigest(one, ["board"]), withBoard, "so an edit to the sibling is a different plugin")
 })
 
 // The two ways a running worker's plugin moves, and the fingerprint has to see both.
@@ -194,4 +221,74 @@ test("pluginFingerprint moves when a checkout's plugin is edited in place", () =
 
 test("pluginFingerprint is undefined for a plugin that cannot be read", () => {
   assert.equal(pluginFingerprint(join(tmp("frizz-fingerprint-"), "gone")), undefined)
+})
+
+// ---- the real plugin, staged ---------------------------------------------------------------------
+
+const repoRoot = fileURLToPath(new URL("../../../", import.meta.url))
+
+/** Every relative import reachable from the plugin's own files, followed into whatever they reach. */
+function unresolvedImports(pluginDir: string): string[] {
+  const queue: string[] = []
+  const walk = (dir: string): void => {
+    for (const name of readdirSync(dir)) {
+      const path = join(dir, name)
+      if (statSync(path).isDirectory()) walk(path)
+      else if (/\.(mjs|cjs|js)$/.test(name)) queue.push(path)
+    }
+  }
+  walk(pluginDir)
+  const seen = new Set<string>()
+  const missing: string[] = []
+  for (let file = queue.shift(); file; file = queue.shift()) {
+    if (seen.has(file)) continue
+    seen.add(file)
+    for (const [, spec] of readFileSync(file, "utf8").matchAll(/(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)['"](\.\.?\/[^'"]+)['"]/g)) {
+      const target = resolve(dirname(file), spec!)
+      if (existsSync(target)) queue.push(target)
+      else missing.push(`${file.slice(pluginDir.length)} imports ${spec}`)
+    }
+  }
+  return missing
+}
+
+// The hooks that import the board through `scripts/frizz/*.mjs`. Run without FRIZZ_THREAD, each is
+// inert and exits 0 — once its imports have loaded, which is the part under test.
+const BOARD_HOOKS: Array<[string, string[]]> = [
+  ["session-seed.mjs", []],
+  ["scratchpad.mjs", ["--mode=nudge", "--event=PostToolUse"]],
+  ["agent-bind.mjs", []],
+]
+
+function runHook(pluginDir: string, hook: string, args: string[], home: string) {
+  return spawnSync(process.execPath, [join(pluginDir, "hooks", hook), ...args], {
+    input: "{}",
+    encoding: "utf8",
+    env: { PATH: process.env.PATH ?? "", HOME: home, CLAUDE_PROJECT_DIR: home },
+  })
+}
+
+// The bug this pins ran from 2026-10-11 to 2026-10-15: the staged copy held cc-worker alone, so every
+// hook that reaches the board died on its first import in every worker, and Claude reported each
+// failure as non-blocking.
+test("the real worker plugin, staged, loads everything it imports", () => {
+  const dir = tmp("frizz-stage-real-")
+  const home = join(dir, "home")
+  mkdirSync(home)
+  const source = join(repoRoot, "cc-worker")
+  const version = pluginContentDigest(source, WORKER_PLUGIN_SIBLINGS)
+
+  const { stablePath, stagedPath } = stageStablePluginDir({ source, version, siblings: WORKER_PLUGIN_SIBLINGS, home })
+  assert.deepEqual(unresolvedImports(stagedPath), [], "a relative import leaves the plugin for a directory WORKER_PLUGIN_SIBLINGS does not name")
+  for (const [hook, args] of BOARD_HOOKS) {
+    const result = runHook(stablePath, hook, args, home)
+    assert.equal(result.status, 0, `${hook}: ${result.stderr}`)
+    assert.doesNotMatch(result.stderr, /ERR_MODULE_NOT_FOUND/, hook)
+  }
+
+  // The negative control: the same plugin staged without its siblings is the copy workers were given.
+  const bare = stageStablePluginDir({ source, version: `${version}-bare`, home: join(dir, "bare-home") })
+  assert.notDeepEqual(unresolvedImports(bare.stagedPath), [])
+  assert.match(runHook(bare.stagedPath, "agent-bind.mjs", [], home).stderr, /ERR_MODULE_NOT_FOUND/)
+  rmSync(dir, { recursive: true, force: true })
 })

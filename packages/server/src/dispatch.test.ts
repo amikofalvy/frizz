@@ -249,13 +249,16 @@ test("artifact worker resolver finds runtime/cc-worker through pnpm's nested mod
 
 // ---- the path a worker is LAUNCHED against (launchableWorkerPluginDir) ----
 
-/** A plugin as an artifact carries it: found at a version-specific path the launcher names. */
+/** A plugin as an artifact carries it: found at a version-specific path the launcher names, with the
+ *  board it imports beside it (`runtime/board`, as scripts/prepare-package.mjs lays it out). */
 function artifactPlugin(root: string, marker: string): string {
   const dir = join(root, "runtime", "cc-worker")
   mkdirSync(join(dir, ".claude-plugin"), { recursive: true })
   mkdirSync(join(dir, "hooks"), { recursive: true })
+  mkdirSync(join(root, "runtime", "board"), { recursive: true })
   writeFileSync(join(dir, ".claude-plugin", "plugin.json"), "{}\n")
   writeFileSync(join(dir, "hooks", "hooks.json"), JSON.stringify({ marker }))
+  writeFileSync(join(root, "runtime", "board", "config.mjs"), `// ${marker}\n`)
   return dir
 }
 
@@ -656,7 +659,7 @@ test("end-state contract: a fenceless rest is a DEFECT, done checks, awaiting pa
     // is the counter-pull that pushed zod #6022 away from a question. It only holds where the worker
     // CAN act; under a read-only boundary the recommendation IS the question, never a silent `done`.
     assert.match(c, /knowing the answer and being ABLE TO ACT ON IT come apart/)
-    assert.match(c, /It becomes the QUESTION, with the recommendation as option 1/)
+    assert.match(c, /It becomes the QUESTION, with the recommendation as option A/)
     // The planning thread type derives the same carve-out where a worker reads its deliverable —
     // codex-only now, since claude's lean contract drops ## Thread types. Claude still carries the
     // rule itself in End-of-turn signals (FULLY written and PERSISTED, asserted above).
