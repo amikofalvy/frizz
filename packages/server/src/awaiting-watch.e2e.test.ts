@@ -861,6 +861,16 @@ test("a PR already back in the queue, auto-merge switched off, and a return to d
     assert.doesNotMatch(h.delivered[0], /nothing will merge it now/)
     h.delivered.length = 0
 
+    // Dropped over a conflict: still stuck, but no merge group failed, so nothing to say about one.
+    h.setQueued(null)
+    h.setMergeExits([dropped(h.justNow(), { id: "dequeued:RFMQE_2", reason: "merge_conflict", rollup: [] })])
+    await h.tick()
+    assert.equal(h.delivered.length, 1)
+    assert.match(h.delivered[0], /REMOVED from the merge queue \(merge conflict\)\./)
+    assert.match(h.delivered[0], /nothing will merge it now\. Find out why it left/)
+    assert.doesNotMatch(h.delivered[0], /gh-readonly-queue|those failures/)
+    h.delivered.length = 0
+
     // Auto-merge off in a repo with no queue is the same dead end.
     h.setQueued(undefined)
     h.setMergeExits([{ id: "auto-merge-off:AMDE_1", kind: "auto-merge-off", at: h.justNow(), reason: "MERGE_CONFLICT", actor: "bob" }])

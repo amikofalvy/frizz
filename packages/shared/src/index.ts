@@ -1506,6 +1506,13 @@ const LEGACY_ISSUE_WATCH_ARMED_TRAILER = "(Registered issue watcher — STILL AR
   + " assignee change, and once more when the issue closes. Drop it with `mcp__frizz__watch_issue` when"
   + " it stops mattering.)"
 
+/** How a watched PR left the road to its merge, which decides the next step its wake names:
+ *  - `queue-failed` — the merge queue dropped it over checks that ran on the merge group's own commit, so
+ *    the PR head can still read green; the one case that explains that commit.
+ *  - `dequeued` — it left the queue another way: a conflict, or removed by hand.
+ *  - `auto-merge-off` — auto-merge was switched off; there may be no queue at all. */
+export type OffMergePath = "queue-failed" | "dequeued" | "auto-merge-off"
+
 /** What frizz delivers when a REGISTERED PR WATCHER has something to report.
  *
  *  Two things can move and the message names which: CI reaching a terminal verdict, and new review or
@@ -1537,10 +1544,9 @@ export function prWatchWakeMessage(input: {
    *  ONE LINE for all of them, joined with semicolons, because each is a clause and not a headline: a
    *  separate line per fact would give a label edit the same weight as a red build. */
   changes?: string[]
-  /** One of `changes` says the PR left the merge queue (`dequeued`), or lost auto-merge, without merging
-   *  and is not back in the queue. Adds the paragraph that says what to do about it; only a queue exit
-   *  gets the sentence about the merge group's commit, since auto-merge going off has none. */
-  offMergePath?: "dequeued" | "auto-merge-off"
+  /** One of `changes` says the PR left the merge path without merging and is not back in the queue.
+   *  Adds the paragraph that says what to do about it — see `OffMergePath`. */
+  offMergePath?: OffMergePath
   review?: string
   merged?: boolean
   closed?: boolean
@@ -1587,12 +1593,14 @@ export function prWatchWakeMessage(input: {
       lines.push(
         "",
         "It did NOT merge, and nothing will merge it now. "
-          + (input.offMergePath === "dequeued"
+          + (input.offMergePath === "queue-failed"
             ? "A merge queue tests the PR merged onto its base in a separate `gh-readonly-queue/…` commit, so"
-              + " those failures do not show on the PR head, whose checks can still read green. Find out why it"
-              + " left, then fix it and put it back"
-              + (command ? ` (${command} re-queues it, or re-enables auto-merge)` : "")
-            : "Find out why auto-merge went off, then fix it and turn it back on" + (command ? ` (${command})` : ""))
+              + " those failures do not show on the PR head, whose checks can still read green. "
+            : "")
+          + (input.offMergePath === "auto-merge-off"
+            ? "Find out why auto-merge went off, then fix it and turn it back on" + (command ? ` (${command})` : "")
+            : "Find out why it left, then fix it and put it back"
+              + (command ? ` (${command} re-queues it, or re-enables auto-merge)` : ""))
           + " if it is yours to land, or tell whoever owns it if it is not.",
       )
     }

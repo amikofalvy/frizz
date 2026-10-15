@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 import { createHash, randomUUID } from "node:crypto"
-import { awaitingNeedsInput, needsInputRequired, DONE_FENCE_CORRECTION_LEAD, doneOverOpenQuestionsBody, type DoneBlockingQuestion, questionFencesLive, PARK_CORRECTION_NAMES_LEAD, PARK_CORRECTION_NEEDS_INPUT_LEAD, PARK_CORRECTION_RETIRED_LEAD, interruptEndedSubAgentsMessage, type InterruptEndedSubAgent, parkExpiredWakeMessage, parkFinishedWakeMessage, prWatchExpiredWakeMessage, ownWatchExpiredWakeMessage, commandWatchPassedWakeMessage, commandWatchExpiredWakeMessage, commandWatchCancelledWakeMessage, questionAnswerMessage, questionsCancelledWakeMessage, type QuestionAnswer, type QuestionDismissal, RETIRED_AWAITING_REPLACEMENT, retiredAwaitingKindsIn, compactionPromptMessage, limitResumeSteer, limitModelSwitchSteer, formatGithubWakeSteer, GithubWakeItem, type GithubWatchStatus, type GithubIssueStatus, prWatchWakeMessage, prWatchGoneWakeMessage, issueWatchWakeMessage, shellDoneMessage, restPromptMessage, schedulePromptMessage, timerPromptMessage, signoffNudgeMessage, type SignoffLiveOps, liveOpsLines, mergedWakeMessage, wakeDeliveryToken, wakeTimeHeader, stripWakeTimeHeader, type QuotaSnapshot } from "@frizz/shared"
+import { awaitingNeedsInput, needsInputRequired, DONE_FENCE_CORRECTION_LEAD, doneOverOpenQuestionsBody, type DoneBlockingQuestion, questionFencesLive, PARK_CORRECTION_NAMES_LEAD, PARK_CORRECTION_NEEDS_INPUT_LEAD, PARK_CORRECTION_RETIRED_LEAD, interruptEndedSubAgentsMessage, type InterruptEndedSubAgent, parkExpiredWakeMessage, parkFinishedWakeMessage, prWatchExpiredWakeMessage, ownWatchExpiredWakeMessage, commandWatchPassedWakeMessage, commandWatchExpiredWakeMessage, commandWatchCancelledWakeMessage, questionAnswerMessage, questionsCancelledWakeMessage, type QuestionAnswer, type QuestionDismissal, RETIRED_AWAITING_REPLACEMENT, retiredAwaitingKindsIn, compactionPromptMessage, limitResumeSteer, limitModelSwitchSteer, formatGithubWakeSteer, GithubWakeItem, type GithubWatchStatus, type GithubIssueStatus, prWatchWakeMessage, prWatchGoneWakeMessage, issueWatchWakeMessage, shellDoneMessage, restPromptMessage, schedulePromptMessage, timerPromptMessage, signoffNudgeMessage, type SignoffLiveOps, liveOpsLines, mergedWakeMessage, type OffMergePath, wakeDeliveryToken, wakeTimeHeader, stripWakeTimeHeader, type QuotaSnapshot } from "@frizz/shared"
 import { autonomousGoalOf, questionFenceCorrection, QUESTION_FENCES_REGISTER_FROM, standingQuestions, syncQuestionFences, type QuestionFaultBook } from "./question-fences.ts"
 import { GITHUB_ISSUE_STATUS_SETTING, GITHUB_STATUS_SETTING, liveActivityOf, parkExpiresAt, parkIsHonoured, parkOnHuman, readAwaitingPark, unaccountedItems } from "./awaiting.ts"
 import type { CommandWatchRow, PrWatchRow, SessionRow, Storage, ThreadQuestionRow } from "./storage.ts"
@@ -293,27 +293,47 @@ export function failedCheckNames(rollup: RollupEntry[], runs: WorkflowRun[] = []
   return { names: names.slice(0, cap), omitted: Math.max(0, names.length - cap) }
 }
 
+/** Least specific first: the paragraph for a later one says everything an earlier one's does. */
+const OFF_MERGE_PATHS: readonly OffMergePath[] = ["auto-merge-off", "dequeued", "queue-failed"]
+function mostSpecificOffMergePath(paths: (OffMergePath | undefined)[]): OffMergePath | undefined {
+  return paths.reduce<OffMergePath | undefined>(
+    (best, p) => (p && (best === undefined || OFF_MERGE_PATHS.indexOf(p) > OFF_MERGE_PATHS.indexOf(best)) ? p : best),
+    undefined,
+  )
+}
+
 /** One clause of the state line for a merge-path exit — what happened, who did it when it was not GitHub
  *  itself, GitHub's reason, and for a queue that failed the PR, the merge-group checks that failed. The
  *  names are the point: they ran on the `gh-readonly-queue/…` commit, so nothing on the PR names them. */
 export function mergeExitClause(exit: GithubPrMergeExit, queued: { position?: number } | null | undefined): string {
   const by = exit.actor && !/^github-merge-queue(\[bot\])?$/.test(exit.actor) ? ` by @${exit.actor}` : ""
   const reason = exit.reason?.toLowerCase().replace(/_/g, " ")
-  // The jobs that FAILED before the ones that were CANCELLED, which `failedCheckNames` counts as failed
-  // too. A merge group fails fast — one job goes red and the queue cancels the rest — so in rollup order
-  // the cancellations fill the cap and the cause is counted in "+N more": bytecodealliance/wasmtime#14375
-  // (2026-09-22) had 26 cancelled jobs and 1 failure, listed 14th.
-  const rollup = (exit.rollup ?? []) as RollupEntry[]
-  const cancelled = (c: RollupEntry) => c?.conclusion === "CANCELLED"
-  const failed = exit.kind === "dequeued"
-    ? failedCheckNames([...rollup.filter((c) => !cancelled(c)), ...rollup.filter(cancelled)])
-    : { names: [], omitted: 0 }
+  const failed = mergeGroupFailures(exit)
   const detail = failed.names.length
     ? `${reason ?? "failed checks"}: ${failed.names.join(", ")}${failed.omitted ? `, +${failed.omitted} more` : ""}`
     : reason
   const what = exit.kind === "dequeued" ? "REMOVED from the merge queue" : "auto-merge turned OFF"
   const back = queued ? `, and is back in the queue${queued.position ? ` at position ${queued.position}` : ""}` : ""
   return `${what}${by}${detail ? ` (${detail})` : ""}${back}`
+}
+
+/** Which next step an exit calls for — see `OffMergePath`. A queue exit counts as failed on GitHub's own
+ *  reason or on a failed check in its merge group (a PR removed by hand while a job was red). */
+export function offMergePathOf(exit: GithubPrMergeExit): OffMergePath {
+  if (exit.kind !== "dequeued") return "auto-merge-off"
+  return exit.reason?.toLowerCase() === "failed_checks" || mergeGroupFailures(exit).names.length > 0 ? "queue-failed" : "dequeued"
+}
+
+function mergeGroupFailures(exit: GithubPrMergeExit): { names: string[]; omitted: number } {
+  // The jobs that FAILED before the ones that were CANCELLED, which `failedCheckNames` counts as failed
+  // too. A merge group fails fast — one job goes red and the queue cancels the rest — so in rollup order
+  // the cancellations fill the cap and the cause is counted in "+N more": bytecodealliance/wasmtime#14375
+  // (2026-09-22) had 26 cancelled jobs and 1 failure, listed 14th.
+  const rollup = (exit.rollup ?? []) as RollupEntry[]
+  const cancelled = (c: RollupEntry) => c?.conclusion === "CANCELLED"
+  return exit.kind === "dequeued"
+    ? failedCheckNames([...rollup.filter((c) => !cancelled(c)), ...rollup.filter(cancelled)])
+    : { names: [], omitted: 0 }
 }
 
 // ---- WHAT A WATCHED PR'S CHECKS LOOK LIKE FROM OUTSIDE ------------------------------------------
@@ -2895,7 +2915,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   /** WHAT THE WATCHER'S LATEST REPORT SAYS, structurally — the inputs its message was built from — so a
    *  poll that finds more news while that report is still waiting can mint one that says all of it
    *  (see the re-mint in evalPrWatches). Written at every mint; read only while a report is undelivered. */
-  interface PrWatchHeld { items: GithubWakeItem[]; omitted: number; checks?: PrWatchChecks; changes?: string[]; offMergePath?: GithubPrMergeExit["kind"] }
+  interface PrWatchHeld { items: GithubWakeItem[]; omitted: number; checks?: PrWatchChecks; changes?: string[]; offMergePath?: OffMergePath }
   /** `merge`, `labels` and `reviewers` are the PR's own state as of the last poll, and they are a
    *  BASELINE before they are a trigger: absent (a watcher armed before 2026-09-04, or a poll that fell
    *  back to `gh`, which does not fetch them) means "not known", so the next poll records them and says
@@ -2948,7 +2968,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     const changes = Array.isArray(h.changes) ? h.changes.filter((x: unknown): x is string => typeof x === "string") : undefined
     return {
       items, omitted: Number(h.omitted) || 0, ...(checks ? { checks } : {}), ...(changes?.length ? { changes } : {}),
-      ...(h.offMergePath === "dequeued" || h.offMergePath === "auto-merge-off" ? { offMergePath: h.offMergePath } : {}),
+      ...((OFF_MERGE_PATHS as readonly unknown[]).includes(h.offMergePath) ? { offMergePath: h.offMergePath as OffMergePath } : {}),
     }
   }
 
@@ -3355,10 +3375,10 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         return Number.isFinite(at) && at > w.created_at
       })
       changes.push(...freshExits.map((e) => mergeExitClause(e, prMeta?.queued)))
-      // WHICH road it left, because the next step differs: only a queue exit has a merge group whose failed
-      // checks the PR head does not show. Auto-merge going off in a repo with no queue has none.
-      const offMergePath = freshExits.length === 0 || prMeta?.queued ? undefined
-        : freshExits.some((e) => e.kind === "dequeued") ? "dequeued" as const : "auto-merge-off" as const
+      // WHICH road it left, because the next step differs: only a queue that FAILED the PR has a merge group
+      // whose failed checks the PR head does not show. A conflict, a removal by hand, or auto-merge going
+      // off in a repo with no queue has none, and saying "those failures" there points at nothing.
+      const offMergePath = prMeta?.queued ? undefined : mostSpecificOffMergePath(freshExits.map(offMergePathOf))
 
       const nextCursor: PrWatchCursor = {
         seen: acts ? [...new Set([...cursor.seen, ...acts.map((a) => a.id)])].slice(-REVIEW_SEEN_CAP) : cursor.seen,
@@ -3418,9 +3438,9 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
           const merged = [...new Set(all)]
           return merged.length ? { changes: merged } : {}
         })()),
-        // A queue exit in either report decides the paragraph: it says everything the auto-merge one does.
+        // The most specific exit in either report decides the paragraph: each says what the ones below it do.
         ...((() => {
-          const off = offMergePath === "dequeued" || held?.offMergePath === "dequeued" ? "dequeued" : offMergePath ?? held?.offMergePath
+          const off = mostSpecificOffMergePath([offMergePath, held?.offMergePath])
           return off ? { offMergePath: off } : {}
         })()),
       }
