@@ -249,13 +249,16 @@ test("artifact worker resolver finds runtime/cc-worker through pnpm's nested mod
 
 // ---- the path a worker is LAUNCHED against (launchableWorkerPluginDir) ----
 
-/** A plugin as an artifact carries it: found at a version-specific path the launcher names. */
+/** A plugin as an artifact carries it: found at a version-specific path the launcher names, with the
+ *  board it imports beside it (`runtime/board`, as scripts/prepare-package.mjs lays it out). */
 function artifactPlugin(root: string, marker: string): string {
   const dir = join(root, "runtime", "cc-worker")
   mkdirSync(join(dir, ".claude-plugin"), { recursive: true })
   mkdirSync(join(dir, "hooks"), { recursive: true })
+  mkdirSync(join(root, "runtime", "board"), { recursive: true })
   writeFileSync(join(dir, ".claude-plugin", "plugin.json"), "{}\n")
   writeFileSync(join(dir, "hooks", "hooks.json"), JSON.stringify({ marker }))
+  writeFileSync(join(root, "runtime", "board", "config.mjs"), `// ${marker}\n`)
   return dir
 }
 
