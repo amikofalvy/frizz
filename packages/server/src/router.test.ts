@@ -7,7 +7,7 @@ import { join } from "node:path"
 import { Hono } from "hono"
 import { mountRouter } from "@frizz/rpc/server"
 import { DISPATCH_TASK_BANNER_MARKER, formatThreadMessage, parseThreadMessage, type BoardSnapshot, type Settings, type ThreadView, type TranscriptMessage } from "@frizz/shared"
-import type { BoardManager } from "./board.ts"
+import { deriveDeliveryInFlight, deriveNeedsYou, type BoardManager } from "./board.ts"
 import { appendDelivery, parseDeliveryLedger, projectDeliveryLedger } from "./delivery-ledger.ts"
 import { createWakeDeliveryStore } from "./wake-store.ts"
 import { Bus, Emitter } from "./bus.ts"
@@ -599,6 +599,63 @@ test("steerThread delivers a wrapped, attributed message through the follow-up p
     /no thread `no-such-thread` in this project/,
   )
   assert.equal(sent.length, 2, "a refused steer reaches no worker")
+  h.storage.close()
+})
+
+// A PEER'S MESSAGE TO A SNOOZED THREAD un-parks it like a human's does, and the board must read the
+// un-parked row as a thread with a message on its way, not as a rest waiting on the human. A tab's
+// follow-up gets that from its write-ahead ledger entry, opened before the un-park; steerThread had
+// none, so the delta the un-park published read needsYou=true for the ~40ms until the turn was
+// observed, which fired a "needs you" notification for a thread a peer had just set to work and dropped
+// its snooze card before the message landed (scripted broker stack, 2026-10-14). Pinned at the board
+// refresh the un-park publishes: whatever the board derives there is what every tab is sent.
+test("steerThread to a snoozed thread un-parks it as a delivery in flight, never as a thread awaiting the human", async () => {
+  const tele = { lastAssistantAt: "2026-01-01T00:00:00.000Z", turn: "idle" }
+  const h = harness({ ...noopTailer, get: () => tele } as unknown as Tailer)
+  h.storage.upsertSession(row("sender-thread"))
+  const slug = "parked-thread"
+  h.storage.upsertSession(row(slug))
+  h.storage.setBackend(slug, "codex")
+  h.storage.setCodexRuntime(slug, "app-server")
+  h.storage.setSnoozedUntil(slug, "2099-07-14T08:45:00.000Z", null)
+  ;(h.ctx as { codexAppServer?: unknown }).codexAppServer = {
+    binding: () => ({ state: "active", currentTurnId: null }),
+    turnLiveness: () => undefined,
+    resumeOwnedSession: async () => {},
+    followUp: async () => {},
+  }
+  // Every refresh: what the board would derive for the target at that instant, at rest.
+  const seen: Array<{ parked: boolean; needsYou: boolean; inFlight: boolean }> = []
+  const refresh = h.ctx.board.refresh
+  h.ctx.board.refresh = () => {
+    const now = h.storage.getSession(slug)!
+    const needsYou = deriveNeedsYou(now, tele as never, "turn-idle")
+    seen.push({ parked: now.snoozed_until !== null, needsYou, inFlight: deriveDeliveryInFlight(now, "turn-idle", needsYou, false, false) })
+    return refresh()
+  }
+
+  await h.router.steerThread.handler({ input: { from: "sender-thread", to: slug, message: "The archive is ready for you." } })
+
+  assert.equal(h.storage.getSession(slug)?.snoozed_until, null, "the message un-parks the thread")
+  const unparked = seen.filter((s) => !s.parked)
+  assert.ok(unparked.length > 0, "the un-park is published")
+  assert.deepEqual(unparked[0], { parked: false, needsYou: false, inFlight: true }, "the first un-parked reading is a delivery in flight")
+  // …and the ledger entry that says so draws nothing: the peer's words are not the human's, and a
+  // failure stays with the sender's tool call.
+  const ledger = parseDeliveryLedger(h.storage.getSession(slug)?.delivery_ledger)
+  assert.equal(projectDeliveryLedger([], ledger).length, 0, "no ghost bubble for a peer's message")
+
+  // A transport that throws fails the SENDER's call and leaves nothing behind on the target: no failed
+  // bubble for this thread's human to retry, and no entry claiming a message is still on its way.
+  ;(h.ctx as { codexAppServer?: unknown }).codexAppServer = {
+    binding: () => ({ state: "active", currentTurnId: null }),
+    turnLiveness: () => undefined,
+    resumeOwnedSession: async () => {},
+    followUp: async () => { throw new Error("app-server went away") },
+  }
+  const before = parseDeliveryLedger(h.storage.getSession(slug)?.delivery_ledger).length
+  await assert.rejects(h.router.steerThread.handler({ input: { from: "sender-thread", to: slug, message: "Second note." } }), /app-server went away/)
+  assert.equal(parseDeliveryLedger(h.storage.getSession(slug)?.delivery_ledger).length, before, "the failed peer send leaves no entry")
   h.storage.close()
 })
 

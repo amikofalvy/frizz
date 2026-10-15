@@ -148,6 +148,16 @@ export interface DeliveryLedgerItem {
   // a byte of it reached the CLI, so no transcript record matched by TEXT can be this send, and nothing
   // but the operator (or the SDK echoing this exact id) may move it out of `failed`.
   dropped?: boolean
+  // A send that came WITHOUT a delivery id of its own: a peer thread's message (`steerThread`), or a
+  // follow-up from a caller that does not mint one (a tab always does). The server gives it an entry
+  // for one reason: so the board reads the thread as having a message on its way (hasFreshDelivery,
+  // deriveDeliveryInFlight) from the moment the server takes it, exactly as it reads a tab's send.
+  // That is what lets the send un-park a snoozed thread without the board calling it a rest that waits
+  // on the human (a "needs you" notification, and the snooze card dropping before the message lands).
+  // It draws NOTHING (projectDeliveryLedger skips it), which is how such a send has always rendered:
+  // the ledger's bubble keeps a HUMAN's words on screen through a failure, and a caller with no id of
+  // its own keeps its own words, its call failing loudly instead (forgetDelivery on failure).
+  silent?: true
 }
 
 // The form every text comparison in this module runs in.
@@ -290,7 +300,7 @@ export function appendDelivery(
 export function beginDelivery(
   storage: Storage,
   slug: string,
-  send: { id: string; text: string; supersedes?: string; now?: number; release?: boolean },
+  send: { id: string; text: string; supersedes?: string; now?: number; release?: boolean; silent?: boolean },
 ): "begin" | "duplicate" {
   const row = storage.getSession(slug)
   if (!row) return "begin" // nothing to record against; the caller's own guards decide the rest
@@ -316,7 +326,7 @@ export function beginDelivery(
   const kept = send.supersedes
     ? items.filter((existing) => !(existing.id === send.supersedes && (existing.state === "failed" || existing.state === "sending")))
     : items
-  kept.push({ id: send.id, text: send.text, state: "sending", at: now, updatedAt: now })
+  kept.push({ id: send.id, text: send.text, state: "sending", at: now, updatedAt: now, ...(send.silent ? { silent: true as const } : {}) })
   storage.setDeliveryLedger(slug, serializeDeliveryLedger(trimLedger(kept)))
   return "begin"
 }
@@ -400,6 +410,18 @@ export const DELIVERY_ERROR_MAX_CHARS = 300
 export function deliveryErrorLine(error: string): string {
   const line = error.split("\n", 1)[0].trim() || "Delivery failed"
   return line.length > DELIVERY_ERROR_MAX_CHARS ? `${line.slice(0, DELIVERY_ERROR_MAX_CHARS - 1)}…` : line
+}
+
+/** Take an entry out of the ledger whatever its state: a SILENT send whose transport threw (see
+ *  DeliveryLedgerItem.silent), which has no bubble to keep and nobody on this thread to retry it. */
+export function forgetDelivery(storage: Storage, slug: string, id: string): boolean {
+  const row = storage.getSession(slug)
+  if (!row) return false
+  const items = parseDeliveryLedger(row.delivery_ledger)
+  const next = items.filter((item) => item.id !== id)
+  if (next.length === items.length) return false
+  storage.setDeliveryLedger(slug, serializeDeliveryLedger(next))
+  return true
 }
 
 /** The operator dismissed a failed send (or took its text back into the prompt box). Only a `failed`
@@ -1077,6 +1099,9 @@ export function projectDeliveryLedger(messages: TranscriptMessage[], items: Deli
   // ledger holding both, exactly one gray bubble on screen).
   const claimed = new Set<number>()
   for (const item of cancelled.live) {
+    // A silent send draws nothing of its own (DeliveryLedgerItem.silent): the transcript's record of it
+    // is the only rendering, as it was before such sends had an entry at all.
+    if (item.silent) continue
     const text = renderMatchKey(item.text)
     const tag = deliveryTag(item.id)
     let handled = false

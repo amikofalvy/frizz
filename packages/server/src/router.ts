@@ -166,7 +166,7 @@ import { appServerTurnStalled, resolveLiveWatchTarget, resolveRecurringPrompt, r
 import { runThreadUpdate } from "./frizz.ts"
 import { repairThreadFile } from "./repair.ts"
 import { reopenArchivedThreadForFollowUp, resumeThread, wakeParkedThreadForFollowUp } from "./resume.ts"
-import { appendDelivery, beginDelivery, cancelDelivery, deliverOutstandingDeliveries, deliveryItem, dismissFailedDelivery, dropHeldDelivery, heldDeliveries, holdDelivery, recordDeliveryFailure, retireOutstandingDeliveries } from "./delivery-ledger.ts"
+import { appendDelivery, beginDelivery, cancelDelivery, deliverOutstandingDeliveries, deliveryItem, dismissFailedDelivery, dropHeldDelivery, forgetDelivery, heldDeliveries, holdDelivery, recordDeliveryFailure, retireOutstandingDeliveries } from "./delivery-ledger.ts"
 import { noteSubAgentsEndedByInterrupt, runningSubAgentsOf } from "./interrupt-ended.ts"
 import {
   readEarlierThreadTranscriptPage,
@@ -898,8 +898,19 @@ export function createRouter(ctx: AppContext) {
     // worker's copy regardless; the ledger then has to hold the same words, because a delivery is
     // matched to its transcript record by text wherever no id survives, and a ledger entry that kept
     // the character would draw a second bubble beside the delivered one.
-    const input = { ...sent, message: deliverableInputText(sent.message) }
-    return keepFailedFollowUp(input, opts, async (openWriteAhead) => {
+    //
+    // EVERY SEND GETS A LEDGER ENTRY, opened before the un-park below. A caller that brought no
+    // delivery id (a peer thread's `steerThread`; any follow-up that did not mint one) gets one minted
+    // here and marked `silent` (delivery-ledger.ts): it draws no bubble, and a failure keeps nothing,
+    // which is how such a send has always rendered. What it does buy is the board's reading of the
+    // thread as a message on its way. Without it, a snoozed thread a peer messaged was un-parked as a
+    // rest waiting on the human: the un-park's delta read needsYou=true for the ~40ms until the turn was
+    // observed, which fired a "needs you" notification and dropped the snooze card before the message
+    // landed (scripted broker stack, 2026-10-14). The id is a UUID because the broker hands it to the
+    // SDK as the input's uuid, which is what retires the entry when the record lands.
+    const silent = !sent.deliveryId
+    const input = { ...sent, message: deliverableInputText(sent.message), deliveryId: sent.deliveryId ?? randomUUID() }
+    return keepFailedFollowUp(input, { ...opts, silent }, async (openWriteAhead) => {
       // Every follow-up crosses a TYPED CONTROL CHANNEL now, never a terminal: a codex row goes to the
       // app-server bridge and a claude row to the session broker, each of which owns its own
       // steer-vs-start decision and reconnects or cold-resumes a dead session itself. Nothing types
@@ -1287,13 +1298,13 @@ export function createRouter(ctx: AppContext) {
   // the text back to the prompt box as it always has.
   async function keepFailedFollowUp(
     input: z.infer<typeof FollowUpInput>,
-    opts: { release?: boolean },
+    opts: { release?: boolean; silent?: boolean },
     deliver: (open: () => boolean) => Promise<void>,
   ): Promise<void> {
     let opened = false
     const open = (): boolean => {
       if (!input.deliveryId) return true
-      if (beginDelivery(ctx.storage, input.slug, { id: input.deliveryId, text: input.message, supersedes: input.supersedes, release: opts.release }) === "duplicate") return false
+      if (beginDelivery(ctx.storage, input.slug, { id: input.deliveryId, text: input.message, supersedes: input.supersedes, release: opts.release, silent: opts.silent }) === "duplicate") return false
       opened = true
       // The ledger is not JSONL bytes: push the frame now, so the server's own bubble (and the removal
       // of a superseded failed one) reaches every tab before the transport is even called.
@@ -1303,6 +1314,13 @@ export function createRouter(ctx: AppContext) {
     try {
       await deliver(open)
     } catch (error) {
+      // A silent send keeps nothing here: its words stay with the caller, whose call this throw fails
+      // (DeliveryLedgerItem.silent). Its entry only ever stood for "a message is on its way".
+      if (opened && input.deliveryId && opts.silent) {
+        forgetDelivery(ctx.storage, input.slug, input.deliveryId)
+        ctx.board.refresh()
+        throw error
+      }
       if (opened && input.deliveryId) {
         const retryable = (error as { retryableDelivery?: unknown } | null)?.retryableDelivery === true
         const message = error instanceof Error ? error.message : String(error)
@@ -2591,8 +2609,10 @@ export function createRouter(ctx: AppContext) {
     // is wrapped so the receiver and the chat both see whose it is, and the sender's identity comes from
     // the calling worker's env (the MCP shim), never from the model.
     //
-    // No deliveryId, so no ledger bubble: that bubble exists to keep a HUMAN's words on screen through a
-    // failure, and here the words stay with the sender, whose tool call fails loudly instead.
+    // No deliveryId, so no ledger BUBBLE: that bubble exists to keep a HUMAN's words on screen through a
+    // failure, and here the words stay with the sender, whose tool call fails loudly instead. The send
+    // still gets a silent ledger entry, minted in deliverFollowUp, which is what lets it un-park a
+    // snoozed thread as a message on its way rather than as a rest waiting on the human.
     //
     // Same project only, as `spawn_thread` is: the shim addresses its own project and takes no project
     // argument, so a worker cannot reach into another repo's board.
