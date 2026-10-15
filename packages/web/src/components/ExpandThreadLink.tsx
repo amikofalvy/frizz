@@ -1,5 +1,5 @@
-import { useRef, type MouseEvent } from "react"
-import { useQueryClient } from "@tanstack/react-query"
+import { useContext, useRef, type MouseEvent } from "react"
+import { QueryClientContext } from "@tanstack/react-query"
 import { Maximize2 } from "lucide-react"
 import { warmTranscript } from "../hooks.ts"
 import { captureFullscreenEnterAnchor, rememberFullscreenOrigin } from "../lib/fullscreenHandoff.ts"
@@ -26,7 +26,9 @@ import { Tooltip } from "./Tooltip.tsx"
 // AFTER this click, so a click-time clear removed the very sheet the transition slides.
 export function ExpandThreadLink({ slug, size = 14, className, label = "Open fullscreen" }: { slug: string; size?: number; className?: string; label?: string }) {
   const href = standaloneThreadHref(slug)
-  const queryClient = useQueryClient()
+  // Read off the context rather than through useQueryClient, which throws without a provider: the door
+  // renders in bare tests (the sidebar row's), and with no client there is nothing to warm.
+  const queryClient = useContext(QueryClientContext)
   const warming = useRef(false)
   function onClick(event: MouseEvent<HTMLAnchorElement>) {
     // Never let the click reach the row/card underneath: the sidebar row would ALSO open its drawer.
@@ -48,7 +50,7 @@ export function ExpandThreadLink({ slug, size = 14, className, label = "Open ful
     // sidebar row's door usually does not: the page would mount on "Loading…", and the view transition
     // would cross-fade that frame in and then cut to the transcript. So it waits for the transcript, a
     // few hundred ms at most (hooks.ts warmTranscript), and a second click meanwhile is the same one.
-    if (queryClient.getQueryData(["transcript", slug]) !== undefined) return go(surface, animate)
+    if (!queryClient || queryClient.getQueryData(["transcript", slug]) !== undefined) return go(surface, animate)
     if (warming.current) return
     warming.current = true
     void warmTranscript(queryClient, slug).then(() => {
