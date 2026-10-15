@@ -768,6 +768,41 @@ test("foldLine: a commentary agent_message refreshes the preview but carries NO 
   assert.match(state.lastAssistant ?? "", /working on it/)
 })
 
+// Codex 0.162 added `partial_answer` (openai/codex#51241): answer text the turn may still extend, which
+// upstream keeps out of its own final-answer summary. Only `final_answer` is terminal, so a fence in a
+// partial answer must not excuse the thread, in either rollout spelling, and the final answer after it
+// still must. Recorded payload shapes (0.153+ item envelope and the flat event_msg) with the new phase.
+test("foldLine: a partial_answer is nonterminal — its fence is ignored, the final_answer's is honoured", () => {
+  const at = (s: number) => `2026-10-15T00:00:0${s}.000Z`
+  const flat = (s: number, phase: string, message: string) =>
+    JSON.stringify({ type: "event_msg", timestamp: at(s), payload: { type: "agent_message", phase, message } })
+  const item = (s: number, phase: string, text: string) =>
+    JSON.stringify({
+      type: "event_msg",
+      timestamp: at(s),
+      payload: { type: "item_completed", item: { type: "AgentMessage", id: `msg_${s}`, content: [{ type: "Text", text }], phase } },
+    })
+  for (const [spelling, line] of [["event_msg/agent_message", flat], ["item_completed/AgentMessage", item]] as const) {
+    const partial = line(1, "partial_answer", "Here is the first half.\n\n```done\npartial-must-not-excuse\n```")
+    const evs = parseCodexLine(partial)
+    assert.deepEqual(evs.map((e) => ({ kind: e.kind, final: (e as any).final })), [{ kind: "assistant-text", final: false }], spelling)
+
+    const backend = createCodexBackend()
+    const state = newTailState("t", "sid", "/x")
+    // Read through a call: an assert on the field itself would narrow it to `undefined` for the rest.
+    const fence = () => state.lastFence
+    backend.foldLine(state, JSON.stringify({ type: "event_msg", timestamp: at(0), payload: { type: "task_started" } }))
+    backend.foldLine(state, partial)
+    assert.equal(state.turn, "in-flight", spelling)
+    assert.equal(fence(), undefined, `${spelling}: a partial answer never sets the excusal fence`)
+    assert.match(state.lastAssistant ?? "", /first half/, `${spelling}: it still refreshes the preview`)
+
+    backend.foldLine(state, line(2, "final_answer", "And the rest.\n\n```done\nthe-real-one\n```"))
+    assert.equal(fence()?.kind, "done", spelling)
+    assert.equal(fence()?.body, "the-real-one", `${spelling}: the final answer's fence is the one that counts`)
+  }
+})
+
 test("foldLine: the first commentary title comment is persisted immediately and never enters preview telemetry", () => {
   const backend = createCodexBackend()
   const state = newTailState("t", "sid", "/x")

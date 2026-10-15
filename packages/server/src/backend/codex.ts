@@ -375,6 +375,11 @@ export function parseCodexLine(line: string): NormalizedEvent[] {
         // phase discriminates the ANSWER (final_answer) from intermediate narration (commentary); only
         // the final answer may carry a done/awaiting excusal fence (a quoted fence in commentary must
         // never excuse the thread — applyEvent's final:false arm refreshes only the preview).
+        // Codex 0.162 added a third phase, `partial_answer` (openai/codex#51241): answer text the turn
+        // may still extend with more output or tool calls, which upstream keeps out of its own
+        // final-answer summary. It is NOT terminal, so it folds exactly like commentary — the strict
+        // `=== "final_answer"` is what keeps it so, and codex.test.ts pins it (a fence in a partial
+        // answer must not excuse the thread).
         return [{ kind: "assistant-text", at, text, final: p.phase === "final_answer" }]
       }
       // Per-request usage telemetry. `last_token_usage.total_tokens` is what the LAST request actually
@@ -412,7 +417,8 @@ export function parseCodexLine(line: string): NormalizedEvent[] {
           case "AgentMessage": {
             const text = codexItemText(item.content)
             if (!text) return []
-            // Same phase discrimination as the flat form above: only final_answer may carry a fence.
+            // Same phase discrimination as the flat form above: only final_answer may carry a fence
+            // (commentary and partial_answer are both nonterminal).
             return [{ kind: "assistant-text", at, text, final: item.phase === "final_answer" }]
           }
           case "UserMessage":
