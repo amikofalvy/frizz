@@ -2887,7 +2887,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   /** WHAT THE WATCHER'S LATEST REPORT SAYS, structurally — the inputs its message was built from — so a
    *  poll that finds more news while that report is still waiting can mint one that says all of it
    *  (see the re-mint in evalPrWatches). Written at every mint; read only while a report is undelivered. */
-  interface PrWatchHeld { items: GithubWakeItem[]; omitted: number; checks?: PrWatchChecks; changes?: string[]; offMergePath?: boolean }
+  interface PrWatchHeld { items: GithubWakeItem[]; omitted: number; checks?: PrWatchChecks; changes?: string[]; offMergePath?: GithubPrMergeExit["kind"] }
   /** `merge`, `labels` and `reviewers` are the PR's own state as of the last poll, and they are a
    *  BASELINE before they are a trigger: absent (a watcher armed before 2026-09-04, or a poll that fell
    *  back to `gh`, which does not fetch them) means "not known", so the next poll records them and says
@@ -2940,7 +2940,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     const changes = Array.isArray(h.changes) ? h.changes.filter((x: unknown): x is string => typeof x === "string") : undefined
     return {
       items, omitted: Number(h.omitted) || 0, ...(checks ? { checks } : {}), ...(changes?.length ? { changes } : {}),
-      ...(h.offMergePath === true ? { offMergePath: true } : {}),
+      ...(h.offMergePath === "dequeued" || h.offMergePath === "auto-merge-off" ? { offMergePath: h.offMergePath } : {}),
     }
   }
 
@@ -3347,7 +3347,10 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         return Number.isFinite(at) && at > w.created_at
       })
       changes.push(...freshExits.map((e) => mergeExitClause(e, prMeta?.queued)))
-      const offMergePath = freshExits.length > 0 && !prMeta?.queued
+      // WHICH road it left, because the next step differs: only a queue exit has a merge group whose failed
+      // checks the PR head does not show. Auto-merge going off in a repo with no queue has none.
+      const offMergePath = freshExits.length === 0 || prMeta?.queued ? undefined
+        : freshExits.some((e) => e.kind === "dequeued") ? "dequeued" as const : "auto-merge-off" as const
 
       const nextCursor: PrWatchCursor = {
         seen: acts ? [...new Set([...cursor.seen, ...acts.map((a) => a.id)])].slice(-REVIEW_SEEN_CAP) : cursor.seen,
@@ -3407,7 +3410,11 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
           const merged = [...new Set(all)]
           return merged.length ? { changes: merged } : {}
         })()),
-        ...(offMergePath || held?.offMergePath ? { offMergePath: true } : {}),
+        // A queue exit in either report decides the paragraph: it says everything the auto-merge one does.
+        ...((() => {
+          const off = offMergePath === "dequeued" || held?.offMergePath === "dequeued" ? "dequeued" : offMergePath ?? held?.offMergePath
+          return off ? { offMergePath: off } : {}
+        })()),
       }
       const review = carried.items.length > 0
         ? formatGithubWakeSteer({ ref: key, items: carried.items, omitted: carried.omitted })
@@ -3418,7 +3425,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         target: key,
         ...(carried.checks ? { checks: carried.checks } : {}),
         ...(carried.changes?.length ? { changes: carried.changes } : {}),
-        ...(carried.offMergePath ? { offMergePath: true } : {}),
+        ...(carried.offMergePath ? { offMergePath: carried.offMergePath } : {}),
         ...(review ? { review } : {}),
       }), `pr-watch ${key}${carried.checks ? ` CI ${carried.checks.verdict}` : ""}${carried.offMergePath ? " left merge path" : carried.changes?.length ? " state" : ""}${review ? " review" : ""}`, nowMs)
       deps.storage.setPrWatchCursor(w.id, JSON.stringify({ ...nextCursor, report, held: carried }))

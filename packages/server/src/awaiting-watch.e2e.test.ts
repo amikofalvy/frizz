@@ -800,6 +800,7 @@ test("a PR the merge queue drops wakes its worker, names the merge group's failu
     assert.doesNotMatch(text, /by @github-merge-queue/, "GitHub's own queue is not an actor worth naming")
     assert.match(text, /It did NOT merge, and nothing will merge it now/)
     assert.match(text, /`gh pr merge 391 --repo acme\/app --auto`/, "the next move, ready to run")
+    assert.match(text, /separate `gh-readonly-queue\/…` commit/, "why the PR head still reads green")
     assert.match(text, /STILL ARMED/, "the watcher keeps watching: a re-queued PR still merges or bounces again")
 
     await h.tick()
@@ -846,7 +847,8 @@ test("a PR already back in the queue, auto-merge switched off, and a return to d
     await h.tick()
     assert.equal(h.delivered.length, 1)
     assert.match(h.delivered[0], /auto-merge turned OFF by @bob \(merge conflict\)\./)
-    assert.match(h.delivered[0], /nothing will merge it now/)
+    assert.match(h.delivered[0], /nothing will merge it now\. Find out why auto-merge went off/)
+    assert.doesNotMatch(h.delivered[0], /merge queue tests|gh-readonly-queue/, "no merge group ran, so no word about one")
     h.delivered.length = 0
 
     h.setDraft(true)

@@ -681,10 +681,16 @@ test("a wake carrying CI, PR state and review activity yields all three parts", 
 // draws it as the same hairline; the instructions under it are for the worker, and no parser reads them.
 test("a merge-queue exit is a state line, with what to do under it only when the PR is stuck", () => {
   const clause = "REMOVED from the merge queue (failed checks: integration (shard 1))"
-  const stuck = prWatchWakeMessage({ target: "acme/app#512", changes: [clause], offMergePath: true })
+  const stuck = prWatchWakeMessage({ target: "acme/app#512", changes: [clause], offMergePath: "dequeued" })
   assert.deepEqual(parsePrWatchStateWake(stuck), { ref: "acme/app#512", detail: clause })
   assert.equal(parsePrWatchWake(stuck), null, "not a CI verdict, whatever its clause says about checks")
   assert.match(stuck, /`gh pr merge 512 --repo acme\/app --auto`/)
+  assert.match(stuck, /gh-readonly-queue/, "a queue exit says where its failures ran")
+  // Auto-merge going off has no merge group, so the sentence about one would be false there.
+  const autoOff = prWatchWakeMessage({ target: "acme/app#512", changes: ["auto-merge turned OFF by @bob (manually disabled)"], offMergePath: "auto-merge-off" })
+  assert.match(autoOff, /It did NOT merge, and nothing will merge it now\. Find out why auto-merge went off/)
+  assert.match(autoOff, /`gh pr merge 512 --repo acme\/app --auto`/)
+  assert.doesNotMatch(autoOff, /merge queue|gh-readonly-queue|those failures/)
   const requeued = prWatchWakeMessage({ target: "acme/app#512", changes: [`${clause}, and is back in the queue`] })
   assert.doesNotMatch(requeued, /gh pr merge/)
 })

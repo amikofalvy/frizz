@@ -1537,9 +1537,10 @@ export function prWatchWakeMessage(input: {
    *  ONE LINE for all of them, joined with semicolons, because each is a clause and not a headline: a
    *  separate line per fact would give a label edit the same weight as a red build. */
   changes?: string[]
-  /** One of `changes` says the PR left the merge queue, or lost auto-merge, without merging and is not
-   *  back in the queue. Adds the paragraph that says what to do about it. */
-  offMergePath?: boolean
+  /** One of `changes` says the PR left the merge queue (`dequeued`), or lost auto-merge, without merging
+   *  and is not back in the queue. Adds the paragraph that says what to do about it; only a queue exit
+   *  gets the sentence about the merge group's commit, since auto-merge going off has none. */
+  offMergePath?: "dequeued" | "auto-merge-off"
   review?: string
   merged?: boolean
   closed?: boolean
@@ -1582,12 +1583,16 @@ export function prWatchWakeMessage(input: {
       // because the merge queue tests a separate commit — so a worker that re-parks on this watcher waits
       // out its whole `for:` (2026-10-14).
       const ref = /^(.+)#(\d+)$/.exec(input.target)
+      const command = ref ? `\`gh pr merge ${ref[2]} --repo ${ref[1]} --auto\`` : undefined
       lines.push(
         "",
-        "It did NOT merge, and nothing will merge it now. A merge queue tests the PR merged onto its base in"
-          + " a separate `gh-readonly-queue/…` commit, so those failures do not show on the PR head, whose"
-          + " checks can still read green. Find out why it left, then fix it and put it back"
-          + (ref ? ` (\`gh pr merge ${ref[2]} --repo ${ref[1]} --auto\` re-queues it, or re-enables auto-merge)` : "")
+        "It did NOT merge, and nothing will merge it now. "
+          + (input.offMergePath === "dequeued"
+            ? "A merge queue tests the PR merged onto its base in a separate `gh-readonly-queue/…` commit, so"
+              + " those failures do not show on the PR head, whose checks can still read green. Find out why it"
+              + " left, then fix it and put it back"
+              + (command ? ` (${command} re-queues it, or re-enables auto-merge)` : "")
+            : "Find out why auto-merge went off, then fix it and turn it back on" + (command ? ` (${command})` : ""))
           + " if it is yours to land, or tell whoever owns it if it is not.",
       )
     }
