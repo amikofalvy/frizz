@@ -573,6 +573,13 @@ function workerCap(name: string, lifted: number, env: NodeJS.ProcessEnv): string
 export const CLAUDE_WORKER_ENV = {
   CLAUDE_CODE_TOTAL_TOKENS_REMINDER: "infinite",
   BASH_MAX_TIMEOUT_MS: String(24 * 60 * 60 * 1000),
+  // Claude Code 2.1.302 turned fork sub-agents ON by default for Agent SDK sessions: the Agent tool
+  // began offering `subagent_type: "fork"`, a child that inherits the parent's whole conversation.
+  // The worker contract (workerPrompt.ts) tells every worker the opposite — no fork exists, each child
+  // starts fresh, and handing it context is the worker's lever — so this keeps the tool matching the
+  // contract. Measured on 2.1.302 through the real SDK path: the Agent tool's description named fork
+  // six times with this unset and not at all with it set to "0", exactly as on 2.1.301.
+  CLAUDE_CODE_FORK_SUBAGENT: "0",
 } as const
 
 // EVERY Claude worker's environment, on EVERY transport — the static entries in CLAUDE_WORKER_ENV plus

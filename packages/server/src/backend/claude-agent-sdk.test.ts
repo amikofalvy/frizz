@@ -193,6 +193,7 @@ test("real SDK + fake executable: init owns the requested session, input streams
       maxWebSearches: "10000",
       maxSubagents: "10000",
       maxConcurrentSubagents: "100",
+      forkSubagent: "0",
     })
     assert.deepEqual(records.find((row) => row.kind === "user-input"), {
       kind: "user-input",
