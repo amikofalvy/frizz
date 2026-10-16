@@ -31,7 +31,10 @@ function tagRelease(t: TestContext, existing: { ref?: string; release?: boolean 
   const dir = mkdtempSync(join(tmpdir(), "frizz-tag-release-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const log = join(dir, "gh.log");
-  // A `gh` that records every call and answers the few the script reads.
+  const notes = join(dir, "notes.md");
+  writeFileSync(notes, "- Question options are lettered again.\n");
+  // A `gh` that records every call, keeps whatever a release create or edit is handed on stdin, and
+  // answers the few calls the script reads.
   writeFileSync(join(dir, "gh"), `#!/bin/sh
 printf '%s\\n' "$*" >> "${log}"
 case "$*" in
@@ -40,18 +43,20 @@ case "$*" in
   "api -X POST repos/acme/frizz/git/tags"*) cat > "${dir}/tag.json"; echo tagobj ;;
   "api -X POST repos/acme/frizz/git/refs"*) cat > "${dir}/ref.json"; echo refs/tags/v1.2.3 ;;
   "release view"*) ${existing.release ? "exit 0" : "exit 1"} ;;
+  "release create"*|"release edit"*) cat > "${dir}/body.md" ;;
 esac
 `, { mode: 0o755 });
   const server = createServer((request, response) => {
-    if (request.url === "/frizz/1.2.3") response.end(JSON.stringify({ name: "frizz", version: "1.2.3", gitHead: "a".repeat(40) }));
+    const served = /^\/(frizz|frizz-server)\/1\.2\.3$/.exec(request.url ?? "");
+    if (served) response.end(JSON.stringify({ name: served[1], version: "1.2.3", gitHead: "a".repeat(40) }));
     else { response.statusCode = 404; response.end(); }
   });
-  return { dir, log, server, run: async () => {
+  return { dir, log, notes, server, run: async (...args: string[]) => {
     await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
     t.after(() => server.close());
     const { port } = server.address() as { port: number };
     // Asynchronously: this process serves the registry the script reads, so it must not block.
-    const child = spawn(process.execPath, [join(repo, "scripts", "tag-release.mjs"), "1.2.3"], {
+    const child = spawn(process.execPath, [join(repo, "scripts", "tag-release.mjs"), ...args], {
       env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, FRIZZ_RELEASE_REPO: "acme/frizz", FRIZZ_NPM_REGISTRY: `http://127.0.0.1:${port}/` },
     });
     let stderr = "";
@@ -61,24 +66,48 @@ esac
   } };
 }
 
-test("tag-release.mjs tags npm's gitHead and creates the release, once", async (t) => {
+test("tag-release.mjs tags npm's gitHead and creates the release with its notes, once", async (t) => {
   const fresh = tagRelease(t);
-  const made = await fresh.run();
+  const made = await fresh.run("1.2.3", "--notes-file", fresh.notes);
   assert.equal(made.status, 0, made.stderr);
   assert.deepEqual(JSON.parse(readFileSync(join(fresh.dir, "tag.json"), "utf8")), { tag: "v1.2.3", message: "frizz v1.2.3", object: "a".repeat(40), type: "commit" });
   assert.deepEqual(JSON.parse(readFileSync(join(fresh.dir, "ref.json"), "utf8")), { ref: "refs/tags/v1.2.3", sha: "tagobj" });
-  assert.match(readFileSync(fresh.log, "utf8"), /release create v1\.2\.3 --repo acme\/frizz --title frizz v1\.2\.3 .*--verify-tag/);
+  assert.match(readFileSync(fresh.log, "utf8"), /release create v1\.2\.3 --repo acme\/frizz --title frizz v1\.2\.3 --notes-file - --latest=true --verify-tag/);
+  assert.equal(readFileSync(join(fresh.dir, "body.md"), "utf8"), "- Question options are lettered again.\n\nPublished to npm: https://www.npmjs.com/package/frizz/v/1.2.3\n");
 
   const done = tagRelease(t, { ref: "tagobj tag", release: true });
-  const rerun = await done.run();
+  const rerun = await done.run("1.2.3");
   assert.equal(rerun.status, 0, rerun.stderr);
-  assert.doesNotMatch(readFileSync(done.log, "utf8"), /POST|release create/, "a re-run creates nothing");
+  assert.doesNotMatch(readFileSync(done.log, "utf8"), /POST|release create|release edit/, "a re-run with no notes creates nothing");
 
   const moved = tagRelease(t, { ref: `${"b".repeat(40)} commit` });
-  const refused = await moved.run();
+  const refused = await moved.run("1.2.3", "--notes-file", moved.notes);
   assert.notEqual(refused.status, 0);
   assert.match(refused.stderr, /never moved/);
   assert.doesNotMatch(readFileSync(moved.log, "utf8"), /POST/);
+});
+
+// Every release carries notes, server-only ones included (maintainer 2026-10-16).
+test("tag-release.mjs never creates a release without notes, and tags the server as not-latest", async (t) => {
+  const bare = tagRelease(t);
+  const refused = await bare.run("frizz-server", "1.2.3");
+  assert.notEqual(refused.status, 0);
+  assert.match(refused.stderr, /never created without notes/);
+  assert.doesNotMatch(readFileSync(bare.log, "utf8"), /POST|release create/, "a refused run leaves no bare tag behind");
+
+  const server = tagRelease(t);
+  const made = await server.run("frizz-server", "1.2.3", "--notes-file", server.notes);
+  assert.equal(made.status, 0, made.stderr);
+  assert.equal(JSON.parse(readFileSync(join(server.dir, "tag.json"), "utf8")).tag, "frizz-server-v1.2.3");
+  assert.match(readFileSync(server.log, "utf8"), /release create frizz-server-v1\.2\.3 --repo acme\/frizz --title frizz-server v1\.2\.3 --notes-file - --latest=false --verify-tag/);
+  assert.match(readFileSync(join(server.dir, "body.md"), "utf8"), /Published to npm: https:\/\/www\.npmjs\.com\/package\/frizz-server\/v\/1\.2\.3\n$/);
+
+  // Notes handed to a release that already exists replace its notes: a re-run is how they are fixed.
+  const fix = tagRelease(t, { ref: "tagobj tag", release: true });
+  const edited = await fix.run("frizz-server", "1.2.3", "--notes-file", fix.notes);
+  assert.equal(edited.status, 0, edited.stderr);
+  assert.match(readFileSync(fix.log, "utf8"), /release edit frizz-server-v1\.2\.3 --repo acme\/frizz --notes-file -/);
+  assert.doesNotMatch(readFileSync(fix.log, "utf8"), /POST|release create/);
 });
 
 test("the release publishes the server, waits for npm to serve it, then publishes the shell", () => {
