@@ -136,7 +136,8 @@ test("callouts, sections and inline keys render, stay sanitized, and a section s
       assert.ok(Math.abs(type.titleHeight - callouts.proseLine) < 0.05, `the title is one prose line tall (${type.titleHeight} vs ${callouts.proseLine})`)
       assert.ok(type.gap > 2 && type.gap < 7, `the title binds to its body (${type.gap}px)`)
     }
-    assert.equal(callouts.plainClass, "", "an unknown type is left a plain blockquote")
+    // A plain quote's one class is its copy button's (lib/quoteCopy.ts).
+    assert.equal(callouts.plainClass, "md-quote", "an unknown type is left a plain blockquote")
     assert.match(callouts.plainText, /\[!sic\]/)
     assert.notEqual(callouts.plainColor, callouts.proseColor, "a plain quote keeps its muted tone")
     assert.equal(callouts.aliasClass, "md-callout md-callout-caution")
