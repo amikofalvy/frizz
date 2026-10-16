@@ -106,13 +106,15 @@ import "./styles.css"
 //   open '…/intermediate-collapse-fixture.html?src=http://127.0.0.1:8181/t.json'
 //
 // It accepts the RPC envelope (`{result:{messages}}`) or a bare `{messages}` / array, and runs before the
-// fetch mock below so it uses the real `fetch`. This is how the 2026-08-16 collapse regression was
+// fetch mock below so it uses the real `fetch`. A dump may also carry `thread` — board fields laid over
+// the fixture's own thread, such as the `questions` still open and the `spawnedAt` that decides which
+// question grammar it speaks — so a card queued on an open question replays with that question. This is how the 2026-08-16 collapse regression was
 // confirmed fixed on the thread that reported it — a synthesized fixture cannot prove the server's own
 // `boundary`/`wake` markers are the ones the walk keys on.
 const params = new URLSearchParams(location.search)
 const variant = params.get("variant") ?? "heavy"
 const src = params.get("src")
-const replay: { messages: TranscriptMessage[]; hasEarlier: boolean } | undefined = src
+const replay: { messages: TranscriptMessage[]; hasEarlier: boolean; thread?: Partial<ThreadViewModel> } | undefined = src
   ? await (async () => {
       const body = await (await fetch(src)).json()
       const page = body?.result ?? body
@@ -121,6 +123,7 @@ const replay: { messages: TranscriptMessage[]; hasEarlier: boolean } | undefined
         // A real dump is a WINDOW, and the card's "Load earlier messages" control is part of what the
         // replay is meant to reproduce.
         hasEarlier: page?.hasEarlier === true,
+        thread: page?.thread,
       }
     })()
   : undefined
@@ -804,6 +807,7 @@ const thread: ThreadViewModel = {
     ? { kind: "done", registered: true, body: "- **Answered the market question** — the map is in the final message; the design report needed no edits." }
     : undefined,
   lastActivityAt: new Date().toISOString(),
+  ...replay?.thread,
 } as unknown as ThreadViewModel
 
 store.board = { projectDir: "/fixture/frizz", threads: [thread] } as BoardSnapshot
