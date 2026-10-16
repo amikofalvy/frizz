@@ -27,12 +27,14 @@ test("the workflow neither tags nor creates GitHub releases, and cannot write to
   assert.doesNotMatch(workflow, /contents: write/);
 });
 
+const NOTES = "## Fixed\n\n- Question options are lettered again ([`cd83c22`](https://github.com/acme/frizz/commit/cd83c229))\n\n**Full changelog**: [frizz@1.2.2...frizz@1.2.3](https://github.com/acme/frizz/compare/aaa...bbb)";
+
 function tagRelease(t: TestContext, existing: { ref?: string; release?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "frizz-tag-release-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const log = join(dir, "gh.log");
   const notes = join(dir, "notes.md");
-  writeFileSync(notes, "- Question options are lettered again.\n");
+  writeFileSync(notes, `${NOTES}\n`);
   // A `gh` that records every call, keeps whatever a release create or edit is handed on stdin, and
   // answers the few calls the script reads.
   writeFileSync(join(dir, "gh"), `#!/bin/sh
@@ -73,7 +75,7 @@ test("tag-release.mjs tags npm's gitHead and creates the release with its notes,
   assert.deepEqual(JSON.parse(readFileSync(join(fresh.dir, "tag.json"), "utf8")), { tag: "v1.2.3", message: "frizz v1.2.3", object: "a".repeat(40), type: "commit" });
   assert.deepEqual(JSON.parse(readFileSync(join(fresh.dir, "ref.json"), "utf8")), { ref: "refs/tags/v1.2.3", sha: "tagobj" });
   assert.match(readFileSync(fresh.log, "utf8"), /release create v1\.2\.3 --repo acme\/frizz --title frizz v1\.2\.3 --notes-file - --latest=true --verify-tag/);
-  assert.equal(readFileSync(join(fresh.dir, "body.md"), "utf8"), "- Question options are lettered again.\n\nPublished to npm: https://www.npmjs.com/package/frizz/v/1.2.3\n");
+  assert.equal(readFileSync(join(fresh.dir, "body.md"), "utf8"), `${NOTES}\n\nPublished to npm: https://www.npmjs.com/package/frizz/v/1.2.3\n`);
 
   const done = tagRelease(t, { ref: "tagobj tag", release: true });
   const rerun = await done.run("1.2.3");
@@ -102,12 +104,87 @@ test("tag-release.mjs never creates a release without notes, and tags the server
   assert.match(readFileSync(server.log, "utf8"), /release create frizz-server-v1\.2\.3 --repo acme\/frizz --title frizz-server v1\.2\.3 --notes-file - --latest=false --verify-tag/);
   assert.match(readFileSync(join(server.dir, "body.md"), "utf8"), /Published to npm: https:\/\/www\.npmjs\.com\/package\/frizz-server\/v\/1\.2\.3\n$/);
 
+  // Notes that are still a draft, or that link nothing, are refused before anything is written
+  // (maintainer 2026-10-16: "They don't link to the relevant commits or PRs, do they?").
+  for (const [body, fault] of [
+    [`<!-- DRAFT: rewrite -->\n${NOTES}`, /DRAFT line/],
+    ["- Question options are lettered again.\n\n**Full changelog**: https://github.com/acme/frizz/compare/aaa...bbb", /links no commit or pull request/],
+    ["- Lettered again ([`cd83c22`](https://github.com/acme/frizz/commit/cd83c229))", /no compare link/],
+  ] as const) {
+    const unfinished = tagRelease(t);
+    writeFileSync(unfinished.notes, body);
+    const refusal = await unfinished.run("frizz-server", "1.2.3", "--notes-file", unfinished.notes);
+    assert.notEqual(refusal.status, 0);
+    assert.match(refusal.stderr, fault);
+    assert.ok(!existsSync(unfinished.log) || !/POST|release (create|edit)/.test(readFileSync(unfinished.log, "utf8")), "a refused run writes nothing");
+  }
+
   // Notes handed to a release that already exists replace its notes: a re-run is how they are fixed.
   const fix = tagRelease(t, { ref: "tagobj tag", release: true });
   const edited = await fix.run("frizz-server", "1.2.3", "--notes-file", fix.notes);
   assert.equal(edited.status, 0, edited.stderr);
   assert.match(readFileSync(fix.log, "utf8"), /release edit frizz-server-v1\.2\.3 --repo acme\/frizz --notes-file -/);
   assert.doesNotMatch(readFileSync(fix.log, "utf8"), /POST|release create/);
+});
+
+// The generator's whole contract on a real git history: the range is npm's (previous served version's
+// gitHead to this one's), each change links its commit, a squashed or merged PR links the PR and credits a
+// contributor, internal commits ride only in the full list, and a compare link closes the notes.
+test("release-notes.mjs drafts linked notes over npm's range, crediting pull requests", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "frizz-release-notes-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const work = join(dir, "repo");
+  mkdirSync(work);
+  const git = (...a: string[]) => spawnSync("git", ["-C", work, ...a], { encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } }).stdout.trim();
+  const commit = (message: string) => { writeFileSync(join(work, "f"), message); git("add", "f"); git("-c", "commit.gpgsign=false", "commit", "-q", "-m", message); return git("rev-parse", "HEAD"); };
+  git("init", "-q", "-b", "main");
+  const previous = commit("chore(release): frizz-server 1.2.2");
+  commit("feat(web): a copy button on every blockquote");
+  commit("fix(pr-watch): wake when a PR leaves the merge queue (#61)");
+  commit("test(web): pin the copy button");
+  git("checkout", "-q", "-b", "side");
+  commit("fix(rail): the spinner wears the question mark");
+  git("checkout", "-q", "main");
+  git("-c", "commit.gpgsign=false", "merge", "-q", "--no-ff", "side", "-m", "Merge pull request #55 from someone/side");
+  const head = commit("chore(release): frizz-server 1.2.3");
+
+  writeFileSync(join(dir, "gh"), `#!/bin/sh
+case "$*" in
+  "api repos/acme/frizz/pulls/61"*) echo octocat ;;
+  "api repos/acme/frizz/pulls/55"*) echo acme ;;
+  *) exit 1 ;;
+esac
+`, { mode: 0o755 });
+  const server = createServer((request, response) => {
+    const meta = (version: string, gitHead: string) => ({ name: "frizz-server", version, gitHead });
+    if (request.url === "/frizz-server") response.end(JSON.stringify({ versions: { "1.2.1": meta("1.2.1", "c".repeat(40)), "1.2.2": meta("1.2.2", previous), "1.2.3": meta("1.2.3", head) } }));
+    else if (request.url === "/frizz-server/1.2.3") response.end(JSON.stringify(meta("1.2.3", head)));
+    else { response.statusCode = 404; response.end(); }
+  });
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+  t.after(() => server.close());
+  const { port } = server.address() as { port: number };
+  const child = spawn(process.execPath, [join(repo, "scripts", "release-notes.mjs"), "frizz-server", "1.2.3"], {
+    env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, FRIZZ_RELEASE_REPO: "acme/frizz", FRIZZ_RELEASE_GIT_DIR: work, FRIZZ_NPM_REGISTRY: `http://127.0.0.1:${port}/` },
+  });
+  let stdout = "", stderr = "";
+  child.stdout.on("data", (bytes) => { stdout += bytes; });
+  child.stderr.on("data", (bytes) => { stderr += bytes; });
+  const [status] = await once(child, "exit") as [number | null];
+  assert.equal(status, 0, stderr);
+
+  const sha = (subject: string) => git("log", "--format=%H", "--grep", subject, "--fixed-strings").split("\n")[0];
+  const link = (subject: string) => `[\`${sha(subject).slice(0, 7)}\`](https://github.com/acme/frizz/commit/${sha(subject)})`;
+  assert.ok(stdout.startsWith("<!-- DRAFT"), "the draft says it is one, so tag-release refuses it unedited");
+  assert.match(stdout, /## Added\n\n- A copy button on every blockquote \(/);
+  assert.ok(stdout.includes(`- A copy button on every blockquote (${link("copy button on every")})`));
+  assert.ok(stdout.includes(`- Wake when a PR leaves the merge queue in [#61](https://github.com/acme/frizz/pull/61) by @octocat (${link("merge queue")})`), "a squashed PR is linked and its author credited");
+  assert.ok(stdout.includes(`- The spinner wears the question mark in [#55](https://github.com/acme/frizz/pull/55) (${link("spinner wears")})`), "a merged PR's branch commit links the PR; the owner is not credited");
+  assert.match(stdout, /## Contributors\n\n- @octocat \(\[#61\]/);
+  const added = stdout.slice(0, stdout.indexOf("<details>"));
+  assert.doesNotMatch(added, /pin the copy button|chore\(release\)|1\.2\.1/, "tests and release bumps stay out of the drafted sections");
+  assert.match(stdout, /<summary>All 4 commits<\/summary>/, "the full list carries every non-merge commit but the release bump");
+  assert.ok(stdout.includes(`**Full changelog**: [frizz-server@1.2.2...frizz-server@1.2.3](https://github.com/acme/frizz/compare/${previous}...${head})`));
 });
 
 test("the release publishes the server, waits for npm to serve it, then publishes the shell", () => {

@@ -13,6 +13,12 @@
 // created without `--notes-file`; the script appends the npm link itself. Given notes for a release that
 // already exists, it replaces that release's notes, so a re-run is how notes are corrected.
 //
+// AND THEY ARE NOTES, NOT A PARAGRAPH (the same day, of 0.15.28's two unlinked bullets: "absolutely
+// fucking terrible. They don't link to the relevant commits or PRs"). Draft them with
+// `scripts/release-notes.mjs`, which links every change to its commit and pull request and closes on a
+// compare link. Notes still carrying its DRAFT line, or missing a commit/PR link or the compare link,
+// are refused before anything is written.
+//
 // Tags: the shell is `vX.Y.Z` (its tags predate the server's), the server `frizz-server-vX.Y.Z`. A server
 // release is never marked GitHub's "Latest": that badge names what `npx frizz` installs, which is the shell.
 //
@@ -50,6 +56,14 @@ if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error(`not a release version: ${
 const tag = spec.tag(version)
 const notes = notesFile === undefined ? undefined : readFileSync(notesFile, "utf8").trim()
 if (notes === "") throw new Error(`${notesFile} is empty; a release's notes say what changed`)
+if (notes !== undefined) {
+  const faults = [
+    notes.includes("<!-- DRAFT") && "it still carries release-notes.mjs's DRAFT line: rewrite the drafted bullets, then delete it",
+    !/github\.com\/[^/\s]+\/[^/\s]+\/(commit|pull)\//.test(notes) && "it links no commit or pull request",
+    !/github\.com\/[^/\s]+\/[^/\s]+\/compare\//.test(notes) && "it has no compare link to the previous release",
+  ].filter(Boolean)
+  if (faults.length) throw new Error(`${notesFile} is not release notes yet: ${faults.join("; ")}. Draft them with scripts/release-notes.mjs`)
+}
 
 const gh = (args, input) => execFileSync("gh", args, { encoding: "utf8", input, stdio: ["pipe", "pipe", "pipe"] }).trim()
 const ghOk = (args) => { try { gh(args); return true } catch { return false } }
