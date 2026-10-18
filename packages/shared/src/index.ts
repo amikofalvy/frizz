@@ -4808,6 +4808,14 @@ export const SetThreadPinnedInput = z.object({
 }).strict()
 export type SetThreadPinnedInput = z.infer<typeof SetThreadPinnedInput>
 
+// The pinned band's whole order, top first, as the tab is showing it after a drag. A whole-list write,
+// like the project rail's: the last arrangement anyone made wins. No session guard — a reorder pins and
+// unpins nothing, so a slug that has since been re-dispatched only keeps the place it was given.
+export const ReorderPinnedThreadsInput = z.object({
+  slugs: z.array(ThreadSlug).max(500),
+}).strict()
+export type ReorderPinnedThreadsInput = z.infer<typeof ReorderPinnedThreadsInput>
+
 // The recurring prompt's OPERATOR half — the Goal panel, arming and disarming in ONE call. The
 // text, the two triggers and the cadence are all views of one row, and splitting them into separate
 // mutations would let a tab holding only some of them clobber the rest on save.

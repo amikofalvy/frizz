@@ -66,6 +66,7 @@ import type {
   OwnThreadActivityResult,
   OwnThreadTimersResult,
   SetThreadPinnedInput,
+  ReorderPinnedThreadsInput,
   SetThreadSnoozeInput,
   TranscriptMessage,
   TranscriptPage,
@@ -212,6 +213,8 @@ export interface Api {
   setThreadSnooze(input: SetThreadSnoozeInput): Promise<void>
   // Pin/unpin the thread out of the rail's band system (the pinned band at the top of the rail).
   setThreadPinned(input: SetThreadPinnedInput): Promise<void>
+  // The pinned band's new order after a drag, top first.
+  reorderPinnedThreads(input: ReorderPinnedThreadsInput): Promise<void>
   // THE RECURRING PROMPT, armed entirely from the Goal panel: one text, and up to two triggers
   // (every rest, and/or every N minutes). Text, triggers and cadence travel together — they are one row.
   setThreadRecurringPrompt(input: SetThreadRecurringPromptInput): Promise<void>
@@ -428,6 +431,7 @@ export const PROCEDURES = {
   completeThread: "mutation",
   setThreadSnooze: "mutation",
   setThreadPinned: "mutation",
+  reorderPinnedThreads: "mutation",
   setThreadRecurringPrompt: "mutation",
   setOwnThreadRecurringPrompt: "mutation",
   setOwnThreadTitle: "mutation",

@@ -1293,6 +1293,45 @@ test("pinned_at: a pre-pin unified file gains the column, the pin persists, and 
   }
 })
 
+test("reorderPinned re-deals the shelf's own instants onto the dragged order, and a new pin still lands last", () => {
+  const dir = mkdtempSync(join(tmpdir(), "frizz-storage-pin-order-"))
+  const s = createStorage(join(dir, "ui.db"), "p")
+  // The order the board sorts the band by (groups.ts sectionThreads): oldest instant first, slug on a tie.
+  const shelf = () =>
+    ["a", "b", "c", "d", "loose"]
+      .map((slug) => ({ slug, at: s.getSession(slug)?.pinned_at ?? null }))
+      .filter((row): row is { slug: string; at: string } => row.at !== null)
+      .sort((x, y) => x.at.localeCompare(y.at) || x.slug.localeCompare(y.slug))
+      .map((row) => row.slug)
+  try {
+    for (const slug of ["a", "b", "c", "d", "loose"]) s.upsertSession(row({ slug, state: "open" }))
+    s.setPinnedAt("a", "2026-10-01T00:00:00.000Z")
+    s.setPinnedAt("b", "2026-10-02T00:00:00.000Z")
+    // c and d were pinned in the same millisecond: a reorder must not leave them tied, or the slug
+    // tiebreak would put them back in the order the drag moved them out of.
+    s.setPinnedAt("c", "2026-10-03T00:00:00.000Z")
+    s.setPinnedAt("d", "2026-10-03T00:00:00.000Z")
+    assert.deepEqual(shelf(), ["a", "b", "c", "d"])
+
+    s.reorderPinned(["d", "c", "a", "b"])
+    assert.deepEqual(shelf(), ["d", "c", "a", "b"], "the band reads in the dragged order")
+    assert.equal(s.getSession("d")?.pinned_at, "2026-10-01T00:00:00.000Z", "the top row takes the shelf's earliest instant")
+    assert.equal(s.getSession("loose")?.pinned_at, null, "an unpinned thread is left unpinned")
+
+    // A list that is stale against the shelf: it names a thread that is not pinned, and misses one that is.
+    s.reorderPinned(["b", "loose", "a", "nope"])
+    assert.deepEqual(shelf(), ["b", "a", "d", "c"], "listed rows lead; the unlisted keep their order after them")
+    assert.equal(s.getSession("loose")?.pinned_at, null, "a reorder never pins anything")
+
+    // A pin made after the drag is stamped now, later than every dealt instant.
+    s.setPinnedAt("loose", new Date().toISOString())
+    assert.deepEqual(shelf(), ["b", "a", "d", "c", "loose"])
+  } finally {
+    s.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 // ── the batched registry reads ──────────────────────────────────────────────────────────────────────
 // The board reads five per-thread tables for EVERY row it assembles, and it used to ask each of them
 // one thread at a time: 2,790 statements per rebuild on the maintainer's 558-thread board, all of it

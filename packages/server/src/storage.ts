@@ -724,6 +724,10 @@ export interface Storage {
   // Pin/unpin: the instant is the pinned band's order, null clears it. Unguarded like setSnoozedUntil —
   // the RPC resolves the owning session first.
   setPinnedAt(slug: string, at: string | null): void
+  // Rearrange the pinned band to `slugs`, top first, by re-dealing the instants it already holds — see
+  // reorderPinnedStmts below. Pins and unpins nothing: a slug not on the shelf is ignored, and a pinned
+  // thread the caller did not list keeps its place after the ones it did.
+  reorderPinned(slugs: readonly string[]): void
   // Arm/clear the awaiting-background event-snooze. Session-guarded like the park above. `restedAt` is
   // the rest instant the card is snoozed FOR; the board re-surfaces it once rested_at moves past this.
   setBgSnoozeRestedAtIfCurrent(slug: string, sessionId: string, generation: number, restedAt: string | null): boolean
@@ -1845,6 +1849,30 @@ export function createStorage(source: string | Database, projectId: string): Sto
   `)
   const snoozedUntilStmt = scope.prepare("UPDATE session SET snoozed_until = ?, snooze_prompt = ? WHERE project_id = @project_id AND slug = ?")
   const pinnedAtStmt = scope.prepare("UPDATE session SET pinned_at = ? WHERE project_id = @project_id AND slug = ?")
+  // THE PINNED BAND'S ORDER IS ITS INSTANTS (web groups.ts sectionThreads: oldest pin first, slug on a
+  // tie), so a drag in the band is written as those same instants dealt back out in the new order: the
+  // earliest goes to the top row, the next to the second, and so on. Nothing reads `pinned_at` as a time
+  // — it is a sort key and a flag — and dealing out the SAME instants keeps the one rule a new pin needs:
+  // it is stamped now, later than every instant on the shelf, so it still lands at the bottom.
+  // Strictly increasing, so a same-millisecond pair cannot fall back on the slug order and undo the drag.
+  // Read and write are one transaction, so the shelf cannot change between them.
+  const pinShelfStmt = scope.prepare<[], { slug: string; pinned_at: string }>(
+    "SELECT slug, pinned_at FROM session WHERE project_id = @project_id AND pinned_at IS NOT NULL ORDER BY pinned_at, slug",
+  )
+  const reorderPinned = db.transaction((slugs: readonly string[]) => {
+    const shelf = pinShelfStmt.all() as { slug: string; pinned_at: string }[]
+    const current = shelf.map((row) => row.slug)
+    const onShelf = new Set(current)
+    const listed = [...new Set(slugs)].filter((slug) => onShelf.has(slug))
+    const named = new Set(listed)
+    const order = [...listed, ...current.filter((slug) => !named.has(slug))]
+    let previous = 0
+    order.forEach((slug, index) => {
+      const parsed = Date.parse(shelf[index]!.pinned_at)
+      previous = Number.isFinite(parsed) && parsed > previous ? parsed : previous + 1
+      pinnedAtStmt.run(new Date(previous).toISOString(), slug)
+    })
+  })
   // The session-guarded park. Deliberately leaves snooze_prompt alone: it parks an instant without
   // arming a scheduled bump, so a caller that wants both writes both.
   const snoozedUntilIfCurrentStmt = scope.prepare(`
@@ -2837,6 +2865,7 @@ export function createStorage(source: string | Database, projectId: string): Sto
     setSnoozedUntilIfCurrent: (slug, sessionId, generation, until) =>
       snoozedUntilIfCurrentStmt.run(until, slug, sessionId, generation).changes === 1,
     setPinnedAt: (slug, at) => void pinnedAtStmt.run(at, slug),
+    reorderPinned: (slugs) => reorderPinned(slugs),
     setBgSnoozeRestedAtIfCurrent: (slug, sessionId, generation, restedAt) =>
       bgSnoozeRestedAtIfCurrentStmt.run(restedAt, slug, sessionId, generation).changes === 1,
     setRecurringPromptIfCurrent: (slug, sessionId, generation, write) =>

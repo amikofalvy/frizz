@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { dropIndex, edgeScrollVelocity, moveItem, RAIL_STEP_PX, shiftFor } from "./railReorder.ts"
+import { clampToSlots, dropIndex, edgeScrollVelocity, heldStep, moveItem, nearestSlot, RAIL_STEP_PX, shiftFor } from "./railReorder.ts"
 
 test("moveItem moves in both directions, and `to` is read against the post-removal list", () => {
   const list = ["a", "b", "c", "d"]
@@ -54,4 +54,35 @@ test("edge auto-scroll engages only inside the zone, ramps with depth, and is si
   // Deeper into the zone is faster, and it is capped.
   assert.ok(Math.abs(edgeScrollVelocity(102, bounds)) > Math.abs(edgeScrollVelocity(130, bounds)))
   assert.ok(Math.abs(edgeScrollVelocity(-500, bounds)) <= 14)
+})
+
+// THE PINNED BAND'S ROWS ARE NOT ONE HEIGHT: a two-line title, or a thread with live sub-agents under it.
+// Three rows: a 40px one, then two of 20px, touching (the band's rows draw no gap between them).
+const ROWS = [{ top: 100, height: 40 }, { top: 140, height: 20 }, { top: 160, height: 20 }]
+
+test("nearestSlot is dropIndex when the rows are one height", () => {
+  const uniform = Array.from({ length: 6 }, (_, i) => ({ top: i * RAIL_STEP_PX, height: RAIL_STEP_PX - 8 }))
+  for (const delta of [-500, -60, -25, -23, 0, 23, 25, 60, 100, 500]) {
+    assert.equal(nearestSlot(uniform, 2, delta), dropIndex(2, delta, 6), `delta ${delta}`)
+  }
+})
+
+test("nearestSlot swaps a tall row past a short one halfway between their centres", () => {
+  // The 40px row's centre is 120 and the next row's is 150: the swap is at 135, a 15px drag.
+  assert.equal(nearestSlot(ROWS, 0, 14), 0)
+  assert.equal(nearestSlot(ROWS, 0, 16), 1)
+  // ...and the short row going up passes it at the same midpoint, from the other side.
+  assert.equal(nearestSlot(ROWS, 1, -14), 1)
+  assert.equal(nearestSlot(ROWS, 1, -16), 0)
+  assert.equal(nearestSlot(ROWS, 0, 900), 2, "past the end lands on the last slot")
+})
+
+test("the held row stays inside the band, and its neighbours shift by its height", () => {
+  assert.equal(clampToSlots(ROWS, 0, -30), 0, "the top row cannot rise above the band")
+  assert.equal(clampToSlots(ROWS, 0, 99), 40, "…nor sink past the last row's bottom")
+  assert.equal(clampToSlots(ROWS, 2, -99), -60)
+  assert.equal(clampToSlots(ROWS, 1, 7), 7, "inside the band the pointer is followed exactly")
+  assert.equal(heldStep(ROWS, 0), 40)
+  assert.equal(heldStep(ROWS, 2), 20)
+  assert.equal(heldStep([{ top: 0, height: 20 }, { top: 24, height: 30 }], 1), 34, "a gap between rows is part of the step")
 })

@@ -50,6 +50,62 @@ export function shiftFor(index: number, fromIndex: number, toIndex: number, step
   return 0
 }
 
+/** A row's box when a drag began, in any one vertical coordinate system. */
+export interface RowSlot {
+  top: number
+  height: number
+}
+
+/**
+ * Which slot a dragged ROW is over, in a list whose rows are not one height — the sidebar's pinned
+ * band, where a title wraps to two lines and a thread's live sub-agents hang under it, so the
+ * one-division `dropIndex` above has no step to divide by.
+ *
+ * The slot whose centre is nearest the held row's centre, against where every row sat when the drag
+ * began. With equal heights that is `dropIndex` exactly; with unequal ones the swap lands halfway
+ * between the two centres, so a two-line row need not travel its whole height to pass a one-line one.
+ */
+export function nearestSlot(slots: readonly RowSlot[], fromIndex: number, deltaY: number): number {
+  const held = slots[fromIndex]
+  if (!held) return fromIndex
+  const centre = held.top + held.height / 2 + deltaY
+  let best = fromIndex
+  let bestDistance = Number.POSITIVE_INFINITY
+  slots.forEach((slot, index) => {
+    const distance = Math.abs(slot.top + slot.height / 2 - centre)
+    if (distance < bestDistance) {
+      best = index
+      bestDistance = distance
+    }
+  })
+  return best
+}
+
+/**
+ * The held row's displacement, kept inside the list: it can reach the first slot's top and the last
+ * slot's bottom, and no further. A drop only ever lands IN the list, so a row drawn over whatever sits
+ * below it would promise a place it cannot go.
+ */
+export function clampToSlots(slots: readonly RowSlot[], fromIndex: number, deltaY: number): number {
+  const held = slots[fromIndex]
+  const first = slots[0]
+  const last = slots[slots.length - 1]
+  if (!held || !first || !last) return 0
+  return Math.max(first.top - held.top, Math.min(last.top + last.height - (held.top + held.height), deltaY))
+}
+
+/**
+ * How far the OTHER rows shift to open the gap: the held row's own height plus the gap between rows,
+ * which is what `shiftFor` takes as its step when the rows are not uniform.
+ */
+export function heldStep(slots: readonly RowSlot[], fromIndex: number): number {
+  const held = slots[fromIndex]
+  if (!held) return 0
+  const [a, b] = slots
+  const gap = a && b ? b.top - (a.top + a.height) : 0
+  return held.height + gap
+}
+
 /**
  * How fast to scroll the band when the pointer nears its edge, in px per frame.
  *

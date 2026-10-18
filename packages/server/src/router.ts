@@ -51,6 +51,7 @@ import {
   TIMER_MAX_ARMED,
   type ThreadTimerView,
   SetThreadPinnedInput,
+  ReorderPinnedThreadsInput,
   SetThreadSnoozeInput,
   GithubStatus,
   GithubListInput,
@@ -3160,6 +3161,17 @@ export function createRouter(ctx: AppContext) {
         const thread = (await ctx.board.snapshot()).threads.find((candidate) => candidate.id === input.slug)
         if (!thread || thread.kind !== "session" || thread.foreign) throw new Error(`thread ${input.slug} is not editable`)
         ctx.storage.setPinnedAt(input.slug, input.pinned ? new Date().toISOString() : null)
+        ctx.board.refresh()
+      },
+    }),
+
+    // A drag in the pinned band: the band's new order, top first. Storage re-deals the pin instants the
+    // band is sorted by (storage.ts reorderPinned), so the order survives a reload and reaches every tab
+    // and the phone board through the same board refresh a pin does.
+    reorderPinnedThreads: mutation({
+      input: ReorderPinnedThreadsInput,
+      handler: async ({ input }) => {
+        ctx.storage.reorderPinned(input.slugs)
         ctx.board.refresh()
       },
     }),

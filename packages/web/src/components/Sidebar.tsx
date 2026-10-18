@@ -31,8 +31,9 @@ import { useOptimisticallyArchived } from "../lib/optimisticArchive.ts"
 import { unlandedDispatches, usePendingDispatches, type PendingDispatchEntry } from "../lib/pendingDispatch.ts"
 import { STACKED_RAIL_ANCHOR_CLASS, stackedRailAnchor } from "../lib/stackedRailAnchor.ts"
 import { useProjectScope } from "../lib/projectScope.tsx"
+import { clampToSlots, edgeScrollVelocity, heldStep, moveItem, nearestSlot, shiftFor, type RowSlot } from "../lib/railReorder.ts"
 import { activeSidebarSection, markerRow, queueCardGeometry, queueNavigationSettled, railRevealDelta, scrolledToDocumentBottom } from "../lib/sidebarScrollspy.ts"
-import type { ReactElement, ReactNode, RefObject } from "react"
+import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, ReactElement, ReactNode, RefObject } from "react"
 
 // THE LEFT SIDEBAR — the thread list as a FLOATING column (no border, no fill: it floats in the
 // page's whitespace the way the old ToC nav did). App centers the sidebar + workpane as a PAIR with
@@ -272,19 +273,15 @@ export function Sidebar() {
               sit). These rows are OUT of the band system entirely — sectionThreads diverts them before
               any band claims them, so a pinned thread stays here spinning, resting, snoozed or Done
               alike — and the band is ordered by the pin instants, oldest first, never by activity: it
-              is an arrangement the human made, and nothing the threads do may shuffle it.
+              is an arrangement the human made, and nothing the threads do may shuffle it. The human
+              rearranges it by dragging a row (PinnedBand).
               LABELED since 2026-09-19, like every band below it, and NOT collapsible (maintainer: the
               Pinned, Queue and Running labels "should not be collapsible") — the header is the static
               form of SectionHeader, so it lines up with the collapsible Snoozed/Done headers. */}
           {sections.pinned.length > 0 && (
             <section aria-label="Pinned">
               <SectionHeader label="Pinned" count={sections.pinned.length} />
-              {sections.pinned.map((t) => (
-                <div key={t.id}>
-                  <ThreadRow t={t} active={activeId === t.id} onQueueNavigate={navigateToQueueCard} />
-                  <SubAgentRows t={t} />
-                </div>
-              ))}
+              <PinnedBand threads={sections.pinned} railRef={railRef} activeId={activeId} onQueueNavigate={navigateToQueueCard} />
               {/* The separating rule is drawn only when the Rested/Active section actually follows:
                   Snoozed, Done and External each draw their OWN rule above themselves, so drawing one
                   here too would double it whenever that section is empty. */}
@@ -411,6 +408,190 @@ export function Sidebar() {
         </div>
       </div>
     </aside>
+  )
+}
+
+// THE PINNED BAND, rearranged by dragging a row (maintainer 2026-10-17: "make the pin list reorderable
+// with a simple drag operation"). It is the project rail's drag (ProjectRail.tsx), adapted to rows that
+// are not one height — a title wraps, and a thread's live sub-agents hang under it — so each row is
+// measured when the drag begins (lib/railReorder nearestSlot). A press becomes a drag only after
+// PIN_DRAG_THRESHOLD_PX, so a click still opens the thread; the held row follows the pointer inside the
+// band while the rows it passes slide aside; the drop writes the band's whole order and holds it on
+// screen until the board carries it back. Alt+↑/↓ on a focused row moves it one slot, as on the rail.
+const PIN_DRAG_THRESHOLD_PX = 4
+/** When the last pinned-row drag ended: the click the browser fires on release must not open the row. */
+let pinDragEndedAt = 0
+
+interface PinDrag {
+  fromIndex: number
+  toIndex: number
+  deltaY: number
+  /** How far a passed row slides: the held row's height plus the gap between rows. */
+  step: number
+  /** The band as the drag found it. The indices are positions in this list, whatever the board does meanwhile. */
+  list: readonly ThreadView[]
+}
+
+/** `threads` in the order of `ids`; any thread `ids` does not name keeps its place after them. */
+function inPinOrder(threads: readonly ThreadView[], ids: readonly string[]): readonly ThreadView[] {
+  const byId = new Map(threads.map((t) => [t.id, t]))
+  const named = ids.flatMap((id) => byId.get(id) ?? [])
+  return named.length === threads.length ? named : [...named, ...threads.filter((t) => !ids.includes(t.id))]
+}
+
+function PinnedBand({ threads, railRef, activeId, onQueueNavigate }: {
+  threads: readonly ThreadView[]
+  railRef: RefObject<HTMLDivElement | null>
+  activeId: string | null
+  onQueueNavigate: (id: string) => void
+}) {
+  const bandRef = useRef<HTMLDivElement>(null)
+  const [drag, setDrag] = useState<PinDrag | null>(null)
+  // The order the human just made, drawn until the board's own pinned order next changes — the write
+  // landing, or anything else moving the shelf, after which the board is the truth again. `base` is the
+  // board's order at the moment it was made.
+  const [arranged, setArranged] = useState<{ ids: readonly string[]; base: string } | null>(null)
+  const boardKey = threads.map((t) => t.id).join("\n")
+  const boardKeyRef = useRef(boardKey)
+  boardKeyRef.current = boardKey
+  useEffect(() => {
+    if (arranged && arranged.base !== boardKey) setArranged(null)
+  }, [arranged, boardKey])
+  const shown = useMemo(() => {
+    if (drag) {
+      // The latest copy of each row the drag picked up, so a spinner still stops mid-drag.
+      const byId = new Map(threads.map((t) => [t.id, t]))
+      return drag.list.map((t) => byId.get(t.id) ?? t)
+    }
+    return arranged && arranged.base === boardKey ? inPinOrder(threads, arranged.ids) : threads
+  }, [drag, arranged, boardKey, threads])
+
+  const commit = useCallback((next: readonly ThreadView[]) => {
+    const ids = next.map((t) => t.id)
+    setArranged({ ids, base: boardKeyRef.current })
+    rpc.reorderPinnedThreads({ slugs: ids }).catch((error: unknown) => {
+      setArranged((current) => (current?.ids === ids ? null : current))
+      showToast(`Reorder failed: ${String(error instanceof Error ? error.message : error).slice(0, 80)}`)
+    })
+  }, [])
+
+  const startDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>, index: number) => {
+    // Left button only, and never a modified click: ⌘-click on the row's door opens a new tab.
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+    if (shown.length < 2) return
+    const row = event.currentTarget
+    const { pointerId, clientY: startY } = event
+    const rail = railRef.current
+    const startScroll = rail?.scrollTop ?? 0
+    const list = shown
+    let slots: RowSlot[] | null = null
+    let frame = 0
+    // The pointer's travel plus whatever the rail has scrolled under it: the held row stays under the
+    // pointer while the rail auto-scrolls, or while a wheel scrolls it.
+    const deltaFor = (clientY: number) => clampToSlots(slots!, index, clientY - startY + ((rail?.scrollTop ?? 0) - startScroll))
+    const apply = (clientY: number) => {
+      if (rail) {
+        const velocity = edgeScrollVelocity(clientY, rail.getBoundingClientRect())
+        if (velocity) rail.scrollTop += velocity
+      }
+      const deltaY = deltaFor(clientY)
+      setDrag({ fromIndex: index, toIndex: nearestSlot(slots!, index, deltaY), deltaY, step: heldStep(slots!, index), list })
+    }
+    const onMove = (move: PointerEvent) => {
+      if (move.pointerId !== pointerId) return
+      if (!slots) {
+        if (Math.abs(move.clientY - startY) < PIN_DRAG_THRESHOLD_PX) return
+        const rows = bandRef.current?.querySelectorAll<HTMLElement>(":scope > [data-pinned-row]")
+        if (!rows || rows.length !== list.length) return
+        slots = [...rows].map((el) => {
+          const box = el.getBoundingClientRect()
+          return { top: box.top, height: box.height }
+        })
+        row.setPointerCapture(pointerId)
+        window.getSelection()?.removeAllRanges()
+      }
+      move.preventDefault()
+      const clientY = move.clientY
+      // One update per frame, and the edge auto-scroll keeps running while the pointer is held still.
+      cancelAnimationFrame(frame)
+      const tick = () => {
+        apply(clientY)
+        if (rail && edgeScrollVelocity(clientY, rail.getBoundingClientRect())) frame = requestAnimationFrame(tick)
+      }
+      frame = requestAnimationFrame(tick)
+    }
+    const onUp = (up: PointerEvent) => {
+      if (up.pointerId !== pointerId) return
+      cancelAnimationFrame(frame)
+      window.removeEventListener("pointermove", onMove)
+      window.removeEventListener("pointerup", onUp)
+      window.removeEventListener("pointercancel", onUp)
+      if (!slots) return // a click: nothing was dragged
+      pinDragEndedAt = Date.now()
+      setDrag(null)
+      if (up.type === "pointercancel") return
+      // From the release itself rather than the last frame, which may not have run yet.
+      const toIndex = nearestSlot(slots, index, deltaFor(up.clientY))
+      if (toIndex !== index) commit(moveItem(list, index, toIndex))
+    }
+    window.addEventListener("pointermove", onMove, { passive: false })
+    window.addEventListener("pointerup", onUp)
+    window.addEventListener("pointercancel", onUp)
+  }, [shown, railRef, commit])
+
+  // Alt+Arrow, not a bare arrow: a bare ArrowUp on a focused row is how the rail scrolls.
+  const onKeyDown = useCallback((event: ReactKeyboardEvent<HTMLDivElement>, index: number) => {
+    if (!event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return
+    const to = index + (event.key === "ArrowUp" ? -1 : 1)
+    if (to < 0 || to >= shown.length) return
+    event.preventDefault()
+    commit(moveItem(shown, index, to))
+    // Focus follows the row, not the slot — otherwise a second press moves whatever landed here.
+    requestAnimationFrame(() => {
+      bandRef.current?.querySelectorAll<HTMLElement>(":scope > [data-pinned-row]")[to]?.querySelector("button")?.focus()
+    })
+  }, [shown, commit])
+
+  return (
+    <div ref={bandRef} data-pinned-band className={drag ? "select-none" : undefined}>
+      {shown.map((t, index) => {
+        const held = drag?.fromIndex === index
+        const offset = drag ? (held ? drag.deltaY : shiftFor(index, drag.fromIndex, drag.toIndex, drag.step)) : 0
+        return (
+          <div
+            key={t.id}
+            data-pinned-row={t.id}
+            data-pin-held={held || undefined}
+            onPointerDown={(event) => startDrag(event, index)}
+            onKeyDown={(event) => onKeyDown(event, index)}
+            // The release click: Chrome fires it at the capture target — this box, which opens nothing —
+            // but an engine that fires it at the row under the pointer would open the row just dropped.
+            onClickCapture={(event) => {
+              if (Date.now() - pinDragEndedAt < 250) {
+                event.preventDefault()
+                event.stopPropagation()
+              }
+            }}
+            // The row's door is a link, and a native link drag would take the pointer away mid-drag.
+            onDragStart={(event) => event.preventDefault()}
+            // Held, the row is lifted off the band on the rail's own base colour — the backing its hover
+            // strip already paints — so it reads as the hovered row it is, raised over the rows it crosses.
+            // The hairline ring is what lifts it in the dark theme, where a shadow on the near-black rail
+            // does not show.
+            className={held ? "relative z-10 cursor-grabbing rounded-md bg-bg shadow-lg shadow-shadow-ink/40 ring-1 ring-border" : undefined}
+            style={{
+              transform: offset ? `translateY(${offset}px)` : undefined,
+              // Only the rows sliding aside animate, and only while a row is held: the drop moves every
+              // row to its new slot in the same commit that clears the transforms, so it must not ease.
+              transition: drag && !held ? "transform 160ms ease" : undefined,
+            }}
+          >
+            <ThreadRow t={t} active={activeId === t.id} onQueueNavigate={onQueueNavigate} />
+            <SubAgentRows t={t} />
+          </div>
+        )
+      })}
+    </div>
   )
 }
 
