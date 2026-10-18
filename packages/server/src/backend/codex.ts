@@ -268,6 +268,7 @@ export function extractCodexFrizzTitle(text: string, allowLegacy = true): CodexF
 //                                    stays dropped, BUT the plaintext `summary[]` (present because Frizz
 //                                    launches codex with model_reasoning_summary; see FRIZZ_CODEX_OUTPUT_DEFAULTS) is
 //                                    surfaced as a `reasoning` event → an expandable summary block.
+//   token_usage_record (seen on 0.163: per-request usage, the same totals token_count carries),
 //   event_msg/token_count, thread_settings_applied, session_meta, turn_context, world_state — sidecar
 //   for the renderable event stream. turn_context's model/effort are folded separately as session
 //   profile telemetry (parseCodexSessionProfile), never emitted as conversation content.

@@ -212,6 +212,10 @@ test(`the pinned codex ${CODEX_APP_SERVER_SUPPORTED_VERSION} still emits every e
     ["assistant-text", "no assistant output would reach the board: no preview, no title, no signal fence"],
     ["user-message", "no human turn would register — row order and external-session naming both read it"],
     ["tool-call", "no tool activity would render, and the sub-agent tracker reads its call ids"],
+    // A 0.163 rollout also carries a top-level `token_usage_record` per request, with the same totals
+    // `event_msg/token_count` reports, and Frizz reads only the latter. Should the vendor retire
+    // token_count in its favour, nothing else here would notice.
+    ["context-usage", "the board's context reading and the sub-agent facts would stop moving"],
   ]
   for (const [kind, consequence] of required) {
     assert.ok((kinds.get(kind) ?? 0) > 0, `parseCodexLine found no '${kind}' in a real pinned-codex rollout — ${consequence}`)
