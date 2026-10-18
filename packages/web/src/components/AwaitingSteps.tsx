@@ -110,7 +110,7 @@ export function StepsComplete({ slug, steps, onReplied, onReplyFailed }: {
       <div
         data-steps-complete
         data-checked={checked}
-        className={`relative mt-3 flex items-center rounded-md border px-3 py-2.5 text-[13px] leading-5 transition-colors ${
+        className={`${BOX_ROW} transition-colors ${
           checked ? "border-selection-border bg-selection text-fg" : "border-border text-fg/90 hover:border-border-strong hover:bg-elevated"
         }`}
       >
@@ -125,15 +125,11 @@ export function StepsComplete({ slug, steps, onReplied, onReplyFailed }: {
         />
         <span
           aria-hidden
-          className={`pointer-events-none relative size-[18px] shrink-0 rounded-[4px] border transition-colors ${
+          className={`pointer-events-none ${BOX_SQUARE} transition-colors ${
             checked ? "border-accent bg-accent-fill text-on-accent" : "border-control-strong bg-panel"
           }`}
         >
-          {checked && (
-            <span className="absolute inset-0 flex items-center justify-center">
-              <Check size={13} strokeWidth={3} />
-            </span>
-          )}
+          {checked && <BoxCheck />}
         </span>
         <span id={labelId} className="pointer-events-none ml-2 font-medium">{STEPS_COMPLETE}</span>
       </div>
@@ -152,5 +148,44 @@ export function StepsComplete({ slug, steps, onReplied, onReplyFailed }: {
         </CardActions>
       )}
     </>
+  )
+}
+
+/** THE BOX ON A SETTLED CARD whose rest the human answered with it (lib/stepsAnswer stepsDoneReplies) —
+ *  ticked, and no longer a control (maintainer 2026-10-15: "we should have something to indicate that the
+ *  awaiting human block … was, in fact, completed. Maybe just leave the checked checkbox in there").
+ *
+ *  THE SAME ROW, IN THE SETTLED PICK'S TREATMENT: an answered question card keeps its picked option as an
+ *  inset row with a soft accent rule (QuestionBlockCard's OptionChip `settledPick`), never the live
+ *  selection's fill, which says "staged, not sent yet". The steps' answer is that kind of past pick, so it
+ *  wears the same: a 2px left rule, the 1px padding it costs taken back (`pl-[11px]`, as there), and the
+ *  square outlined rather than filled. Same box, same height as the live row, so the card does not move
+ *  in the frame the send turns one into the other. */
+export function StepsCompleted() {
+  return (
+    <div
+      data-steps-completed
+      role="checkbox"
+      aria-checked="true"
+      aria-disabled="true"
+      className={`${BOX_ROW} border-border-strong border-l-2 border-l-accent/40 bg-bg/50 pl-[11px] text-fg`}
+    >
+      <span aria-hidden className={`${BOX_SQUARE} border-control-strong text-fg`}>
+        <BoxCheck />
+      </span>
+      <span className="ml-2 font-medium">{STEPS_COMPLETE}</span>
+    </div>
+  )
+}
+
+// The row and its square, shared by the live box and the settled one so they cannot drift apart.
+const BOX_ROW = "relative mt-3 flex items-center rounded-md border px-3 py-2.5 text-[13px] leading-5"
+const BOX_SQUARE = "relative size-[18px] shrink-0 rounded-[4px] border"
+
+function BoxCheck() {
+  return (
+    <span className="absolute inset-0 flex items-center justify-center">
+      <Check size={13} strokeWidth={3} />
+    </span>
   )
 }

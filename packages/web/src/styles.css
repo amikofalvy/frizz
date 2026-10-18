@@ -1623,7 +1623,8 @@ html[data-code-wrap="off"] {
    that row — and for the button in its own right, so one standing outside a wrapper
    (scripts/verify-md-code-copy-button.mjs lays probes out that way) still resolves them. */
 .md-body .md-code,
-.md-body .md-code-copy {
+.md-body .md-code-copy,
+.md-body .md-quote-copy {
   --md-copy-box: 1.7em;
   --md-copy-inset: 0.35em;
 }
@@ -1696,8 +1697,9 @@ html[data-code-wrap="off"] {
 /* Geometry in `em`, so it tracks the prose scale instead of being pinned at the transcript's 14px (a
    card's .md-body renders at 13px): a 24px box holding a 14px lucide glyph at that 14px, which is what
    1.7em and 0.58 of the box are. Inset 0.35em sits the button inside the `pre`'s own 0.75em/1em padding,
-   so it never overhangs the border. */
-.md-body .md-code-copy {
+   so it never overhangs the border. A quote's button (lib/quoteCopy.ts) is this same button, placed
+   differently — see `.md-quote-copy` below. */
+.md-body :is(.md-code-copy, .md-quote-copy) {
   /* --md-copy-box and --md-copy-inset are declared just above. ONE inset, used three times, because the
      corner depends on it — see the radius below. */
   position: absolute;
@@ -1734,18 +1736,19 @@ html[data-code-wrap="off"] {
   transition: opacity 120ms ease, color 120ms ease, border-color 120ms ease;
 }
 .md-body .md-code:hover .md-code-copy,
-.md-body .md-code-copy:focus-visible,
-.md-body .md-code-copy.is-copied {
+.md-body .md-quote:hover > .md-quote-copy,
+.md-body :is(.md-code-copy, .md-quote-copy):focus-visible,
+.md-body :is(.md-code-copy, .md-quote-copy).is-copied {
   opacity: 1;
 }
 /* Nothing to hover WITH: on a touch surface the button would be permanently invisible. */
 @media (hover: none) {
-  .md-body .md-code-copy {
+  .md-body :is(.md-code-copy, .md-quote-copy) {
     opacity: 1;
   }
 }
-.md-body .md-code-copy:hover,
-.md-body .md-code-copy.is-copied {
+.md-body :is(.md-code-copy, .md-quote-copy):hover,
+.md-body :is(.md-code-copy, .md-quote-copy).is-copied {
   color: var(--color-fg);
   border-color: color-mix(in srgb, var(--color-muted) 55%, transparent);
 }
@@ -1761,7 +1764,7 @@ html[data-code-wrap="off"] {
    gate); 2.4 puts the check at 3.09% (1.52×). Going further is the wrong lever — closing the RAW-AREA
    gap (still 2.53×) with the pen alone would need stroke ~3.9, heavier than any other glyph in the
    app; the tone step below is what actually carries it. */
-.md-body .md-code-copy::after {
+.md-body :is(.md-code-copy, .md-quote-copy)::after {
   content: "";
   position: absolute;
   inset: 0;
@@ -1773,8 +1776,46 @@ html[data-code-wrap="off"] {
 /* Same `-0.5` viewBox shift the task list's check carries, and for the same reason: lucide's tick runs
    (20,6)→(9,17)→(4,12), so its ink centre sits half a unit above the viewBox centre and it renders
    riding high. Correcting it in the glyph's own coordinates costs no unit and cannot drift with size. */
-.md-body .md-code-copy.is-copied::after {
+.md-body :is(.md-code-copy, .md-quote-copy).is-copied::after {
   --md-copy-glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 -0.5 24 24' fill='none' stroke='%23fff' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E");
+}
+/* ── Blockquote copy button ─────────────────────────────────────────────────────────────────────
+   The code block's button, on a quote (lib/quoteCopy.ts mints it; lib/copy-code.ts copies). A quote has
+   no box to inset it into and its text runs the full measure, so where the code button OVERLAYS its
+   first line this one makes room: it FLOATS, as the quote's first child, and only the lines beside it —
+   one line, since its margin box is exactly 1lh tall — wrap short. Every line under it keeps the full
+   width, and nothing moves when it fades in.
+
+   VERTICAL: centred on the first line. The margins take the box down to 1lh (negative where the box is
+   the taller, as in an answer chip's snug leading), so the line beside it sets the float's height and
+   the second line is never pushed in too.
+   HORIZONTAL: its right edge stands where a plain code block's button does, the same inset in from the
+   column's edge, so a quote and a code block in one message put their buttons in one column. */
+.md-body .md-quote-copy {
+  /* Positioned for the glyph's `inset: 0`, and so it paints above an answer chip's stretched button,
+     which comes first in the DOM. */
+  position: relative;
+  top: auto;
+  right: auto;
+  float: right;
+  --md-quote-copy-trim: calc((1lh - var(--md-copy-box)) / 2);
+  margin: var(--md-quote-copy-trim) var(--md-copy-inset) var(--md-quote-copy-trim) 0.6em;
+}
+/* Only LINES wrap around a float; a block box runs on underneath it. That is right for prose, and wrong
+   for a quote that OPENS with a code block: its frame ran on under this button, and the code block's own
+   copy button, placed from that frame's edge, landed exactly beneath it. As a block formatting context
+   the frame stands beside the float instead, with its button inside it. Same for what a fence becomes. */
+.md-body .md-quote-copy + :is(.md-code, .md-lightbox, .md-mermaid) {
+  display: flow-root;
+}
+/* In an answer chip the button is revealed by hovering the QUOTE, so the quote has to be what the
+   pointer is over rather than the chip's stretched button beneath it. Today the body's `opacity-90`
+   lifts it anyway; this is what the reveal rests on if that goes, as the summary's click does above. A
+   click on the quote's text still picks the option through the chip's div-level click, which skips the
+   button. */
+[data-question-option] .md-body .md-quote {
+  position: relative;
+  z-index: 1;
 }
 /* ── Framed code blocks ─────────────────────────────────────────────────────────────────────────
    A block with a row above or below its code — a title or tabs (lib/codeTabs.ts), the show-all button

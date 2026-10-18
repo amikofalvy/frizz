@@ -17,6 +17,7 @@ import {
   parseMergedWake,
   parseOwnWatchExpiredWake,
   parsePrWatchExpiredWake,
+  parsePrWatchGoneWake,
   parseQuestionsCancelledWake,
   parseRecurringPrompt,
   restPromptMessage,
@@ -32,6 +33,7 @@ import {
   mergedWakeMessage,
   ownWatchExpiredWakeMessage,
   prWatchExpiredWakeMessage,
+  prWatchGoneWakeMessage,
   questionsCancelledWakeMessage,
   wakeTimeHeader,
   prWatchWakeMessage,
@@ -511,7 +513,7 @@ test("parsePrWatchExpiredWake: the lapsed watcher's ref is the whole of what a r
 // fixture's claim to hold "every wake frizz delivers".
 const RECOGNIZERS = [
   parseShellDoneWake, parseTimerWake, parseLimitResumeWake, parseLimitModelSwitchWake, parsePrWatchWake, parseGithubWakeSteer,
-  parseParkWake, parsePrWatchExpiredWake, parseOwnWatchExpiredWake, parsePrWatchStateWake, parseQuestionsCancelledWake,
+  parseParkWake, parsePrWatchExpiredWake, parsePrWatchGoneWake, parseOwnWatchExpiredWake, parsePrWatchStateWake, parseQuestionsCancelledWake,
 ] as const
 
 const COMPOSED: [string, string][] = [
@@ -530,6 +532,8 @@ const COMPOSED: [string, string][] = [
   ["park expired, nothing listed", parkExpiredWakeMessage([])],
   ["park finished", parkFinishedWakeMessage(parkStatus, true)],
   ["watcher lapsed", prWatchExpiredWakeMessage("nubjs/nub#777")],
+  ["pr watcher gone", prWatchGoneWakeMessage("nubjs/nub#777", "pull", 30)],
+  ["issue watcher gone", prWatchGoneWakeMessage("nubjs/nub#12", "issue", 30)],
   ["own shell watch lapsed", ownWatchExpiredWakeMessage("shell", "bzvtnt3ig")],
   ["own sub-agent watch lapsed", ownWatchExpiredWakeMessage("agent", "a01b2d20b32feab11")],
   ["questions cancelled", questionsCancelledWakeMessage(2)],
@@ -804,6 +808,14 @@ test("issueWatchWakeMessage: state changes and a comment steer share one deliver
   assert.ok(parseGithubWakeSteer(text.split("\n\n")[1]), "the steer is the second paragraph")
   assert.ok(text.endsWith(ISSUE_WATCH_ARMED_TRAILER))
   assert.doesNotMatch(stripWakeTrailer(text), /watch[-_]issue/)
+})
+
+test("parsePrWatchGoneWake: a watcher GitHub stopped resolving names its ref, for a PR and an issue alike", () => {
+  assert.deepEqual(parsePrWatchGoneWake(prWatchGoneWakeMessage("nubjs/nub#777", "pull", 30)), { ref: "nubjs/nub#777" })
+  assert.deepEqual(parsePrWatchGoneWake(prWatchGoneWakeMessage("acme/app#7", "issue", 30)), { ref: "acme/app#7" })
+  assert.equal(parsePrWatchGoneWake(prWatchExpiredWakeMessage("nubjs/nub#777")), null, "an expiry is its own wake")
+  assert.equal(parsePrWatchExpiredWake(prWatchGoneWakeMessage("nubjs/nub#777", "pull", 30)), null)
+  assert.equal(parsePrWatchGoneWake("nubjs/nub#777 can no longer be read, it seems"), null)
 })
 
 test("prWatchExpiredWakeMessage: an issue's expiry parses through the same head and points at watch-issue", () => {

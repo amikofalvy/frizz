@@ -1430,6 +1430,31 @@ const userRec = (ts: string) => JSON.stringify({ type: "user", timestamp: ts, me
 const thinkRec = (ts: string, mid: string) => JSON.stringify({ type: "assistant", timestamp: ts, message: { id: mid, content: [{ type: "thinking", signature: "sig", thinking: "" }] } })
 const bashRec = (ts: string, mid: string) => JSON.stringify({ type: "assistant", timestamp: ts, message: { id: mid, content: [{ type: "tool_use", name: "Bash", input: { command: "ls" } }] } })
 
+test("Claude Code's request records (2.1.300+) draw nothing", () => {
+  // From 2.1.300 the transcript also holds every API request: its parameters (`api-request`), the system
+  // prompt and tools once per shape (`api-request-shape`), and each message it carried, content-addressed
+  // (`api-request-blob`). A blob's `message` is `{ role: "user", content: [{ type: "text" }] }` — a human
+  // turn's shape — so a reader keyed on that role rather than the record's `type` would draw the model's
+  // whole context as messages nobody sent. Shapes as 2.1.301 writes them; the text is placeholder.
+  const turn = [
+    userRec("2026-07-01T00:00:00.000Z"),
+    bashRec("2026-07-01T00:00:02.000Z", "m1"),
+    JSON.stringify({ type: "user", timestamp: "2026-07-01T00:00:03.000Z", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tu", content: "ok" }] } }),
+    JSON.stringify({ type: "assistant", timestamp: "2026-07-01T00:00:05.000Z", message: { id: "m2", stop_reason: "end_turn", content: [{ type: "text", text: "Done." }] } }),
+  ]
+  const requests = [
+    JSON.stringify({ type: "api-request-shape", sessionId: "s", shapeHash: "h-shape", timestamp: "2026-07-01T00:00:01.000Z", version: "2.1.301", shape: { system: [{ type: "text", text: "SYSTEM PROMPT" }], tools: [{ name: "Bash", description: "d", input_schema: {} }] } }),
+    JSON.stringify({ type: "api-request-blob", sessionId: "s", hash: "h-user", message: { role: "user", content: [{ type: "text", text: "CONTEXT NOBODY TYPED" }] } }),
+    JSON.stringify({ type: "api-request-blob", sessionId: "s", hash: "h-sys", message: { role: "system", content: [{ type: "text", text: "SYSTEM BLOB" }], output_config: { effort: "high" } } }),
+    JSON.stringify({ type: "api-request", sessionId: "s", id: "r1", timestamp: "2026-07-01T00:00:01.000Z", version: "2.1.301", querySource: "sdk", shapeHash: "h-shape", params: { model: "claude-haiku-5-5" }, keep: 0, tail: ["h-user"], requestDigest: "d1" }),
+  ]
+  const withRequests = parseTranscript([turn[0], ...requests, turn[1], turn[2], requests[1], requests[3], turn[3]].join("\n"))
+  // `sourceId` is a record's byte offset, so the extra lines move it; everything drawn must not move.
+  const drawn = (messages: TranscriptMessage[]) => messages.map(({ sourceId: _offset, ...m }) => m)
+  assert.deepEqual(drawn(withRequests), drawn(parseTranscript(turn.join("\n"))), "the request records change nothing the transcript draws")
+  assert.ok(!withRequests.some((m) => /NOBODY TYPED|SYSTEM/.test(m.text)), "no request content is drawn as a message")
+})
+
 test("a long thinking window leaves NO row behind, only the turn's own card", () => {
   // Claude's thinking content is redacted, so this line could only ever have reported a DURATION — and a
   // permanent row whose whole payload is "the model paused here" is what the transcript stopped carrying

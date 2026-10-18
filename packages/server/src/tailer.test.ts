@@ -50,6 +50,29 @@ test("applyRecord: extracts trimmed assistant preview + advances activity", () =
   assert.equal(s.lastStopReason, "end_turn")
 })
 
+// Claude Code 2.1.300 writes every API request into the transcript too: its parameters
+// (`api-request`), the system prompt and tools once per shape (`api-request-shape`), and each message
+// it carried, content-addressed (`api-request-blob`). A blob's `message` is `{ role: "user", content }`
+// — a human turn's shape — so the turn state must key on the record's `type` and never on that role:
+// read as a user record, the model's own context would re-invoke a rested thread and reorder its row.
+test("applyRecord: Claude Code's request records (2.1.300+) are not turns", () => {
+  const s = newTailState("t", "sid", "/x")
+  // Through parseLine, as the tailer reads them: these carry fields the Record interface never names.
+  const line = (record: object) => parseLine(JSON.stringify(record))!
+  const blob = line({ type: "api-request-blob", sessionId: "sid", hash: "h-user", message: { role: "user", content: [{ type: "text", text: "context" }] } })
+  const request = (timestamp: string) => line({ type: "api-request", sessionId: "sid", id: "r", timestamp, version: "2.1.301", shapeHash: "h-shape", params: { model: "claude-haiku-5-5" }, tail: ["h-user"] })
+  applyRecord(s, { type: "user", timestamp: "2026-07-01T00:00:00.000Z", message: { content: "go" } })
+  applyRecord(s, line({ type: "api-request-shape", sessionId: "sid", shapeHash: "h-shape", timestamp: "2026-07-01T00:00:01.000Z", version: "2.1.301", shape: { system: [], tools: [] } }))
+  applyRecord(s, blob)
+  applyRecord(s, request("2026-07-01T00:00:01.000Z"))
+  applyRecord(s, { type: "assistant", timestamp: "2026-07-01T00:00:02.000Z", message: { stop_reason: "end_turn", content: [{ type: "text", text: "done" }] } })
+  applyRecord(s, blob)
+  applyRecord(s, request("2026-07-01T00:00:03.000Z"))
+  assert.equal(s.lastKind, "assistant", "a request record after the reply leaves the turn at rest")
+  assert.equal(s.lastAssistant, "done")
+  assert.equal(s.lastUserAt, "2026-07-01T00:00:00.000Z", "a role-user blob never reorders the row")
+})
+
 test("applyRecord: a system-origin user record (peer / task-notification) RE-INVOKES (in-flight) but never reorders the row", () => {
   const s = newTailState("t", "sid", "/x")
   // Agent comes to rest with an unanswered ```question.

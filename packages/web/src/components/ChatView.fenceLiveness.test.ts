@@ -145,7 +145,7 @@ test("a settled fence that handed the human steps keeps its card, with no thread
   assert.ok(keep >= 0, "the exception must exist")
   assert.ok(keep < render.indexOf("(m.fenceRefused || staleAwaiting || restingCardShown)) continue"), "…ahead of the skip it excepts")
   assert.match(render, /staleAwaiting && !m\.fenceRefused && !restingCardShown && settledFenceDraws\(fseg\.hints\)/, "never for a refused fence, nor one the resting card states")
-  assert.match(render, /push\(<AwaitingBackgroundCard key=\{`[^`]+`\} fence=\{\{ body: fseg\.body, hints: fseg\.hints \}\} \/>\)/, "no `thread`, so no rows and no verb")
+  assert.match(render, /push\(<AwaitingBackgroundCard key=\{`[^`]+`\} fence=\{\{ body: fseg\.body, hints: fseg\.hints \}\} stepsDone=\{stepsDone\} \/>\)/, "no `thread`, so no rows and no verb — only the record of a reply that was the box's")
   assert.match(source, /function settledFenceDraws\(hints: readonly AwaitingHint\[\]\): boolean \{\n\s*return awaitingSteps\(hints\)\.length > 0\n\}/)
 })
 

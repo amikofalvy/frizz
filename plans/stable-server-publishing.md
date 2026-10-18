@@ -56,6 +56,6 @@ Reference: [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/).
 
 ## Recovery after publication
 
-The workflow publishes and waits for npm to serve each version; it does not tag. Tags and GitHub releases are made by the releaser after a green run, from its own `gh` session: `nub scripts/tag-release.mjs`. The script waits up to 30s for the exact shell version's registry metadata, fails closed on a missing or invalid `gitHead`, tags that commit and never a checkout, never moves an existing tag, and creates only what is missing.
+The workflow publishes and waits for npm to serve each version; it does not tag. Tags, GitHub releases and their release notes are made by the releaser after a green run, from its own `gh` session, for every release (the server's tagged `frizz-server-vX.Y.Z`): `nub scripts/tag-release.mjs [frizz-server] --notes-file <file>`. The script refuses to create a release without notes, waits up to 30s for the exact version's registry metadata, fails closed on a missing or invalid `gitHead`, tags that commit and never a checkout, never moves an existing tag, and creates only what is missing.
 
 The workflow tagged the shell itself until 2026-10-12. GitHub rejects a tag from the workflow's own token when that commit's workflow differs from the current run's, because the token may not introduce that workflow revision, and a later run reconciling an earlier shell is exactly that case (frizz 0.13.13).

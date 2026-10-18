@@ -11,6 +11,7 @@ import { githubRefFromUrl, linkifyGithubRefs, withGithubRepo } from "./githubAut
 import { restoreWindowsPathEscapes } from "./windowsPathEscapes.ts"
 import { calloutExtension, promoteCallouts } from "./callouts.ts"
 import { restoreDisclosure } from "./disclosure.ts"
+import { mintQuoteCopy, quoteSourceFor, renderBlockquote, withQuoteSources, type QuoteSources } from "./quoteCopy.ts"
 import { FRAMED_IMAGE, IMAGE_FRAME, IMAGE_FRAME_MAT } from "../components/ImageFrame.tsx"
 
 // marked's GFM strikethrough opener is `~~?` — ONE tilde is enough. That misreads the tilde agents
@@ -270,6 +271,9 @@ export const MARKDOWN_OPTIONS = {
     // block's clamp and a lone title are all read off the info string there.
     code: (token: Tokens.Code) =>
       renderCodeBlock([{ info: token.lang ?? "", text: token.text, closed: isClosedFence(token) }]),
+    // A quote files its Markdown for the copy button the sanitizer mints (quoteCopy.ts). Outside
+    // mdToHtml it steps aside and marked draws the plain quote.
+    blockquote: renderBlockquote,
     // No `checkbox` override: marked's default is `<input type="checkbox" disabled>`, which the render
     // allowlist below drops — so `- [x] done` and `- [ ] todo` came out as identical plain bullets and
     // a checklist lost the only thing it was communicating. `promoteTaskItem` now takes GFM's two
@@ -304,10 +308,10 @@ export function mdToHtml(md: string, opts?: { baseDir?: string; homeDir?: string
   // breaks: single newlines are HARD breaks (chat convention — Slack/GitHub-comment style);
   // CommonMark default silently glued "item ✅\nitem ✅" lists onto one line.
   // A document also keeps its long code blocks open (codeBlock.ts `withLongBlocksOpen`).
-  const html = withGithubRepo(opts?.githubRepo, () => opts?.document
+  const { result: html, quotes } = withQuoteSources(() => withGithubRepo(opts?.githubRepo, () => opts?.document
     ? withLongBlocksOpen(() => documentMarkdown.parse(md, { async: false }) as string)
-    : markdown.parse(md, { async: false }) as string)
-  return sanitize(html, { block: true, baseDir: opts?.baseDir, homeDir: opts?.homeDir, project: opts?.project })
+    : markdown.parse(md, { async: false }) as string))
+  return sanitize(html, { block: true, baseDir: opts?.baseDir, homeDir: opts?.homeDir, project: opts?.project, quotes })
 }
 
 // INLINE-only render: emphasis/strong/code/del/links but NO block wrapping (`<p>`, headings, lists).
@@ -390,13 +394,14 @@ const DROP_WITH_CONTENT = new Set([
 // built-in reader, and the PROJECT ROOT everywhere else, which is the base the server already uses for
 // a bare path in inline code. `homeDir` — the expansion of a leading `~`. Both come from the caller;
 // see lib/localPathBase.ts for where the non-reader surfaces get them. `project` — the Console project
-// the prose belongs to, for an in-app link that names none (prefixedAppRoute).
-type WalkContext = { block: boolean; baseDir?: string; homeDir?: string; project?: string }
+// the prose belongs to, for an in-app link that names none (prefixedAppRoute). `quotes` — the render's
+// quote table, which only mdToHtml keeps (quoteCopy.ts).
+type WalkContext = { block: boolean; baseDir?: string; homeDir?: string; project?: string; quotes?: QuoteSources }
 
-function sanitize(dirty: string, { block = false, baseDir, homeDir, project }: Partial<WalkContext> = {}): string {
+function sanitize(dirty: string, { block = false, baseDir, homeDir, project, quotes }: Partial<WalkContext> = {}): string {
   const tpl = document.createElement("template")
   tpl.innerHTML = dirty
-  walk(tpl.content, { block, baseDir, homeDir, project })
+  walk(tpl.content, { block, baseDir, homeDir, project, quotes })
   return tpl.innerHTML
 }
 
@@ -498,6 +503,12 @@ function walk(node: ParentNode, ctx: WalkContext) {
     // After its children, so the summary text that keys the reader's remembered choice is the sanitized
     // text the page will show (lib/disclosure.ts).
     if (tag === "details") restoreDisclosure(el)
+    // After its children as well, so the button it mints is never walked: the allowlist would strip the
+    // source attribute that only this line may write (quoteCopy.ts).
+    if (tag === "blockquote") {
+      const source = quoteSourceFor(el.getAttribute("class") ?? "", ctx.quotes)
+      if (source !== undefined) mintQuoteCopy(el, source)
+    }
   }
 }
 

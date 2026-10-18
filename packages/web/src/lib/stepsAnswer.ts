@@ -1,6 +1,7 @@
 import { useMemo } from "react"
 import type { AwaitingHint, ThreadView } from "@frizz/shared"
-import { awaitingSteps } from "@frizz/shared"
+import { awaitingSteps, splitAnswersNote } from "@frizz/shared"
+import type { ChatMessage } from "../hooks.ts"
 import { STEPS_DONE } from "./awaitingPresentation.ts"
 import { draftKey, draftStore, useDraft, useProjectDir } from "./drafts.ts"
 
@@ -61,6 +62,46 @@ export function useStepsChecked(slug: string, steps: readonly string[]): readonl
 export function withStepsDone(note: string): string {
   const trimmed = note.trim()
   return trimmed ? `${STEPS_DONE}\n\n${trimmed}` : STEPS_DONE
+}
+
+// A SETTLED STEPS CARD KEEPS ITS BOX, TICKED, when the human's reply to that rest was the box's
+// (maintainer 2026-10-15: "if someone checks 'I have completed this' … we should have something to
+// indicate that the awaiting human block … was, in fact, completed. Maybe just leave the checked
+// checkbox in there"). Read off the TRANSCRIPT rather than the draft store: the reply is in every
+// browser's copy of it, and the tick that sent it is cleared the moment it leaves.
+
+/** Does this reply say the steps are done? The box's word opens the human's own words: the whole
+ *  message, or what follows the answers that rode the same send. Each kind of answer ends its rows with
+ *  its own note header (shared withAnswersNote), so a reply carrying registered AND fenced answers nests
+ *  twice, and the word is under the last one. A reply that only MENTIONS done is not the box's. */
+export function repliesStepsDone(text: string): boolean {
+  let said = text.trim()
+  for (;;) {
+    const { answers, note } = splitAnswersNote(said)
+    if (answers === said) break
+    said = note
+  }
+  return said === STEPS_DONE || said.startsWith(`${STEPS_DONE}\n\n`)
+}
+
+/** The indices of the agent messages whose rest the human answered with the box: a reply that says the
+ *  steps are done (repliesStepsDone) before the worker's next word. Only a message carrying an
+ *  ```awaiting fence can be one, so the walk looks no further at any other. */
+export function stepsDoneReplies(messages: readonly Pick<ChatMessage, "role" | "kind" | "text">[]): ReadonlySet<number> {
+  const done = new Set<number>()
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i]
+    if (m.role !== "assistant" || m.kind === "event" || !m.text.includes("```awaiting")) continue
+    for (let j = i + 1; j < messages.length; j++) {
+      const reply = messages[j]
+      if (reply.role === "assistant" && reply.kind !== "event") break
+      if (reply.role === "user" && repliesStepsDone(reply.text)) {
+        done.add(i)
+        break
+      }
+    }
+  }
+  return done
 }
 
 /** The staged answer as the prompt box's send needs it. */

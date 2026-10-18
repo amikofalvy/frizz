@@ -85,6 +85,9 @@ record({
     maxWebSearches: process.env.CLAUDE_CODE_MAX_WEB_SEARCHES_PER_SESSION,
     maxSubagents: process.env.CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION,
     maxConcurrentSubagents: process.env.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS,
+    // The fork switch (CLAUDE_WORKER_ENV): unset, Claude Code 2.1.302+ offers a worker the fork
+    // sub-agent its contract says does not exist. Silent when dropped, like the caps.
+    forkSubagent: process.env.CLAUDE_CODE_FORK_SUBAGENT,
     // Settings.autoCompactWindow, the ceiling that stops a `[1m]` worker growing to 1M before it
     // compacts. Same reason as the caps: only the forked process can prove it arrived.
     autoCompactWindow: process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW,
