@@ -55,11 +55,25 @@ test("each op count opens a panel of its own rows, one panel at a time", { skip:
     )
     assert.deepEqual(await openPanels(), [], "nothing is open until a count is hovered")
 
-    // 1. Hover: every count, left to right. Going straight from one to the next swaps the panel.
+    // 1. Hover: every count, left to right. Going straight from one to the next swaps the panel — and
+    // every panel opens in the same place, flush with the prompt box's right edge and 4px over the
+    // count (maintainer 2026-10-17: "those popovers should always show up in the same place").
+    const boxRight = await page.$eval("[data-queue-ops-summary] + [data-composer-box]", (el) => el.getBoundingClientRect().right)
+    const placed: { kind: Kind; left: number; right: number; overCount: number }[] = []
     for (const kind of KINDS) {
       await page.hover(count(kind))
       await assertOnly(kind)
       assert.equal(await page.$eval(count(kind), (el) => el.getAttribute("aria-expanded")), "true")
+      placed.push({ kind, ...await page.evaluate((countSel, panelSel) => {
+        const c = document.querySelector(countSel)!.getBoundingClientRect()
+        const p = document.querySelector(panelSel)!.getBoundingClientRect()
+        return { left: p.left, right: p.right, overCount: c.top - p.bottom }
+      }, count(kind), panel(kind)) })
+    }
+    for (const at of placed) {
+      assert.ok(Math.abs(at.right - boxRight) < 0.5, `the ${at.kind} panel ends at the prompt box's right edge (${at.right} vs ${boxRight})`)
+      assert.ok(Math.abs(at.left - placed[0]!.left) < 0.5, `the ${at.kind} panel starts where the ${placed[0]!.kind} panel does (${at.left} vs ${placed[0]!.left})`)
+      assert.ok(Math.abs(at.overCount - 4) < 0.5, `the ${at.kind} panel stands 4px over its count, got ${at.overCount}`)
     }
 
     // 2. The pointer can cross the gap into the panel and stay there: the rows are controls.

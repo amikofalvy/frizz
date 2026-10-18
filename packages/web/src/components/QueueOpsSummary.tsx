@@ -32,6 +32,12 @@ import { Popover, PopoverAnchor, PopoverContent } from "./ui/Popover.tsx"
 // nothing about what opened. One panel is open at a time, and the pointer moving along the line swaps
 // it the way a menu bar does.
 //
+// EVERY PANEL OPENS IN THE SAME PLACE, right-aligned to the line, which ends where the prompt box does
+// (maintainer 2026-10-17: "those popovers should always show up in the same place, regardless of which
+// one you're hovering over"). Each panel was right-aligned to its own count until then, so sliding along
+// six counts walked it 322px sideways and the first count's panel hung 125px past the card's left edge.
+// The hovered count keeps its highlight, and that is what says which kind is open.
+//
 // THE ROWS IN A PANEL ARE THE REAL ONES — QueueSubAgentLines and BackgroundOpsStrip, the components
 // that drew them under the box — so a row still opens its drawer, stops its child, and reads its CI the
 // way it did. The COUNTS are taken from the same lists those components render, by the same filters, so
@@ -143,6 +149,22 @@ function OpsCount({ group, line, open, onOpen, onCloseSoon, onOpenChange, childr
 }) {
   const button = useRef<HTMLButtonElement>(null)
   const panel = useRef<HTMLDivElement>(null)
+  // THE PANEL'S ANCHOR: the line's left and right, the count's top and bottom. So every count's panel
+  // takes the line's right edge, and still stands `sideOffset` over the count, as it did when the count
+  // was the anchor. `contextElement` is the line, which floating-ui watches for scroll, resize and moves
+  // in a virtual anchor's place.
+  const [anchor] = useState(() => ({
+    current: {
+      getBoundingClientRect: () => {
+        const span = line.current?.getBoundingClientRect() ?? new DOMRect()
+        const count = button.current?.getBoundingClientRect() ?? span
+        return new DOMRect(span.left, count.top, span.width, count.height)
+      },
+      get contextElement() {
+        return line.current ?? undefined
+      },
+    },
+  }))
   const word = group.n === 1 ? group.one : group.many
   // THE KEYBOARD'S WAY IN. Focus opens the panel the way hover does, but it is portaled to the end of the
   // page, so Tab from a count goes to the next count and then the prompt box, and the panel closes — its
@@ -154,49 +176,48 @@ function OpsCount({ group, line, open, onOpen, onCloseSoon, onOpenChange, childr
   }
   return (
     <Popover open={open} onOpenChange={onOpenChange}>
-      <PopoverAnchor asChild>
-        <button
-          type="button"
-          data-ops-count={group.key}
-          aria-label={`${group.n} ${word} — show ${group.n === 1 ? "it" : "them"}`}
-          aria-haspopup="dialog"
-          aria-expanded={open}
-          onMouseEnter={onOpen}
-          onMouseLeave={onCloseSoon}
-          onFocus={onOpen}
-          ref={button}
-          onClick={(event) => {
-            // The line sits inside a queue card; the click is this control's, not the card's. A click
-            // OPENS, never toggles: with a mouse the hover already opened the panel. A keyboard click
-            // (Enter or Space, `detail` 0) carries focus into it.
-            event.stopPropagation()
-            if (event.detail === 0) focusPanel()
-            else onOpen()
-          }}
-          onKeyDown={(event) => {
-            if (event.key !== "ArrowDown") return
-            event.preventDefault()
-            focusPanel()
-          }}
-          onMouseDown={(event) => event.preventDefault()}
-          // `px-1.5` and no gap between the counts: two neighbours stand 12px apart, box to box, which is
-          // what the one control's `gap-3` drew, and each count's hover square reaches halfway to the next.
-          // Ink, scripts/ink-gaps.mjs at dsf 6, sans: 8.00–9.42px from a mark to its digit and
-          // 13.57–14.64px from one count's word to the next count's mark, dots and icons alike.
-          className={`flex shrink-0 items-baseline gap-1.5 whitespace-nowrap rounded-md px-1.5 py-0.5 outline-none transition-colors focus-visible:ring-1 focus-visible:ring-focus-ink-60 ${open ? "bg-panel-2 text-fg/85" : "text-muted-70 hover:bg-panel-2 hover:text-fg/85"}`}
-        >
-          {/* ON THE CAP BAND, computed by the browser (the ThreadLinks icon idiom): a 1em slot whose
-              bottom sits on the baseline, lifted so its centre lands at half the cap height — the
-              count beside it is digits, which are cap-height ink. The mark is ABSOLUTELY centred in
-              the slot, never a flex child of it: a flex slot takes its baseline from its first
-              child, so a 6px dot's bottom edge (not the slot's) landed on the baseline and the dot
-              rode ~2px low. An empty block synthesizes its baseline from its own bottom edge. */}
-          <span aria-hidden className="relative block h-[1em] w-[1em] shrink-0 self-baseline translate-y-[calc(0.5em_-_0.5cap)]">
-            <span className="absolute inset-0 flex items-center justify-center"><CountMark kind={group.key} states={group.states} /></span>
-          </span>
-          <span><span className="tabular-nums text-fg/85">{group.n}</span> {word}</span>
-        </button>
-      </PopoverAnchor>
+      <PopoverAnchor virtualRef={anchor} />
+      <button
+        type="button"
+        data-ops-count={group.key}
+        aria-label={`${group.n} ${word} — show ${group.n === 1 ? "it" : "them"}`}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        onMouseEnter={onOpen}
+        onMouseLeave={onCloseSoon}
+        onFocus={onOpen}
+        ref={button}
+        onClick={(event) => {
+          // The line sits inside a queue card; the click is this control's, not the card's. A click
+          // OPENS, never toggles: with a mouse the hover already opened the panel. A keyboard click
+          // (Enter or Space, `detail` 0) carries focus into it.
+          event.stopPropagation()
+          if (event.detail === 0) focusPanel()
+          else onOpen()
+        }}
+        onKeyDown={(event) => {
+          if (event.key !== "ArrowDown") return
+          event.preventDefault()
+          focusPanel()
+        }}
+        onMouseDown={(event) => event.preventDefault()}
+        // `px-1.5` and no gap between the counts: two neighbours stand 12px apart, box to box, which is
+        // what the one control's `gap-3` drew, and each count's hover square reaches halfway to the next.
+        // Ink, scripts/ink-gaps.mjs at dsf 6, sans: 8.00–9.42px from a mark to its digit and
+        // 13.57–14.64px from one count's word to the next count's mark, dots and icons alike.
+        className={`flex shrink-0 items-baseline gap-1.5 whitespace-nowrap rounded-md px-1.5 py-0.5 outline-none transition-colors focus-visible:ring-1 focus-visible:ring-focus-ink-60 ${open ? "bg-panel-2 text-fg/85" : "text-muted-70 hover:bg-panel-2 hover:text-fg/85"}`}
+      >
+        {/* ON THE CAP BAND, computed by the browser (the ThreadLinks icon idiom): a 1em slot whose
+            bottom sits on the baseline, lifted so its centre lands at half the cap height — the
+            count beside it is digits, which are cap-height ink. The mark is ABSOLUTELY centred in
+            the slot, never a flex child of it: a flex slot takes its baseline from its first
+            child, so a 6px dot's bottom edge (not the slot's) landed on the baseline and the dot
+            rode ~2px low. An empty block synthesizes its baseline from its own bottom edge. */}
+        <span aria-hidden className="relative block h-[1em] w-[1em] shrink-0 self-baseline translate-y-[calc(0.5em_-_0.5cap)]">
+          <span className="absolute inset-0 flex items-center justify-center"><CountMark kind={group.key} states={group.states} /></span>
+        </span>
+        <span><span className="tabular-nums text-fg/85">{group.n}</span> {word}</span>
+      </button>
       <PopoverContent
         side="top"
         align="end"

@@ -52,19 +52,29 @@ test("thread drawer counts its ops over the prompt box and keeps the box inset e
 
     // Hover opens the rows, the drawer's own, in a panel above the count that names them — the agents'
     // rows over "2 agents", the shell's over "1 shell", and neither panel holds the other's.
+    // Both open in the same place, flush with the prompt box's right edge (QueueOpsSummary's anchor).
     const AGENTS = ["Trace the layout regression in the drawer", "Exercise desktop and narrow viewport behavior"]
     const SHELLS = ["Watch the production fixture build"]
+    const panelEdges = (kind: string) => page.$eval(`[data-queue-ops-panel="${kind}"]`, (el) => {
+      const box = document.querySelector("[data-thread-action-bar] [data-composer-box]")!.getBoundingClientRect()
+      const r = el.getBoundingClientRect()
+      return { left: Math.round(r.left), right: Math.round(r.right), boxRight: Math.round(box.right) }
+    })
     await page.hover('[data-queue-ops-summary] [data-ops-count="agent"]')
     await page.waitForSelector('[data-queue-ops-panel="agent"] [data-queue-subagents]')
     const agents = await page.$eval('[data-queue-ops-panel="agent"]', (el) => (el as HTMLElement).innerText)
     for (const row of AGENTS) assert.ok(agents.includes(row), `the agents panel lists "${row}"`)
     for (const row of SHELLS) assert.ok(!agents.includes(row), `the agents panel does not list the shell "${row}"`)
+    const agentEdges = await panelEdges("agent")
     await page.hover('[data-queue-ops-summary] [data-ops-count="shell"]')
     await page.waitForSelector('[data-queue-ops-panel="shell"] [data-background-ops]')
     await page.waitForFunction(() => !document.querySelector('[data-queue-ops-panel="agent"]'))
     const shells = await page.$eval('[data-queue-ops-panel="shell"]', (el) => (el as HTMLElement).innerText)
     for (const row of SHELLS) assert.ok(shells.includes(row), `the shells panel lists "${row}"`)
     for (const row of AGENTS) assert.ok(!shells.includes(row), `the shells panel does not list the agent "${row}"`)
+    const shellEdges = await panelEdges("shell")
+    assert.equal(agentEdges.right, agentEdges.boxRight, "the agents panel ends at the prompt box's right edge")
+    assert.deepEqual(shellEdges, agentEdges, "the shells panel opens where the agents panel did")
 
     assert.deepEqual(errors, [])
   } finally {
