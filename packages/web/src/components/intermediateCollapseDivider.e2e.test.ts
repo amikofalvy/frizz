@@ -519,6 +519,59 @@ test("a pinned background op after the final rest does not push the sign-off int
   }
 })
 
+// THE QUESTION BEHIND THE FOLD (2026-10-15). The worker asked in a MIDDLE run and rested twice more
+// without naming the question, so its card stays at the rest it was asked at. The middle collapse used to
+// swallow that run whole: the rail said [?] and nothing on the card showed the ask. The asking run is now
+// kept between two "1 more round" lines, with its question card drawn and answerable.
+test("an open question asked in a middle run stays on the card, between two middle lines", {
+  skip: !baseUrl,
+  timeout: 120_000,
+}, async () => {
+  const { browser, page, errors } = await launch()
+  try {
+    await page.goto(variant("foldedask"), { waitUntil: "networkidle0" })
+    await page.waitForSelector('[data-wake-divider="middle-runs-summary"]', { timeout: 10_000 })
+    const ASK = "Which engine should the storage layer target?"
+    // Document order of the middle lines and the question's card, wherever the card draws it.
+    const order = await page.evaluate((ask) => {
+      const nodes = [...document.querySelectorAll('[data-wake-divider="middle-runs-summary"]')]
+      // The question is wherever its first option is drawn — inside the asking message or its rest's stack.
+      const option = [...document.querySelectorAll("[data-question-option]")]
+        .find((o) => o.textContent?.includes("Postgres") && document.body.innerText.includes(ask))
+      if (option) nodes.push(option)
+      nodes.sort((a, b) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1))
+      return nodes.map((n) =>
+        n.getAttribute("data-wake-divider") === "middle-runs-summary"
+          ? `middle: ${(n as HTMLElement).innerText.replace(/\s+/g, " ").trim()}`
+          : "question",
+      )
+    }, ASK)
+    assert.deepEqual(
+      order.map((o) => o.replace(/ · .*/, "")),
+      ["middle: 1 more round", "question", "middle: 1 more round"],
+      `the asking run sits between one line per side, got ${order.join(" | ")}`,
+    )
+    const text = await page.evaluate(() => document.body.innerText)
+    assert.match(text, /One decision belongs to you before the connection layer goes in/, "the asking prose renders")
+    assert.match(text, /The server build packages cleanly/, "and so does the last run")
+    assert.doesNotMatch(text, /The full suite is green with the runner in/, "the run after the ask is still hidden")
+    // An option is answerable in place, without expanding anything.
+    const option = await page.$$eval("[data-question-option]", (os) =>
+      os.some((o) => o.textContent?.includes("Postgres") && !!o.querySelector("button:not([disabled])")))
+    assert.ok(option, "the question's options are live buttons on the collapsed card")
+
+    // Expanding is still ONE action for the whole card: both lines go, and the question stays.
+    await page.click('[data-wake-divider="middle-runs-summary"]')
+    await page.waitForFunction(() => !document.querySelector('[data-wake-divider="middle-runs-summary"]'), { timeout: 5_000 })
+    const expanded = await page.evaluate(() => document.body.innerText)
+    assert.match(expanded, /The full suite is green with the runner in/)
+    assert.ok(expanded.includes(ASK), "the question is still drawn in the full log")
+    assert.deepEqual(errors, [])
+  } finally {
+    await browser.close()
+  }
+})
+
 // ONE MESSAGE CAN BE BOTH ANCHORS. A resumed run folds even when a single prose message opens and closes
 // it, but the divider was only ever emitted at a row AFTER the opening prose — and in that run every such
 // row is hidden. Its calls vanished with no divider standing in for them. The lone message now takes the
