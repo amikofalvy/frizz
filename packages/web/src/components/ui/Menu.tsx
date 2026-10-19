@@ -40,7 +40,6 @@ export function MenuItem({
   icon,
   danger,
   disabled,
-  title,
 }: {
   children: ReactNode
   onSelect: () => void
@@ -48,14 +47,11 @@ export function MenuItem({
   danger?: boolean
   /** Greyed out, skipped by the keyboard, and inert to a click — Radix's own disabled item. */
   disabled?: boolean
-  /** The native tooltip: why a disabled row is disabled. */
-  title?: string
 }) {
   return (
     <RadixMenu.Item
       onSelect={onSelect}
       disabled={disabled}
-      title={title}
       className={`flex cursor-pointer select-none items-center gap-2 rounded-md px-2.5 py-1.5 text-[12px] outline-none transition-colors data-[highlighted]:bg-panel-2 data-[disabled]:cursor-default data-[disabled]:opacity-45 ${
         danger
           ? "text-danger data-[highlighted]:text-danger-soft"

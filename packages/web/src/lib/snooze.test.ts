@@ -1,6 +1,5 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import type { ThreadView } from "@frizz/shared"
 import {
   DEFAULT_SNOOZE_PRESET,
   NOTHING_CAN_WAKE_IT,
@@ -132,42 +131,14 @@ test("a snooze prompt preview collapses to one line and truncates without spilli
 })
 
 // "UNTIL ACTIVITY" — the snooze menu's one row that is not a clock (2026-10-19). Offered only where the
-// server says something can end it, greyed out with the reason where nothing can (maintainer: "gray it
-// out"), and its right column names what it is waiting on where the clock rows name a time.
-type RowInput = Parameters<typeof activitySnoozeRow>[0]
-const resting = (over: Partial<RowInput> = {}): RowInput =>
-  ({ runtime: "turn-idle", wakesOnItsOwn: true, subAgents: [], bgShells: [], watches: [], state: "open", ...over }) as RowInput
-const watch = (over: Partial<ThreadView["watches"][number]>) =>
-  ({ id: "w", kind: "github", target: "acme/app#1", state: "armed", ...over }) as ThreadView["watches"][number]
-
-test("activitySnoozeRow: greyed out, with the reason, where nothing can end the park", () => {
-  assert.deepEqual(
-    { enabled: activitySnoozeRow(resting({ wakesOnItsOwn: undefined })).enabled, detail: activitySnoozeRow(resting({ wakesOnItsOwn: undefined })).detail },
-    { enabled: false, detail: NOTHING_CAN_WAKE_IT },
-  )
-  assert.equal(activitySnoozeRow(resting({ runtime: "exited" })).enabled, false, "a dead worker wakes for nothing")
+// server says something can end it; greyed out where nothing can, with the reason kept for the hover
+// (maintainer: "should just show up when you hover over it. It should just be grayed out").
+test("activitySnoozeRow: offered on a rest something can end, greyed out with a hover reason otherwise", () => {
+  assert.deepEqual(activitySnoozeRow({ runtime: "turn-idle", wakesOnItsOwn: true }), { enabled: true })
+  assert.deepEqual(activitySnoozeRow({ runtime: "turn-idle", wakesOnItsOwn: undefined }), { enabled: false, reason: NOTHING_CAN_WAKE_IT })
+  assert.deepEqual(activitySnoozeRow({ runtime: "exited", wakesOnItsOwn: true }), { enabled: false, reason: NOTHING_CAN_WAKE_IT }, "a dead worker wakes for nothing")
   // A turn in flight rests by itself; there is no rest to park yet.
-  assert.deepEqual(
-    { enabled: activitySnoozeRow(resting({ runtime: "running" })).enabled, detail: activitySnoozeRow(resting({ runtime: "running" })).detail },
-    { enabled: false, detail: "Working now" },
-  )
-  assert.ok(activitySnoozeRow(resting({ wakesOnItsOwn: undefined })).title, "a disabled row says why on hover")
-})
-
-test("activitySnoozeRow: names what will end it", () => {
-  const shell = { label: "nub run test", startedAt: "2026-10-19T10:00:00.000Z", state: "running" } as ThreadView["bgShells"][number]
-  assert.equal(activitySnoozeRow(resting({ watches: [watch({})], bgShells: [shell] })).detail, "PR or shell")
-  assert.equal(activitySnoozeRow(resting({ watches: [watch({ subject: "issue" })] })).detail, "issue")
-  assert.equal(
-    activitySnoozeRow(resting({
-      watches: [watch({}), watch({ kind: "timer", target: "tmr_1" })],
-      recurringPrompt: { prompt: "go", stopHook: false, heartbeat: true, postCompaction: false, armedAt: "2026-10-19T10:00:00.000Z" },
-    })).detail,
-    "PR, timer or goal",
-  )
-  // A watch that already fired is not a way back.
-  assert.equal(activitySnoozeRow(resting({ watches: [watch({ state: "fired" })], bgShells: [shell] })).detail, "shell")
-  assert.equal(activitySnoozeRow(resting({ watches: [watch({})] })).enabled, true)
+  assert.deepEqual(activitySnoozeRow({ runtime: "running", wakesOnItsOwn: true }), { enabled: false, reason: "Working now" })
 })
 
 test("activitySnoozed: armed, at rest, and still something to end it", () => {

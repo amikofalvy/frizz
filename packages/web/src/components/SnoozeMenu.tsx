@@ -1,5 +1,5 @@
 import { useId, useMemo, useState } from "react"
-import { Activity, AlarmClock, AlarmClockOff, Loader2 } from "lucide-react"
+import { AlarmClock, AlarmClockOff, Loader2 } from "lucide-react"
 import { SNOOZE_PROMPT_MAX, type ThreadView } from "@frizz/shared"
 import { rpc } from "../api/rpc.ts"
 import { futureSnoozedUntil } from "../groups.ts"
@@ -35,9 +35,9 @@ import { Tooltip } from "./Tooltip.tsx"
 // for Friday says so in its header, and the menu then leads with when it wakes and Wake now.
 //
 // One row is not a clock: "Until activity" (2026-10-19), the resting card's event-snooze offered on any
-// rested thread — back at its next rest. It sits under the clock times and is greyed out where nothing
-// but a person could end it (lib/snooze.ts activitySnoozeRow). Armed, it takes the same amber clock and
-// the same Wake now, which clears either park.
+// rested thread — back at its next rest. It sits under the clock times and is greyed out, with the reason
+// on hover, where nothing but a person could end it (lib/snooze.ts activitySnoozeRow). Armed, it takes
+// the same amber clock and the same Wake now, which clears either park.
 export function SnoozeMenu({ thread, onSnoozed }: { thread: ThreadView; onSnoozed?: () => void }) {
   const [open, setOpen] = useState(false)
   // Closing the menu hands focus back to the clock, and the tooltip opens on focus — where it then takes
@@ -66,7 +66,7 @@ export function SnoozeMenu({ thread, onSnoozed }: { thread: ThreadView; onSnooze
   }), [open])
   // "Until activity": the park with no clock (lib/snooze.ts activitySnoozeRow). Read when the menu opens,
   // like the clock rows, so a shell that finished since the header rendered greys the row out.
-  const activityRow = useMemo(() => activitySnoozeRow(thread), [open, thread])
+  const activityRow = useMemo(() => activitySnoozeRow(thread), [open, thread.runtime, thread.wakesOnItsOwn])
   // The menu never sets both parks (each RPC clears the other), but a clock armed by another tab is the
   // one with a time to show, so it wins the state line.
   const byActivity = !snoozedUntil && activitySnoozed(thread)
@@ -187,19 +187,18 @@ export function SnoozeMenu({ thread, onSnoozed }: { thread: ThreadView; onSnooze
               </span>
             </MenuItem>
           ))}
-          {/* UNDER THE CLOCK TIMES, not above them (maintainer 2026-10-19, picking it off the mockup
-              sheet), with what will end it where those rows say when. Greyed out, and saying why, where
-              nothing but a person could end it: a park nothing ends would hide the thread for good. */}
-          <MenuItem
-            onSelect={() => void applyActivity()}
-            disabled={!activityRow.enabled}
-            title={activityRow.title}
-            icon={<Activity size={12} />}
-          >
-            <span data-snooze-activity className="flex min-w-0 flex-1 items-center justify-between gap-6">
-              <span>Until activity</span>
-              {activityRow.detail && <span className="text-[10.5px] text-muted-55">{activityRow.detail}</span>}
-            </span>
+          {/* UNDER THE CLOCK TIMES, under the same alarm clock (maintainer 2026-10-19, picking it off the
+              mockup sheet, then: "Keep the alarm clock icon"). Greyed out where nothing but a person could
+              end it — a park nothing ends would hide the thread for good — with the reason on HOVER only.
+              The icon is drawn inside the hover target, not in MenuItem's own slot, and the target takes
+              back the item's padding, so the whole row answers the pointer rather than the words alone. */}
+          <MenuItem onSelect={() => void applyActivity()} disabled={!activityRow.enabled}>
+            <Tooltip label={activityRow.enabled ? "" : activityRow.reason} side="left" disabled={activityRow.enabled}>
+              <span data-snooze-activity className="-mx-2.5 -my-1.5 flex min-w-0 flex-1 items-center gap-2 px-2.5 py-1.5">
+                <span className="flex w-3.5 shrink-0 items-center justify-center"><AlarmClock size={12} /></span>
+                <span>Until activity</span>
+              </span>
+            </Tooltip>
           </MenuItem>
           <MenuSeparator />
           <MenuItem onSelect={openCustom}>Custom time &amp; prompt…</MenuItem>
