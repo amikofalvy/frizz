@@ -3805,8 +3805,15 @@ export const ThreadView = z.object({
    *  the reasoning that the card states a FACT the drawer must keep showing or it blanks at rest and
    *  reads as "the agent died". That reasoning holds for a thread nobody has parked; once the human has
    *  explicitly parked THIS rest, showing them the same card with the same button one surface over is
-   *  not information, and they said so. */
+   *  not information, and they said so.
+   *
+   *  The header's "Until activity" (SnoozeMenu, 2026-10-19) arms the same snooze on any rested thread. */
   bgSnoozed: z.boolean().optional(),
+  /** Something of the thread's own can wake it without a person — a running sub-agent or shell, an
+   *  armed watch or timer, a Goal that fires on rest or on a clock (board.wakesOnItsOwn). The snooze
+   *  menu greys out "Until activity" without it, and the server stops honouring that snooze once it
+   *  goes false. Absent on a dead worker and on an archived thread. */
+  wakesOnItsOwn: z.boolean().optional(),
   // Which Claude transport serves this thread. "broker" — a session-broker-owned Agent SDK session with
   // a typed control channel — is the only one there is; ABSENT means a row dispatched before the broker
   // became the sole transport, which frizz can no longer reach that way. Only the broker can be asked to

@@ -581,9 +581,11 @@ export function sessionIndicatorKind(t: ThreadView): SessionIndicatorKind {
   // on any surface, on three different projects, and all three were user-snoozed with a pending ask.
   // Gated on isSnoozed so its carve-outs still hold — a running turn and a live sub-agent keep their
   // spinner, because motion is a fact about the process that a park does not change — and on
-  // futureSnoozedUntil so ONLY the operator's own wall-clock park takes this branch: a declared wait or
-  // an event-snooze leaves the thread QUEUED server-side, where the ask is reachable and the [?] is true.
-  if (futureSnoozedUntil(t) !== undefined && isSnoozed(t)) return "snoozed"
+  // the OPERATOR'S OWN parks, so only they take this branch: a declared wait leaves the thread QUEUED
+  // server-side, where the ask is reachable and the [?] is true. The event-snooze joined the wall-clock
+  // one on 2026-10-19, when "Until activity" put it in the header menu and the server started honouring
+  // it ahead of a question too (deriveNeedsYou) — until then it left the asking thread queued as well.
+  if ((futureSnoozedUntil(t) !== undefined || t.bgSnoozed === true) && isSnoozed(t)) return "snoozed"
 
   const explicitlyNeedsInput = Boolean(
     t.actionableInteraction ||

@@ -4,7 +4,7 @@ import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, w
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { questionAnswerMessage, questionsCancelledWakeMessage, type InteractionRequest } from "@frizz/shared"
-import { ANSWER_IN_FLIGHT_EXCUSAL_MS, DELIVERY_IN_FLIGHT_SPIN_MS, answerAwaitingDelivery, deriveDeliveryInFlight, answersInFlight, wakeQuestionAnswer, appServerTurnStalled, createBoard, deriveAwaitingBackground, deriveNeedsYou, degradeIfAwaitingAnswer, degradeIfNoTranscript, fenceWatchViews, hasDeclaredWait, hasParkedTimerWatch, hasRegisteredBackgroundPark, isBoardRelevantFrizzPath, registeredDoneFence, resolveLimitPause, resolveSessionPermission, resolveSessionProfile, resolveSessionTitle, type RegisteredWatch } from "./board.ts"
+import { ANSWER_IN_FLIGHT_EXCUSAL_MS, DELIVERY_IN_FLIGHT_SPIN_MS, answerAwaitingDelivery, deriveDeliveryInFlight, answersInFlight, wakeQuestionAnswer, appServerTurnStalled, createBoard, deriveAwaitingBackground, deriveNeedsYou, degradeIfAwaitingAnswer, degradeIfNoTranscript, fenceWatchViews, hasDeclaredWait, hasParkedTimerWatch, hasRegisteredBackgroundPark, isBoardRelevantFrizzPath, registeredDoneFence, resolveLimitPause, resolveSessionPermission, resolveSessionProfile, resolveSessionTitle, wakesOnItsOwn, type RegisteredWatch } from "./board.ts"
 import { Bus } from "./bus.ts"
 import { createStorage, type ThreadQuestionRow } from "./storage.ts"
 import type { Project } from "./project.ts"
@@ -651,6 +651,50 @@ test("deriveNeedsYou: the event-snooze parks a shell-only rest for exactly the c
   const fenced = tele({ bgShells: [{ label: "watch", startedAt: T0, state: "running" }], lastFence: prWatch, lastActivityAt: LATER })
   assert.equal(deriveNeedsYou(row({ rested_at: T0 }), fenced, "turn-idle"), true, "a pr-watch handoff stays visible")
   assert.equal(deriveNeedsYou(row({ rested_at: T0, bg_snooze_rested_at: T0 }), fenced, "turn-idle"), false, "…unless snoozed for this exact rest")
+})
+
+// "UNTIL ACTIVITY" (2026-10-19): the same event-snooze, armed from the header's snooze menu on ANY rested
+// thread — not only the shapes whose resting card carries the button — and honoured for exactly as long
+// as something of the thread's own can still end it.
+test("wakesOnItsOwn: a running shell or sub-agent, an armed watch or timer, or a goal that fires — and nothing else", () => {
+  const none = new Set<string>()
+  assert.equal(wakesOnItsOwn(row(), tele(), none, none), false, "a bare rest has nothing out")
+  assert.equal(wakesOnItsOwn(row(), tele({ bgShells: [{ label: "w", startedAt: T0, state: "running" }] }), none, none), true)
+  assert.equal(wakesOnItsOwn(row(), tele({ bgShells: [{ label: "w", startedAt: T0, state: "stale" }] }), none, none), false, "a finished shell wakes nothing")
+  assert.equal(wakesOnItsOwn(row(), tele({ subAgents: [{ label: "c", startedAt: T0, state: "running", id: "a1" }] }), none, none), true)
+  assert.equal(wakesOnItsOwn(row(), tele(), new Set(["acme/app#1"]), none), true, "an armed PR or issue watch")
+  assert.equal(wakesOnItsOwn(row(), tele(), none, new Set(["tmr_1"])), true, "an armed timer or command watch")
+  const goal = { recurring_prompt: "keep going", recurring_armed_at: T0 }
+  assert.equal(wakesOnItsOwn(row({ ...goal, recurring_on_schedule: 1 }), tele(), none, none), true, "a heartbeat goal")
+  assert.equal(wakesOnItsOwn(row({ ...goal, recurring_on_rest: 1 }), tele(), none, none), true, "a stop-hook goal")
+  assert.equal(wakesOnItsOwn(row({ ...goal, recurring_on_compact: 1 }), tele(), none, none), false, "post-compaction alone never fires at rest")
+})
+
+test("deriveNeedsYou: the activity snooze parks any rest something can still end, ahead of a question", () => {
+  const timer = new Set(["tmr_1"])
+  const atRest = (over: Partial<SessionRow> = {}) => row({ rested_at: T0, ...over })
+  // A bare rest whose only way back is an armed timer — a shape the resting card never offered a snooze on.
+  assert.equal(deriveNeedsYou(atRest(), tele(), "turn-idle", false, Date.now(), undefined, true, false, {}, new Set(), timer), true, "unsnoozed, it queues")
+  assert.equal(deriveNeedsYou(atRest({ bg_snooze_rested_at: T0 }), tele(), "turn-idle", false, Date.now(), undefined, true, false, {}, new Set(), timer), false, "snoozed until activity")
+  // …and a goal heartbeat is a way back too.
+  const goal = { recurring_prompt: "keep going", recurring_armed_at: T0, recurring_on_schedule: 1 }
+  assert.equal(deriveNeedsYou(atRest({ ...goal, bg_snooze_rested_at: T0 }), tele(), "turn-idle"), false)
+  // THE NEXT REST ENDS IT, as it always did.
+  assert.equal(deriveNeedsYou(atRest({ rested_at: LATER, bg_snooze_rested_at: T0 }), tele(), "turn-idle", false, Date.now(), undefined, true, false, {}, new Set(), timer), true)
+  // NOTHING LEFT TO END IT ⇒ NOT HONOURED: the last way back went away (the timer fired into a dead
+  // worker, the goal was stopped), so the thread comes back rather than hiding until someone looks.
+  assert.equal(deriveNeedsYou(atRest({ bg_snooze_rested_at: T0 }), tele(), "turn-idle"), true, "a bare rest cannot be parked this way")
+  assert.equal(deriveNeedsYou(atRest({ bg_snooze_rested_at: T0 }), tele(), "exited", false, Date.now(), undefined, true, false, {}, new Set(), timer), true, "a dead worker wakes for nothing")
+  // AHEAD OF A QUESTION, like the wall-clock snooze: the human parked it knowingly, the ask stays answerable.
+  assert.equal(deriveNeedsYou(atRest({ bg_snooze_rested_at: T0 }), tele({ pendingQuestion: true }), "turn-idle", false, Date.now(), undefined, true, false, {}, new Set(), timer), false)
+  assert.equal(deriveNeedsYou(atRest({ bg_snooze_rested_at: T0 }), tele(), "turn-idle", false, Date.now(), undefined, true, false, {}, new Set(), timer, [], 1), false, "a registered question too")
+  // …but not ahead of the asks that hold the turn itself.
+  assert.equal(deriveNeedsYou(atRest({ bg_snooze_rested_at: T0 }), tele(), "turn-idle", true, Date.now(), undefined, true, false, {}, new Set(), timer), true, "an actionable interaction still queues")
+  // A DONE handoff with a server it left running: the resting card never offered the snooze there, the
+  // header does, and it holds.
+  const done = tele({ lastFence: { kind: "done", body: "", hints: [] }, bgShells: [{ label: "dev", startedAt: T0, state: "running" }] })
+  assert.equal(deriveNeedsYou(atRest(), done, "turn-idle"), true)
+  assert.equal(deriveNeedsYou(atRest({ bg_snooze_rested_at: T0 }), done, "turn-idle"), false)
 })
 
 test("deriveAwaitingBackground: true only when own-work rest is the SOLE reason for the card", () => {

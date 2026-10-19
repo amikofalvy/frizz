@@ -3138,7 +3138,7 @@ export function createRouter(ctx: AppContext) {
     setThreadSnooze: mutation({
       input: SetThreadSnoozeInput,
       handler: async ({ input }) => {
-        currentOwnedSession(input.slug, input.sessionId)
+        const row = currentOwnedSession(input.slug, input.sessionId)
         const thread = (await ctx.board.snapshot()).threads.find((candidate) => candidate.id === input.slug)
         if (!thread || thread.kind !== "session" || thread.foreign) throw new Error(`thread ${input.slug} is not editable`)
         if (input.until !== null) {
@@ -3147,6 +3147,10 @@ export function createRouter(ctx: AppContext) {
         }
         // `until: null` is Wake now: setSnoozedUntil clears the instant and the bump it owed together.
         ctx.storage.setSnoozedUntil(input.slug, input.until, input.prompt ?? null)
+        // …and either way the event-snooze ("Until activity") goes with it: Wake now wakes the thread
+        // from whichever park it is in, and a clock picked over an activity snooze replaces it rather
+        // than sitting beside it (see snoozeAwaitingBackground).
+        if (row.bg_snooze_rested_at != null) ctx.storage.setBgSnoozeRestedAtIfCurrent(input.slug, row.session_id, row.runtime_generation ?? 0, null)
         ctx.board.refresh()
       },
     }),
@@ -3944,14 +3948,23 @@ export function createRouter(ctx: AppContext) {
     // worker comes to a new rest. No deadline, no scheduler, no reaper: the session stays alive (it is
     // ALREADY resting) and the snooze expires itself on the next rest. Session-guarded so a stale tab
     // cannot snooze whatever now owns the slug.
+    //
+    // ALSO THE HEADER'S "UNTIL ACTIVITY" (SnoozeMenu, 2026-10-19), which offers the same park on any rested
+    // thread. It is refused when nothing but a person could end it (board.wakesOnItsOwn — the menu greys
+    // the row out on the same reading), and it REPLACES a wall-clock snooze rather than stacking on one:
+    // the two are one choice in one menu, and a clock left armed underneath would keep the thread parked
+    // past the rest this one promises.
     snoozeAwaitingBackground: mutation({
       input: z.object({ slug: ThreadSlug, sessionId: z.string().min(1) }).strict(),
       handler: async ({ input }) => {
         const row = currentOwnedSession(input.slug, input.sessionId)
         if (!row.rested_at) throw new Error("This thread is not at rest; nothing to snooze")
+        const thread = (await ctx.board.snapshot()).threads.find((candidate) => candidate.id === input.slug)
+        if (thread?.wakesOnItsOwn !== true) throw new Error("Nothing can wake this thread on its own")
         if (!ctx.storage.setBgSnoozeRestedAtIfCurrent(input.slug, row.session_id, row.runtime_generation ?? 0, row.rested_at)) {
           throw new Error("This thread changed before it could be snoozed")
         }
+        if (row.snoozed_until) ctx.storage.setSnoozedUntil(input.slug, null)
         ctx.board.refresh()
       },
     }),

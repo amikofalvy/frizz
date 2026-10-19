@@ -1219,6 +1219,16 @@ test("isSnoozed: an event-snoozed rest parks in Snoozed — behind a PR watch, a
   assert.equal(sessionIndicatorKind({ ...shellOnly, bgSnoozed: undefined }), "background")
 })
 
+// "UNTIL ACTIVITY" OVER AN OPEN QUESTION (2026-10-19). The server now honours the event-snooze ahead of a
+// question, as it does the wall-clock one, so the row is dequeued — and it must wear the park, not a [?]
+// that advertises a card no surface is drawing. While the server still queues it (needsYou), the ask wins.
+test("sessionIndicatorKind: an event-snoozed thread with an open question wears the park while it is dequeued", () => {
+  const asking = thread({ kind: "session", state: "open", runtime: "turn-idle", needsYou: false, bgSnoozed: true, pendingQuestion: true, wakesOnItsOwn: true })
+  assert.equal(sessionIndicatorKind(asking), "snoozed")
+  assert.equal(sectionOf(asking), "snoozed")
+  assert.equal(sessionIndicatorKind({ ...asking, needsYou: true }), "needs-input")
+})
+
 test("isSnoozed: the event-snooze yields to a live sub-agent, a queue reason, and a running turn", () => {
   const base = { kind: "session" as const, state: "open" as const, runtime: "turn-idle" as const, needsYou: false, awaitingBackground: true, bgSnoozed: true, bgShells: [shell()] }
   // A child's return re-invokes the parent within seconds: that row spins in Active, snooze or not

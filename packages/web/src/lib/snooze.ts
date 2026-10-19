@@ -1,3 +1,5 @@
+import { isDirectSubAgent, type ThreadView } from "@frizz/shared"
+
 export type SnoozePreset = "1h" | "tomorrow" | "1d" | "3d" | "1w"
 export const DEFAULT_SNOOZE_PRESET: SnoozePreset = "1d"
 
@@ -152,3 +154,62 @@ export function formatAutoSnoozedUntil(until: string, nowMs = Date.now()): strin
   return wake ? `Auto-snoozed until ${wake}` : null
 }
 
+
+// ---- "UNTIL ACTIVITY" ------------------------------------------------------------------------------
+// The snooze menu's one row that is not a clock (maintainer 2026-10-19, choosing it off a mockup sheet):
+// it parks a rested thread until its next rest — the resting card's event-snooze, offered on any thread
+// — and sits at the bottom of the clock times. Where nothing but a person could end that park the row is
+// GREYED OUT rather than warned about after the click, and says why in the column where the clock rows
+// say when.
+
+/** The things that can wake a thread without a person, as the row's right column names them. Same
+ *  list the server checks (board.wakesOnItsOwn); the server's answer, `wakesOnItsOwn`, decides whether
+ *  the row is offered at all, and this only says what it is waiting on. */
+function wakeKinds(t: Pick<ThreadView, "subAgents" | "bgShells" | "watches" | "recurringPrompt" | "state">): string[] {
+  const armed = t.state === "archived" ? [] : (t.watches ?? []).filter((watch) => watch.state === "armed")
+  const kinds = [
+    armed.some((watch) => watch.kind === "github" && watch.subject !== "issue") && "PR",
+    armed.some((watch) => watch.kind === "github" && watch.subject === "issue") && "issue",
+    (t.bgShells ?? []).some((shell) => shell.state === "running") && "shell",
+    (t.subAgents ?? []).some((agent) => isDirectSubAgent(agent) && agent.state === "running") && "sub-agent",
+    armed.some((watch) => watch.kind === "timer") && "timer",
+    armed.some((watch) => watch.kind === "command") && "watch",
+    (t.recurringPrompt?.stopHook || t.recurringPrompt?.heartbeat) && "goal",
+  ]
+  return kinds.filter((kind): kind is string => typeof kind === "string")
+}
+
+/** "PR", "PR or shell", "PR, shell or goal". */
+function orList(words: string[]): string {
+  return words.length <= 1 ? (words[0] ?? "") : `${words.slice(0, -1).join(", ")} or ${words.at(-1)}`
+}
+
+export type ActivitySnoozeRow = { enabled: boolean; detail: string; title?: string }
+
+export const NOTHING_CAN_WAKE_IT = "Nothing can wake it"
+
+export function activitySnoozeRow(
+  t: Pick<ThreadView, "runtime" | "wakesOnItsOwn" | "subAgents" | "bgShells" | "watches" | "recurringPrompt" | "state">,
+): ActivitySnoozeRow {
+  // A turn in flight ends in a rest by itself, so there is nothing to park until; the server would arm
+  // the PREVIOUS rest, which that turn's own rest then clears.
+  if (t.runtime === "running" || t.runtime === "spawning") {
+    return { enabled: false, detail: "Working now", title: "It comes back to the queue on its own when this turn ends" }
+  }
+  if (t.runtime !== "turn-idle" || t.wakesOnItsOwn !== true) {
+    return {
+      enabled: false,
+      detail: NOTHING_CAN_WAKE_IT,
+      title: "No shell, sub-agent, watch, timer or goal is out on this thread, so nothing would bring it back",
+    }
+  }
+  return { enabled: true, detail: orList(wakeKinds(t)) }
+}
+
+/** Is the thread parked by "Until activity" right now? The server keeps the snooze armed through a
+ *  running turn (it clears at that turn's rest) and stops honouring it once nothing can end it, so the
+ *  header reads it the way the queue does. A wall-clock snooze outranks it: the two are never set
+ *  together by the menu, and the clock's state is the one with a time to show. */
+export function activitySnoozed(t: Pick<ThreadView, "bgSnoozed" | "runtime" | "wakesOnItsOwn">): boolean {
+  return t.bgSnoozed === true && t.runtime === "turn-idle" && t.wakesOnItsOwn === true
+}

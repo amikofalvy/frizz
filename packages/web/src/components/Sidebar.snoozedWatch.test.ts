@@ -153,7 +153,7 @@ test("a PR-watching thread event-snoozed off its resting card wears GitHub's mar
   const html = row(t)
   assert.match(html, GITHUB)
   assert.doesNotMatch(html, HOURGLASS)
-  assert.equal(sessionIndicatorFor({ ...base, id: "watching-thread", ...t } as ThreadView).tip, "Snoozed until the background work returns — waiting on acme/app#391\n\nApproved, CI green.")
+  assert.equal(sessionIndicatorFor({ ...base, id: "watching-thread", ...t } as ThreadView).tip, "Snoozed until activity — waiting on acme/app#391\n\nApproved, CI green.")
 })
 
 // The snoozed twin of the Active band's `background` row: same live vite dev server, same blue dot, and
@@ -169,7 +169,21 @@ test("a shell-only rest event-snoozed off its resting card keeps the shell's blu
   const html = row(t)
   assert.match(html, SHELL_DOT)
   assert.doesNotMatch(html, HOURGLASS)
-  assert.equal(sessionIndicatorFor({ ...base, id: "watching-thread", ...t } as ThreadView).tip, "Snoozed until the background work returns")
+  assert.equal(sessionIndicatorFor({ ...base, id: "watching-thread", ...t } as ThreadView).tip, "Snoozed until activity")
+})
+
+// "Until activity" from the header (2026-10-19) reaches a rest with NOTHING running — a Goal heartbeat is
+// its only way back. The blue dot would claim a live shell there, so it wears the human's alarm clock.
+test("an activity-snoozed rest with nothing running wears the alarm clock, not the shell's dot", () => {
+  const t = {
+    bgSnoozed: true,
+    wakesOnItsOwn: true,
+    recurringPrompt: { prompt: "Check in.", stopHook: false, heartbeat: true, postCompaction: false, armedAt: "2026-10-19T00:00:00.000Z" },
+  } as Partial<ThreadView>
+  const html = row(t)
+  assert.match(html, ALARM)
+  assert.doesNotMatch(html, SHELL_DOT)
+  assert.equal(sessionIndicatorFor({ ...base, id: "watching-thread", ...t } as ThreadView).tip, "Snoozed until activity")
 })
 
 // ── the 2026-09-04 widening: the octocat belongs to the WAIT, not to the Snoozed band ───────────────

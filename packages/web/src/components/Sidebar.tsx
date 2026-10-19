@@ -3,7 +3,7 @@ import { useQueryClient } from "@tanstack/react-query"
 import { useVirtualizer } from "@tanstack/react-virtual"
 import { useSnapshot } from "valtio"
 import { AlarmClock, Check, ChevronRight, CircleDashed, Ellipsis, Github, Hourglass, Loader2, Pin, PinOff, RotateCcw, Timer } from "lucide-react"
-import type { BoardSnapshot, ThreadView } from "@frizz/shared"
+import { hasLiveSubAgents, type BoardSnapshot, type ThreadView } from "@frizz/shared"
 import { store, openThread, scrollToQueueCard, queueCardTargetY, pushSubAgentDrawer, showToast, queueCardViewportTop } from "../store.ts"
 import { rpc } from "../api/rpc.ts"
 import { useBoardThreads } from "../hooks.ts"
@@ -1585,13 +1585,21 @@ function sessionStateIndicatorFor(t: ThreadView): { node: ReactElement; tip: str
     // the state reads the way the card's own toast did when it was clicked. A fence, when there is
     // one, still supplies the clause and the glyph below; a shell-only rest has no fence, and its snooze
     // wears the shell's blue dot rather than the hourglass, because nothing here is on a clock.
-    const eventSnoozed = t.bgSnoozed === true ? "Snoozed until the background work returns" : null
+    //
+    // "Snoozed until activity" since 2026-10-19, when the header's snooze menu began arming the same park
+    // on any rested thread under that name — one park, one name in the header and here. It read "until
+    // the background work returns" before, which a thread parked on a Goal alone has none of.
+    const eventSnoozed = t.bgSnoozed === true ? "Snoozed until activity" : null
     // Canonical blocked+timer status can arrive from an older/pre-session snapshot without a fence.
     if (t.lastFence?.kind !== "awaiting") {
-      // The event-snooze reaches here for a rest on a shell, a timer OR a registered PR watch, and only
-      // the first of those is a shell. A watch the worker never fenced has no hints to read, so the dot
-      // was the default by omission rather than by decision.
-      if (eventSnoozed) return { node: waitNamesPr(t) ? github : restingShellDot, tip: eventSnoozed }
+      // The event-snooze reaches here for a rest on a shell, a timer, a registered PR watch OR — from the
+      // header — a Goal alone, and only the first of those is live work. The dot is for a running shell or
+      // sub-agent; anything else that will end the park is a wake frizz delivers, and the row wears the
+      // human's own alarm clock rather than a dot claiming something is running.
+      if (eventSnoozed) {
+        const live = (t.bgShells ?? []).some((s) => s.state === "running") || hasLiveSubAgents(t)
+        return { node: waitNamesPr(t) ? github : live ? restingShellDot : alarmMark, tip: eventSnoozed }
+      }
       // A `watching` REST WITH NO FENCE TO READ (2026-10-05): a worker that rested behind a watch it
       // registered, which the board reads as a watcher. The mark is the watch's own, as above.
       if (t.waitStatus === "watching") {

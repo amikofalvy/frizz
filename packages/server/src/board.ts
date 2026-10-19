@@ -770,6 +770,31 @@ function bgSnoozeArmed(row: Pick<SessionRow, "bg_snooze_rested_at" | "rested_at"
   return row.bg_snooze_rested_at != null && row.rested_at != null && row.bg_snooze_rested_at === row.rested_at
 }
 
+/** CAN ANYTHING BUT A PERSON WAKE THIS THREAD? The same event-snooze is also the header's "Until
+ *  activity" (2026-10-19), offered on ANY rested thread rather than only on the resting card, and its
+ *  promise — back at the next rest — only holds while something of the thread's own is still out to
+ *  cause that rest: a running sub-agent or shell, an armed PR or issue watch, an armed timer or command
+ *  watch, or a Goal that fires on rest or on a clock. A steer from another thread can wake it too, but
+ *  nothing can know one is coming, so it never counts.
+ *
+ *  Three readers, one answer: the snooze menu greys the option out when this is false (maintainer
+ *  2026-10-19: grey it out rather than warn), the RPC refuses it, and deriveNeedsYou stops honouring an
+ *  armed snooze the moment it turns false — a thread that lost its last way back returns to the queue
+ *  rather than staying hidden until someone happens to look. `registeredWatches` and `armedTimerIds` are
+ *  the board's per-thread sets (both GitHub kinds; timers and command watches). */
+export function wakesOnItsOwn(
+  row: Pick<SessionRow, "recurring_prompt" | "recurring_armed_at" | "recurring_on_rest" | "recurring_on_schedule">,
+  tele: SessionTelemetry | undefined,
+  registeredWatches: ReadonlySet<string>,
+  armedTimerIds: ReadonlySet<string>,
+): boolean {
+  const goal = Boolean(row.recurring_prompt && row.recurring_armed_at) && (row.recurring_on_rest === 1 || row.recurring_on_schedule === 1)
+  return goal || registeredWatches.size > 0 || armedTimerIds.size > 0 || Boolean(
+    tele?.subAgents?.some((agent) => isDirectSubAgent(agent) && agent.state === "running") ||
+    tele?.bgShells?.some((shell) => shell.state === "running"),
+  )
+}
+
 // A declared wait excuses an idle thread from the queue only for a specific external-human gate or a
 // valid future scheduler instant. Legacy PR/CI/session hints, malformed/elapsed timers, and hintless
 // fences are agent-owned work; if the worker nevertheless comes to rest, the queue must surface that
@@ -1061,6 +1086,13 @@ export function deriveNeedsYou(
   // doesn't move the card from the queue into the running rail"). The human has responded; nothing here
   // is theirs to do until the worker has read it.
   if (answerInFlight) return false
+  // THE EVENT-SNOOZE, ON ANY REST (2026-10-19). It was honoured only inside the per-wait branches below,
+  // on the shapes whose resting card carried the button; the header's "Until activity" offers it on
+  // every rested thread, so it is honoured here, once, for as long as something can still end it
+  // (wakesOnItsOwn). Ahead of a question for the reason the wall-clock snooze is: the human parked the
+  // thread knowingly, and the ask stays answerable behind the park. The asks that hold the TURN itself —
+  // an actionable interaction, a permission prompt, a native ask — are checked above and still win.
+  if (runtime !== "exited" && bgSnoozeArmed(row) && wakesOnItsOwn(row, tele, registeredPrWatches, armedTimerIds)) return false
   if (tele?.providerError && !tele.providerError.retrying) return true
   // An unanswered ```question fence in the last assistant message is an EXPLICIT ask — a hard queue
   // member exactly like a native pendingAsk, NOT subject to interaction-clearance. VIEWING a question
@@ -1937,6 +1969,9 @@ function sessionThreadView(
     // states whether the thread is waiting, which the snooze does not change — so the suppression is a
     // presentation rule the client applies, not a second opinion about the thread's state.
     bgSnoozed: bgSnoozeArmed(row) || undefined,
+    // Whether "Until activity" can be offered: see wakesOnItsOwn. False on a dead worker and on an archived
+    // thread, which nothing wakes.
+    wakesOnItsOwn: (!archived && runtime !== "exited" && wakesOnItsOwn(row, tele, registeredPrWatches, armedTimerIds)) || undefined,
     claudeRuntime: row.claude_runtime === "broker" ? "broker" as const : undefined,
     // The recurring prompt — the same projection the worker's own `action: "get"` reads back.
     recurringPrompt: resolveRecurringPrompt(row),

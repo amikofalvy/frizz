@@ -1,11 +1,13 @@
 import { useId, useMemo, useState } from "react"
-import { AlarmClock, AlarmClockOff, Loader2 } from "lucide-react"
+import { Activity, AlarmClock, AlarmClockOff, Loader2 } from "lucide-react"
 import { SNOOZE_PROMPT_MAX, type ThreadView } from "@frizz/shared"
 import { rpc } from "../api/rpc.ts"
 import { futureSnoozedUntil } from "../groups.ts"
 import {
   DEFAULT_SNOOZE_PRESET,
   SNOOZE_PRESETS,
+  activitySnoozeRow,
+  activitySnoozed,
   formatSnoozeWake,
   localDateTimeInputValue,
   parseLocalSnooze,
@@ -31,6 +33,11 @@ import { Tooltip } from "./Tooltip.tsx"
 // The clock is AMBER while a snooze is armed — the goal mark's "something is set" tone — so the verb is
 // also the presence marker the footer's grey alarm glyph used to be: a thread opened with a bump armed
 // for Friday says so in its header, and the menu then leads with when it wakes and Wake now.
+//
+// One row is not a clock: "Until activity" (2026-10-19), the resting card's event-snooze offered on any
+// rested thread — back at its next rest. It sits under the clock times and is greyed out where nothing
+// but a person could end it (lib/snooze.ts activitySnoozeRow). Armed, it takes the same amber clock and
+// the same Wake now, which clears either park.
 export function SnoozeMenu({ thread, onSnoozed }: { thread: ThreadView; onSnoozed?: () => void }) {
   const [open, setOpen] = useState(false)
   // Closing the menu hands focus back to the clock, and the tooltip opens on focus — where it then takes
@@ -57,10 +64,35 @@ export function SnoozeMenu({ thread, onSnoozed }: { thread: ThreadView; onSnooze
       ? { value: preset.value, label: "Tomorrow", wake: wake.replace(/^Tomorrow at /, "") }
       : { value: preset.value, label: preset.label, wake }
   }), [open])
+  // "Until activity": the park with no clock (lib/snooze.ts activitySnoozeRow). Read when the menu opens,
+  // like the clock rows, so a shell that finished since the header rendered greys the row out.
+  const activityRow = useMemo(() => activitySnoozeRow(thread), [open, thread])
+  // The menu never sets both parks (each RPC clears the other), but a clock armed by another tab is the
+  // one with a time to show, so it wins the state line.
+  const byActivity = !snoozedUntil && activitySnoozed(thread)
+  const armed = Boolean(snoozedUntil) || byActivity
   // Two shapes: a plain park only re-surfaces the card, while an armed one resumes the agent with that
   // text — so naming the follow-up IS the detail.
-  const state = snoozedUntil ? (prompt ? `Bumps ${formatSnoozeWake(snoozedUntil)}` : `Snoozed until ${formatSnoozeWake(snoozedUntil)}`) : null
+  const state = snoozedUntil
+    ? (prompt ? `Bumps ${formatSnoozeWake(snoozedUntil)}` : `Snoozed until ${formatSnoozeWake(snoozedUntil)}`)
+    : byActivity ? "Snoozed until activity" : null
   const label = state ? (prompt ? `${state}\n${prompt}` : state) : "Snooze"
+
+  // The event-snooze the resting card's own button arms (rpc.snoozeAwaitingBackground): hidden until the
+  // thread's next rest. The server refuses it where nothing can wake the thread, which the greyed row
+  // already says, and it replaces a clock snooze rather than stacking on one.
+  async function applyActivity(): Promise<void> {
+    setBusy(true)
+    try {
+      await rpc.snoozeAwaitingBackground({ slug: thread.id, sessionId: thread.sessionId ?? "" })
+      showToast("Snoozed until activity")
+      onSnoozed?.()
+    } catch (error) {
+      showToast((error instanceof Error ? error.message : "Snooze failed").slice(0, 100))
+    } finally {
+      setBusy(false)
+    }
+  }
 
   // `bump` is what upgrades a park into a scheduled BUMP: the server arms a durable wake that resumes
   // this thread with exactly that text at `until`. null keeps the historical reminder behavior.
@@ -124,7 +156,7 @@ export function SnoozeMenu({ thread, onSnoozed }: { thread: ThreadView; onSnooze
               type="button"
               disabled={busy}
               data-snooze-menu
-              data-snoozed={snoozedUntil ? "true" : "false"}
+              data-snoozed={armed ? "true" : "false"}
               aria-label={state ?? "Snooze"}
               // The armed follow-up is the tooltip's second line; a screen reader hears it here, since the
               // name stays the short state that the menu's own first line repeats.
@@ -133,7 +165,7 @@ export function SnoozeMenu({ thread, onSnoozed }: { thread: ThreadView; onSnooze
               onMouseDown={(event) => event.preventDefault()}
               onBlur={() => setTooltipQuiet(false)}
               onPointerLeave={() => setTooltipQuiet(false)}
-              className={`${snoozedUntil ? HEADER_ICON_CLASS.replace(/(^| )text-muted( |$)/, "$1text-attention-90$2") : HEADER_ICON_CLASS} ${open ? "bg-panel-2" : ""}`}
+              className={`${armed ? HEADER_ICON_CLASS.replace(/(^| )text-muted( |$)/, "$1text-attention-90$2") : HEADER_ICON_CLASS} ${open ? "bg-panel-2" : ""}`}
             >
               {busy ? <Loader2 size={14} strokeWidth={2} className="animate-spin" /> : <AlarmClock size={14} strokeWidth={2} />}
             </button>
@@ -141,7 +173,7 @@ export function SnoozeMenu({ thread, onSnoozed }: { thread: ThreadView; onSnooze
         </Tooltip>
         <MenuContent align="end">
           <div className="px-2.5 pb-1 pt-1.5 text-[11px] text-muted-60">{state ?? "Snooze"}</div>
-          {snoozedUntil && (
+          {armed && (
             <>
               <MenuItem onSelect={() => void apply(null)} icon={<AlarmClockOff size={12} />}>Wake now</MenuItem>
               <MenuSeparator />
@@ -155,6 +187,20 @@ export function SnoozeMenu({ thread, onSnoozed }: { thread: ThreadView; onSnooze
               </span>
             </MenuItem>
           ))}
+          {/* UNDER THE CLOCK TIMES, not above them (maintainer 2026-10-19, picking it off the mockup
+              sheet), with what will end it where those rows say when. Greyed out, and saying why, where
+              nothing but a person could end it: a park nothing ends would hide the thread for good. */}
+          <MenuItem
+            onSelect={() => void applyActivity()}
+            disabled={!activityRow.enabled}
+            title={activityRow.title}
+            icon={<Activity size={12} />}
+          >
+            <span data-snooze-activity className="flex min-w-0 flex-1 items-center justify-between gap-6">
+              <span>Until activity</span>
+              {activityRow.detail && <span className="text-[10.5px] text-muted-55">{activityRow.detail}</span>}
+            </span>
+          </MenuItem>
           <MenuSeparator />
           <MenuItem onSelect={openCustom}>Custom time &amp; prompt…</MenuItem>
         </MenuContent>

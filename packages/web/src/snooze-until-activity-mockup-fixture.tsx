@@ -34,6 +34,10 @@ import "./styles.css"
 // option. mock it up", then: "There should probably be some kind of alert or notification if they do
 // this on a thread that has no possible awaker."
 //
+// PICKED: 1C and 2C, the same day — the row at the bottom of the clock times, greyed out where nothing can
+// wake the thread — and the resting card's own Snooze left exactly as it is ("it's all already clear from
+// context what it means"). Shipped in SnoozeMenu; the sheet stays as the record of what was weighed.
+//
 // WHAT IS TRUE TODAY (read from the code on 2026-10-19):
 //   · The header's alarm clock (SnoozeMenu) offers clock times only: 1h, tomorrow, 1d, 3d, 1w, custom.
 //   · "Until activity" already exists, but only as the resting card's own Snooze button
