@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { activityTimestamp, ageSpan, compactAge, exactStamp, formatLastActive, spanUntil } from "./activityTime.ts"
+import { activityTimestamp, ageSpan, compactAge, formatLastActive, spanUntil } from "./activityTime.ts"
 
 const now = Date.parse("2026-07-13T12:00:00.000Z")
 const at = (offsetMs: number) => new Date(now - offsetMs).toISOString()
@@ -81,10 +81,3 @@ test("compactAge is a compact age, and refuses to invent one", () => {
   assert.equal(compactAge("not a date", then), null)
 })
 
-test("exactStamp is GitHub's relative-time title, field for field", () => {
-  // The reference reading, copied off a real `<relative-time title>` on github.com (2026-08-29).
-  assert.equal(exactStamp("2026-08-29T17:44:50Z", { locale: "en-US", timeZone: "America/Los_Angeles" }), "Aug 29, 2026, 10:44 AM PDT")
-  assert.equal(exactStamp("2026-01-05T03:07:00Z", { locale: "en-US", timeZone: "America/New_York" }), "Jan 4, 2026, 10:07 PM EST")
-  assert.equal(exactStamp(undefined), null)
-  assert.equal(exactStamp("not a date"), null)
-})

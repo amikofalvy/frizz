@@ -16,7 +16,8 @@
 // see `onClick` below.
 import type { ReactNode } from "react"
 import type { LucideIcon } from "lucide-react"
-import { compactAge, exactStamp } from "../lib/activityTime.ts"
+import { compactAge } from "../lib/activityTime.ts"
+import { messageStamp } from "../lib/messageTime.ts"
 import { useNowMs } from "../lib/liveClock.ts"
 
 // An INTERACTIVE divider — one whose whole row is the affordance, like the queue card's collapsed
@@ -177,8 +178,9 @@ export function DividerQuotedTitle({ lead, title, tail, note }: { lead?: string;
   )
 }
 
-// THE AGE ON THE TAIL — `· 21m ago`, ticking on the app's one shared clock, with GitHub's exact
-// reading (`Aug 29, 2026, 10:44 AM PDT`) as its hover.
+// THE AGE ON THE TAIL — `· 21m ago`, ticking on the app's one shared clock, with the transcript's one
+// hover reading (`Today at 10:44 AM`, lib/messageTime) as its title — the same words the rest of the
+// divider's message shows on hover, so the line does not read one instant two ways.
 //
 // It is rendered HERE, inside the label, and not by each caller, for the reason the icon is: nine
 // dividers wear it now, and the one that drew its own (the timer's, with `title={wake.at}`) had already
@@ -192,7 +194,8 @@ export function DividerQuotedTitle({ lead, title, tail, note }: { lead?: string;
 //
 // The hover is a native `title`, not the app's Tooltip. Both age lines used `title` before this, GitHub's
 // own `<relative-time>` uses one, and Tooltip needs a Provider that the transcript fixtures which render
-// these dividers deliberately do not mount. What changed is the CONTENT: it was the raw ISO string.
+// these dividers deliberately do not mount. It was the raw ISO string, then GitHub's exact reading
+// (`Aug 29, 2026, 10:44 AM PDT`) until every message took a hover of its own (2026-10-19).
 //
 // `aria-hidden` on the dot only. The age is real content a screen reader should get; the dot is
 // punctuation between two flex items and would be read as "middle dot".
@@ -203,7 +206,7 @@ function DividerAge({ at }: { at?: string }) {
   return (
     <>
       <span aria-hidden="true" className="shrink-0 opacity-50">·</span>
-      <span title={exactStamp(at) ?? undefined} className="shrink-0 tabular-nums">{age}</span>
+      <span title={messageStamp(at) ?? undefined} className="shrink-0 tabular-nums">{age}</span>
     </>
   )
 }

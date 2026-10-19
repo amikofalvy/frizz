@@ -95,34 +95,6 @@ export function compactAge(at: string | undefined, nowMs = Date.now()): string |
   return seconds < 60 ? JUST_NOW : `${ageLadder(seconds)} ago`
 }
 
-/**
- * The EXACT instant behind a compact age, for its hover: `Aug 29, 2026, 10:44 AM PDT`.
- *
- * This is GitHub's own `<relative-time>` title, field for field — read off the real element on a real
- * PR page (2026-08-29) rather than designed: day, short month, year, hour, two-digit minute, short zone.
- * Mirrored because the compact age it explains is GitHub's grammar too (`21m ago`), and the reader
- * hovering a review-comment hairline has just come from the page that taught them what to expect.
- *
- * A tooltip is read alone, cold, and has room for the year and the zone — and a hairline is where a
- * thread crosses a day or a machine (a PR watcher fires on GitHub's clock, a timer on this one), so the
- * zone earns its place.
- *
- * `locale`/`timeZone` exist for the test; production passes neither and takes the browser's.
- */
-export function exactStamp(at: string | undefined, opts: { locale?: string; timeZone?: string } = {}): string | null {
-  const ms = at ? Date.parse(at) : NaN
-  if (!Number.isFinite(ms)) return null
-  return new Intl.DateTimeFormat(opts.locale, {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    timeZoneName: "short",
-    timeZone: opts.timeZone,
-  }).format(ms)
-}
-
 /** Format a unix-seconds instant as a bare local wall clock ("5:50 PM"), or with the weekday when it
  *  is not today — a limit that resets tomorrow afternoon must not read as if it comes back this hour.
  *  Shared by the drawer's LimitPauseCard and the rail's limit mark, so the two name one instant alike. */

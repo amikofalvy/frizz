@@ -44,7 +44,7 @@ import { PhoneAnswerBar, PhoneQuestionsContext, type PhoneQuestions } from "./Ph
 import { RegisteredAnswerSheet } from "./RegisteredAnswerSheet.tsx"
 import { sendEagerFollowUp } from "../lib/eagerComposerSubmission.ts"
 import { limitResumeClock } from "../lib/activityTime.ts"
-import { timeBreakLabel, timeBreaks, type TimeBreak } from "../lib/timeBreaks.ts"
+import { dayAndTime, messageStamp, restGapAt } from "../lib/messageTime.ts"
 import { useUnqueueFollowUp, useUnqueueSupported } from "../lib/unqueueFollowUp.ts"
 import { useFailedDeliveryActions } from "../lib/failedDelivery.ts"
 import { useDeliverQueuedNow, useDeliverQueuedNowSupported } from "../lib/deliverQueuedNow.ts"
@@ -115,7 +115,7 @@ import { withoutRedundantRestDividers } from "../lib/restDividers.ts"
 import { coalesceToolActivityMessages, editedFileCount, historicalToolActivityMessages, isPictureTool, isSettledAsk, isToolActivityException, liveRuntimeStartedAt, liveToolActivityRun, liveToolActivityTail, settledToolActivityLabel, thinkingToolActivityLabel, toolActivityLabel, type ToolActivityMessage } from "../lib/toolActivity.ts"
 import { CodexDirectiveCard, MermaidDiagram } from "./CodexRichOutput.tsx"
 import { LightboxGallery } from "./Lightbox.tsx"
-import { HUMAN_RUN_STEP, META_CARD_STEP, PICTURE_STEP, STEP, TIME_BREAK_ABOVE, TIME_BREAK_BELOW, USER_TAIL_EXTRA, VSpace } from "./rhythm.tsx"
+import { HUMAN_RUN_STEP, META_CARD_STEP, PICTURE_STEP, STEP, USER_TAIL_EXTRA, VSpace } from "./rhythm.tsx"
 
 // Answer types moved to lib/questionBlocks.ts (shared by the queue card, the thread view, and the
 // answering controller). Re-exported here so existing importers keep working.
@@ -529,7 +529,7 @@ type VirtualThreadRow =
   | { key: string; kind: "settled-questions"; questions: SettledQuestion[] }
   | { key: "transport-fallback"; kind: "transport-fallback" }
   | { key: string; kind: "earlier-history" }
-  | ({ kind: "message"; timeBreak: TimeBreak | null; timeBreakAt: string | undefined } & VirtualTranscriptMessageRow)
+  | ({ kind: "message"; restGap: string | null } & VirtualTranscriptMessageRow)
   | { key: "runtime-status"; kind: "runtime-status" }
   | { key: string; kind: "queued"; message: ChatMessage; messageIndex: number; gap: number }
   | { key: "queued-send-now"; kind: "queued-send-now" }
@@ -811,15 +811,12 @@ function VirtualizedThreadTranscript({
       rendersNothingIn(activityMessages, awaitingCut, restingShown),
       messageGap,
     )
-    // A coalesced tool run STARTED at `runStartedAt` and last moved at its walked-forward `at` — see
-    // lib/timeBreaks for why the pause is measured between the two.
-    const startAt = (row: VirtualTranscriptMessageRow) => activityMessages[row.messageIndex].runStartedAt ?? row.message.at
-    const breaks = timeBreaks(rows, startAt, (row) => row.message.at)
+    // A rest the human came back to after a long wait draws as the instant they came back (restGapOf).
+    // The next ROW is the next thing drawn, which is what the redundancy filter above already measured.
     return rows.map((row, i) => ({
       ...row,
       messageIndex: activityMessages[row.messageIndex].messageIndex,
-      timeBreak: breaks[i],
-      timeBreakAt: startAt(row),
+      restGap: restGapOf(row.message, rows[i + 1]?.message),
     }))
   }, [activityMessages, awaitingCut, restingShown])
   // The slot at the end, off the model the queue card draws its own from (useRuntimeTail). Its ROW exists
@@ -1525,12 +1522,10 @@ function VirtualizedThreadTranscript({
                 )}
               </div>
             ) : row.kind === "message" ? (
-              // A time break heads the row it dates, INSIDE it, so the virtualizer measures the two as
-              // one and nothing can ever be drawn over the message below. It replaces the row's gap
-              // (TimeBreakHead brings its own air; none above it at the very top of the transcript).
-              <div className="relative flex flex-col px-6" style={{ paddingTop: row.timeBreak && row.timeBreakAt ? 0 : row.gap }}>
-                {row.timeBreak && row.timeBreakAt ? <TimeBreakHead at={row.timeBreakAt} kind={row.timeBreak} flush={row.gap === 0} /> : null}
-                <ThreadMessage m={row.message} index={row.messageIndex} showSendButton />
+              <div className="relative flex flex-col px-6" style={{ paddingTop: row.gap }}>
+                {row.restGap
+                  ? <RestGapLine rest={row.message} at={row.restGap} />
+                  : <ThreadMessage m={row.message} index={row.messageIndex} showSendButton />}
               </div>
             ) : row.kind === "runtime-status" ? (
               <div className="px-6">
@@ -1735,29 +1730,30 @@ export function messageHeadIsPicture(m: ChatMessage): boolean {
   const tools = messageHeadTools(m)
   return tools !== null && isPictureTool(tools[0])
 }
-// The centred reading a time break draws — see lib/timeBreaks. `<time>` carries the exact instant on
-// `dateTime`; the day word is a step brighter than the clock because it is the part a reader scrolling
-// a long, parked thread is looking for.
-function TimeBreakLine({ at, kind }: { at: string; kind: TimeBreak }) {
-  const { day, time } = timeBreakLabel(at, kind)
-  return (
-    <time dateTime={at} data-time-break={kind} className="block select-none text-center text-[11px] leading-4 [font-variant-numeric:tabular-nums] text-muted-45">
-      {day ? <span className="font-medium text-muted-60">{day} </span> : null}
-      {time}
-    </time>
-  )
+// THE WAIT, DATED (lib/messageTime). A rest the human came back to REST_GAP_MS or more later draws as
+// the instant they came back — `Today · 8:33 AM` — in place of "Agent rested · 3d ago": the same hairline
+// at the same seam, saying when the new stretch began rather than how long ago the old one ended. Only a
+// rest whose next drawn row is the human's own send: one above a wake has already been dropped as a
+// restatement (lib/restDividers), and the next row is what both surfaces pass as `next`.
+export function restGapOf(rest: ChatMessage, next: ChatMessage | undefined): string | null {
+  if (rest.kind !== "event" || rest.boundary !== "rest" || !next || !humanSend(next)) return null
+  return restGapAt(rest.at, next.at)
 }
-// THE READING WITH ITS AIR, which together take the place of the gap above the message they date:
-// TIME_BREAK_ABOVE over the reading (none when `flush`, at the very top of what a surface draws, where
-// the row already starts flush) and TIME_BREAK_BELOW tying it to its own message. Both surfaces that
-// draw a transcript draw a break through this, so the two cannot space it differently.
-export function TimeBreakHead({ at, kind, flush = false }: { at: string; kind: TimeBreak; flush?: boolean }) {
+// Both surfaces draw it through this. The hover names the END of the wait the label no longer shows; the
+// `·` is DividerAge's, so the day and the clock sit the same 4px either side of it as an age does.
+export function RestGapLine({ rest, at }: { rest: ChatMessage; at: string }) {
+  const { day, time } = dayAndTime(at)
+  const wentQuiet = messageStamp(rest.at)?.replace(/^(Today|Yesterday)/, (word) => word.toLowerCase())
   return (
-    <>
-      {flush ? null : <VSpace h={TIME_BREAK_ABOVE} />}
-      <TimeBreakLine at={at} kind={kind} />
-      <VSpace h={TIME_BREAK_BELOW} />
-    </>
+    <div title={wentQuiet ? `Agent rested ${wentQuiet}` : undefined} className="contents">
+      <WakeDivider sourceId={rest.sourceId} marker="rest-gap" ariaLabel={`${day}, ${time}`}>
+        <time dateTime={at} className="flex shrink-0 items-center gap-1 tabular-nums">
+          <span>{day}</span>
+          <span aria-hidden="true" className="opacity-50">·</span>
+          <span>{time}</span>
+        </time>
+      </WakeDivider>
+    </div>
   )
 }
 
@@ -3483,7 +3479,22 @@ export function ThreadMessage({ m, index, dense, textOnly, showSendButton }: { m
 // `stepsDone` — the human answered this message's rest on steps with the "I have completed this" box
 // (lib/stepsAnswer stepsDoneReplies), so its settled steps card keeps the box, ticked. A boolean, false
 // on every other row.
-export const Message = memo(function Message({ m, answering, dense, paired, textOnly, showSendButton, staleAwaiting, shadowedBy, placed, settledPlaced, fenceQuestions, thread, restingCardShown, stepsDone }: { m: ChatMessage; answering?: MessageAnswering; dense?: boolean; paired?: PairedAnswer[] | null; textOnly?: boolean; showSendButton?: boolean; staleAwaiting?: boolean; shadowedBy?: readonly RegisteredQuestionView[]; placed?: readonly RegisteredQuestionView[]; settledPlaced?: readonly SettledQuestion[]; fenceQuestions?: readonly FenceQuestionRow[]; thread?: ThreadViewData; restingCardShown?: boolean; stepsDone?: boolean }) {
+type MessageProps = { m: ChatMessage; answering?: MessageAnswering; dense?: boolean; paired?: PairedAnswer[] | null; textOnly?: boolean; showSendButton?: boolean; staleAwaiting?: boolean; shadowedBy?: readonly RegisteredQuestionView[]; placed?: readonly RegisteredQuestionView[]; settledPlaced?: readonly SettledQuestion[]; fenceQuestions?: readonly FenceQuestionRow[]; thread?: ThreadViewData; restingCardShown?: boolean; stepsDone?: boolean }
+// EVERY MESSAGE SAYS WHEN IT WAS SAID ON HOVER — `Today at 8:33 AM` as the browser's own tooltip
+// (lib/messageTime). Here, around every branch of the body, so a bubble, a prose turn, a tool run and a
+// hairline all carry it on every surface, the sub-agent sheet's included. `contents` keeps the wrapper
+// out of layout: the body's root is still the flex item its row lays out. A `title` on anything inside
+// (a divider's quoted title, a link) is nearer the pointer and wins there. A queued bubble has not been
+// said yet and carries none.
+export const Message = memo(function Message(props: MessageProps) {
+  const stamp = props.m.queued ? null : messageStamp(props.m.at)
+  return (
+    <div title={stamp ?? undefined} className="contents">
+      <MessageBody {...props} />
+    </div>
+  )
+})
+function MessageBody({ m, answering, dense, paired, textOnly, showSendButton, staleAwaiting, shadowedBy, placed, settledPlaced, fenceQuestions, thread, restingCardShown, stepsDone }: MessageProps) {
   // ANSWERING ON A PHONE happens in a sheet, one question at a time (MobileAnswerSheet) — the cards in
   // the transcript stay READ-ONLY there, so the questions are still visible in the context that
   // produced them but a 44pt-thumb answer never has to land on a 24pt chip inside a scrolling message.
@@ -3831,7 +3842,7 @@ export const Message = memo(function Message({ m, answering, dense, paired, text
       ) : null}
     </div>
   )
-})
+}
 
 // A user's composed multi-block answer, rendered as a structured card that MIRRORS the question
 // component's answered state — so it wears the SAME anatomy as every other transcript card

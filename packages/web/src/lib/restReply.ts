@@ -13,8 +13,8 @@ import type { ChatMessage } from "../hooks.ts"
 // the maintainer's one-second recording of pressing Done.
 //
 // So the ghost of that ONE send takes the landed message's place from its first frame: an ordinary row in
-// the message flow, under the hairline, carrying the instant it was sent so a time break heads it exactly
-// as one will head the landed copy. It still RENDERS as a ghost (`queued` stays set: half opacity, and
+// the message flow, under the hairline, carrying the instant it was sent so the hairline above it is dated
+// (ChatView restGapOf) exactly as it will be above the landed copy. It still RENDERS as a ghost (`queued` stays set: half opacity, and
 // whatever affordances a queued bubble offers); only its place changes, so the echo changes its opacity
 // and nothing else.
 //
