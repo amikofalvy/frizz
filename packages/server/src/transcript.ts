@@ -84,21 +84,10 @@ export const LATEST_WINDOW_MAX_BYTES = 3 * 1024 * 1024
 // user bubble the human never typed, and codex's compaction rendered as nothing at all. It is the one
 // event that explains why an agent suddenly re-reads its scratchpad or forgets what was just agreed,
 // so it earns the boundary divider — the same affordance an external wake uses (see EventLine).
-// One label, both providers: the token bracket is what makes the loss concrete.
-function formatTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
-  if (n >= 1_000) return `${Math.round(n / 1_000)}k`
-  return String(n)
-}
-// The pre→post bracket is shown only when it is REAL evidence of shrinkage. Codex derives it from the
-// token_count readings either side of the event and one rollout in 2282 reported the same number twice
-// (a stale pre-reading); an unshrunk "13k → 13k" is noise, so it degrades to the bare label instead.
-function compactionLabel(preTokens?: number, postTokens?: number): string {
-  const shrank = preTokens !== undefined && postTokens !== undefined && postTokens < preTokens
-  return shrank ? `Context compacted — ${formatTokens(preTokens!)} → ${formatTokens(postTokens!)} tokens` : "Context compacted"
-}
-function compactionMessage(sourceId: string, at: string | undefined, preTokens?: number, postTokens?: number): TranscriptMessage {
-  return { sourceId, role: "assistant", kind: "event", boundary: "compaction", text: compactionLabel(preTokens, postTokens), tools: [], parts: [], at }
+// One label, both providers, and no token counts: it carried a "978k → 19k tokens" bracket until
+// 2026-10-19, dropped as noise on a line whose only job is to say the context was reset.
+function compactionMessage(sourceId: string, at: string | undefined): TranscriptMessage {
+  return { sourceId, role: "assistant", kind: "event", boundary: "compaction", text: "Context compacted", tools: [], parts: [], at }
 }
 
 // ---- the agent came to rest --------------------------------------------------------------------
@@ -825,13 +814,10 @@ export function createTranscriptFold(identityPrefix = "claude"): TranscriptFold 
     const thisTs = typeof rec.timestamp === "string" ? rec.timestamp : undefined
 
     // CONTEXT COMPACTION — everything above this line left the agent's context. Claude writes the
-    // boundary as its own system record and hands us the exact token bracket; the ~20 000-character
-    // carry-over summary that follows is dropped in the user arm below.
+    // boundary as its own system record; the ~20 000-character carry-over summary that follows is
+    // dropped in the user arm below.
     if (rec.type === "system" && rec.subtype === "compact_boundary") {
-      const meta = rec.compactMetadata
-      const pre = typeof meta?.preTokens === "number" ? meta.preTokens : undefined
-      const post = typeof meta?.postTokens === "number" ? meta.postTokens : undefined
-      out.push(compactionMessage(sourceId, thisTs, pre, post))
+      out.push(compactionMessage(sourceId, thisTs))
       lastAssistantId = null // the divider breaks the assistant-record merge chain
       return
     }
@@ -2607,12 +2593,6 @@ export function projectCodexTranscript(raw: string, identityPrefix = "codex"): T
   // not on a reasoning record, so it's excluded. The large idle between turns sits on a turn-start, also
   // excluded.
   let prevEventAt: string | undefined
-  // Context-compaction bracket. Codex records the event but measures nothing, so the size of the loss
-  // comes from the token_count readings on either side: `lastContextTokens` is the newest reading seen,
-  // and a compaction divider stays in `openCompaction` only until the NEXT reading arrives (always the
-  // very next telemetry record — 2282/2282 across the corpus) to be rewritten with the real bracket.
-  let lastContextTokens: number | undefined
-  let openCompaction: { message: TranscriptMessage; preTokens?: number } | null = null
   // A child's first inbound NEW_TASK is its original assignment; every later one is a follow-up.
   // Codex encrypts both payloads today, so sequence is the only honest distinction the projection can
   // make. The marker remains useful: it pins the arrival to the exact point in the child's timeline.
@@ -2939,21 +2919,9 @@ export function projectCodexTranscript(raw: string, identityPrefix = "codex"): T
           // `cur`/`turnReasoning` matters here: compaction lands MID-turn, and without it the turn's
           // later text and reasoning steps would keep appending to blocks that now sit ABOVE the
           // divider — content rendered on the wrong side of the boundary it happened after.
-          const m = compactionMessage(sourceId, ev.at, lastContextTokens, undefined)
-          out.push(m)
-          openCompaction = { message: m, preTokens: lastContextTokens }
+          out.push(compactionMessage(sourceId, ev.at))
           cur = null
           turnReasoning = null
-          break
-        }
-        case "context-usage": {
-          // The first reading AFTER a compaction is its post-size — rewrite the divider in place with the
-          // real bracket. Ordinary readings just advance the running context size for the next compaction.
-          if (openCompaction) {
-            openCompaction.message.text = compactionLabel(openCompaction.preTokens, ev.tokens)
-            openCompaction = null
-          }
-          lastContextTokens = ev.tokens
           break
         }
         case "turn-start":
@@ -2989,7 +2957,7 @@ export function projectCodexTranscript(raw: string, identityPrefix = "codex"): T
           }
           break
         }
-        // title: sidecar, not renderable content.
+        // title, context-usage: sidecar, not renderable content.
         default:
           break
       }

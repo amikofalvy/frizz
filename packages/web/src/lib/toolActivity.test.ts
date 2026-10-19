@@ -732,7 +732,7 @@ test("a quiet event line still ends the run it follows", () => {
   // and those are real transcript punctuation: the calls either side of one are not one batch.
   const compact = coalesceToolActivityMessages([
     toolMessage("a", [tool("Bash", { detail: "git log" })]),
-    eventMessage("c", "Context compacted — 142k tokens dropped"),
+    eventMessage("c", "Context compacted"),
     toolMessage("b", [tool("Bash", { detail: "git diff" })], "2026-07-30T12:00:02.000Z"),
   ])
 

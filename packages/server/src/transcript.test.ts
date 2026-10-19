@@ -2404,7 +2404,7 @@ test("claude compaction renders a boundary divider carrying its token bracket, a
     msgs.map((m) => `${m.role}/${m.kind ?? "message"}:${m.text}`),
     [
       "user/message:keep going",
-      "assistant/event:Context compacted — 978k → 19k tokens",
+      "assistant/event:Context compacted", // no token counts, though compactMetadata carries them
       "assistant/message:Let me re-read my scratchpad.",
     ],
   )
@@ -2427,7 +2427,7 @@ test("a manual /compact renders only its divider — no envelope bubble, no stdo
   ].join("\n")
   assert.deepEqual(projectClaudeTranscript(raw).map((m) => `${m.role}:${m.text}`), [
     "assistant:READY",
-    "assistant:Context compacted — 41k → 4k tokens",
+    "assistant:Context compacted",
     "user:carry on",
   ])
 })
@@ -2493,7 +2493,7 @@ test("a decline receipt is dropped too, and a human message that merely QUOTES o
   assert.deepEqual(msgs.map((m) => m.displayText ?? m.text), ["the original task", quoting])
 })
 
-test("claude compaction without usable metadata still renders the divider (bare label, never a guessed bracket)", () => {
+test("claude compaction without metadata still renders the divider", () => {
   const raw = JSON.stringify({ type: "system", subtype: "compact_boundary", content: "Conversation compacted", timestamp: "2026-07-21T00:05:00.000Z" })
   const msgs = projectClaudeTranscript(raw)
   assert.equal(msgs.length, 1)
