@@ -3271,7 +3271,13 @@ export function QueuedSendNow() {
           title={`${step === "release"
             ? several ? "Send them now — the agent reads them at its next step" : "Send it now — the agent reads it at its next step"
             : "Send now — the worker reads the queue immediately, and a command it is running carries on in the background"} (⌘⏎)`}
-          className="flex items-baseline outline-none transition-colors duration-50 hover:text-fg focus-visible:text-fg disabled:opacity-50"
+          // THE HAND REACHES PAST THE INK. The button's box is its ink edge to edge — the keycap's left
+          // border to the end of "now", on a 16px line of 11.5px words — so a pointer a hair off either
+          // end read as the plain arrow (maintainer 2026-10-20: "Send now isn't cursor-pointer"). The
+          // `before:` box is an invisible hit halo, 8px either side and 4px above and below (the run's
+          // 6px pitch still separates it from the last bubble), and as a positioned pseudo-element it
+          // moves nothing. The pointer is declared here as well as by the global button rule.
+          className="relative flex cursor-pointer items-baseline outline-none transition-colors duration-50 before:absolute before:-inset-x-2 before:-inset-y-1 before:content-[''] hover:text-fg focus-visible:text-fg disabled:cursor-default disabled:opacity-50"
         >
           {pending ? (
             // The spinner takes the cap's place while the press is in flight, at the arrow's old 1em size
