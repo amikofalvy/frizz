@@ -300,7 +300,13 @@ const answerKey = (a: PairedAnswer): string => `${a.handle ?? ""} ${a.question ?
  *  The transcript's copy is the one at its true place in the conversation, so it wins and the pinned card
  *  stands down. Row-wise rather than whole-message, because the board composes ONE message from every
  *  unspent row while the scheduler delivers per BATCH: two answers given in two clicks can be half
- *  delivered, and then the card's job is the half that is not on screen yet — not all of it, and not none. */
+ *  delivered, and then the card's job is the half that is not on screen yet — not all of it, and not none.
+ *
+ *  WHAT IS LEFT HAS TO BE SOMETHING THE CARD DRAWS. The board's message carries a row for every question
+ *  the human dismissed since the worker last heard, and the card leaves those out (answersForDisplay).
+ *  So answering two questions and then dismissing a third left the dismissal as the only unseen row, and
+ *  the tail drew an Answers card with nothing in it (reported 2026-10-19, on a thread whose answers had
+ *  reached the worker mid-turn). Dismissal rows still ride along when a real answer is left beside them. */
 export function unrenderedAnswers(messages: readonly MsgLike[], wire: string | undefined): PairedAnswer[] | null {
   const rows = wire ? parseAnswersCard(wire) : null
   if (!rows?.length) return null
@@ -309,9 +315,8 @@ export function unrenderedAnswers(messages: readonly MsgLike[], wire: string | u
     if (m.role !== "user" || m.kind === "event" || m.kind === "reasoning") continue
     for (const a of parseAnswersCard(answersText(m)) ?? []) shown.add(answerKey(a))
   }
-  if (shown.size === 0) return rows
   const left = rows.filter((a) => !shown.has(answerKey(a)))
-  return left.length > 0 ? left : null
+  return answersForDisplay(left).length > 0 ? left : null
 }
 
 // The ```question blocks of the NEAREST EARLIER ask, looking backward from `index` with the same skip

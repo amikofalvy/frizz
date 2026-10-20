@@ -35,7 +35,7 @@ import { projectTranscriptSessionPeers, type SessionPeerThread } from "./session
 import type { Project } from "./project.ts"
 import type { Storage } from "./storage.ts"
 import { CLAUDE_WORKER_ENV, type AgentBackend, type NormalizedEvent } from "./backend/types.ts"
-import { parseDeliveryLedger, projectDeliveryLedger, suppressCancelledDeliveries, attachmentPromptText } from "./delivery-ledger.ts"
+import { parseDeliveryLedger, projectDeliveryLedger, suppressCancelledDeliveries, attachmentPromptText, isPromptDeliveryAttachment } from "./delivery-ledger.ts"
 import { editedFilesOf } from "./edited-files.ts"
 import { repoCarriedEditedFiles } from "./repo-files.ts"
 import { stripDeliveryMarkers } from "./delivery-marker.ts"
@@ -904,13 +904,13 @@ export function createTranscriptFold(identityPrefix = "claude"): TranscriptFold 
     // upward SendMessage, not the operator's words — and is handled by its own branch just below.
     if (rec.type === "attachment" && rec.attachment?.type === "queued_command") {
       const att = rec.attachment
-      const humanDelivery = att.origin?.kind === "human" || (att.origin === undefined && typeof att.source_uuid === "string")
+      const humanDelivery = isPromptDeliveryAttachment(att)
       // `prompt` is a plain string for a typed message but an ARRAY of content blocks when the human
       // attached an image to a queued follow-up (10 such in this machine's corpus, every one
       // text+image). Reading only the string shape dropped those on the floor entirely — combined with
       // the removal above, an image-bearing queued message disappeared from the chat for good.
       const prompt = normalizeNewlines(attachmentPromptText(att.prompt))
-      if (prompt.trim() && humanDelivery && att.commandMode === "prompt" && !isInjectedNoise(prompt) && !dropCorrection(prompt)) {
+      if (prompt.trim() && humanDelivery && !isInjectedNoise(prompt) && !dropCorrection(prompt)) {
         // Resolve the pending bubble — the same object, un-grayed and placed at this delivery. Never emit
         // a second copy (the enqueue already made the bubble when the human hit send).
         if (!resolveQueued(prompt)) {

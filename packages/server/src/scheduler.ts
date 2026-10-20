@@ -14,7 +14,7 @@ import { claudeFallbackModel, claudeModelFromLimitName, claudeProfile, normalize
 import { createWakeDeliveryStore, WAKE_QUIET_WINDOW_MS, type WakeDelivery } from "./wake-store.ts"
 // The board owns the registered-done lifetime rule, and the waker must read it by exactly the same rule
 // or the two disagree about whether a thread is finished.
-import { answersInFlight, registeredDoneFence, safeQuestionSpec, wakeQuestionAnswer } from "./board.ts"
+import { answersInFlight, answersReceivedAt, registeredDoneFence, safeQuestionSpec, wakeQuestionAnswer } from "./board.ts"
 import { ProducerStoppedError } from "./shutdown.ts"
 import { completionsDueForRelay, relayMessage } from "./completion-relay.ts"
 import {
@@ -2148,7 +2148,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         tele.pendingQuestion ||
         registeredDoneFence(deps.storage.getThreadDone(row.slug), tele.lastUserAt) !== undefined ||
         standing.length > 0 ||
-        answersInFlight(questionRows, tele.lastUserAt, row.recurring_on_rest === 1 && Boolean(row.recurring_prompt?.trim())) !== undefined ||
+        answersInFlight(questionRows, answersReceivedAt(tele), row.recurring_on_rest === 1 && Boolean(row.recurring_prompt?.trim())) !== undefined ||
         (!needsInput && deps.storage.listThreadWatches(row.slug, { armedOnly: true }).length > 0)
       ) {
         if ((row.signoff_nudges ?? 0) > 0) deps.storage.resetSignoffNudges(row.slug)
@@ -2485,7 +2485,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     if (questionFencesLive(row.spawned_at)) return []
     const spokeAt = tele.lastAssistantAt
     if (!spokeAt || !(Date.parse(spokeAt) >= DONE_GATE_FROM_MS)) return []
-    if (answersInFlight(rows, tele.lastUserAt, autonomousGoalOf(row) !== undefined) !== undefined) return []
+    if (answersInFlight(rows, answersReceivedAt(tele), autonomousGoalOf(row) !== undefined) !== undefined) return []
     // Named as `frizzctl done` names them (router markOwnDone), unreadable rows left out as there.
     return rows.flatMap((q) => {
       if (q.state !== "open") return []
@@ -4246,8 +4246,9 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       // The flag may be hard true: this pass only runs for rows whose armed rest Goal is exactly the
       // gate evalQuestionAnswers wakes dismissal-only settlements on. Bounded like the answer card is —
       // the wake landing advances `lastUserAt` past the settlement, which both spends this hold and
-      // closes the rest above.
-      if (answersInFlight(deps.storage.listThreadQuestions(row.slug), tele.lastUserAt, true) !== undefined) continue
+      // closes the rest above. A wake the worker took MID-TURN leaves no user record, so the hold reads
+      // answersReceivedAt: on `lastUserAt` alone it never spent, and the Goal never fired again.
+      if (answersInFlight(deps.storage.listThreadQuestions(row.slug), answersReceivedAt(tele), true) !== undefined) continue
       // THE REMINDER TOOK THIS REST (2026-08-28). SOURCE 9 mints before this pass runs, and a rest it
       // claimed gets no Goal on top. The two used to go out in the same tick, 5 ms apart; the runtime
       // queued the second behind the first's turn, so a worker that answered the Goal with a ```done

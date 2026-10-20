@@ -429,6 +429,26 @@ test("unrenderedAnswers: a partly delivered batch keeps only the rows still unse
   assert.deepEqual(unrenderedAnswers([delivered], both), [{ n: 2, answer: "B", question: "Second?" }])
 })
 
+// The abuse-monitor thread, 2026-10-19: two answers reached the worker mid-turn, and the human dismissed a
+// third question five seconds later. The board's message carried all three; the transcript drew the two
+// answers, and the dismissal alone was left — a row the card never draws, so it drew an EMPTY card.
+test("unrenderedAnswers: a dismissal is never the only thing left to draw", () => {
+  const answered = [
+    { questionId: "q1", question: "Merge it?", chosen: ["Merge it"], handle: "merge" },
+    { questionId: "q2", question: "Have a cert?", chosen: [], text: "Not sure", handle: "cert" },
+  ]
+  const delivered = user(questionAnswerMessage(answered))
+  const wire = questionAnswerMessage(answered, [{ question: "Mint or store?", handle: "creds" }])
+  assert.equal(unrenderedAnswers([delivered], wire), null)
+  // Negative control: the dismissal IS an unseen row, and it is exactly what would have drawn.
+  assert.equal(parseAnswersCard(wire)?.filter((a) => a.answer === DISMISSED_ANSWER).length, 1)
+  // With an unseen ANSWER beside it the card still draws, and the dismissal rides along as before.
+  const partly = user(questionAnswerMessage(answered.slice(0, 1)))
+  assert.deepEqual(unrenderedAnswers([partly], wire)?.map((a) => a.handle), ["cert", "creds"])
+  // Nothing on screen at all: still the whole wire.
+  assert.equal(unrenderedAnswers([user("go")], wire)?.length, 3)
+})
+
 test("unrenderedAnswers: no wire, or an unreadable one, draws nothing", () => {
   assert.equal(unrenderedAnswers([user("go")], undefined), null)
   assert.equal(unrenderedAnswers([user("go")], "an ordinary steer"), null)

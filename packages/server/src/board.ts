@@ -513,16 +513,17 @@ export function wakeQuestionAnswer(q: Pick<ThreadQuestionRow, "answer" | "spec" 
  *  SPENT BY THE WORKER RECEIVING IT, as the transcript shows it. `delivered` is the OUTBOX's verdict on
  *  the carrying wake (scheduler.evalQuestionAnswers) and can lead the transcript — a daemon's
  *  acknowledgement files the wake before the record lands — so keying on it would reopen the same hole
- *  a moment wide. The newest USER record is the honest test — frizz's delivery IS one — and it is the same test
- *  `registeredDoneFence` uses for the same reason. A dismissal alone shows nothing: nobody is being
+ *  a moment wide. The transcript is the honest test: the newest USER record, which is what frizz's
+ *  delivery becomes at a turn's start, or the `queued_command` attachment it becomes when the worker takes
+ *  it mid-turn (`receivedAt` is the later of the two — answersReceivedAt). A dismissal alone shows nothing: nobody is being
  *  woken for it, so there is no arrival to bridge to — UNLESS `wakeOnDismissals` says one is. On an
  *  AUTONOMOUS thread (a Goal armed on rest — the exact gate evalQuestionAnswers wakes on) the
  *  cancellation wake IS coming, and without this the instant between arming the Goal and that wake
  *  landing was the same hole all over again: the question card gone, nothing in its place, and the
  *  residual "Rested without a sign-off" card claiming a bare rest of a thread that had asked
  *  (maintainer 2026-09-02). The message is the wake's own bytes, exactly as for an answer. */
-export function answersInFlight(rows: readonly ThreadQuestionRow[], lastUserAt: string | undefined, wakeOnDismissals = false): string | undefined {
-  const userAt = lastUserAt ? Date.parse(lastUserAt) : Number.NaN
+export function answersInFlight(rows: readonly ThreadQuestionRow[], receivedAt: string | undefined, wakeOnDismissals = false): string | undefined {
+  const userAt = receivedAt ? Date.parse(receivedAt) : Number.NaN
   const answers: NamedQuestionAnswer[] = []
   const dismissed: QuestionDismissal[] = []
   for (const q of rows) {
@@ -543,6 +544,21 @@ export function answersInFlight(rows: readonly ThreadQuestionRow[], lastUserAt: 
   return wakeOnDismissals && dismissed.length > 0 ? questionsCancelledWakeMessage(dismissed.length, dismissed) : undefined
 }
 
+/** WHEN THE WORKER LAST RECEIVED ANYTHING, as the two tests above read it: the newest user record, or the
+ *  newest delivery it took mid-turn, whichever is later. A delivery queued behind a running turn reaches
+ *  the model as a `queued_command` attachment and no user record ever follows it, so reading
+ *  `lastUserAt` alone kept those answers "in flight" until the next human message. In that time the
+ *  tail drew the board's copy under the transcript's, the sign-off reminder and a Goal's rest prompt
+ *  stood down for a delivery that had already landed, and a question dismissed meanwhile drew as an
+ *  empty Answers card (thread `abuse-monitor`, 2026-10-19). */
+export function answersReceivedAt(tele: { lastUserAt?: string; lastMidTurnDeliveryAt?: string } | undefined): string | undefined {
+  const user = tele?.lastUserAt
+  const midTurn = tele?.lastMidTurnDeliveryAt
+  if (!midTurn) return user
+  if (!user) return midTurn
+  return Date.parse(midTurn) > Date.parse(user) ? midTurn : user
+}
+
 /** How long a stored answer excuses its thread from the queue while the wake carrying it has not landed.
  *  The delivery normally lands within seconds (answerQuestions kicks the scheduler at once); a worker
  *  that has to be resumed first takes longer. The cap is what keeps the excusal honest: a wake the
@@ -553,9 +569,9 @@ export const ANSWER_IN_FLIGHT_EXCUSAL_MS = 60_000
 
 /** Has the human answered a registered question that the worker has not received yet, recently enough
  *  to trust that the wake is still on its way? Answers only: a dismissal wakes nobody on its own. Reads
- *  the same "newest user record" test as answersInFlight, so the two can never disagree on arrival. */
-export function answerAwaitingDelivery(rows: readonly ThreadQuestionRow[], lastUserAt: string | undefined, nowMs = Date.now()): boolean {
-  const userAt = lastUserAt ? Date.parse(lastUserAt) : Number.NaN
+ *  the same receipt test as answersInFlight, so the two can never disagree on arrival. */
+export function answerAwaitingDelivery(rows: readonly ThreadQuestionRow[], receivedAt: string | undefined, nowMs = Date.now()): boolean {
+  const userAt = receivedAt ? Date.parse(receivedAt) : Number.NaN
   return rows.some((q) =>
     q.state === "answered" &&
     q.settled_at != null &&
@@ -1791,7 +1807,7 @@ function sessionThreadView(
   // The dismissal-only case counts as in flight EXACTLY when a cancellation wake is coming — an armed
   // rest Goal with text, the same gate the scheduler's evalQuestionAnswers wakes on. Anything looser
   // would also cover the human's own ×, which deliberately wakes nobody and has no arrival to bridge to.
-  const inFlightAnswers = answersInFlight(questionRows, rawTele?.lastUserAt, row.recurring_on_rest === 1 && Boolean(row.recurring_prompt?.trim()))
+  const inFlightAnswers = answersInFlight(questionRows, answersReceivedAt(rawTele), row.recurring_on_rest === 1 && Boolean(row.recurring_prompt?.trim()))
   const armedWatches: RegisteredWatch[] = (registries.watches.get(row.slug) ?? []).map((w) => ({
     id: w.id,
     kind: w.kind,
@@ -1872,7 +1888,7 @@ function sessionThreadView(
   const state = effectiveSessionState(row, registeredLegacyTerminal)
   const archived = state === "archived"
   const limitPause = resolveLimitPause(row, tele, nowMs)
-  const answerInFlight = answerAwaitingDelivery(questionRows, rawTele?.lastUserAt, nowMs)
+  const answerInFlight = answerAwaitingDelivery(questionRows, answersReceivedAt(rawTele), nowMs)
   // Only the questions STANDING at this rest queue the thread (`standingIds`, above).
   const standingCount = standingIds.size
   const needsYou = archived ? false : deriveNeedsYou(row, tele, runtime, interactionPresence.needsUser, nowMs, limitPause, true, deliveryProcessGone, github, registeredPrWatches, armedTimerIds, armedWatches, standingCount, answerInFlight)

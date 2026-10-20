@@ -4,7 +4,7 @@ import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, w
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { questionAnswerMessage, questionsCancelledWakeMessage, type InteractionRequest } from "@frizz/shared"
-import { ANSWER_IN_FLIGHT_EXCUSAL_MS, DELIVERY_IN_FLIGHT_SPIN_MS, answerAwaitingDelivery, deriveDeliveryInFlight, answersInFlight, wakeQuestionAnswer, appServerTurnStalled, createBoard, deriveAwaitingBackground, deriveNeedsYou, degradeIfAwaitingAnswer, degradeIfNoTranscript, fenceWatchViews, hasDeclaredWait, hasParkedTimerWatch, hasRegisteredBackgroundPark, isBoardRelevantFrizzPath, registeredDoneFence, resolveLimitPause, resolveSessionPermission, resolveSessionProfile, resolveSessionTitle, wakesOnItsOwn, type RegisteredWatch } from "./board.ts"
+import { ANSWER_IN_FLIGHT_EXCUSAL_MS, DELIVERY_IN_FLIGHT_SPIN_MS, answerAwaitingDelivery, deriveDeliveryInFlight, answersInFlight, answersReceivedAt, wakeQuestionAnswer, appServerTurnStalled, createBoard, deriveAwaitingBackground, deriveNeedsYou, degradeIfAwaitingAnswer, degradeIfNoTranscript, fenceWatchViews, hasDeclaredWait, hasParkedTimerWatch, hasRegisteredBackgroundPark, isBoardRelevantFrizzPath, registeredDoneFence, resolveLimitPause, resolveSessionPermission, resolveSessionProfile, resolveSessionTitle, wakesOnItsOwn, type RegisteredWatch } from "./board.ts"
 import { Bus } from "./bus.ts"
 import { createStorage, type ThreadQuestionRow } from "./storage.ts"
 import type { Project } from "./project.ts"
@@ -2297,6 +2297,25 @@ test("the WORKER RECEIVING it spends it — not the outbox claiming it", () => {
   assert.ok(answersInFlight([askedRow({ delivered: 1 })], new Date(1999).toISOString()), "acknowledged is not on screen")
   assert.equal(answersInFlight([askedRow()], new Date(2000).toISOString()), undefined, "the record landed")
   assert.equal(answersInFlight([askedRow()], new Date(9000).toISOString()), undefined, "…and stays spent")
+})
+
+// A delivery the worker takes MID-TURN is a `queued_command` attachment and no user record ever follows
+// it. Read off `lastUserAt` alone, the answers it carried stayed "in flight" until the next human message:
+// the sign-off reminder and a Goal's rest prompt stood down for them, and a question the human dismissed
+// meanwhile rode the board's copy and drew as an empty Answers card (thread abuse-monitor, 2026-10-19).
+test("answersReceivedAt: a delivery taken mid-turn spends the answers it carried", () => {
+  const rows = [askedRow(), askedRow({ id: "qst_2", state: "dismissed", answer: null, settled_at: 2500 })]
+  const before = new Date(1000).toISOString()
+  const midTurn = new Date(2010).toISOString()
+  // Negative control: the user record alone predates the answer, so it reads as still on its way.
+  assert.ok(answersInFlight(rows, answersReceivedAt({ lastUserAt: before })))
+  assert.equal(answersInFlight(rows, answersReceivedAt({ lastUserAt: before, lastMidTurnDeliveryAt: midTurn })), undefined)
+  assert.equal(answerAwaitingDelivery(rows, answersReceivedAt({ lastUserAt: before, lastMidTurnDeliveryAt: midTurn }), 2011), false)
+  // The later of the two wins, whichever it is; either alone stands for itself.
+  assert.equal(answersReceivedAt({ lastUserAt: midTurn, lastMidTurnDeliveryAt: before }), midTurn)
+  assert.equal(answersReceivedAt({ lastMidTurnDeliveryAt: midTurn }), midTurn)
+  assert.equal(answersReceivedAt({ lastUserAt: before }), before)
+  assert.equal(answersReceivedAt(undefined), undefined)
 })
 
 test("nothing in flight for a question nobody answered, or for a dismissal alone", () => {

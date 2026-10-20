@@ -816,6 +816,28 @@ test("applyRecord: a resume landing between the carriers of the OLD completion k
   assert.equal(s.subAgents.size, 0, "the resumed run retires on its own notification")
 })
 
+// A message queued behind a running turn reaches the model at a tool boundary as a `queued_command`
+// attachment and NOTHING ELSE — no user record follows it (thread abuse-monitor, 2026-10-19: two answers
+// delivered at 02:09:30, the next user record an hour later). The fold notes when one landed, so the board
+// can tell a delivered answer from one still on its way, and leaves the row-order key alone.
+test("applyRecord: a delivery taken mid-turn is noted, and only a delivery is", () => {
+  const s = newTailState("t", "s", "/x")
+  applyRecord(s, { type: "user", timestamp: "2026-10-20T02:09:09.103Z", message: { content: "a human turn" } })
+  const userAt = s.lastUserAt
+  // A child's completion rides the same attachment type and is not a delivery.
+  applyRecord(s, { type: "attachment", timestamp: "2026-10-20T02:09:20.000Z", attachment: { type: "queued_command", commandMode: "task-notification", prompt: "<task-notification>…</task-notification>" } })
+  // Nor is a child's upward SendMessage.
+  applyRecord(s, { type: "attachment", timestamp: "2026-10-20T02:09:25.000Z", attachment: { type: "queued_command", commandMode: "prompt", origin: { kind: "peer" }, prompt: "report" } })
+  assert.equal(s.lastMidTurnDeliveryAt, undefined)
+  // The broker's shape: no origin, Frizz's own source_uuid.
+  applyRecord(s, { type: "attachment", timestamp: "2026-10-20T02:09:30.325Z", attachment: { type: "queued_command", commandMode: "prompt", source_uuid: "u-1", prompt: "Answers to earlier questions:\n1. “Merge it?” → Merge it" } })
+  assert.equal(s.lastMidTurnDeliveryAt, "2026-10-20T02:09:30.325Z")
+  assert.equal(s.lastUserAt, userAt, "the row-order key does not move")
+  // An interactive `claude`'s shape: origin human, no source_uuid.
+  applyRecord(s, { type: "attachment", timestamp: "2026-10-20T02:10:00.000Z", attachment: { type: "queued_command", commandMode: "prompt", origin: { kind: "human" }, prompt: "a steer" } })
+  assert.equal(s.lastMidTurnDeliveryAt, "2026-10-20T02:10:00.000Z")
+})
+
 test("applyRecord: an ordinary SendMessage to a LIVE child neither duplicates it nor invents one", () => {
   const s = newTailState("t", "s", "/x")
   applyRecord(s, agentDispatch("toolu_dispatch", "Still working", "2026-07-28T18:14:02.743Z"))

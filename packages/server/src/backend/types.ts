@@ -111,6 +111,8 @@ export interface NormalizedTail {
   liveTool?: LiveTool
   aiTitle?: string
   lastUserAt?: string
+  // The newest delivery the worker took MID-TURN — see FoldState.lastMidTurnDeliveryAt.
+  lastMidTurnDeliveryAt?: string
   // When the human last TYPED a message to the thread — see FoldState.restFromAt. Absent reads as `lastUserAt`.
   restFromAt?: string
   // When Frizz last delivered a ```question fence correction — see FoldState.questionCorrectedAt.
@@ -193,6 +195,13 @@ export interface FoldState {
   // ISO8601 of the newest non-synthetic user turn — the human's, or a delivery of Frizz's (a wake, an
   // answer, a steer). The row-order key; `restFromAt` below is when the HUMAN last typed.
   lastUserAt?: string
+  // WHEN THE WORKER LAST TOOK A DELIVERY MID-TURN. A message queued behind a running turn reaches the
+  // model at its next tool boundary as a `queued_command` attachment, and no user record ever follows
+  // it, so `lastUserAt` never moves for it. Anything asking "has the worker got the answer yet?"
+  // reads the later of the two (board answersReceivedAt). Kept apart from `lastUserAt` on purpose: that
+  // one also orders the rows and closes rests, and neither has been measured against mid-turn
+  // deliveries. Stamped with the attachment's own timestamp, which is when the message was QUEUED.
+  lastMidTurnDeliveryAt?: string
   // WHEN THE HUMAN LAST TYPED A MESSAGE TO THIS THREAD (shared isHumanTypedMessage) — the boundary an
   // open question stands across (question-fences.ts standingQuestions). Unlike `lastUserAt` it does NOT
   // move for anything Frizz delivers: a wake of any kind, a correction, a Goal prompt, an answer's

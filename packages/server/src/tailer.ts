@@ -19,7 +19,7 @@ import { resolveRuntimeTurn, type ClaudeRuntimeTask } from "./backend/claude-run
 import { classifyLimitRecord } from "./backend/usage-limit.ts"
 import { claudeBrokerDiagnosticLogPath } from "./backend/claude-broker-diagnostics.ts"
 import { claudeBrokerRecordPath, readBrokerRecord } from "./backend/claude-broker-host.ts"
-import { parseDeliveryLedger, correlateDeliveryRecord, ageDeliveries, serializeDeliveryLedger, type DeliveryLedgerItem } from "./delivery-ledger.ts"
+import { parseDeliveryLedger, correlateDeliveryRecord, ageDeliveries, serializeDeliveryLedger, isPromptDeliveryAttachment, type DeliveryLedgerItem } from "./delivery-ledger.ts"
 import { createCodexSubAgentTracker, type CodexSubAgentTracker } from "./codex-subagents.ts"
 import { defaultCodexHome, readCodexThreadNames, scanForeignRollouts } from "./backend/codex.ts"
 import {
@@ -1136,7 +1136,8 @@ interface Record {
   // On `attachment` records (type:"queued_command"): the injected text — a queued human follow-up OR a
   // background op's <task-notification>. This is the notification's INLINE-written carrier, positioned
   // AFTER its launch — unlike the queue-operation bookkeeping, which is flushed and can land BEFORE it.
-  attachment?: { type?: string; prompt?: unknown }
+  // `commandMode`, `origin` and `source_uuid` say whether it is a delivery (isPromptDeliveryAttachment).
+  attachment?: { type?: string; prompt?: unknown; commandMode?: unknown; origin?: { kind?: unknown } | null; source_uuid?: unknown }
   promptSource?: string // on user records: typed/queued (human) · "system" (peer msg / task-notification)
   isApiErrorMessage?: boolean // synthetic assistant record claude writes for a provider API error
   // Structured category claude stamps on that synthetic record: "rate_limit" (subscription window
@@ -2676,6 +2677,11 @@ export function applyRecord(state: TailState, rec: Record): void {
   // bridge-session, file-history-snapshot, system) are sidecar metadata — ignored for turn state.
   // …but a message QUEUED behind a running turn is the human typing, at the instant they typed it.
   if (type === "queue-operation") noteQueuedMessage(state, rec)
+  // …and a message that left the queue MID-TURN reaches the model as this attachment and nothing else:
+  // no user record follows it, so `lastUserAt` stays where it was (FoldState.lastMidTurnDeliveryAt).
+  if (type === "attachment" && typeof rec.timestamp === "string" && isPromptDeliveryAttachment(rec.attachment)) {
+    state.lastMidTurnDeliveryAt = rec.timestamp
+  }
   // Sub-agent completion rides queue-operation AND attachment records (each a <task-notification>
   // carrier — see notificationText), so it's checked for EVERY record regardless of type (the helper
   // self-guards on shape + tracked ids).
@@ -6152,7 +6158,7 @@ export function createTailer(deps: TailerDeps): Tailer {
     // thread has no row and reads as legacy, which is what `questionFencesLive` does with unknown.
     const pendingQuestion = s.lastAssistantHasQuestion && questionFencesLive(row?.spawned_at)
     const nowMs = now()
-    return { turn: s.turn, permPrompt: s.permPrompt, permPolicy: s.permPolicy, permDenies: s.permDenies, model: s.model, effort: s.effort, profileAt: s.profileAt, profileRevision: s.profileRevision, permissionMode: s.permissionMode, permissionModeAt: s.permissionModeAt, permissionModeRevision: s.permissionModeRevision, lastActivityAt: s.lastActivityAt, lastAssistantAt: s.lastAssistantAt, lastAssistant: s.lastAssistant, lastAssistantLine: s.lastAssistantLine, liveTool: newestLiveTool(s), aiTitle: s.aiTitle, customTitle: s.customTitle, customTitleRevision: s.customTitleRevision, subAgents: subAgentViews(s, nowMs), droppedReports: [...s.queuedReports.values()], bgShells: [...bgShellViews(s), ...codexBgShellViews(s)], retiredShells: retiredShellViews(s), retiredSubAgents: retiredSubAgentViews(s), questionSightings: s.questionSightings, pendingAsk: s.pendingAsk, pendingQuestion, lastAssistantAllDone: s.lastAssistantAllDone, lastUserAt: s.lastUserAt, restFromAt: s.restFromAt, questionCorrectedAt: s.questionCorrectedAt, lastUserText: s.lastUserText, firstUserText: s.firstUserText, lastFence: s.lastFence, noTranscript: s.noTranscript, authFault: s.authFault, apiFault: s.apiFault, providerError: s.providerError, limitFault: s.limitFault, contextTokens: s.contextTokens, contextWindow: s.contextWindow, lastCompactionAt: s.lastCompactionAt }
+    return { turn: s.turn, permPrompt: s.permPrompt, permPolicy: s.permPolicy, permDenies: s.permDenies, model: s.model, effort: s.effort, profileAt: s.profileAt, profileRevision: s.profileRevision, permissionMode: s.permissionMode, permissionModeAt: s.permissionModeAt, permissionModeRevision: s.permissionModeRevision, lastActivityAt: s.lastActivityAt, lastAssistantAt: s.lastAssistantAt, lastAssistant: s.lastAssistant, lastAssistantLine: s.lastAssistantLine, liveTool: newestLiveTool(s), aiTitle: s.aiTitle, customTitle: s.customTitle, customTitleRevision: s.customTitleRevision, subAgents: subAgentViews(s, nowMs), droppedReports: [...s.queuedReports.values()], bgShells: [...bgShellViews(s), ...codexBgShellViews(s)], retiredShells: retiredShellViews(s), retiredSubAgents: retiredSubAgentViews(s), questionSightings: s.questionSightings, pendingAsk: s.pendingAsk, pendingQuestion, lastAssistantAllDone: s.lastAssistantAllDone, lastUserAt: s.lastUserAt, lastMidTurnDeliveryAt: s.lastMidTurnDeliveryAt, restFromAt: s.restFromAt, questionCorrectedAt: s.questionCorrectedAt, lastUserText: s.lastUserText, firstUserText: s.firstUserText, lastFence: s.lastFence, noTranscript: s.noTranscript, authFault: s.authFault, apiFault: s.apiFault, providerError: s.providerError, limitFault: s.limitFault, contextTokens: s.contextTokens, contextWindow: s.contextWindow, lastCompactionAt: s.lastCompactionAt }
   }
 
   // ---- telemetryMemo: the SAME object while nothing about the thread changed ---------------------------

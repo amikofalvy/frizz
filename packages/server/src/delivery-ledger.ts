@@ -593,6 +593,17 @@ export function attachmentPromptText(prompt: unknown): string {
     .join("\n")
 }
 
+/** Is this attachment a message the human or Frizz put in front of the model out of the queue — the
+ *  whole record of a delivery taken mid-turn? An interactive `claude` stamps `origin.kind: "human"`;
+ *  the SDK/broker path writes no origin but always carries the `source_uuid` Frizz passed in, which no
+ *  task-notification attachment ever does (see the measurements in transcript.ts). A child's upward
+ *  `SendMessage` (`origin.kind: "peer"`) is not one. Shared by the transcript, which draws it, and the
+ *  tailer, which notes when it landed. */
+export function isPromptDeliveryAttachment(att: { type?: unknown; commandMode?: unknown; origin?: { kind?: unknown } | null; source_uuid?: unknown } | undefined): boolean {
+  if (att?.type !== "queued_command" || att.commandMode !== "prompt") return false
+  return att.origin?.kind === "human" || (att.origin === undefined && typeof att.source_uuid === "string")
+}
+
 // Extract the plain text of a user record (string content, or the joined text blocks) — mirrors the
 // transcript parser's reading, minimally.
 function userRecordText(rec: Record<string, unknown>): string {
