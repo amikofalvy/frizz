@@ -31,6 +31,13 @@ import "./styles.css"
 // and whether the cap lifts with the words on hover. A ⌘⏎ press now presses the cap itself. Round one
 // stays below them, folded, as the record.
 //
+// ROUND THREE, the same day: "Option I is good. Can we get a version that's like Option I? It's a flat
+// keycap, but it still turns white on hover like Option N. Also, the transition animation's transition
+// time needs to be much faster." So O and P are I's flat cap lifting with the words — O lifts the hairline
+// to grey as N does, P turns it white with the glyphs — and every fade on the sheet drops from 150ms to
+// 50ms, with a switch to compare speeds. The beat a ⌘⏎ press holds before the line goes drops from 220ms
+// to 90ms. Round two folds away under it.
+//
 // THE BEHAVIOUR EVERY CANDIDATE SHARES: with nothing typed, ⌘⏎ presses Send now — with the caret in the
 // empty box or with focus anywhere else in the thread — and does exactly what a click would at that
 // moment. With words typed it keeps today's meaning and sends them now. Only the way the control shows
@@ -114,7 +121,7 @@ function SendNowButton({ run, onSend, pressed, title = true, children }: Omit<Li
       onMouseDown={(e) => e.preventDefault()}
       onClick={onSend}
       title={title ? `${TITLE[run]} (${CHORD})` : undefined}
-      className={`flex items-baseline gap-1 outline-none transition-colors duration-150 hover:text-fg focus-visible:text-fg ${pressed ? "text-fg" : ""}`}
+      className={`flex items-baseline gap-1 outline-none transition-colors duration-[var(--sn-fade)] hover:text-fg focus-visible:text-fg ${pressed ? "text-fg" : ""}`}
     >
       {children}
     </button>
@@ -144,8 +151,13 @@ type Candidate = {
 //   lip   panel fill, a strong hairline and a 2px bottom lip: a key. A press drops it onto the lip.
 //   flat  the hairline alone, no fill, no lip: an outline.
 //   fill  a soft fill and no border: a chip.
-// `data-lift` makes the cap part of the link: hovering lifts its glyphs and border with the words.
+// `data-lift` makes the cap part of the link: hovering lifts its glyphs to white with the words, and its
+// hairline to grey (`grey`) or to white with them (`white`).
+//
+// Every fade on the sheet runs on --sn-fade (50ms; the switch over round three sets it) and the cap's
+// press on --sn-press.
 const KEYCAP_CSS = `
+:root { --sn-fade: 50ms; --sn-press: 40ms; }
 .sn-kbd {
   --sn-kbd-size: 0.87;
   position: relative;
@@ -159,7 +171,7 @@ const KEYCAP_CSS = `
   border-radius: 0.35em;
   color: var(--color-muted);
   vertical-align: calc(0.5cap / var(--sn-kbd-size) - 0.5cap);
-  transition: top 70ms, border-bottom-width 70ms, color 150ms, border-color 150ms, background-color 150ms;
+  transition: top var(--sn-press), border-bottom-width var(--sn-press), color var(--sn-fade), border-color var(--sn-fade), background-color var(--sn-fade);
 }
 .sn-kbd + .sn-kbd { margin-left: 0.25em; }
 .sn-kbd[data-look="lip"] { border: 1px solid var(--color-border-strong); border-bottom-width: 2px; background: var(--color-panel); }
@@ -167,7 +179,8 @@ const KEYCAP_CSS = `
 .sn-kbd[data-look="flat"] { border: 1px solid var(--color-border-strong); }
 .sn-kbd[data-look="fill"] { background: color-mix(in srgb, var(--color-fg) 9%, transparent); }
 .sn-kbd:is([data-look="flat"], [data-look="fill"])[data-pressed] { background: color-mix(in srgb, var(--color-fg) 18%, transparent); color: var(--color-fg); }
-button:is(:hover, :focus-visible) .sn-kbd[data-lift] { color: var(--color-fg); border-color: var(--color-muted); }
+button:is(:hover, :focus-visible) .sn-kbd[data-lift], .sn-kbd[data-lift][data-pressed] { color: var(--color-fg); border-color: var(--color-muted); }
+button:is(:hover, :focus-visible) .sn-kbd[data-lift="white"], .sn-kbd[data-lift="white"][data-pressed] { border-color: var(--color-fg); }
 `
 
 type Look = "lip" | "flat" | "fill"
@@ -182,11 +195,11 @@ const RETURN_ARROW = [MAC ? "⌘↩" : "Ctrl ↩"]
 const CAP_TO_WORDS = "mr-[0.44em]"
 const CAP_TO_ARROW = "mr-[0.32em]"
 
-function Keycap({ keys = ONE_KEY, look = "lip", pressed, lift, className = "" }: { keys?: string[]; look?: Look; pressed: boolean; lift?: boolean; className?: string }) {
+function Keycap({ keys = ONE_KEY, look = "lip", pressed, lift, className = "" }: { keys?: string[]; look?: Look; pressed: boolean; lift?: "grey" | "white"; className?: string }) {
   return (
     <span aria-hidden className={`shrink-0 no-underline ${className}`}>
       {keys.map((key) => (
-        <kbd key={key} className="sn-kbd" data-look={look} data-pressed={pressed || undefined} data-lift={lift || undefined}>
+        <kbd key={key} className="sn-kbd" data-look={look} data-pressed={pressed || undefined} data-lift={lift}>
           {key}
         </kbd>
       ))}
@@ -202,7 +215,7 @@ function CapButton({ run, onSend, pressed, children }: Omit<LineProps, "boxReady
       onMouseDown={(e) => e.preventDefault()}
       onClick={onSend}
       title={`${TITLE[run]} (${CHORD})`}
-      className={`flex items-baseline outline-none transition-colors duration-150 hover:text-fg focus-visible:text-fg ${pressed ? "text-fg" : ""}`}
+      className={`flex items-baseline outline-none transition-colors duration-[var(--sn-fade)] hover:text-fg focus-visible:text-fg ${pressed ? "text-fg" : ""}`}
     >
       {children}
     </button>
@@ -309,7 +322,38 @@ const ROUND_TWO: Candidate[] = [
     line: ({ run, onSend, pressed }) => (
       <div className={line}>
         <CapButton run={run} onSend={onSend} pressed={pressed}>
-          <Keycap pressed={pressed} lift className={CAP_TO_WORDS} />
+          <Keycap pressed={pressed} lift="grey" className={CAP_TO_WORDS} />
+          <Words />
+        </CapButton>
+      </div>
+    ),
+  },
+]
+
+// ── round three: I's flat cap, lifting with the words ────────────────────────────────────────────────
+
+const ROUND_THREE: Candidate[] = [
+  {
+    key: "O",
+    name: "Flat keycap, lifting with the words",
+    says: "I's outline cap. Hovering turns its glyphs white with the words and brightens its hairline to grey, as N's cap does.",
+    line: ({ run, onSend, pressed }) => (
+      <div className={line}>
+        <CapButton run={run} onSend={onSend} pressed={pressed}>
+          <Keycap look="flat" pressed={pressed} lift="grey" className={CAP_TO_WORDS} />
+          <Words />
+        </CapButton>
+      </div>
+    ),
+  },
+  {
+    key: "P",
+    name: "Flat keycap, all white on hover",
+    says: "O with the hairline turning white too, so on hover the whole cap is drawn in the words' white.",
+    line: ({ run, onSend, pressed }) => (
+      <div className={line}>
+        <CapButton run={run} onSend={onSend} pressed={pressed}>
+          <Keycap look="flat" pressed={pressed} lift="white" className={CAP_TO_WORDS} />
           <Words />
         </CapButton>
       </div>
@@ -332,16 +376,17 @@ const TODAY: Candidate = {
   ),
 }
 
-// Every round-two line side by side at 2x, with today's for reference, so the eight can be compared
-// without scrolling between frames. Not live: the frames below are.
-function Strip() {
+// A round's lines side by side at 2x, so they can be compared without scrolling between frames. Each
+// is a real button, so hover works here; ⌘⏎ is the frames' below.
+function Strip({ tiles, note = {} }: { tiles: Candidate[]; note?: Record<string, string> }) {
   const noop = () => {}
   return (
     <div className="mb-12 grid grid-cols-3 gap-3 max-[1000px]:grid-cols-2">
-      {[TODAY, ...ROUND_TWO].map((c) => (
+      {tiles.map((c) => (
         <div key={c.key} data-strip-tile={c.key} className="rounded-xl border border-border bg-bg px-4 pb-4 pt-3">
           <div className="mb-3 text-[11px] font-medium text-muted-60">
             {c.key === "today" ? "Today" : `${c.key} · ${c.name}`}
+            {note[c.key] && <span className="text-muted-45"> · {note[c.key]}</span>}
           </div>
           <div style={{ zoom: 2 }}>
             <c.line run="steer" onSend={noop} pressed={false} boxReady={false} />
@@ -482,7 +527,7 @@ function CandidateFrame({ candidate, initial }: { candidate: Candidate; initial:
     timer.current = window.setTimeout(() => {
       setPressed(false)
       advance()
-    }, 220)
+    }, 90)
   }
 
   // The composer handles ⌘⏎ itself whenever there is something to send, and stops it there. With the
@@ -586,6 +631,35 @@ function Section({ id, name, says, children }: { id: string; name: string; says:
   )
 }
 
+// How long every hover fade on the sheet takes. 150ms is what round two ran on, and Tailwind's default
+// for `transition-colors`, which the shipped Send now uses.
+const FADES = [0, 50, 100, 150] as const
+function FadeSwitch() {
+  const [fade, setFade] = useState<number>(50)
+  const pick = (ms: number) => {
+    setFade(ms)
+    document.documentElement.style.setProperty("--sn-fade", `${ms}ms`)
+  }
+  return (
+    <div className="mb-5 flex items-baseline gap-3 text-[12px] text-muted">
+      <span>Hover fade</span>
+      <div className="flex gap-1">
+        {FADES.map((ms) => (
+          <button
+            key={ms}
+            type="button"
+            onClick={() => pick(ms)}
+            className={`rounded-md px-2 py-0.5 outline-none transition-colors ${fade === ms ? "bg-panel-2 text-fg" : "hover:text-fg"}`}
+          >
+            {ms === 0 ? "None" : `${ms}ms`}
+            {ms === 150 ? " (round two)" : ""}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function Sheet() {
   return (
     <TooltipProvider>
@@ -604,18 +678,31 @@ function Sheet() {
             The candidates differ only in how the control shows the chord. Every frame is live: click into its prompt box and
             press {CHORD} with it empty, or type something and press Enter to queue another message. Reset puts a frame back.
           </p>
-          <h2 className="mb-2 text-[17px] font-semibold">Round two: a keycap to the left of Send now</h2>
-          <p className="mb-5 max-w-[760px] text-[13px] leading-[20px] text-muted">
-            G to N, side by side at twice their size, with today&rsquo;s line for reference. Each has its live frames further down,
-            where {CHORD} presses the cap.
+          <h2 className="mb-2 text-[17px] font-semibold">Round three: I&rsquo;s flat keycap, lifting on hover</h2>
+          <p className="mb-4 max-w-[760px] text-[13px] leading-[20px] text-muted">
+            O and P at twice their size, beside I and N from round two. Hover any of them. Every fade on the page now takes
+            50ms, down from 150ms, and the switch sets it for the whole sheet. A {CHORD} press holds for 90ms before the line
+            goes, down from 220ms.
           </p>
-          <Strip />
-          {ROUND_TWO.map((c) => (
+          <FadeSwitch />
+          <Strip tiles={[ROUND_TWO[2]!, ROUND_TWO[7]!, ...ROUND_THREE]} note={{ I: "round two", N: "round two" }} />
+          {ROUND_THREE.map((c) => (
             <Section key={c.key} id={c.key} name={c.name} says={c.says}>
               <CandidateFrame candidate={c} initial="steer" />
               <CandidateFrame candidate={c} initial="held" />
             </Section>
           ))}
+          <details className="mt-4">
+            <summary className="mb-8 cursor-pointer text-[15px] font-semibold text-muted">Round two: G to N, a keycap to the left of Send now</summary>
+
+            <Strip tiles={[TODAY, ...ROUND_TWO]} />
+            {ROUND_TWO.map((c) => (
+              <Section key={c.key} id={c.key} name={c.name} says={c.says}>
+                <CandidateFrame candidate={c} initial="steer" />
+                <CandidateFrame candidate={c} initial="held" />
+              </Section>
+            ))}
+          </details>
           <details className="mt-4">
             <summary className="mb-8 cursor-pointer text-[15px] font-semibold text-muted">Round one: A to F, none of them right</summary>
 
