@@ -69,12 +69,12 @@ const RAIL_BOX_GAP: Partial<Record<`${RailMark}>${RailMark}`, number>> = {
   // 14.75px from the paperclip to send. Measured on a real queue card with scripts/ink-gaps.mjs at dsf 4,
   // 2026-10-05; the two glyphs also read at one weight there (mean contrast 338.5 against 338.9).
   "lead>paperclip": -1,
-  // The plug (16px, lucide's 2-unit pen) paints 8 of its 13 box units, so it wears more dead box than the
-  // paperclip or the Goal: its square overlaps theirs by 3px of empty padding for ~14px of ink either side.
-  // Measured on the mockup sheet built from the app's CSS and rail markup with scripts/ink-gaps.mjs,
-  // 2026-10-19 (goal → plug 14px, plug → paperclip 14px, against paperclip → mic 14.25px).
+  // The plug (16px, lucide's 2-unit pen) wears more dead box than the paperclip or the Goal, and its ink
+  // sits half a pixel right of its box's centre: its square overlaps the paperclip's by 3px and the Goal's
+  // by 2px of empty padding for 14.5px of ink on both sides, against 14.75px from the paperclip to send.
+  // Measured on a real queue card and the new-thread box with scripts/ink-gaps.mjs at dsf 4, 2026-10-19.
   "mcp>paperclip": -3,
-  "lead>mcp": -3,
+  "lead>mcp": -2,
   "mic>send": 6,
   "paperclip>mic": -2,
   "action>mic": -3,

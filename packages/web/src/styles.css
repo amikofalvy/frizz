@@ -2570,7 +2570,8 @@ html[data-vt-door="expand"]::view-transition-old(thread-chat) {
    BOX is centred on the name's cap band by the browser — an inline-block's baseline is its bottom edge, so
    raising that edge by half the cap height less half the box puts the box's centre mid-cap, in any font
    and at any size. The dot and the X are symmetric in the 16px grid, so their ink is centred too; the
-   check's ink sits 0.49 grid units low in it (y 4.22–12.75): 0.42px at 14px, lifted by that much. */
+   check's ink sits 0.375 grid units low in it (y 4.00–12.75, its round caps included): 0.33px at 14px,
+   lifted by that much. Measured on the real menu in sans: all three marks 0.00px off the cap band. */
 .mcp-mark {
   display: inline-block;
   width: 14px;
@@ -2578,7 +2579,7 @@ html[data-vt-door="expand"]::view-transition-old(thread-chat) {
   vertical-align: calc(0.5cap - 7px);
   margin-right: 6px;
 }
-.mcp-mark-check { translate: 0 -0.42px; }
+.mcp-mark-check { translate: 0 -0.33px; }
 .mcp-btn {
   font: inherit;
   font-size: 11px;
