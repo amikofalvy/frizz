@@ -62,6 +62,8 @@ const NEEDS_REAL_STACK = [
   "packages/web/src/components/mobileUpdate.e2e.test.ts",
   "packages/web/src/components/threadSurfaceFileDrop.e2e.test.ts",
   "packages/web/src/components/pageFrame.e2e.test.ts",
+  "packages/web/src/components/pinnedBandReorder.e2e.test.ts",
+  "packages/web/src/components/consolePinnedBand.e2e.test.ts",
 ];
 
 const args = process.argv.slice(2);
