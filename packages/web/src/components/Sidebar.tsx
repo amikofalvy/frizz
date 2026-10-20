@@ -268,7 +268,12 @@ export function Sidebar() {
               it). The rail draws the pending thread as the Running row it becomes instead (StartingRow). */}
           <DispatchForm pendingCard={false} />
         </div>
-        <div ref={railRef} data-sidebar-rail className="min-h-0 min-w-0 overflow-y-auto overflow-x-hidden max-[800px]:overflow-y-visible">
+        {/* The rows scroll BEHIND the prompt box: the list's scroll edge is the box's bottom edge, and the
+            20px between them is the list's own top padding, not the block's margin. With the gap outside
+            the scroller, a row scrolled up was cut off 20px short of the box in a strip of page colour
+            (maintainer 2026-10-20: "should look like they scroll behind the prompt box. no black padding
+            under it"). At rest nothing moves: the first row sits where it did. */}
+        <div ref={railRef} data-sidebar-rail className="-mt-5 min-h-0 min-w-0 overflow-y-auto overflow-x-hidden pt-5 max-[800px]:overflow-y-visible">
           {/* PINNED — the human's shelf, at the very top, above the cue (maintainer 2026-09-02, variant
               A of the pin mockups: each row wearing the small solid pin where the cue's rest time would
               sit). These rows are OUT of the band system entirely — sectionThreads diverts them before

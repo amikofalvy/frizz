@@ -4,15 +4,18 @@ import { useQuery } from "@tanstack/react-query"
 import { rpc } from "../api/rpc.ts"
 import { useBoardLoaded, useQueuedThreads } from "../hooks.ts"
 import { isConsolePath } from "../lib/base-path.ts"
-import { HOME_BAND_PX, homeHref, setHomeView, useHomeView, type HomeView } from "../lib/homeView.ts"
+import { homeHref, setHomeView, useHomeView, type HomeView } from "../lib/homeView.ts"
 import { RAIL_WIDTH_PX } from "./ProjectRail.tsx"
 
 // THE SWITCH BETWEEN THE TWO HOMES — the project grid (`/`) and the Console (`/console`).
 //
-// FIXED to the top of the window, centred over the page beside the rail, with an opaque band behind it
-// so the page scrolls UNDER it: the Console's cards are long and the switch must stay where the operator
-// left it. The band fades out below its edge rather than ending on one (BAND_FADE_PX), because what
-// scrolls under it is a column of cards, not a header.
+// FIXED to the top of the window, centred over the page beside the rail, so it stays where the operator
+// left it however far the Console's cards scroll. It FLOATS: the pill is the whole of it, translucent
+// and blurred, and the page scrolls on underneath it in plain sight (maintainer 2026-10-20: "supposed to
+// be FLOATING. not be in a black top bar"). It stood on an opaque page-coloured band 62px tall until
+// then, which cut every card off in a black strip across the top of the window. What must not slide
+// under the pill keeps clear of it instead — the Console's card headers stick below it
+// (lib/homeView.ts HOME_SWITCHER_CLEARANCE_PX, TodosView's sticky cap).
 //
 // The Console tab carries the queue's size across every project, drawn as the rail's badge FACE (the
 // rail's badge is this face plus a 1px cut-out in the rail's colour; nothing sits under it here, so the
@@ -26,13 +29,6 @@ function faceWidth(count: number): number {
 }
 
 const TRIM = { textBox: "trim-both cap alphabetic" } as CSSProperties
-
-/**
- * The band is OPAQUE down to HOME_BAND_PX — the line the Console's card headers stick to — and fades out
- * over this much below it. Fading above that line let the card behind a stuck header show through in a
- * dimmed strip over it; below it, the fade lands on the header's own top padding, as a soft edge.
- */
-const BAND_FADE_PX = 10
 
 /**
  * Every project's queue, summed. On the Console it is counted off the merged board the sidebar is
@@ -91,26 +87,15 @@ export function HomeSwitcher({ railVisible }: { railVisible: boolean }) {
     )
   }
   return (
-    <>
-      <div
-        aria-hidden
-        className="pointer-events-none fixed right-0 top-0 z-40"
-        style={{
-          left: inset,
-          height: HOME_BAND_PX + BAND_FADE_PX,
-          background: `linear-gradient(var(--color-bg) 0, var(--color-bg) ${HOME_BAND_PX}px, transparent)`,
-        }}
-      />
-      <div
-        role="tablist"
-        aria-label="Home"
-        data-home-switcher
-        className="fixed top-[14px] z-40 flex -translate-x-1/2 gap-0.5 rounded-full border border-border-strong bg-elevated/80 p-[3px] shadow-lg shadow-shadow-ink/40 backdrop-blur-md"
-        style={{ left: `calc(${inset}px + (100% - ${inset}px) / 2)` }}
-      >
-        {tab("projects", "Projects")}
-        {tab("console", "Console", total)}
-      </div>
-    </>
+    <div
+      role="tablist"
+      aria-label="Home"
+      data-home-switcher
+      className="fixed top-[14px] z-40 flex -translate-x-1/2 gap-0.5 rounded-full border border-border-strong bg-elevated/80 p-[3px] shadow-lg shadow-shadow-ink/40 backdrop-blur-md"
+      style={{ left: `calc(${inset}px + (100% - ${inset}px) / 2)` }}
+    >
+      {tab("projects", "Projects")}
+      {tab("console", "Console", total)}
+    </div>
   )
 }

@@ -688,8 +688,8 @@ export function ProjectGrid() {
   return (
     // m-auto rather than justify-center: a centred flex column CLIPS its overflow at the top once
     // the content is taller than the viewport, and forty projects will be. Auto margins centre while
-    // still letting the page scroll from its real top. The top clears the home switcher's fixed band
-    // (HomeSwitcher, 62px) with the page's own 22px to spare.
+    // still letting the page scroll from its real top. The top clears the floating home switcher
+    // (HomeSwitcher, 62px with its air) with the page's own 22px to spare.
     <div className="flex min-h-dvh w-full flex-col px-6 pb-14 pt-[84px] max-[700px]:px-0 max-[700px]:py-10">
       <div className="m-auto flex w-full flex-col items-center">
       <div className="mb-6 flex flex-col items-center gap-2.5 text-center">

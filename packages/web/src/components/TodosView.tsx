@@ -1,4 +1,4 @@
-import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react"
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react"
 import { useSnapshot } from "valtio"
 import { ChevronsUpDown, Inbox } from "lucide-react"
 import type { ThreadView, RegisteredQuestionView, TranscriptMessage } from "@frizz/shared"
@@ -664,7 +664,7 @@ export function TodosView() {
     // The two EMPTY states keep their centring, on their own: the first-run prompt box and the calm
     // inbox-zero were designed as the middle of an empty workpane, and with no card on the page there
     // is nothing for a centred column to shove. (`my-auto`, not justify-center, whose top overflow
-    // would be unreachable.) The Console was already top-anchored, under its home band.
+    // would be unreachable.) The Console was already top-anchored, under its home switcher.
     <div className={`${renderItems.length === 0 && !onConsole ? "my-auto" : "mb-auto"} w-full min-w-0 flex flex-col py-8`}>
       {/* Source-of-truth failures are LOUD: a board that can't be read renders as this banner, never
           as a silently empty listing (a truncated shell-out once blanked a 700-thread board with the
@@ -916,6 +916,8 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
   // Tracks only vtReturnTarget (valtio re-renders on accessed keys alone), so the memo'd card
   // re-renders just when a /full exit primes or clears it — see the root div's viewTransitionName.
   const vtSnap = useSnapshot(store)
+  // The Console draws a cap above the stuck header (below), clear of its floating home switcher.
+  const onConsole = isConsolePath()
   const [collapsed, setCollapsed] = useState(false)
   // Higher-level (turn-level) collapse: the whole run of INTERMEDIATE steps between the pinned last
   // user message and the final agent message is hidden behind a single summary divider by default, so a
@@ -1560,6 +1562,24 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
           BELOW this wrapper, so the root's rounded bottom corners are always the dock's, never the
           square-cornered header's. (No overflow here — that would neuter the header's stickiness.) */}
       <div className={`flex flex-col min-w-0 ${collapsed ? "" : "mb-[calc(-1*var(--queue-card-header-h,0px))]"}`}>
+      {/* THE CONSOLE'S STICKY CAP. There the header sticks `--frizz-sticky-top` (62px) down, clear of the
+          floating home switcher, so without this the card's own text would run on above its stuck header,
+          up under the pill. The cap is a strip of the card's surface that sticks to the window's very top,
+          as tall as that offset, and it fills the gap: the card reads as reaching the top of the window
+          with its header pinned under the pill, and nothing is drawn across the page beside it.
+          At rest it sits exactly behind the header (same top, same top corners, no taller than the
+          header: `min()` against the measured height, and a negative bottom margin so it takes no room),
+          and the header, later in the DOM at the same z, paints over it. As the card's top rises past the
+          header's line, the strip between them is the cap. It is the wrapper's child, so it leaves with
+          the header when the card scrolls off. Only the Console sets `--frizz-sticky-cap` (App.tsx). */}
+      {!collapsed && onConsole && (
+        <div
+          aria-hidden
+          data-queue-card-cap
+          className={`sticky top-0 z-10 h-[var(--queue-card-cap-h)] mb-[calc(-1*var(--queue-card-cap-h))] shrink-0 bg-panel ${BLOCK_RADIUS_TOP}`}
+          style={{ "--queue-card-cap-h": "min(var(--frizz-sticky-cap, 0px), var(--queue-card-header-h, 0px))" } as CSSProperties}
+        />
+      )}
       {/* STICKY header: the title and its facts on the left, whole-item icon actions on the right — the
           thread header's own pieces (ChatView ThreadHeader), in the card's padding. It drew one more
           line until 2026-10-14, a needs-human thread's `statusText` — which nothing in the server sets, and

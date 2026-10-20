@@ -30,7 +30,7 @@ export const QUEUE_CARD_VIEWPORT_TOP = 40
 
 /**
  * The landing, measured from the window's top. On the Console's wide layout it is the line its content
- * opens on under the home band (lib/homeView.ts CONSOLE_TOP_PX), the same line the top card rests on.
+ * opens on under the home switcher (lib/homeView.ts CONSOLE_TOP_PX), the same line the top card rests on.
  */
 export function queueCardViewportTop(): number {
   const wide = typeof window === "undefined" || typeof window.matchMedia !== "function" || !window.matchMedia("(max-width: 800px)").matches

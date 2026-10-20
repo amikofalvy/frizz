@@ -8,7 +8,7 @@ import { takeScrollAfterUnlock } from "./lib/pageScrollLock.ts"
 import { startRouter } from "./lib/router.ts"
 import { nextSidebarPresence, readSidebarMirror, writeSidebarMirror, type SidebarPresence } from "./lib/sidebarPresence.ts"
 import { isConsolePath, projectSlug } from "./lib/base-path.ts"
-import { CONSOLE_TOP_PX, HOME_BAND_PX } from "./lib/homeView.ts"
+import { CONSOLE_TOP_PX, HOME_SWITCHER_CLEARANCE_PX } from "./lib/homeView.ts"
 import { CONSOLE_SIDEBAR_COLUMN_CLASS, ConsoleSidebar } from "./components/ConsoleSidebar.tsx"
 import { SIDEBAR_COLUMN_CLASS, Sidebar } from "./components/Sidebar.tsx"
 import { MobileBoard } from "./components/MobileBoard.tsx"
@@ -37,7 +37,7 @@ export function App() {
   const snap = useSnapshot(store)
   // THE CONSOLE is this same board shell over every project's threads (routes.tsx ConsoleRoute): its own
   // sidebar, its own feed (each project's board read and merged by api/consoleFeed.ts), and room at the
-  // top for the home band. A project page's board is read by api/socket.ts as the page loads.
+  // top for the home switcher. A project page's board is read by api/socket.ts as the page loads.
   const onConsole = isConsolePath()
   const sidebarPresence = useRef<SidebarPresence>({ projectDir: null, hasBeenVisible: false })
 
@@ -178,10 +178,12 @@ export function App() {
     // stands in the same one. They were this file's alone until 2026-10-13, and that page had neither.
     <PageFrame
       className="relative min-h-screen bg-bg text-fg text-sm"
-      // What sticks to the window's top sticks below the Console's home band instead (the cards' headers).
-      // The narrow layout's own 40px offset gives way to the band as well: the switcher shows down to the
-      // phone breakpoint, and a phone renders MobileBoard, which has no sticky card header at all.
-      style={onConsole ? ({ "--frizz-sticky-top": `${HOME_BAND_PX}px`, "--frizz-sticky-top-narrow": `${HOME_BAND_PX}px` } as CSSProperties) : undefined}
+      // What sticks to the window's top sticks below the Console's floating home switcher instead (the
+      // cards' headers), and `--frizz-sticky-cap` fills the strip above a stuck header with the card's own
+      // surface (TodosView), so the card reaches the window's top under the pill rather than ending on a
+      // line of page. The narrow layout's own 40px offset gives way to the switcher as well: it shows down
+      // to the phone breakpoint, and a phone renders MobileBoard, which has no sticky card header at all.
+      style={onConsole ? ({ "--frizz-sticky-top": `${HOME_SWITCHER_CLEARANCE_PX}px`, "--frizz-sticky-top-narrow": `${HOME_SWITCHER_CLEARANCE_PX}px`, "--frizz-sticky-cap": `${HOME_SWITCHER_CLEARANCE_PX}px` } as CSSProperties) : undefined}
     >
       {/* NO FIXED CHROME IN EITHER TOP CORNER. Identity, settings, reload and both quota chips used to
           be a bar pinned to the upper-left, a screen's width from the column they describe; they are

@@ -12,18 +12,19 @@ import { CONSOLE_PATH } from "./base-path.ts"
 export type HomeView = "projects" | "console"
 
 /**
- * The height of the home switcher's fixed band (components/HomeSwitcher.tsx): its 14px inset, its 36px
- * pill, and a 12px fade below. Everything on a home page that sticks to the top of the window sticks
- * below it instead — the Console's sidebar, its cards' headers, and a scroll that lands a card.
+ * How far down the window the home switcher reaches (components/HomeSwitcher.tsx): its 14px inset, its
+ * 36px pill, and 12px of air below. The switcher FLOATS — nothing is drawn behind it, and the page
+ * scrolls under it — so this is not a band but a clearance: what sticks to the top of a home page sticks
+ * this far down instead (the Console's cards' headers), so it is never under the pill.
  */
-export const HOME_BAND_PX = 62
+export const HOME_SWITCHER_CLEARANCE_PX = 62
 
 /**
- * Where the Console's content starts: 8px under the band. The sidebar's status row and the first card
- * both open on this line, and a card the sidebar scrolls to lands on it too, so a landed card sits
- * exactly where the top card sits at rest.
+ * Where the Console's content starts: 8px under the switcher's clearance. The sidebar's status row and
+ * the first card both open on this line, and a card the sidebar scrolls to lands on it too, so a landed
+ * card sits exactly where the top card sits at rest.
  */
-export const CONSOLE_TOP_PX = HOME_BAND_PX + 8
+export const CONSOLE_TOP_PX = HOME_SWITCHER_CLEARANCE_PX + 8
 
 const KEY = "frizz:home-view"
 

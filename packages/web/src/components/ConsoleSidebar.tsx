@@ -49,8 +49,8 @@ import { StatusRow } from "./StatusRow.tsx"
 //     what they do (maintainer 2026-10-11);
 //   · "By status" keeps a pin shelf of its own, apart from every project board's (lib/consoleBoard.ts
 //     PINS): a Pinned band above Queue, drawn and dragged like a board's;
-//   · it is anchored under the home switcher's band rather than centred in the window, because the band
-//     is fixed chrome at the window's top and a centred column would slide under it on a short window.
+//   · it is anchored under the home switcher rather than centred in the window, because the switcher is
+//     fixed at the window's top and a centred column would slide under it on a short window.
 
 export const CONSOLE_SIDEBAR_COLUMN_CLASS =
   "sticky top-0 self-start h-screen w-[clamp(272px,34vw,680px)] shrink-0 flex flex-col pb-4 max-[800px]:static max-[800px]:h-auto max-[800px]:w-full max-[800px]:pt-16"
@@ -124,7 +124,10 @@ export function ConsoleSidebar() {
           <ConsoleDispatch />
         </div>
         <GroupSwitch group={group} />
-        <div ref={railRef} data-sidebar-rail className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden pb-10 max-[800px]:overflow-y-visible">
+        {/* The rows scroll BEHIND the switch, as a project's do behind its prompt box (Sidebar.tsx): the
+            12px under the switch is the list's own top padding, so its scroll edge is the switch's bottom
+            edge rather than a strip of page colour below it. */}
+        <div ref={railRef} data-sidebar-rail className="-mt-3 min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden pb-10 pt-3 max-[800px]:overflow-y-visible">
           {pinned.length === 0 && queueRows.length === 0 && runningCount === 0 ? (
             <div className="py-1 pl-5 pr-1.5 text-[11.5px] text-muted-50">Nothing waiting or running</div>
           ) : group === "status" ? (
