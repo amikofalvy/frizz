@@ -124,6 +124,8 @@ function McpMenu({ target, status, isIgnored }: {
     body = <MenuNote>Couldn’t read MCP servers. {status.error instanceof Error ? status.error.message : ""}</MenuNote>
   } else if (!data.supported) {
     body = <MenuNote>{data.agent} doesn’t support MCP status introspection.</MenuNote>
+  } else if (data.note) {
+    body = <MenuNote>{data.note}</MenuNote>
   } else if (data.servers.length === 0) {
     body = <MenuNote>{data.agent} has no MCP servers configured.</MenuNote>
   } else {

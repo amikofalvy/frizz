@@ -47,12 +47,21 @@ test("a reading comes from the thread's live session, and from the probe when th
   assert.equal((await fallback.status({ backend: "claude" })).agent, "Claude Code")
 })
 
-test("with Claude Code signed out the probe never starts, so no Claude Code runs in a sandbox HOME", async () => {
+test("with Claude Code signed out the probe never starts, and the menu is told why rather than sent an error", async () => {
   let started = 0
   const mcp = createMcpService(deps({ claudeSignedIn: async () => false, claudeProbe: () => { started += 1; return fakeProbe() } }))
-  await assert.rejects(mcp.status({ backend: "claude" }), /isn't signed in/)
-  await assert.rejects(mcp.signIn({ backend: "claude" }, "notion"), /isn't signed in/)
+  // Every prompt box asks on page load, so a machine without a Claude login (every sandbox stack) must get
+  // an answer here, not a 500 on each page.
+  const reading = await mcp.status({ backend: "claude" })
+  assert.deepEqual({ ...reading, note: undefined }, { backend: "claude", agent: "Claude Code", supported: true, servers: [], note: undefined })
+  assert.match(reading.note ?? "", /isn’t signed in/)
+  const gone = { mcpServerStatus: async () => { throw new Error("This thread's Claude session is not running") } }
+  const fromThread = createMcpService(deps({ claudeSignedIn: async () => false, claudeBroker: gone as unknown as ClaudeAgentBrokerBridge, claudeProbe: () => { started += 1; return fakeProbe() } }))
+  assert.match((await fromThread.status({ slug: "claude-thread" })).note ?? "", /isn’t signed in/, "a thread with no live session falls back to the same answer")
+  // A sign-in is a click, so it still says no.
+  await assert.rejects(mcp.signIn({ backend: "claude" }, "notion"), /isn’t signed in/)
   assert.equal(started, 0)
+  assert.match((await createMcpService(deps()).status({ backend: "codex" })).note ?? "", /Codex isn’t available/)
 })
 
 test("an ACP agent reads as unsupported, named", async () => {

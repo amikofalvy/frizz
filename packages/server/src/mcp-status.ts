@@ -35,6 +35,14 @@ const WATCH_MS = 1_500
 // A settled attempt is kept this long so a poll that arrives late still reads its outcome.
 const SETTLED_KEEP_MS = 10 * 60 * 1000
 
+const CLAUDE_SIGNED_OUT = "Claude Code isn’t signed in on this machine, so its MCP servers can’t be read."
+const CODEX_UNAVAILABLE = "Codex isn’t available on this server, so its MCP servers can’t be read."
+
+// A state of the machine, not a failure: `status` answers it as the menu's note (every prompt box asks on
+// page load, so throwing it made every page on a machine without a Claude login log a 500), while a
+// sign-in click still rejects with it.
+class McpUnavailable extends Error {}
+
 export interface McpServiceDeps {
   getSession(slug: string): { backend?: string; claude_runtime?: string | null; session_id: string; model?: string | null } | undefined
   claudeBroker?: ClaudeAgentBrokerBridge
@@ -122,7 +130,7 @@ export function createMcpService(deps: McpServiceDeps): McpService {
   let signedIn: { at: number; answer: Promise<boolean> } | undefined
   const probe = async (): Promise<ClaudeMcpProbe> => {
     if (!signedIn || now() - signedIn.at > 60_000) signedIn = { at: now(), answer: deps.claudeSignedIn().catch(() => false) }
-    if (!(await signedIn.answer)) throw new Error("Claude Code isn't signed in on this machine, so its MCP servers can't be read")
+    if (!(await signedIn.answer)) throw new McpUnavailable(CLAUDE_SIGNED_OUT)
     return deps.claudeProbe()
   }
 
@@ -197,11 +205,16 @@ export function createMcpService(deps: McpServiceDeps): McpService {
       const resolved = resolve(target)
       if (resolved.backend === "acp") return { backend: "acp", agent: resolved.agent, supported: false, servers: [] }
       if (resolved.backend === "codex") {
-        if (!deps.codexAppServer) throw new Error("Codex is not available on this server")
+        if (!deps.codexAppServer) return { backend: "codex", agent: resolved.agent, supported: true, servers: [], note: CODEX_UNAVAILABLE }
         const rows = withoutFrizz(await deps.codexAppServer.listMcpServers())
         return { backend: "codex", agent: resolved.agent, supported: true, servers: rows.map(toReading) }
       }
-      return { backend: "claude", agent: resolved.agent, supported: true, servers: (await claudeServers(resolved)).map(toReading) }
+      try {
+        return { backend: "claude", agent: resolved.agent, supported: true, servers: (await claudeServers(resolved)).map(toReading) }
+      } catch (error) {
+        if (error instanceof McpUnavailable) return { backend: "claude", agent: resolved.agent, supported: true, servers: [], note: error.message }
+        throw error
+      }
     },
 
     async signIn(target, server) {
@@ -216,7 +229,7 @@ export function createMcpService(deps: McpServiceDeps): McpService {
       }
       const attempt: Attempt = { id: randomUUID(), backend: resolved.backend, server, state: "waiting", expiresAt: now() + ATTEMPT_TTL_MS }
       if (resolved.backend === "codex") {
-        if (!deps.codexAppServer) throw new Error("Codex is not available on this server")
+        if (!deps.codexAppServer) throw new McpUnavailable(CODEX_UNAVAILABLE)
         // Subscribe BEFORE starting, so a completion that lands immediately is not missed.
         attempt.unsubscribe = deps.codexAppServer.onMcpOAuthCompleted((event) => {
           if (event.name !== server) return

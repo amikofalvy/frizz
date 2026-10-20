@@ -5191,6 +5191,12 @@ export const McpStatusResult = z.object({
   agent: z.string().max(200),
   supported: z.boolean(),
   servers: z.array(McpServerReading).max(256),
+  /**
+   * Why the servers can't be read right now (Claude Code isn't signed in on this machine), drawn as the
+   * menu's note. An answer, not an error: every prompt box asks on page load, and a machine without the
+   * agent's login is an ordinary machine, not a failing server.
+   */
+  note: z.string().max(500).optional(),
 }).strict()
 export type McpStatusResult = z.infer<typeof McpStatusResult>
 
