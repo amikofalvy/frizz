@@ -28,7 +28,7 @@ function currentPerm(): NotifPerm {
 }
 
 // The drawer holds ONLY what belongs to the machine and this browser — appearance, the rail, how local
-// links open, density, queue order, notifications. Everything that belongs to a project or to one
+// links open, code wrapping, queue order, notifications. Everything that belongs to a project or to one
 // runtime is edited where it applies: a runtime's launch settings behind the gear on its band in the
 // model picker (AgentSettingsPopover), the GitHub triage prompt behind the gear in the GitHub picker's
 // header (GithubPromptPopover). A "Project settings" tab stood here for a few hours on 2026-09-19
@@ -126,13 +126,9 @@ export function SettingsDrawer({ offerUpdate = false }: {
               <OnOffToggle value={draft.projectRail} onChange={(projectRail) => update({ ...draft, projectRail })} />
             </SettingsField>
 
-            {/* A client-only VIEW preference (localStorage, not server Settings): it never travels to
-                the server at all, so it's wired straight to the prefs proxy rather than the draft. */}
-            <SettingsField label="Density" help={SETTINGS_HELP.density}>
-              <DensityToggle />
-            </SettingsField>
-
-            {/* Client-only (localStorage): whether a long line of code wraps or scrolls its block. */}
+            {/* Client-only (localStorage, not server Settings): whether a long line of code wraps or
+                scrolls its block. It never travels to the server, so it's wired straight to the prefs
+                proxy rather than the draft. */}
             <SettingsField label="Wrap code" help={SETTINGS_HELP.wrapCode}>
               <WrapCodeToggle />
             </SettingsField>
@@ -189,7 +185,7 @@ export function SettingsDrawer({ offerUpdate = false }: {
 //   · IT LEADS WITH THE READINGS. The board's ⋯ sheet used to carry the connection dot and the quota
 //     chips; that sheet is gone and its gear opens this page, so the readings arrive here first — they
 //     are what a phone opens Settings to check.
-//   · IT HOLDS ONLY WHAT MEANS SOMETHING ON A PHONE. The project sidebar, diff density and local file
+//   · IT HOLDS ONLY WHAT MEANS SOMETHING ON A PHONE. The project sidebar and local file
 //     links are desktop-only rows and do not render here; the SERVER values behind them are untouched,
 //     so the desktop reads exactly what it did. Snooze length is here instead: it sets the preset the
 //     board's swipe and the ⋯ sheet use, and the phone has no other place to choose it.
@@ -537,35 +533,6 @@ function DictationToggle() {
 function WrapCodeToggle() {
   const { wrapCode } = useSnapshot(prefs)
   return <OnOffToggle value={wrapCode} onChange={(on) => (prefs.wrapCode = on)} />
-}
-
-// Diff density: client-only (localStorage prefs proxy), applies live — diff blocks across the app
-// collapse/expand the instant it flips, with no server round-trip at all. The pair is named for what
-// each one FEELS like rather than Off/On, in the Comfortable|Compact vocabulary Gmail and Trello settled
-// (a boolean called "compact mode" told you what Off was not). Left to right is increasing density,
-// so Compact — the default — holds the right-hand slot, where On sits on the boolean pairs.
-function DensityToggle() {
-  const { compactDiffs } = useSnapshot(prefs)
-  const opts: { v: boolean; label: string }[] = [
-    { v: false, label: "Comfortable" },
-    { v: true, label: "Compact" },
-  ]
-  return (
-    <div className="inline-flex w-fit rounded-md border border-border bg-bg p-0.5">
-      {opts.map((o) => (
-        <button
-          key={o.label}
-          onClick={() => (prefs.compactDiffs = o.v)}
-          aria-pressed={compactDiffs === o.v}
-          className={`rounded px-3 py-1 text-[12px] transition-colors ${
-            compactDiffs === o.v ? "bg-fg text-bg" : "text-muted hover:text-fg"
-          }`}
-        >
-          {o.label}
-        </button>
-      ))}
-    </div>
-  )
 }
 
 // Queue/rested-band direction: client-only (localStorage prefs proxy), applies live to the Needs-you

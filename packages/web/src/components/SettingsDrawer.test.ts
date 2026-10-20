@@ -15,10 +15,9 @@ const tooltipSource = readFileSync(new URL("./Tooltip.tsx", import.meta.url), "u
 test("settings maps each contextual explanation to a help control", () => {
   // `subagentInstructions` is gone: the settings preamble was retired in favour of FRIZZ.md, so there
   // is exactly one operator-authored surface for project conventions.
-  for (const key of ["permissionMode", "promptCacheTtl", "appearance", "density", "notifications", "githubPrompt"]) {
+  for (const key of ["permissionMode", "promptCacheTtl", "appearance", "notifications", "githubPrompt"]) {
     assert.match(helpSource, new RegExp(`\\b${key}:`), `missing settings help mapping: ${key}`)
   }
-  assert.match(source, /label="Density" help=\{SETTINGS_HELP\.density\}/)
   assert.match(source, /label="Desktop notifications" help=\{SETTINGS_HELP\.notifications\}/)
   // The runtime fields read the same table from their own surface.
   assert.match(agentSource, /label="Permissions" help=\{SETTINGS_HELP\.permissionMode\}/)
@@ -75,7 +74,7 @@ test("the drawer is one untabbed list of interface preferences, with no project 
   // (The note above the component NAMES the retired tab in prose; what must be gone is the markup.)
   assert.doesNotMatch(source, /role="tab(?:list)?"|SettingsTabs|label: "(?:Project|Frizz) settings"/)
   const fields = [...source.matchAll(/<SettingsField label="([^"]+)"/g)].map((m) => m[1])
-  assert.deepEqual(fields, ["Appearance", "Project sidebar", "Density", "Wrap code", "Queue order", "Dictation", "Desktop notifications", "Local file links"])
+  assert.deepEqual(fields, ["Appearance", "Project sidebar", "Wrap code", "Queue order", "Dictation", "Desktop notifications", "Local file links"])
   // The triage prompt has exactly one editor, and it is the picker's.
   assert.doesNotMatch(source, /GithubPromptEditor|githubPrompt|<textarea/)
   assert.match(promptPopoverSource, /<GithubPromptEditor draft=\{draft\} onChange=\{update\} rows=\{14\} \/>/)
@@ -161,13 +160,15 @@ test("notification recovery aligns with its control and keeps recovery instructi
   assert.match(denied, /Paste this into a new tab, set Notifications/)
 })
 
-// "Compact mode" Off|On told the operator what Off was NOT. A density pair names both states.
-test("diff density is a Comfortable|Compact pair, densest on the right, compact by default", () => {
-  const toggle = source.slice(source.indexOf("function DensityToggle"), source.indexOf("function QueueOrderControl"))
-  assert.match(toggle, /\{ v: false, label: "Comfortable" \},\s*\{ v: true, label: "Compact" \}/)
-  assert.match(toggle, /prefs\.compactDiffs = o\.v/)
-  assert.doesNotMatch(source, /label="Compact mode"/)
-  assert.doesNotMatch(source, /function CompactToggle/)
+// The Density switch (Comfortable|Compact) only decided whether an Edit diff opened expanded, and an
+// Edit card only appears once its folded tool row is opened — so it decided almost nothing. It was
+// retired 2026-10-20 (maintainer: "it should just always be compact"); every diff opens collapsed.
+test("there is no diff density setting — diffs always open collapsed", () => {
+  assert.doesNotMatch(source, /label="(?:Density|Compact mode)"|DensityToggle|CompactToggle|compactDiffs/)
+  assert.doesNotMatch(helpSource, /\bdensity:/)
+  const diffBlock = readFileSync(new URL("./DiffBlock.tsx", import.meta.url), "utf8")
+  assert.doesNotMatch(diffBlock, /prefs|compactDiffs/)
+  assert.match(diffBlock, /const \[open, setOpen\] = useState\(false\)/)
 })
 
 // What the row DOES — the preference reaching <html>, surviving a reload and never touching the server —
@@ -175,7 +176,7 @@ test("diff density is a Comfortable|Compact pair, densest on the right, compact 
 // block by lib/codeBlocks.e2e.test.ts. This guards the wiring those two depend on.
 test("wrap code is an Off|On browser preference with its own explanation, mirrored onto the page at boot", () => {
   assert.match(source, /label="Wrap code" help=\{SETTINGS_HELP\.wrapCode\}/)
-  const toggle = source.slice(source.indexOf("function WrapCodeToggle"), source.indexOf("function DensityToggle"))
+  const toggle = source.slice(source.indexOf("function WrapCodeToggle"), source.indexOf("function QueueOrderControl"))
   assert.match(toggle, /<OnOffToggle value=\{wrapCode\} onChange=\{\(on\) => \(prefs\.wrapCode = on\)\} \/>/)
   assert.match(helpSource, /\bwrapCode:/)
   // Client-only: it must not have grown a key in the server's settings draft.

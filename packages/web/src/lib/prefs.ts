@@ -9,8 +9,6 @@ import { DEFAULT_SNOOZE_PRESET, isSnoozePreset, type SnoozePreset } from "./snoo
 const KEY = "frizz.prefs.v1"
 
 export interface Prefs {
-  // Collapse rendered diff blocks to just their header row (click a header to expand that one).
-  compactDiffs: boolean
   // The PHONE's snooze length: the duration the board's swipe snoozes for, set in Settings and by a pick
   // in the ⋯ sheet. The desktop snooze menu neither reads nor writes it — every click there lists every
   // preset (SnoozeMenu.tsx), because a remembered default made one click mean different spans on
@@ -49,37 +47,25 @@ function coerceQueueOrder(v: unknown, fallback: QueueDirection): QueueDirection 
   return v === "fifo" || v === "lifo" ? v : fallback
 }
 
-// One-time re-default markers. They ride along in the stored blob but never in `Prefs` (what
-// components read), and they are seeded into the fallback too — otherwise a browser starting FRESH
-// after a migration ships stores no marker, and the very next load would revert the deliberate
-// toggle that browser just made.
-interface RedefaultMarkers {
-  diffsRedefaulted?: boolean
-}
+// Keys a retired setting left behind in stored blobs, dropped on read so the spread below does not
+// carry them into the proxy and back out to localStorage forever. `compactDiffs` was the Settings
+// "Density" switch (retired 2026-10-20 — diffs always open collapsed now, see DiffBlock) and
+// `diffsRedefaulted` the marker of its one-time 2026-07-09 migration.
+const RETIRED_KEYS = ["compactDiffs", "diffsRedefaulted"]
 
 export function parseStoredPrefs(raw: string | null): Prefs {
-  // Compact diffs by DEFAULT — expanded diff bodies are the opt-in.
-  const fallback: Prefs & RedefaultMarkers = {
-    compactDiffs: true,
+  const fallback: Prefs = {
     snoozePreset: DEFAULT_SNOOZE_PRESET,
     queueOrder: "fifo",
     railFilesCollapsed: false,
     dictation: true,
     wrapCode: true,
     mcpIgnored: {},
-    diffsRedefaulted: true,
   }
   try {
     if (!raw) return fallback
-    const stored = JSON.parse(raw) as Partial<Prefs> & RedefaultMarkers
-    // ONE-TIME migration (2026-07-09): the maintainer settled diffs as collapsed-by-default for
-    // card-family consistency. A stored `compactDiffs: false` predating that decision was the OLD
-    // default, not a choice — re-default it once. The marker makes a subsequent deliberate
-    // Settings-toggle OFF stick forever.
-    if (!stored.diffsRedefaulted) {
-      stored.compactDiffs = true
-      stored.diffsRedefaulted = true
-    }
+    const stored = JSON.parse(raw) as Partial<Prefs> & Record<string, unknown>
+    for (const key of RETIRED_KEYS) delete stored[key]
     return {
       ...fallback,
       ...stored,

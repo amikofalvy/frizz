@@ -1,11 +1,9 @@
-import { useEffect, useId, useMemo, useState } from "react"
-import { useSnapshot } from "valtio"
+import { useId, useMemo, useState } from "react"
 import type { TranscriptEdit } from "@frizz/shared"
 import { renderDiff, type DiffHunk } from "../lib/diff/index.ts"
 import "../lib/diff/diff.css"
 import { openLocalPath } from "../lib/local-file-links.ts"
 import { basename } from "../lib/paths.ts"
-import { prefs } from "../lib/prefs.ts"
 import { ToolDisclosureHeader } from "./ToolDisclosureHeader.ts"
 
 // A file path rendered as an openable link. Plain (inherits the surrounding gray); brightens +
@@ -42,23 +40,20 @@ export function PathLink({ path, className = "", children }: { path: string; cla
 // (clickable file path + summed +N/−N counts) and a syntax-highlighted, line-numbered body. Multiple
 // edits stack as sequential hunk groups under the one header, divided by a hairline. A long line
 // wraps under its own code, or with the Wrap code setting off the body scrolls sideways, never the
-// page (lib/diff/diff.css). In compact mode the body is hidden — the
-// header alone shows — and its explicit chevron control expands that one block.
+// page (lib/diff/diff.css). The body starts hidden — the header alone shows — and its explicit
+// chevron control expands that one block.
 export function DiffBlock({ edits, meta }: { edits: TranscriptEdit[]; meta?: React.ReactNode }) {
-  const { compactDiffs } = useSnapshot(prefs)
   const bodyId = useId()
   const file = edits[0].file
   const diffs = useMemo(() => edits.map((e) => renderDiff(e.old, e.new, e.file)), [edits])
   const additions = diffs.reduce((n, d) => n + d.additions, 0)
   const deletions = diffs.reduce((n, d) => n + d.deletions, 0)
 
-  // COLLAPSED BY DEFAULT — full card-family consistency (Bash/Read/Agent all open on demand; the
-  // maintainer settled the deferred question 2026-07-09). The Settings "compact diffs" toggle is the
-  // escape hatch: switching it OFF returns to expanded-by-default. A per-block click overrides either
-  // way, and re-syncing the override to null when the global flips lets the switch drive every block.
-  const [override, setOverride] = useState<boolean | null>(null)
-  useEffect(() => setOverride(null), [compactDiffs])
-  const open = override ?? !compactDiffs
+  // ALWAYS COLLAPSED AT FIRST — the same as Bash/Read/Agent, which all open on demand (settled
+  // 2026-07-09). A Settings "Density" switch could open every diff by default until 2026-10-20, when the
+  // maintainer dropped it: an Edit card only appears once its folded tool row is opened, so the switch
+  // decided almost nothing.
+  const [open, setOpen] = useState(false)
 
   return (
     <div className="frizz-diff">
@@ -67,7 +62,7 @@ export function DiffBlock({ edits, meta }: { edits: TranscriptEdit[]; meta?: Rea
         controls={bodyId}
         expanded={open}
         label={`${open ? "Collapse" : "Expand"} Edit diff: ${file}`}
-        onToggle={() => setOverride(!open)}
+        onToggle={() => setOpen(!open)}
         meta={meta}
         chevronSize={11}
       >
