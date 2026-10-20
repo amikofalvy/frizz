@@ -96,6 +96,7 @@ test("callouts, sections and inline keys render, stay sanitized, and a section s
         const strip = title.getBoundingClientRect()
         return {
           frame: getComputedStyle(quote).borderLeftColor,
+          rule: head.borderBottomColor,
           wash: head.backgroundColor,
           title: head.color,
           icon: icon.backgroundColor,
@@ -144,6 +145,7 @@ test("callouts, sections and inline keys render, stay sanitized, and a section s
     for (const type of callouts.types) {
       assert.match(type.glyph, /^url\("data:image\/svg\+xml/)
       assert.notEqual(type.wash, "rgba(0, 0, 0, 0)", "the header is washed")
+      assert.equal(type.rule, type.frame, "the line under the header is the frame's own hairline")
       assert.equal(type.icon, type.title, "the icon is painted in the title's colour")
       assert.equal(type.body, callouts.proseColor, "a callout's body is prose, not a muted quote")
       // The icon is a 1em box on a 1.7 line: it must not have made the title's line any taller.

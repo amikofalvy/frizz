@@ -1326,7 +1326,10 @@ html[data-code-wrap="off"] {
 
    CALLOUTS. A callout is a BLOCK, drawn as a code block is — the same fill, hairline, shared corner and
    1em inset, so its body's text starts where a fence's code does — with the title in a header strip
-   across its top: the type's ink on a 9% wash of it, over an 18% hairline. Picked 2026-10-20 from eight
+   across its top: the type's ink on a 9% wash of it, closed by the box's own hairline (an 18% tint of
+   the ink there read as a second, different line against the frame; maintainer, the same day: "I
+   don't like that the horizontal rule underneath the header is a different color than the outer
+   border of the callout card"). Picked 2026-10-20 from eight
    shapes (packages/web/src/callout-mockup-fixture.tsx). It was a quote's 2px rule in the type's colour
    with a bare title above the body until then, and the maintainer found it "so saturated": the rule,
    icon and title were all one full-strength status colour, and the warning's was amber-400, which a
@@ -1384,7 +1387,7 @@ html[data-code-wrap="off"] {
   --md-callout-gutter: calc(1em - 2 * var(--md-callout-trim) + var(--md-callout-gap));
   margin: 0 -1em;
   padding: 0.4em 1em 0.4em calc(1em + var(--md-callout-gutter));
-  border-bottom: 1px solid color-mix(in oklab, var(--md-callout-ink) 18%, transparent);
+  border-bottom: 1px solid var(--color-border);
   border-radius: calc(var(--block-radius) - 1px) calc(var(--block-radius) - 1px) 0 0;
   background: color-mix(in oklab, var(--md-callout-ink) 9%, transparent);
   font-weight: 600;
