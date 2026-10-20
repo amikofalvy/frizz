@@ -77,7 +77,7 @@ function ProjectChip({ project, projects, onPick }: { project: ProjectCard; proj
               key={p.id}
               onSelect={() => onPick(p.slug)}
               data-console-project-option={p.slug}
-              className="flex cursor-default items-center gap-2 rounded px-1.5 py-1 text-[12.5px] text-fg outline-none data-[highlighted]:bg-panel-2"
+              className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-[12.5px] text-fg outline-none data-[highlighted]:bg-panel-2"
             >
               <ProjectSquare project={p} size={16} />
               <span className="min-w-0 flex-1 truncate">{p.name}</span>

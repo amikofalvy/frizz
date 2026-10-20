@@ -182,13 +182,13 @@ function ProjectMenu({
           className="z-[220] min-w-[170px] rounded-lg border border-border bg-panel p-1 shadow-xl shadow-shadow-ink/40"
         >
           <RadixDropdown.Item
-            className="cursor-default rounded px-2 py-1.5 text-[12.5px] text-fg outline-none data-[highlighted]:bg-panel-2"
+            className="cursor-pointer rounded px-2 py-1.5 text-[12.5px] text-fg outline-none data-[highlighted]:bg-panel-2"
             onSelect={onRename}
           >
             Rename…
           </RadixDropdown.Item>
           <RadixDropdown.Item
-            className="cursor-default rounded px-2 py-1.5 text-[12.5px] text-danger outline-none data-[highlighted]:bg-danger-fill/10 data-[highlighted]:text-danger-soft"
+            className="cursor-pointer rounded px-2 py-1.5 text-[12.5px] text-danger outline-none data-[highlighted]:bg-danger-fill/10 data-[highlighted]:text-danger-soft"
             onSelect={onDelete}
           >
             Delete project…

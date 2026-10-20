@@ -563,12 +563,37 @@ body {
   top: -1px;
 }
 
-/* Tailwind v4 preflight drops the pointer cursor from buttons — restore it for every clickable. */
-button:not(:disabled),
-[role="button"]:not([aria-disabled="true"]),
-select,
+/* THE POINTER IS FOR WHATEVER A CLICK ACTS ON. Tailwind v4's preflight drops it from buttons, so this
+   gives it back to every element that is clickable by what it IS — its tag, or the ARIA role a menu,
+   select, palette or tab strip puts on its rows — and a new control gets it without remembering a
+   utility. Rows in a Radix menu and a cmdk list are not buttons, and three project menus had opted out
+   with `cursor-default` (maintainer 2026-10-20: "audit everything in Frizz for anything that's
+   actionable and should have the cursor pointer").
+
+   A DISABLED control keeps the arrow, and `aria-disabled` counts: a control that stays focusable so its
+   tooltip can say why it is off (AiRenameButton, RestartFrizzButton, the lightbox's spent arrows) sets
+   that rather than the native attribute. This rule is unlayered, so it beats any utility, and with
+   `:not(:disabled)` alone it overrode their `cursor-default` and pointed a hand at a dead control.
+
+   A control with a cursor of its own (`cursor-zoom-in`, `cursor-grab`) must not take one of these
+   roles, for the same reason. */
+button:not(:disabled):not([aria-disabled="true"]),
+:is(
+  [role="button"],
+  [role="link"],
+  [role="tab"],
+  [role="menuitem"],
+  [role="menuitemcheckbox"],
+  [role="menuitemradio"],
+  [role="option"],
+  [role="checkbox"],
+  [role="radio"],
+  [role="switch"]
+):not([aria-disabled="true"]),
+select:not(:disabled),
 summary,
-label:has(> input[type="checkbox"]),
+label:has(> input:is([type="checkbox"], [type="radio"]):not(:disabled)),
+input:is([type="checkbox"], [type="radio"], [type="file"], [type="color"]):not(:disabled),
 a[href] {
   cursor: pointer;
 }

@@ -404,7 +404,7 @@ export function ProjectIconMenu({
     onError: () => input.current?.click(),
   })
 
-  const item = "cursor-default rounded px-2 py-1.5 text-[12.5px] text-fg outline-none data-[highlighted]:bg-panel-2"
+  const item = "cursor-pointer rounded px-2 py-1.5 text-[12.5px] text-fg outline-none data-[highlighted]:bg-panel-2"
   return (
     <>
       <input
