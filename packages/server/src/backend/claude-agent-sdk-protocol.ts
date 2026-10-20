@@ -166,6 +166,31 @@ export const CLAUDE_BROKER_CAPABILITY_LIST_SKILLS = "list-skills-v1"
 // been WRITTEN to a connected socket, which still closes the never-connected hole.
 export const CLAUDE_BROKER_CAPABILITY_INPUT_ACK = "input-ack-v1"
 
+// Reading the session's MCP servers (`mcp-status`, the SDK's `mcpServerStatus()`) and asking it to
+// reconnect one (`mcp-reconnect`, `reconnectMcpServer`) — what the prompt box's plug menu shows, and how
+// a sign-in finished elsewhere reaches a thread that is already running. Gated like the others: an older
+// surviving daemon ignores the unknown frame, and the menu would sit out a deadline instead of falling
+// back to what the thread's next session would see.
+export const CLAUDE_BROKER_CAPABILITY_MCP = "mcp-v1"
+
+// One MCP server as a Claude session reports it, bounded for the wire. `status` is the SDK's own
+// vocabulary. `remote` says whether it is a URL server (the only kind that can need a sign-in).
+export interface ClaudeMcpServerReading {
+  name: string
+  status: "connected" | "failed" | "needs-auth" | "pending" | "disabled"
+  tools?: number
+  error?: string
+  remote?: boolean
+}
+
+// What starting a sign-in hands back: the page to open, and whether the CLI is listening for the
+// browser's return trip (a `localhost` redirect it answers itself).
+export interface ClaudeMcpAuthStart {
+  authUrl?: string
+  requiresUserAction: boolean
+  callbackPort?: number
+}
+
 // One invocable skill, as the harness reports it. `name` is what `/name` invokes; `description` is the
 // skill's own frontmatter line, for the composer typeahead to render. `source` is where claude
 // resolved it from, normalized to the shared vocabulary — undefined when claude did not say, which the

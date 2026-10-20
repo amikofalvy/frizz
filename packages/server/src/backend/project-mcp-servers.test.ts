@@ -79,6 +79,21 @@ test("precedence: the project shadows a user-scope remote of the same name, and 
   assert.deepEqual(workerMcpServers(project, undefined), project)
 })
 
+test("a remote server keeps its `oauth` client and `headersHelper`, which its sign-in needs", () => {
+  const f = fixture()
+  f.write(join(f.cwd, ".mcp.json"), {
+    mcpServers: {
+      fixed: { type: "http", url: "https://fixed.example/mcp", oauth: { clientId: "abc", callbackPort: 8765, scopes: ["read"], junk: { nested: 1 } } },
+      helper: { type: "sse", url: "https://helper.example/sse", headersHelper: "${HELPER_DIR:-/opt}/print-headers.sh" },
+    },
+  })
+  f.write(join(f.cwd, ".claude", "settings.json"), { enableAllProjectMcpServers: true })
+  assert.deepEqual(f.read({}), {
+    fixed: { type: "http", url: "https://fixed.example/mcp", oauth: { clientId: "abc", callbackPort: 8765, scopes: ["read"] } },
+    helper: { type: "sse", url: "https://helper.example/sse", headersHelper: "/opt/print-headers.sh" },
+  })
+})
+
 test("${VAR} and ${VAR:-default} expand against the WORKER's env; an unresolved reference drops that server", () => {
   const f = fixture()
   f.write(join(f.cwd, ".mcp.json"), {

@@ -41,6 +41,8 @@ import {
   type ClaudeInputMessage,
   type ClaudeInterruptOptions,
   type ClaudeInterruptReceipt,
+  type ClaudeMcpAuthStart,
+  type ClaudeMcpServerReading,
   type ClaudeModelCapability,
   type ClaudeOnElicitation,
   type ClaudePermissionMode,
@@ -72,6 +74,9 @@ export const CLAUDE_CLI_CAPABILITY_SEND_NOW = "interrupt_send_now_v1"
 // SDK has no typed method that carries it. Undeclared in the `.d.ts` like the cancel method above, and
 // watched by the same canary.
 export const CLAUDE_SDK_REQUEST_METHOD = "request"
+// The SDK `Query` method that starts an MCP server's OAuth sign-in. Undeclared in the `.d.ts` like the
+// two above, and watched by the same canary.
+export const CLAUDE_SDK_MCP_AUTHENTICATE_METHOD = "mcpAuthenticate"
 
 function stillQueuedIds(raw: unknown): string[] {
   return boundedStringArray(raw, "interrupt.stillQueued", 256, 512).map((id, index) => boundedId(id, `interrupt.stillQueued[${index}]`))
@@ -201,6 +206,13 @@ export interface ClaudeQueryHandle extends AsyncIterable<ClaudeQueryEvent> {
   // record frizz's tailer reads. See CLAUDE_TITLE_NEEDS_EXPLICIT_REQUEST below for why the broker has
   // to ask instead of letting Claude title the session on its own.
   generateSessionTitle(description: string): Promise<string | undefined>
+  /** The session's MCP servers and their state, as the CLI reports them (`mcpServerStatus()`). */
+  mcpServerStatus(): Promise<ClaudeMcpServerReading[]>
+  /** Drop and re-open one MCP server's connection — how a sign-in saved by another session reaches this one. */
+  reconnectMcpServer(name: string): Promise<void>
+  /** Start an MCP server's OAuth sign-in inside this session. The CLI listens for the browser's return
+   *  trip on `localhost` and reconnects the server itself once it lands. */
+  mcpAuthenticate(name: string): Promise<ClaudeMcpAuthStart>
   close(): Promise<void>
 }
 
@@ -722,6 +734,61 @@ class RealClaudeQueryHandle implements ClaudeQueryHandle {
     if (typeof title !== "string") return undefined
     const clean = safeText(title, "sessionTitle.title", MAX_SESSION_TITLE_BYTES).trim()
     return clean === "" ? undefined : clean
+  }
+
+  // NOT gated on ready(), like fetchSkillSources: real claude emits its first init frame only once a turn
+  // starts, and these are read by a session that never runs one (the MCP probe, claude-mcp-probe.ts) as
+  // well as by a thread at rest. The control channel is open as soon as the CLI is.
+  async mcpServerStatus(): Promise<ClaudeMcpServerReading[]> {
+    this.assertOpen()
+    const rows = boundedArray(await this.awaitOpenControl(this.sdkQuery.mcpServerStatus()), "mcpServerStatus", 256)
+    const out: ClaudeMcpServerReading[] = []
+    for (const [index, entry] of rows.entries()) {
+      // Per-row degrade, as in fetchSkillSources: one malformed server costs its own row, not the menu.
+      try {
+        const row = objectValue(entry, `mcpServerStatus[${index}]`)
+        const name = safeText(row.name, `mcpServerStatus[${index}].name`, 256)
+        const status = row.status
+        if (!name || !(status === "connected" || status === "failed" || status === "needs-auth" || status === "pending" || status === "disabled")) continue
+        const config = row.config && typeof row.config === "object" ? row.config as { type?: unknown; url?: unknown } : undefined
+        const remote = typeof config?.url === "string" || config?.type === "http" || config?.type === "sse"
+        const error = optionalText(row.error, `mcpServerStatus[${index}].error`, 2000)
+        out.push({
+          name,
+          status,
+          ...(Array.isArray(row.tools) ? { tools: Math.min(row.tools.length, 100_000) } : {}),
+          ...(error ? { error } : {}),
+          remote,
+        })
+      } catch { continue }
+    }
+    return out
+  }
+
+  async reconnectMcpServer(name: string): Promise<void> {
+    this.assertOpen()
+    await this.awaitOpenControl(this.sdkQuery.reconnectMcpServer(exactText(name, "reconnectMcpServer.name", 256)))
+  }
+
+  // `mcpAuthenticate` is present at runtime in @anthropic-ai/claude-agent-sdk 0.3.303 (the
+  // `mcp_authenticate` control request) but absent from its `.d.ts`, so — like cancelAsyncMessage — it
+  // is PROBED: an SDK bump that drops it fails here, with a reason, instead of as "not a function".
+  async mcpAuthenticate(name: string): Promise<ClaudeMcpAuthStart> {
+    this.assertOpen()
+    const server = exactText(name, "mcpAuthenticate.name", 256)
+    const provider = this.sdkQuery as unknown as {
+      [CLAUDE_SDK_MCP_AUTHENTICATE_METHOD]?: (serverName: string) => Promise<unknown>
+    }
+    if (typeof provider[CLAUDE_SDK_MCP_AUTHENTICATE_METHOD] !== "function") {
+      throw new ClaudeAgentSdkProtocolError("Claude MCP sign-in is unavailable in this Claude Code")
+    }
+    const answer = objectValue(await this.awaitOpenControl(provider[CLAUDE_SDK_MCP_AUTHENTICATE_METHOD](server)), "mcpAuthenticate")
+    const authUrl = optionalExactText(answer.authUrl, "mcpAuthenticate.authUrl", 8192)
+    if (authUrl !== undefined && !/^https?:\/\//i.test(authUrl)) throw new ClaudeAgentSdkProtocolError("mcpAuthenticate.authUrl must be an http(s) URL")
+    const callbackPort = typeof answer.callbackPort === "number" && Number.isInteger(answer.callbackPort) && answer.callbackPort > 0 && answer.callbackPort < 65536
+      ? answer.callbackPort
+      : undefined
+    return { ...(authUrl ? { authUrl } : {}), requiresUserAction: answer.requiresUserAction === true, ...(callbackPort ? { callbackPort } : {}) }
   }
 
   close(): Promise<void> {

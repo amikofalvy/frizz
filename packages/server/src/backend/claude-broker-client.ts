@@ -8,6 +8,7 @@ import type {
   ClaudeDiagnostic,
   ClaudeInputMessage,
   ClaudeInterruptOptions,
+  ClaudeMcpServerReading,
   ClaudePermissionDecision,
   ClaudePermissionRequest,
   ClaudeSkillInfo,
@@ -70,6 +71,10 @@ export interface ClaudeBrokerClient {
   renameSession(description: string): Promise<string | undefined>
   /** The session's invocable skills, as the harness reports them (names + descriptions). */
   listSkills(): Promise<ClaudeSkillInfo[]>
+  /** The session's MCP servers, as the CLI reports them. */
+  mcpServerStatus(): Promise<ClaudeMcpServerReading[]>
+  /** Ask the session to reconnect one MCP server (after a sign-in saved its token elsewhere). */
+  reconnectMcpServer(name: string): Promise<void>
   setPermissionMode(mode: string): void
   connected(): boolean
   /**
@@ -121,6 +126,8 @@ export function connectClaudeBroker(
   const pendingStops = new Map<string, { settle: () => void; fail: (error: Error) => void; timer: NodeJS.Timeout }>()
   const pendingRenames = new Map<string, { settle: (t: string | undefined) => void; fail: (error: Error) => void; timer: NodeJS.Timeout }>()
   const pendingSkills = new Map<string, { settle: (s: ClaudeSkillInfo[]) => void; fail: (error: Error) => void; timer: NodeJS.Timeout }>()
+  // The MCP round trips (`mcp-status`, `mcp-reconnect`), keyed by request id; `settle` reads its own frame.
+  const pendingMcp = new Map<string, { settle: (frame: Record<string, unknown>) => void; fail: (error: Error) => void; timer: NodeJS.Timeout }>()
   // In-flight deliverInput calls, keyed by the requestId the daemon echoes on `input-result`.
   const pendingInputs = new Map<string, { settle: () => void; fail: (error: Error) => void; timer: NodeJS.Timeout; written: boolean }>()
   let cancelSeq = 0
@@ -200,6 +207,16 @@ export function connectClaudeBroker(
           else entry.settle(typeof frame.title === "string" ? frame.title : undefined)
           break
         }
+        case "mcp-status-result":
+        case "mcp-reconnect-result": {
+          const entry = pendingMcp.get(frame.requestId as string)
+          if (!entry) break
+          pendingMcp.delete(frame.requestId as string)
+          clearTimeout(entry.timer)
+          if (typeof frame.error === "string" && frame.error) entry.fail(new Error(frame.error))
+          else entry.settle(frame)
+          break
+        }
         case "skills-result": {
           const entry = pendingSkills.get(frame.requestId as string)
           if (!entry) break
@@ -240,6 +257,19 @@ export function connectClaudeBroker(
     next.on("error", () => next.destroy())
   }
   connect()
+
+  const mcpRequest = (t: "mcp-status" | "mcp-reconnect", fields: Record<string, unknown>, timeoutMs: number) =>
+    new Promise<Record<string, unknown>>((resolve, reject) => {
+      if (closed) { reject(new Error("the broker connection is closed")); return }
+      const requestId = `${t}-${++cancelSeq}`
+      const timer = setTimeout(() => {
+        pendingMcp.delete(requestId)
+        reject(new Error("the Claude session did not answer the MCP request"))
+      }, timeoutMs)
+      if (timer.unref) timer.unref()
+      pendingMcp.set(requestId, { settle: resolve, fail: reject, timer })
+      send({ t, requestId, ...fields })
+    })
 
   return {
     sendInput: (message: ClaudeInputMessage) => send({ t: "input", message }),
@@ -314,6 +344,11 @@ export function connectClaudeBroker(
       pendingSkills.set(requestId, { settle: resolve, fail: reject, timer })
       send({ t: "list-skills", requestId })
     }),
+    // A status read is local to the CLI; a reconnect waits on the server's handshake, so it takes the
+    // longer deadline.
+    mcpServerStatus: () => mcpRequest("mcp-status", {}, cancelTimeoutMs).then((frame) => (Array.isArray(frame.servers) ? frame.servers : [])
+      .filter((s: unknown): s is ClaudeMcpServerReading => typeof (s as ClaudeMcpServerReading)?.name === "string" && typeof (s as ClaudeMcpServerReading)?.status === "string")),
+    reconnectMcpServer: (name: string) => mcpRequest("mcp-reconnect", { name }, renameTimeoutMs).then(() => undefined),
     // The longer deadline: a re-title is a provider round trip, not local bookkeeping.
     renameSession: (description: string) => new Promise<string | undefined>((resolve, reject) => {
       if (closed) { reject(new Error("the broker connection is closed")); return }
@@ -340,6 +375,8 @@ export function connectClaudeBroker(
       pendingRenames.clear()
       for (const [, entry] of pendingSkills) { clearTimeout(entry.timer); entry.fail(new Error("the broker connection closed before the skill listing was answered")) }
       pendingSkills.clear()
+      for (const [, entry] of pendingMcp) { clearTimeout(entry.timer); entry.fail(new Error("the broker connection closed before the MCP request was answered")) }
+      pendingMcp.clear()
       pendingStops.clear()
       sock?.destroy(); sock = null
     },
