@@ -135,55 +135,61 @@ export function ConsoleSidebar() {
             the box's bottom edge, and the 20px between them is the list's own top padding. The grouping
             switch is the list's first item, so it scrolls away with the rows rather than standing fixed
             over them (maintainer 2026-10-20: "the tab switcher in the sidebar should scroll with the rest
-            of the sidebar"). At rest nothing moves: the switch and the rows sit where they did. */}
-        <div ref={railRef} data-sidebar-rail className="-mt-5 min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden pb-10 pt-5 max-[800px]:overflow-y-visible">
+            of the sidebar"). At rest nothing moves: the switch and the rows sit where they did.
+            Every scroller here keeps a 7px scrollbar gutter (styles.css, `--sbw`), which inside the list
+            would leave the switch 7px short of the prompt box's right edge. So the list reaches 7px past
+            the column, its scrollbar standing in the gap beside it, and the rows take the 7px back. */}
+        <div ref={railRef} data-sidebar-rail className="-mt-5 -mr-[var(--sbw)] min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden pb-10 pt-5 max-[800px]:mr-0 max-[800px]:overflow-y-visible">
           <GroupSwitch group={group} />
-          {pinned.length === 0 && queueRows.length === 0 && runningCount === 0 ? (
-            <div className="py-1 pl-5 pr-1.5 text-[11.5px] text-muted-50">Nothing waiting or running</div>
-          ) : group === "status" ? (
-            <>
-              {/* PINNED — the Console's own shelf, the project board's band in every respect but whose it
-                  is: out of Queue and Running whatever its rows' state, ordered by the pins, dragged to
-                  rearrange. Its waiting rows' cards lead the cards, so the marker reaches them first. */}
-              {pinned.length > 0 && (
-                <section aria-label="Pinned" data-console-pinned>
-                  <SectionHeader label="Pinned" count={pinned.length} />
-                  <PinnedBand
-                    threads={pinned}
-                    railRef={railRef}
-                    activeId={activeId}
-                    onQueueNavigate={navigateToQueueCard}
-                    shelf="console"
-                    leading={square}
-                    onReorder={reorderPins}
+          {/* The rows keep the column's measure; only the switch spans the scrollbar's gutter (above). */}
+          <div className="mr-[var(--sbw)] max-[800px]:mr-0">
+            {pinned.length === 0 && queueRows.length === 0 && runningCount === 0 ? (
+              <div className="py-1 pl-5 pr-1.5 text-[11.5px] text-muted-50">Nothing waiting or running</div>
+            ) : group === "status" ? (
+              <>
+                {/* PINNED — the Console's own shelf, the project board's band in every respect but whose it
+                    is: out of Queue and Running whatever its rows' state, ordered by the pins, dragged to
+                    rearrange. Its waiting rows' cards lead the cards, so the marker reaches them first. */}
+                {pinned.length > 0 && (
+                  <section aria-label="Pinned" data-console-pinned>
+                    <SectionHeader label="Pinned" count={pinned.length} />
+                    <PinnedBand
+                      threads={pinned}
+                      railRef={railRef}
+                      activeId={activeId}
+                      onQueueNavigate={navigateToQueueCard}
+                      shelf="console"
+                      leading={square}
+                      onReorder={reorderPins}
+                    />
+                    {queueRows.length + runningCount > 0 && <hr className="my-3 border-border/50" />}
+                  </section>
+                )}
+                {queueRows.length > 0 && <SectionHeader label="Queue" count={queueRows.length} />}
+                {queueRows.map((t) => row(t, { square: true, waiting: true }))}
+                {runningCount > 0 && queueRows.length > 0 && <hr className="my-3 border-border/50" />}
+                {runningCount > 0 && <SectionHeader label="Running" count={runningCount} />}
+                {/* Newest first, the band's own order: a thread that starts lands at the top. */}
+                {[...starting].reverse().map((entry) => startingRow(entry, { square: true }))}
+                {runningRows.map((t) => row(t, { square: true, waiting: false }))}
+              </>
+            ) : (
+              projectBlocks(waiting, running, order, starting).map((block, i) => (
+                <section key={block.project} aria-label={bySlug.get(block.project)?.name ?? block.project} data-console-project={block.project}>
+                  {i > 0 && <hr className="my-3 border-border/50" />}
+                  <ProjectHeader project={bySlug.get(block.project)} slug={block.project} />
+                  {block.waiting.map((t) => row(t, { square: false, waiting: true }))}
+                  <RunningRows
+                    project={block.project}
+                    rows={block.running}
+                    starting={block.starting}
+                    render={(t) => row(t, { square: false, waiting: false })}
+                    renderStarting={(entry) => startingRow(entry, { square: false })}
                   />
-                  {queueRows.length + runningCount > 0 && <hr className="my-3 border-border/50" />}
                 </section>
-              )}
-              {queueRows.length > 0 && <SectionHeader label="Queue" count={queueRows.length} />}
-              {queueRows.map((t) => row(t, { square: true, waiting: true }))}
-              {runningCount > 0 && queueRows.length > 0 && <hr className="my-3 border-border/50" />}
-              {runningCount > 0 && <SectionHeader label="Running" count={runningCount} />}
-              {/* Newest first, the band's own order: a thread that starts lands at the top. */}
-              {[...starting].reverse().map((entry) => startingRow(entry, { square: true }))}
-              {runningRows.map((t) => row(t, { square: true, waiting: false }))}
-            </>
-          ) : (
-            projectBlocks(waiting, running, order, starting).map((block, i) => (
-              <section key={block.project} aria-label={bySlug.get(block.project)?.name ?? block.project} data-console-project={block.project}>
-                {i > 0 && <hr className="my-3 border-border/50" />}
-                <ProjectHeader project={bySlug.get(block.project)} slug={block.project} />
-                {block.waiting.map((t) => row(t, { square: false, waiting: true }))}
-                <RunningRows
-                  project={block.project}
-                  rows={block.running}
-                  starting={block.starting}
-                  render={(t) => row(t, { square: false, waiting: false })}
-                  renderStarting={(entry) => startingRow(entry, { square: false })}
-                />
-              </section>
-            ))
-          )}
+              ))
+            )}
+          </div>
         </div>
       </div>
     </aside>

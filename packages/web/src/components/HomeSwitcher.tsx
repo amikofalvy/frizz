@@ -17,11 +17,23 @@ import { RAIL_WIDTH_PX } from "./ProjectRail.tsx"
 // under the pill keeps clear of it instead — the Console's card headers stick below it
 // (lib/homeView.ts HOME_SWITCHER_CLEARANCE_PX, TodosView's sticky cap).
 //
+// The two tabs are one fixed width (HOME_TAB_PX), their words centred in them. Sized to its words the
+// pill was 174px, and centred on the page its left edge landed within 4px of the Console cards' left edge
+// in a 1440px window, which read as a misaligned attempt at lining up (maintainer 2026-10-20: "widen the
+// Console/Projects switcher so it doesn't weirdly line up with the left edge of the queue cards"). The
+// cards' edge sits a different distance left of the page's centre at every width — 121px at a 1280px
+// window, 91px at 1440, 40px at 1728, and right of it past ~1900 — so no width avoids it everywhere; at
+// 282px the pill's edge clears the cards' by 20px or more in every window from 1280px up, and in a
+// narrower one it sits well inside them. A fixed width also stops the pill growing and shifting when the
+// count gains a digit.
+//
 // The Console tab carries the queue's size across every project, drawn as the rail's badge FACE (the
 // rail's badge is this face plus a 1px cut-out in the rail's colour; nothing sits under it here, so the
 // cut-out goes). Both the word and the digits are trimmed to their cap band, so the tab's `items-center`
-// centres ink on ink rather than line box on line box, and the 14px face in a 28px tab sits 7px off its
-// top and bottom — so it sits 7px off the tab's end too, and the two round ends share a centre.
+// centres ink on ink rather than line box on line box.
+
+/** Each tab's width: two of them, the 2px between, 3px of padding and a 1px border a side make 282px. */
+const HOME_TAB_PX = 136
 
 /** The face's width per digit count — the rail's badgeWidth less its 1px cut-out each side. */
 function faceWidth(count: number): number {
@@ -68,9 +80,10 @@ export function HomeSwitcher({ railVisible }: { railVisible: boolean }) {
         aria-selected={selected}
         data-home-tab={target}
         onClick={() => { if (!selected) choose(target) }}
-        className={`flex h-7 items-center whitespace-nowrap rounded-full pl-3.5 text-[12.5px] leading-none outline-none transition-colors focus-visible:ring-1 focus-visible:ring-focus-ink-60 ${
-          count ? "pr-[7px]" : "pr-3.5"
-        } ${selected ? "bg-hover-strong text-fg shadow-[inset_0_0_0_1px_var(--hover-strong)]" : "text-muted hover:text-fg"}`}
+        className={`flex h-7 items-center justify-center whitespace-nowrap rounded-full px-3.5 text-[12.5px] leading-none outline-none transition-colors focus-visible:ring-1 focus-visible:ring-focus-ink-60 ${
+          selected ? "bg-hover-strong text-fg shadow-[inset_0_0_0_1px_var(--hover-strong)]" : "text-muted hover:text-fg"
+        }`}
+        style={{ width: HOME_TAB_PX }}
       >
         <span className="block" style={TRIM}>{label}</span>
         {count ? (
