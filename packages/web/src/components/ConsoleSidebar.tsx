@@ -55,11 +55,20 @@ import { StatusRow } from "./StatusRow.tsx"
 export const CONSOLE_SIDEBAR_COLUMN_CLASS =
   "sticky top-0 self-start h-screen w-[clamp(272px,34vw,680px)] shrink-0 flex flex-col pb-4 max-[800px]:static max-[800px]:h-auto max-[800px]:w-full max-[800px]:pt-16"
 
-/** A 16px project square beside a 19px title line: the half-step that centres it on the line. */
+/**
+ * A 16px project square beside a 19px title line: the half-step that centres it on the line.
+ *
+ * `-mr-1` sits it 4px closer to the status squircle than the row's `gap-2` spaces the squircle from the
+ * title, so the square and the squircle read as one pair (maintainer 2026-10-20, option E of
+ * console-row-gap-mockup-fixture.tsx: "4px closer"). MEASURED on that sheet: the square's ink fills its
+ * box and the 15px squircle is centred in a 16px slot, so square → squircle is 4.5px of ink and
+ * squircle → title stays 8.5px. The placeholder for a project the list no longer names takes the same
+ * trim, so its row's title starts where every other row's does.
+ */
 function RowSquare({ project }: { project: ProjectCard | undefined }) {
-  if (!project) return <span aria-hidden className="h-4 w-4 shrink-0" />
+  if (!project) return <span aria-hidden className="-mr-1 h-4 w-4 shrink-0" />
   return (
-    <span className="mt-[1.5px] shrink-0" title={project.name}>
+    <span className="-mr-1 mt-[1.5px] shrink-0" title={project.name}>
       <ProjectSquare project={project} size={16} />
     </span>
   )
@@ -118,16 +127,17 @@ export function ConsoleSidebar() {
   return (
     <aside ref={stackedRailAnchor} className={`${CONSOLE_SIDEBAR_COLUMN_CLASS} ${STACKED_RAIL_ANCHOR_CLASS}`} style={{ paddingTop: CONSOLE_TOP_PX }} data-console-sidebar>
       <div className="flex min-h-0 min-w-0 w-full flex-1 flex-col max-[800px]:max-h-none">
-        {/* mb-5: the 20px that sets the grouping switch off from the prompt box (GroupSwitch). */}
         <div className="mb-5 shrink-0 px-0.5">
           <StatusRow label="All projects" />
           <ConsoleDispatch />
         </div>
-        <GroupSwitch group={group} />
-        {/* The rows scroll BEHIND the switch, as a project's do behind its prompt box (Sidebar.tsx): the
-            12px under the switch is the list's own top padding, so its scroll edge is the switch's bottom
-            edge rather than a strip of page colour below it. */}
-        <div ref={railRef} data-sidebar-rail className="-mt-3 min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden pb-10 pt-3 max-[800px]:overflow-y-visible">
+        {/* The list scrolls BEHIND the prompt box, as a project's does (Sidebar.tsx): its scroll edge is
+            the box's bottom edge, and the 20px between them is the list's own top padding. The grouping
+            switch is the list's first item, so it scrolls away with the rows rather than standing fixed
+            over them (maintainer 2026-10-20: "the tab switcher in the sidebar should scroll with the rest
+            of the sidebar"). At rest nothing moves: the switch and the rows sit where they did. */}
+        <div ref={railRef} data-sidebar-rail className="-mt-5 min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden pb-10 pt-5 max-[800px]:overflow-y-visible">
+          <GroupSwitch group={group} />
           {pinned.length === 0 && queueRows.length === 0 && runningCount === 0 ? (
             <div className="py-1 pl-5 pr-1.5 text-[11.5px] text-muted-50">Nothing waiting or running</div>
           ) : group === "status" ? (
@@ -289,13 +299,14 @@ function RunningRows({
 }
 
 /**
- * "By status" | "By project": a segmented control as wide as the prompt box, the chosen half raised.
+ * "By status" | "By project": a segmented control as wide as the prompt box, the chosen half raised. It
+ * is the first thing in the scrolling list, not chrome over it (see the rail above).
  *
  * It was two borderless words until 2026-10-13, and that read as the prompt box's footer rather than the
  * list's header: 12px of muted text 12px under the box, and lighter than the project names it groups. Of
  * seven mockups the maintainer chose this one ("I do think it's got to be full width. Option C: segmented
- * control"). Full width, it spans the list it sorts; the top block's `mb-5` is the 20px that separates it
- * from the box. The idiom is the GitHub picker's `Segmented` (GithubPickerModal.tsx), stretched to the
+ * control"). Full width, it spans the list it sorts; the list's 20px top padding separates it from the
+ * box. The idiom is the GitHub picker's `Segmented` (GithubPickerModal.tsx), stretched to the
  * column: a bordered track, the chosen segment lifted to `elevated`. The track's 10px corner less its 4px
  * inset (border + `p-[3px]`) is the segments' 6px (`rounded-md`), so the two arcs share a centre.
  */
