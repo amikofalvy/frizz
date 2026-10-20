@@ -751,7 +751,9 @@ class RealClaudeQueryHandle implements ClaudeQueryHandle {
         const status = row.status
         if (!name || !(status === "connected" || status === "failed" || status === "needs-auth" || status === "pending" || status === "disabled")) continue
         const config = row.config && typeof row.config === "object" ? row.config as { type?: unknown; url?: unknown } : undefined
-        const remote = typeof config?.url === "string" || config?.type === "http" || config?.type === "sse"
+        // A URL server is remote unless it is on loopback: the lazy MCP host mounts every project stdio
+        // server as a `127.0.0.1` URL (lazy-mcp-host.ts), and that is still a local server to the operator.
+        const remote = (typeof config?.url === "string" || config?.type === "http" || config?.type === "sse") && !loopbackUrl(config?.url)
         const error = optionalText(row.error, `mcpServerStatus[${index}].error`, 2000)
         out.push({
           name,
@@ -2155,6 +2157,16 @@ function exactText(value: unknown, label: string, maxBytes: number): string {
   const text = safeText(value, label, maxBytes)
   if (text !== value) throw new ClaudeAgentSdkProtocolError(`${label} contains unsafe or oversized text`)
   return text
+}
+
+function loopbackUrl(value: unknown): boolean {
+  if (typeof value !== "string") return false
+  try {
+    const host = new URL(value).hostname
+    return host === "127.0.0.1" || host === "localhost" || host === "[::1]"
+  } catch {
+    return false
+  }
 }
 
 function boundedArray(value: unknown, label: string, maxItems: number): unknown[] {
