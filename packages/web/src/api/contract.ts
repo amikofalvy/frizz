@@ -41,6 +41,13 @@ import type {
   ThreadProfileOptionsInput,
   ThreadSkillsInput,
   ThreadSkillsResult,
+  McpStatusInput,
+  McpStatusResult,
+  McpSignInInput,
+  McpSignInResult,
+  McpSignInAttemptInput,
+  McpSignInPollResult,
+  McpSignInFinishInput,
   ThreadProfileOptionsResult,
   SetThreadProfileInput,
   SetThreadProfileResult,
@@ -198,6 +205,11 @@ export interface Api {
   // The composer's `/` typeahead: the thread's invocable skills, as its own harness reports them.
   // Any failure (no live session, a legacy row) means "no suggestions", never a surfaced error.
   threadSkills(input: ThreadSkillsInput): Promise<ThreadSkillsResult>
+  mcpStatus(input: McpStatusInput): Promise<McpStatusResult>
+  mcpSignIn(input: McpSignInInput): Promise<McpSignInResult>
+  mcpSignInPoll(input: McpSignInAttemptInput): Promise<McpSignInPollResult>
+  mcpSignInFinish(input: McpSignInFinishInput): Promise<McpSignInPollResult>
+  mcpSignInCancel(input: McpSignInAttemptInput): Promise<McpSignInPollResult>
   setThreadProfile(input: SetThreadProfileInput): Promise<SetThreadProfileResult>
   upgradeThreadModel(input: UpgradeThreadModelInput): Promise<UpgradeThreadModelResult>
   markRead(input: { slug: string }): Promise<void>
@@ -429,6 +441,11 @@ export const PROCEDURES = {
   setThreadPermission: "mutation",
   threadProfileOptions: "query",
   threadSkills: "query",
+  mcpStatus: "query",
+  mcpSignIn: "mutation",
+  mcpSignInPoll: "query",
+  mcpSignInFinish: "mutation",
+  mcpSignInCancel: "mutation",
   setThreadProfile: "mutation",
   upgradeThreadModel: "mutation",
   markRead: "mutation",

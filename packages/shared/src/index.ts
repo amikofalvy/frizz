@@ -5159,6 +5159,63 @@ export type ThreadSkillsInput = z.infer<typeof ThreadSkillsInput>
 export const ThreadSkillsResult = z.object({ skills: z.array(ThreadSkill).max(1024) }).strict()
 export type ThreadSkillsResult = z.infer<typeof ThreadSkillsResult>
 
+// The prompt box's MCP menu (the plug in its icon row). It lists the MCP servers of the agent the box
+// talks to: a thread's own session when one is running, otherwise what that agent's next session in this
+// project would get — which is also all the new-thread box can ask about. Claude Code and Codex report;
+// an ACP agent's protocol has no MCP status, so `supported` is false and the list is empty.
+//
+// A TARGET is a thread (`slug`) or, for the new-thread box, the agent its model chip picks (`backend`,
+// plus the model for an ACP agent so the menu can name it).
+export const McpTarget = z.union([
+  z.object({ slug: ThreadSlug }).strict(),
+  z.object({ backend: Backend, model: z.string().trim().max(200).optional() }).strict(),
+])
+export type McpTarget = z.infer<typeof McpTarget>
+// `needs-auth` is the only state the menu asks the human about. `remote` marks a URL server, the only
+// kind that can ever need a sign-in.
+export const McpServerState = z.enum(["connected", "needs-auth", "failed", "pending", "disabled"])
+export type McpServerState = z.infer<typeof McpServerState>
+export const McpServerReading = z.object({
+  name: z.string().min(1).max(256),
+  state: McpServerState,
+  tools: z.number().int().nonnegative().optional(),
+  error: z.string().max(2000).optional(),
+  remote: z.boolean().optional(),
+}).strict()
+export type McpServerReading = z.infer<typeof McpServerReading>
+export const McpStatusInput = McpTarget
+export type McpStatusInput = McpTarget
+export const McpStatusResult = z.object({
+  backend: Backend,
+  /** The agent's display name, for the empty state ("Gemini CLI doesn't support …"). */
+  agent: z.string().max(200),
+  supported: z.boolean(),
+  servers: z.array(McpServerReading).max(256),
+}).strict()
+export type McpStatusResult = z.infer<typeof McpStatusResult>
+
+// A sign-in is an ATTEMPT the server tracks: it opens the provider's page (`authUrl`) in the browser, the
+// agent's CLI catches the return trip on `localhost`, and the menu polls the attempt until it settles.
+// From another device that return trip cannot reach this machine, so the human pastes the address the
+// browser landed on and the server delivers it (`mcpSignInFinish`).
+export const McpSignInInput = z.object({ target: McpTarget, server: z.string().min(1).max(256) }).strict()
+export type McpSignInInput = z.infer<typeof McpSignInInput>
+export const McpSignInState = z.enum(["waiting", "done", "failed", "expired", "cancelled"])
+export type McpSignInState = z.infer<typeof McpSignInState>
+export const McpSignInResult = z.object({
+  attemptId: z.string().min(1).max(64),
+  /** Absent when the agent finished without the human (a refresh token was still good). */
+  authUrl: z.string().url().max(8192).optional(),
+  state: McpSignInState,
+}).strict()
+export type McpSignInResult = z.infer<typeof McpSignInResult>
+export const McpSignInAttemptInput = z.object({ attemptId: z.string().min(1).max(64) }).strict()
+export type McpSignInAttemptInput = z.infer<typeof McpSignInAttemptInput>
+export const McpSignInPollResult = z.object({ state: McpSignInState, error: z.string().max(2000).optional() }).strict()
+export type McpSignInPollResult = z.infer<typeof McpSignInPollResult>
+export const McpSignInFinishInput = z.object({ attemptId: z.string().min(1).max(64), callbackUrl: z.string().trim().min(1).max(8192) }).strict()
+export type McpSignInFinishInput = z.infer<typeof McpSignInFinishInput>
+
 export const SetThreadProfileInput = z.object({
   slug: ThreadSlug,
   model: z.string().trim().min(1).max(200),

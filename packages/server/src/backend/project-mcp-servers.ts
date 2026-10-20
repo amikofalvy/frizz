@@ -41,7 +41,18 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 
 export interface StdioMcpServer { type?: "stdio"; command: string; args?: string[]; env?: Record<string, string> }
-export interface RemoteMcpServer { type: "http" | "sse"; url: string; headers?: Record<string, string> }
+// `oauth` (a pre-registered client: `clientId`, `callbackPort`, …) and `headersHelper` (a command that
+// prints headers) are carried through verbatim. Dropping them, as this did until 2026-10-19, broke the
+// sign-in of any server that needs a fixed client or redirect port. Neither is part of the key Claude
+// Code files a server's token under (its name and `{type, url, headers}`), so keeping them never strands
+// a token the operator already has.
+export interface RemoteMcpServer {
+  type: "http" | "sse"
+  url: string
+  headers?: Record<string, string>
+  oauth?: Record<string, string | number | boolean | string[]>
+  headersHelper?: string
+}
 export type WorkerMcpServer = StdioMcpServer | RemoteMcpServer
 export type WorkerMcpServers = Record<string, WorkerMcpServer>
 
@@ -124,7 +135,10 @@ export function normalizeMcpServer(raw: unknown, env: NodeJS.ProcessEnv): Worker
     const url = expandMcpEnvRefs(record.url, env)
     const headers = expandMap(stringMap(record.headers), env)
     if (url === undefined || headers === null) return undefined
-    return { type, url, ...(headers ? { headers } : {}) }
+    const oauth = oauthConfig(record.oauth)
+    const headersHelper = typeof record.headersHelper === "string" ? expandMcpEnvRefs(record.headersHelper, env) : undefined
+    if (typeof record.headersHelper === "string" && headersHelper === undefined) return undefined
+    return { type, url, ...(headers ? { headers } : {}), ...(oauth ? { oauth } : {}), ...(headersHelper ? { headersHelper } : {}) }
   }
   if (type !== undefined && type !== "stdio") return undefined
   if (typeof record.command !== "string") return undefined
@@ -140,6 +154,17 @@ export function normalizeMcpServer(raw: unknown, env: NodeJS.ProcessEnv): Worker
   const serverEnv = expandMap(stringMap(record.env), env)
   if (serverEnv === null) return undefined
   return { command, ...(args.length ? { args } : {}), ...(serverEnv ? { env: serverEnv } : {}) }
+}
+
+/** A remote server's `oauth` block, keeping only JSON scalars and string lists (what Claude Code reads there). */
+function oauthConfig(value: unknown): RemoteMcpServer["oauth"] | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined
+  const out: NonNullable<RemoteMcpServer["oauth"]> = {}
+  for (const [key, entry] of Object.entries(value as JsonObject)) {
+    if (typeof entry === "string" || typeof entry === "number" || typeof entry === "boolean") out[key] = entry
+    else if (Array.isArray(entry) && entry.every((item) => typeof item === "string")) out[key] = entry as string[]
+  }
+  return Object.keys(out).length ? out : undefined
 }
 
 interface Approval { all: boolean; enabled: Set<string>; disabled: Set<string> }

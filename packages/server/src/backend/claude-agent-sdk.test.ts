@@ -290,6 +290,40 @@ test("stopTask reaches the provider control channel with the exact runtime task 
   }
 })
 
+test("the MCP menu's reads reach the CLI without a turn, and only what it can render comes back", { timeout: 10_000 }, async () => {
+  const harness = startHarness("basic")
+  try {
+    // No ready(): the probe session never runs a turn, so these must not wait on one.
+    assert.deepEqual(await harness.handle.mcpServerStatus(), [
+      { name: "better-stack", status: "connected", tools: 2, remote: true },
+      // The lazy host's loopback URL is a local server to the operator.
+      { name: "local-tools", status: "connected", tools: 1, remote: false },
+      { name: "notion", status: "needs-auth", remote: true },
+      { name: "broken", status: "failed", error: "connect ECONNREFUSED 127.0.0.1:9", remote: false },
+    ])
+    assert.deepEqual(await harness.handle.mcpAuthenticate("notion"), {
+      authUrl: "https://mcp.notion.com/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A61234%2Fcallback",
+      requiresUserAction: true,
+      callbackPort: 61234,
+    })
+    await harness.handle.reconnectMcpServer("notion")
+    await assert.rejects(harness.handle.reconnectMcpServer("nope"), /Server not found: nope/)
+    const records = await waitForCapture(harness.capturePath, (rows) => rows.filter((row) => row.kind === "mcp-reconnect").length === 2)
+    assert.deepEqual(records.filter((row) => row.kind === "mcp-authenticate").map((row) => row.serverName), ["notion"])
+  } finally {
+    await harness.close()
+  }
+})
+
+test("a sign-in address that is not http(s) never reaches the menu", { timeout: 10_000 }, async () => {
+  const harness = startHarness("mcp-auth-hostile")
+  try {
+    await assert.rejects(harness.handle.mcpAuthenticate("notion"), /must be an http\(s\) URL/)
+  } finally {
+    await harness.close()
+  }
+})
+
 test("session init mismatch fails ownership before exposing provider events", { timeout: 10_000 }, async () => {
   const harness = startHarness("mismatch")
   try {

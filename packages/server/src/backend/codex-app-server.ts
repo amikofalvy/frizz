@@ -1680,6 +1680,43 @@ const TurnSteerResponse = z.object({ turnId: Opaque }).passthrough()
 // `skills/list` — the app-server's OWN skill discovery (system/user/repo roots, enable state), so frizz
 // never re-implements or drifts from it. Loose by design: only the fields the composer typeahead needs
 // are read, and an unknown extra field must not fail the listing.
+// `mcpServerStatus/list` with `detail: "toolsAndAuthOnly"` (codex-cli 0.163.0). Lenient past the fields
+// read here: the menu needs the name, the auth verdict, the tool catalogue and its error.
+const McpServerStatusListResponse = z.object({
+  data: z.array(z.object({
+    name: z.string().min(1).max(256),
+    authStatus: z.string().max(64).nullish(),
+    runtimeStatus: z.string().max(64).nullish(),
+    tools: z.record(z.string(), z.unknown()).nullish(),
+    toolsError: z.string().max(4000).nullish(),
+    httpOrigin: z.string().max(2048).nullish(),
+  }).passthrough()).max(256),
+  nextCursor: z.string().max(4096).nullish(),
+}).passthrough()
+
+export interface CodexMcpServerReading {
+  name: string
+  status: "connected" | "failed" | "needs-auth" | "pending" | "disabled"
+  tools?: number
+  error?: string
+  remote?: boolean
+}
+
+export interface CodexMcpOAuthCompleted { name: string; loginId?: string; success: boolean; error?: string }
+
+// Codex's two readings — the credential (`authStatus`) and the connection (`runtimeStatus`, usually null
+// outside a thread) — folded into the menu's one. No credential outranks everything: that is the server
+// asking for a sign-in, and its catalogue error is a symptom of it.
+function codexMcpReading(server: z.infer<typeof McpServerStatusListResponse>["data"][number]): CodexMcpServerReading {
+  const tools = server.tools ? Object.keys(server.tools).length : undefined
+  const base = { name: server.name, remote: Boolean(server.httpOrigin), ...(tools !== undefined && !server.toolsError ? { tools } : {}) }
+  if (server.authStatus === "notLoggedIn" || server.runtimeStatus === "authenticationRequired") return { ...base, status: "needs-auth" }
+  if (server.runtimeStatus === "disabled") return { ...base, status: "disabled" }
+  if (server.runtimeStatus === "failed" || server.toolsError) return { ...base, status: "failed", ...(server.toolsError ? { error: server.toolsError.slice(0, 2000) } : {}) }
+  if (server.runtimeStatus === "starting" || server.runtimeStatus === "notStarted") return { ...base, status: tools !== undefined ? "connected" : "pending" }
+  return { ...base, status: "connected" }
+}
+
 const SkillsListResponse = z.object({
   data: z.array(z.object({
     skills: z.array(z.object({
@@ -2428,6 +2465,67 @@ export class CodexAppServerBridge {
     } finally {
       releaseOperation()
     }
+  }
+
+  // The app-server's MCP servers and their state (`mcpServerStatus/list`), for the prompt box's plug menu.
+  // Asked of the connection, not a thread: Codex's MCP config is the app-server's (one per project), so
+  // the list a new thread gets and the one a running thread has are the same, and the sign-in a server
+  // needs is the app-server's own credential store, not any thread's.
+  async listMcpServers(): Promise<CodexMcpServerReading[]> {
+    const releaseOperation = this.beginOperation()
+    try {
+      const connection = await this.ensureConnected()
+      const out: CodexMcpServerReading[] = []
+      let cursor: string | null | undefined
+      for (let page = 0; page < 8; page += 1) {
+        const response = McpServerStatusListResponse.parse(
+          await connection.request("mcpServerStatus/list", { detail: "toolsAndAuthOnly", ...(cursor ? { cursor } : {}) }),
+        )
+        for (const server of response.data) {
+          if (out.length >= 256) return out
+          out.push(codexMcpReading(server))
+        }
+        cursor = response.nextCursor
+        if (!cursor) break
+      }
+      return out
+    } finally {
+      releaseOperation()
+    }
+  }
+
+  // Start one MCP server's OAuth sign-in. Codex listens for the browser's return trip itself (its
+  // `mcp_oauth_callback_port`) and answers `mcpServer/oauthLogin/completed` when it lands — delivered to
+  // `onMcpOAuthCompleted` listeners, keyed by the login id this returns.
+  async startMcpOAuthLogin(name: string): Promise<{ authUrl: string; loginId?: string }> {
+    const releaseOperation = this.beginOperation()
+    try {
+      const connection = await this.ensureConnected()
+      const response = z.object({ authorizationUrl: z.string().url().max(8192), loginId: z.string().max(256).optional() })
+        .passthrough()
+        .parse(await connection.request("mcpServer/oauth/login", { name }))
+      if (!/^https?:\/\//i.test(response.authorizationUrl)) throw new Error("Codex returned a sign-in page that is not an http(s) URL")
+      return { authUrl: response.authorizationUrl, ...(response.loginId ? { loginId: response.loginId } : {}) }
+    } finally {
+      releaseOperation()
+    }
+  }
+
+  // Re-read the MCP config and reconnect its servers, so a sign-in reaches threads already running.
+  async reloadMcpServers(): Promise<void> {
+    const releaseOperation = this.beginOperation()
+    try {
+      const connection = await this.ensureConnected()
+      await connection.request("config/mcpServer/reload", undefined)
+    } finally {
+      releaseOperation()
+    }
+  }
+
+  private readonly mcpOAuthListeners = new Set<(event: CodexMcpOAuthCompleted) => void>()
+  onMcpOAuthCompleted(listener: (event: CodexMcpOAuthCompleted) => void): () => void {
+    this.mcpOAuthListeners.add(listener)
+    return () => { this.mcpOAuthListeners.delete(listener) }
   }
 
   // The single entry point the dispatcher/router uses to deliver a human follow-up. It owns the
@@ -4198,6 +4296,23 @@ export class CodexAppServerBridge {
   }
 
   private async handleNotification(connection: JsonlRpcConnection, method: string, rawParams: unknown): Promise<void> {
+    if (method === "mcpServer/oauthLogin/completed") {
+      const parsed = z.object({
+        name: z.string().max(256),
+        loginId: z.string().max(256).nullish(),
+        success: z.boolean(),
+        error: z.string().max(2000).nullish(),
+      }).passthrough().safeParse(rawParams)
+      if (!parsed.success) return
+      const event: CodexMcpOAuthCompleted = {
+        name: parsed.data.name,
+        success: parsed.data.success,
+        ...(parsed.data.loginId ? { loginId: parsed.data.loginId } : {}),
+        ...(parsed.data.error ? { error: parsed.data.error } : {}),
+      }
+      for (const listener of this.mcpOAuthListeners) { try { listener(event) } catch {} }
+      return
+    }
     if (method === "error") {
       const parsed = z.object({ threadId: Opaque, turnId: Opaque, error: z.unknown(), willRetry: z.boolean() }).passthrough().safeParse(rawParams)
       if (!parsed.success) return

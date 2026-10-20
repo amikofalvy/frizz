@@ -81,6 +81,13 @@ import {
   ThreadProfileOptionsResult,
   ThreadSkillsInput,
   ThreadSkillsResult,
+  McpStatusInput,
+  McpStatusResult,
+  McpSignInInput,
+  McpSignInResult,
+  McpSignInAttemptInput,
+  McpSignInPollResult,
+  McpSignInFinishInput,
   type ThreadSkill,
   SetThreadProfileInput,
   SetThreadProfileResult,
@@ -2987,6 +2994,56 @@ export function createRouter(ctx: AppContext) {
           skills = await ctx.claudeBroker.listSkills({ threadSlug: input.slug, sessionId: row.session_id })
         }
         return { skills: skills.sort((a, b) => a.name.localeCompare(b.name)) }
+      },
+    }),
+
+    // The prompt box's MCP menu — the plug in its icon row. mcp-status.ts decides where a reading comes
+    // from (a thread's live session, the project's Claude probe, the Codex app-server) and owns the
+    // sign-in attempts. Unavailability THROWS with a reason, which the menu shows in place of the list.
+    mcpStatus: query({
+      input: McpStatusInput,
+      output: McpStatusResult,
+      handler: async ({ input }) => {
+        if (!ctx.mcp) throw new Error("MCP status is not available on this server")
+        return await ctx.mcp.status(input)
+      },
+    }),
+
+    mcpSignIn: mutation({
+      input: McpSignInInput,
+      output: McpSignInResult,
+      handler: async ({ input }) => {
+        if (!ctx.mcp) throw new Error("MCP sign-in is not available on this server")
+        return await ctx.mcp.signIn(input.target, input.server)
+      },
+    }),
+
+    mcpSignInPoll: query({
+      input: McpSignInAttemptInput,
+      output: McpSignInPollResult,
+      handler: async ({ input }) => {
+        if (!ctx.mcp) throw new Error("MCP sign-in is not available on this server")
+        return ctx.mcp.poll(input.attemptId)
+      },
+    }),
+
+    // The paste box: the address a sign-in's last page landed on, from a browser that could not reach this
+    // machine's `localhost`. Delivered only to the loopback port that attempt's own redirect named.
+    mcpSignInFinish: mutation({
+      input: McpSignInFinishInput,
+      output: McpSignInPollResult,
+      handler: async ({ input }) => {
+        if (!ctx.mcp) throw new Error("MCP sign-in is not available on this server")
+        return await ctx.mcp.finish(input.attemptId, input.callbackUrl)
+      },
+    }),
+
+    mcpSignInCancel: mutation({
+      input: McpSignInAttemptInput,
+      output: McpSignInPollResult,
+      handler: async ({ input }) => {
+        if (!ctx.mcp) throw new Error("MCP sign-in is not available on this server")
+        return ctx.mcp.cancel(input.attemptId)
       },
     }),
 

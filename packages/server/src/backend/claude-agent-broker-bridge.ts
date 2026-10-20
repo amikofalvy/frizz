@@ -8,8 +8,8 @@ import { randomUUID } from "node:crypto"
 import { adoptOrForkBroker, brokerLivenessSnapshot, killBroker, lastKnownBrokerDaemon, liveBrokerRecord, liveBrokerRecords, claudeBrokerRecordPath, resolveClaudeExecutableAbsolute, takeBrokerRetirement, type BrokerRetirementMark, type BrokerRetirementReason } from "./claude-broker-host.ts"
 import { connectClaudeBroker, type ClaudeBrokerClient } from "./claude-broker-client.ts"
 import { describeClaudeBrokerExit, readClaudeBrokerExit, type ClaudeBrokerExitRecord } from "./claude-broker-diagnostics.ts"
-import type { ClaudeDiagnostic, ClaudePermissionDecision, ClaudePermissionRequest, ClaudeQueryEvent, ClaudeSkillInfo } from "./claude-agent-sdk-protocol.ts"
-import { CLAUDE_AGENT_SDK_MAX_INPUT_BYTES, CLAUDE_BROKER_CAPABILITY_CANCEL_INPUT, CLAUDE_BROKER_CAPABILITY_INPUT_ACK, CLAUDE_BROKER_CAPABILITY_LIST_SKILLS, CLAUDE_BROKER_CAPABILITY_RENAME, CLAUDE_BROKER_CAPABILITY_STOP_TASK, CLAUDE_BROKER_CAPABILITY_SUBAGENT_STEER, deliverableInputText, validateInputMessage } from "./claude-agent-sdk-protocol.ts"
+import type { ClaudeDiagnostic, ClaudeMcpServerReading, ClaudePermissionDecision, ClaudePermissionRequest, ClaudeQueryEvent, ClaudeSkillInfo } from "./claude-agent-sdk-protocol.ts"
+import { CLAUDE_AGENT_SDK_MAX_INPUT_BYTES, CLAUDE_BROKER_CAPABILITY_CANCEL_INPUT, CLAUDE_BROKER_CAPABILITY_INPUT_ACK, CLAUDE_BROKER_CAPABILITY_LIST_SKILLS, CLAUDE_BROKER_CAPABILITY_MCP, CLAUDE_BROKER_CAPABILITY_RENAME, CLAUDE_BROKER_CAPABILITY_STOP_TASK, CLAUDE_BROKER_CAPABILITY_SUBAGENT_STEER, deliverableInputText, validateInputMessage } from "./claude-agent-sdk-protocol.ts"
 import type { BrokerRecord, ClaudeBrokerConfig } from "./claude-agent-broker.ts"
 import type { InteractionSessionScope, InteractionStore } from "../interaction-store.ts"
 import {
@@ -201,6 +201,19 @@ export interface ClaudeAgentBrokerBridge {
    * global skills, and frizz deliberately has no discovery of its own to fall back on.
    */
   listSkills(input: { threadSlug: string; sessionId: string }): Promise<ClaudeSkillInfo[]>
+  /**
+   * The LIVE session's MCP servers, as its CLI reports them. Throws when there is no live daemon for
+   * the thread or it predates `mcp-v1`; the caller then reads what the thread's next session would get.
+   */
+  mcpServerStatus(input: { threadSlug: string; sessionId: string }): Promise<ClaudeMcpServerReading[]>
+  /** Ask one live session to reconnect an MCP server. Same refusals as mcpServerStatus. */
+  reconnectMcpServer(input: { threadSlug: string; sessionId: string; name: string }): Promise<void>
+  /**
+   * Ask EVERY live session this bridge holds to reconnect `name` — how a sign-in saved once (the token
+   * store is shared by every Claude session on the machine) reaches the threads already running.
+   * Best effort: a session that refuses or predates `mcp-v1` is skipped. Resolves with how many did it.
+   */
+  reconnectMcpServerEverywhere(name: string): Promise<number>
   /**
    * Re-title the LIVE session through the provider — the replacement for typing `/rename` at an
    * interactive `claude` prompt.
@@ -680,6 +693,17 @@ export function createClaudeAgentBrokerBridge(deps: ClaudeBrokerBridgeDeps): Cla
     return record !== null && record.generation === session.generation
   }
 
+  // The held client of a LIVE daemon that speaks `mcp-v1`, or a throw saying why not. Unlike listSkills
+  // this never closes the held session: an MCP read is a background poll from the plug, and a stale
+  // session is dropped by the verbs that act on the thread.
+  const liveMcpClient = async (threadSlug: string, sessionId: string): Promise<ClaudeBrokerClient> => {
+    const held = current(threadSlug, sessionId)
+    if (!held || !holdsLiveDaemon(held)) throw new Error("This thread's Claude session is not running")
+    const record = liveBrokerRecord(claudeBrokerRecordPath(deps.stateDir, held.sessionId))
+    if (!record?.capabilities?.includes(CLAUDE_BROKER_CAPABILITY_MCP)) throw new Error("This thread's Claude session predates MCP status")
+    return held.client
+  }
+
   return {
     async spawnDispatch(input) {
       // A new dispatch replaces any prior session on the slug.
@@ -889,6 +913,21 @@ export function createClaudeAgentBrokerBridge(deps: ClaudeBrokerBridgeDeps): Cla
         throw new Error("This thread's Claude session predates skill listing — its next turn will restart on a session that supports it")
       }
       return await held.client.listSkills()
+    },
+
+    async mcpServerStatus(input) {
+      return await (await liveMcpClient(input.threadSlug, input.sessionId)).mcpServerStatus()
+    },
+
+    async reconnectMcpServer(input) {
+      await (await liveMcpClient(input.threadSlug, input.sessionId)).reconnectMcpServer(input.name)
+    },
+
+    async reconnectMcpServerEverywhere(name) {
+      const held = [...sessions.values()].filter((session) => holdsLiveDaemon(session)
+        && liveBrokerRecord(claudeBrokerRecordPath(deps.stateDir, session.sessionId))?.capabilities?.includes(CLAUDE_BROKER_CAPABILITY_MCP))
+      const results = await Promise.allSettled(held.map((session) => session.client.reconnectMcpServer(name)))
+      return results.filter((result) => result.status === "fulfilled").length
     },
 
     async warmUp() {

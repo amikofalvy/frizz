@@ -43,8 +43,8 @@
 
 
 /** THE RAIL, right to left: send, the microphone (only where on-device dictation exists — see
- *  lib/dictation.ts), the rail action (the dispatch composer's GitHub picker), the paperclip, and the
- *  lead (the thread composer's Goal). Each is a 28px square; any of the middle marks may be absent, and
+ *  lib/dictation.ts), the rail action (the dispatch composer's GitHub picker), the paperclip, the MCP plug
+ *  (components/McpPlug.tsx), and the lead (the thread composer's Goal). Each is a 28px square; any of the middle marks may be absent, and
  *  the marks to its left close up.
  *
  *  What is measured is the BOX GAP between each pair of neighbours — the gap that puts their INK
@@ -52,8 +52,8 @@
  *  box; the bare 15px icons carry 7–9px of empty box per side. Hover outlines do not take part in the
  *  resting rhythm. A pair missing from the table falls back to the paperclip→send gap; add the
  *  measurement rather than relying on it. */
-export type RailMark = "lead" | "paperclip" | "action" | "mic" | "send"
-const RAIL_ORDER: readonly RailMark[] = ["lead", "paperclip", "action", "mic", "send"]
+export type RailMark = "lead" | "mcp" | "paperclip" | "action" | "mic" | "send"
+const RAIL_ORDER: readonly RailMark[] = ["lead", "mcp", "paperclip", "action", "mic", "send"]
 const RAIL_BOX = 28
 const RAIL_SEND_RIGHT = 8
 // Clearance the prose keeps from the leftmost mark.
@@ -69,6 +69,12 @@ const RAIL_BOX_GAP: Partial<Record<`${RailMark}>${RailMark}`, number>> = {
   // 14.75px from the paperclip to send. Measured on a real queue card with scripts/ink-gaps.mjs at dsf 4,
   // 2026-10-05; the two glyphs also read at one weight there (mean contrast 338.5 against 338.9).
   "lead>paperclip": -1,
+  // The plug (16px, lucide's 2-unit pen) wears more dead box than the paperclip or the Goal, and its ink
+  // sits half a pixel right of its box's centre: its square overlaps the paperclip's by 3px and the Goal's
+  // by 2px of empty padding for 14.5px of ink on both sides, against 14.75px from the paperclip to send.
+  // Measured on a real queue card and the new-thread box with scripts/ink-gaps.mjs at dsf 4, 2026-10-19.
+  "mcp>paperclip": -3,
+  "lead>mcp": -2,
   "mic>send": 6,
   "paperclip>mic": -2,
   "action>mic": -3,
@@ -87,11 +93,11 @@ export const SEND_SPLIT_WIDTH = SEND_SPLIT_LABEL_WIDTH + SEND_SPLIT_SEAM_WIDTH +
  *  `sendWidth` is the Send control's own width when it is not the 28px square. A fractional one is
  *  rounded UP for the marks beside it: the button is filled and may end on a half pixel, but a bare
  *  15px icon placed on one draws soft on a 1x screen. */
-export function composerRail(present: { lead?: boolean; action?: boolean; mic?: boolean; sendWidth?: number }): {
+export function composerRail(present: { lead?: boolean; mcp?: boolean; action?: boolean; mic?: boolean; sendWidth?: number }): {
   right: Partial<Record<RailMark, number>>
   reserve: number
 } {
-  const shown: Record<RailMark, boolean> = { send: true, paperclip: true, lead: !!present.lead, action: !!present.action, mic: !!present.mic }
+  const shown: Record<RailMark, boolean> = { send: true, paperclip: true, lead: !!present.lead, mcp: !!present.mcp, action: !!present.action, mic: !!present.mic }
   const marks = RAIL_ORDER.filter((m) => shown[m])
   const right: Partial<Record<RailMark, number>> = {}
   let edge = 0

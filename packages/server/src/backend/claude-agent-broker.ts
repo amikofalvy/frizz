@@ -9,11 +9,13 @@
 //   frizz -> broker:  {t:"input", message, requestId?} | {t:"permission", requestId, decision} | {t:"interrupt", sendNow?: {messageId?}} | {t:"set-mode", mode}
 //                  | {t:"cancel-input", requestId, id} | {t:"stop-task", requestId, taskId}
 //                  | {t:"reload-plugins", requestId} | {t:"rename", requestId, description} | {t:"list-skills", requestId}
+//                  | {t:"mcp-status", requestId} | {t:"mcp-reconnect", requestId, name}
 //   broker -> frizz:  {t:"hello", sessionId, generation} | {t:"event", event} | {t:"permission-request", requestId, request} | {t:"diagnostic", diagnostic}
 //                  | {t:"permission-withdrawn", requestId}   (a request frizz was shown that nothing can answer any more)
 //                  | {t:"input-result", requestId, error?}   (only for an input that carried a requestId)
 //                  | {t:"cancel-result", requestId, cancelled, error?} | {t:"stop-result", requestId, error?}
 //                  | {t:"reload-result", requestId, reloaded?, error?} | {t:"rename-result", requestId, title?, error?} | {t:"skills-result", requestId, skills?, error?}
+//                  | {t:"mcp-status-result", requestId, servers?, error?} | {t:"mcp-reconnect-result", requestId, error?}
 //
 // Control actions that make a user-visible promise are REQUEST/RESPONSE pairs: `cancel-input` carries
 // the CLI's verdict about whether a message will still run, and `stop-task` returns only after the SDK
@@ -40,7 +42,7 @@ import { socketPathOwnership } from "./socket-ownership.ts"
 import { createClaudeBrokerDiagnosticWriter, createClaudeBrokerExitWriter, type ClaudeBrokerExitReason } from "./claude-broker-diagnostics.ts"
 import { claudeClosureFingerprint, claudePluginSyncEnabled, createClaudePluginSync } from "./claude-plugin-sync.ts"
 import { recordObservedClaudeQuota } from "./claude-quota-observed.ts"
-import { CLAUDE_BROKER_CAPABILITY_CANCEL_INPUT, CLAUDE_BROKER_CAPABILITY_INPUT_ACK, CLAUDE_BROKER_CAPABILITY_LIST_SKILLS, CLAUDE_BROKER_CAPABILITY_RELOAD_PLUGINS, CLAUDE_BROKER_CAPABILITY_RENAME, CLAUDE_BROKER_CAPABILITY_STOP_TASK, CLAUDE_BROKER_CAPABILITY_SUBAGENT_STEER, CLAUDE_INPUT_DROP_DIAGNOSTIC_PREFIX } from "./claude-agent-sdk-protocol.ts"
+import { CLAUDE_BROKER_CAPABILITY_CANCEL_INPUT, CLAUDE_BROKER_CAPABILITY_INPUT_ACK, CLAUDE_BROKER_CAPABILITY_LIST_SKILLS, CLAUDE_BROKER_CAPABILITY_MCP, CLAUDE_BROKER_CAPABILITY_RELOAD_PLUGINS, CLAUDE_BROKER_CAPABILITY_RENAME, CLAUDE_BROKER_CAPABILITY_STOP_TASK, CLAUDE_BROKER_CAPABILITY_SUBAGENT_STEER, CLAUDE_INPUT_DROP_DIAGNOSTIC_PREFIX } from "./claude-agent-sdk-protocol.ts"
 import type {
   ClaudeDiagnostic,
   ClaudeInputMessage,
@@ -108,7 +110,7 @@ export interface BrokerRecord {
 // of a VALUE from here — rather than an `import type` — initializes this module inside the server
 // process, where the entry-point check is satisfied by the bundle's own path and the guard fires. That
 // took down the whole control plane on the artifact while dev source (separate files) stayed green.
-const BROKER_CAPABILITIES = [CLAUDE_BROKER_CAPABILITY_SUBAGENT_STEER, CLAUDE_BROKER_CAPABILITY_CANCEL_INPUT, CLAUDE_BROKER_CAPABILITY_STOP_TASK, CLAUDE_BROKER_CAPABILITY_RELOAD_PLUGINS, CLAUDE_BROKER_CAPABILITY_RENAME, CLAUDE_BROKER_CAPABILITY_LIST_SKILLS, CLAUDE_BROKER_CAPABILITY_INPUT_ACK]
+const BROKER_CAPABILITIES = [CLAUDE_BROKER_CAPABILITY_SUBAGENT_STEER, CLAUDE_BROKER_CAPABILITY_CANCEL_INPUT, CLAUDE_BROKER_CAPABILITY_STOP_TASK, CLAUDE_BROKER_CAPABILITY_RELOAD_PLUGINS, CLAUDE_BROKER_CAPABILITY_RENAME, CLAUDE_BROKER_CAPABILITY_LIST_SKILLS, CLAUDE_BROKER_CAPABILITY_INPUT_ACK, CLAUDE_BROKER_CAPABILITY_MCP]
 
 const IDLE_EXIT_MS = 6 * 60 * 60 * 1000
 // How long a permission request waits in this process before frizz is shown it — long enough for the
@@ -540,6 +542,24 @@ export function runClaudeBroker(config: ClaudeBrokerConfig, options: RunClaudeBr
           void (pluginSync?.beforeRead() ?? Promise.resolve()).then(() => handle.listSkills()).then(
             (skills) => write(sock, { t: "skills-result", requestId, skills }),
             (error: unknown) => write(sock, { t: "skills-result", requestId, error: error instanceof Error ? error.message : String(error) }),
+          )
+        }
+        else if (msg.t === "mcp-status") {
+          // The plug menu's reading of this thread's MCP servers. Answered on `sock` like the others.
+          const requestId = msg.requestId as string
+          void handle.mcpServerStatus().then(
+            (servers) => write(sock, { t: "mcp-status-result", requestId, servers }),
+            (error: unknown) => write(sock, { t: "mcp-status-result", requestId, error: error instanceof Error ? error.message : String(error) }),
+          )
+        }
+        else if (msg.t === "mcp-reconnect") {
+          // A sign-in finished in another session saved the token this one was missing; reconnecting is
+          // what makes the server's tools appear here without restarting the thread.
+          const requestId = msg.requestId as string
+          const name = typeof msg.name === "string" ? msg.name : ""
+          void handle.reconnectMcpServer(name).then(
+            () => write(sock, { t: "mcp-reconnect-result", requestId }),
+            (error: unknown) => write(sock, { t: "mcp-reconnect-result", requestId, error: error instanceof Error ? error.message : String(error) }),
           )
         }
         else if (msg.t === "set-mode") void handle.setPermissionMode(msg.mode as never).catch(() => {})

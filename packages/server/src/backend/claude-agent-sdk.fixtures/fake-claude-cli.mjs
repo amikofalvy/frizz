@@ -236,6 +236,33 @@ function handleHostControl(message) {
     respond(message.request_id, { commands: [], agents: [], plugins: [], mcpServers: [], error_count: 0 })
     return
   }
+  // The MCP menu's reads, shaped like the answers real claude 2.1.304 gave a live probe: a remote server, a stdio server the lazy host mounts as a loopback URL, one waiting on a sign-in, a row
+  // with a status the adapter does not know (dropped), and a row with no name (dropped).
+  if (request.subtype === "mcp_status") {
+    respond(message.request_id, {
+      mcpServers: [
+        { name: "better-stack", status: "connected", config: { type: "http", url: "https://mcp.betterstack.com" }, tools: [{ name: "a" }, { name: "b" }] },
+        { name: "local-tools", status: "connected", config: { type: "http", url: "http://127.0.0.1:53111/mcp/local-tools" }, tools: [{ name: "c" }] },
+        { name: "notion", status: "needs-auth", config: { type: "http", url: "https://mcp.notion.com/mcp" } },
+        { name: "broken", status: "failed", error: "connect ECONNREFUSED 127.0.0.1:9", config: { type: "stdio", command: "x" } },
+        { name: "odd", status: "sleeping" },
+        { status: "connected" },
+      ],
+    })
+    return
+  }
+  if (request.subtype === "mcp_authenticate") {
+    record({ kind: "mcp-authenticate", serverName: request.serverName })
+    if (scenario === "mcp-auth-hostile") return respond(message.request_id, { authUrl: "javascript:alert(1)", requiresUserAction: true })
+    respond(message.request_id, { authUrl: "https://mcp.notion.com/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A61234%2Fcallback", requiresUserAction: true, callbackPort: 61234 })
+    return
+  }
+  if (request.subtype === "mcp_reconnect") {
+    record({ kind: "mcp-reconnect", serverName: request.serverName })
+    if (request.serverName !== "notion") return respondError(message.request_id, `Server not found: ${String(request.serverName)}`)
+    respond(message.request_id, {})
+    return
+  }
   respondError(message.request_id, `unsupported fake control subtype ${String(request.subtype)}`)
 }
 

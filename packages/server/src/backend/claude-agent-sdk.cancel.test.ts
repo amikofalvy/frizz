@@ -11,7 +11,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { query } from "@frizz/claude-agent-sdk-runtime"
-import { CLAUDE_SDK_CANCEL_METHOD, CLAUDE_SDK_REQUEST_METHOD } from "./claude-agent-sdk.ts"
+import { CLAUDE_SDK_CANCEL_METHOD, CLAUDE_SDK_MCP_AUTHENTICATE_METHOD, CLAUDE_SDK_REQUEST_METHOD } from "./claude-agent-sdk.ts"
 
 function unspawnedQuery(): Record<string, unknown> {
   return query({
@@ -60,5 +60,16 @@ test("the SDK still exposes the control-request writer a send-now interrupt goes
     "function",
     `@anthropic-ai/claude-agent-sdk no longer exposes Query.${CLAUDE_SDK_REQUEST_METHOD}, so a send-now degrades to a ` +
     `plain interrupt. Point claude-agent-sdk.ts sendNow at whatever the SDK now offers for it.`,
+  )
+})
+
+test("the SDK still exposes the MCP sign-in method the prompt box's plug menu starts", () => {
+  // Undeclared in the .d.ts, so only this notices it going: the menu's Sign in button would start
+  // failing with "Claude MCP sign-in is unavailable" on every Claude server.
+  assert.equal(
+    typeof unspawnedQuery()[CLAUDE_SDK_MCP_AUTHENTICATE_METHOD],
+    "function",
+    `@anthropic-ai/claude-agent-sdk no longer exposes Query.${CLAUDE_SDK_MCP_AUTHENTICATE_METHOD}. Point ` +
+    `claude-agent-sdk.ts mcpAuthenticate at whatever the SDK now offers for an MCP server's OAuth sign-in.`,
   )
 })
