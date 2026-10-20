@@ -41,6 +41,13 @@ export interface McpServiceDeps {
   codexAppServer?: CodexAppServerBridge
   /** The project's Claude MCP probe, created on first use. */
   claudeProbe(): ClaudeMcpProbe
+  /**
+   * Is Claude Code signed in on this machine? The probe is a real Claude Code process, and it starts only
+   * when this says yes — the same condition a Claude dispatch needs. That is what keeps one from ever
+   * running under a sandbox `HOME` (an ad-hoc stack, an e2e test), where Claude Code's keychain writes
+   * raise macOS's "Keychain Not Found" dialog: a sandbox carries no Claude login (CLAUDE.md).
+   */
+  claudeSignedIn(): Promise<boolean>
   /** An ACP agent's display name, from its id. */
   acpAgentLabel(id: string): string | undefined
   now?: () => number
@@ -111,6 +118,14 @@ export function createMcpService(deps: McpServiceDeps): McpService {
   const fetchImpl = deps.fetch ?? fetch
   const attempts = new Map<string, Attempt>()
 
+  // The sign-in check runs `security` on macOS, so its answer is reused for a minute.
+  let signedIn: { at: number; answer: Promise<boolean> } | undefined
+  const probe = async (): Promise<ClaudeMcpProbe> => {
+    if (!signedIn || now() - signedIn.at > 60_000) signedIn = { at: now(), answer: deps.claudeSignedIn().catch(() => false) }
+    if (!(await signedIn.answer)) throw new Error("Claude Code isn't signed in on this machine, so its MCP servers can't be read")
+    return deps.claudeProbe()
+  }
+
   const resolve = (target: McpTarget): Resolved => {
     if ("slug" in target) {
       const row = deps.getSession(target.slug)
@@ -140,7 +155,7 @@ export function createMcpService(deps: McpServiceDeps): McpService {
         // No running daemon, or one older than mcp-v1: fall through to what its next session would get.
       }
     }
-    return withoutFrizz(await deps.claudeProbe().status())
+    return withoutFrizz(await (await probe()).status())
   }
 
   const settle = (attempt: Attempt, state: McpSignInState, error?: string): void => {
@@ -219,15 +234,15 @@ export function createMcpService(deps: McpServiceDeps): McpService {
           throw error
         }
       }
-      const probe = deps.claudeProbe()
-      const started = await probe.authenticate(server)
+      const claude = await probe()
+      const started = await claude.authenticate(server)
       attempt.redirectPort = started.callbackPort ?? loopbackRedirectPort(started.authUrl)
       attempts.set(attempt.id, attempt)
       // The CLI finishes the sign-in on its own and reconnects the server; watch the probe for that.
       attempt.timer = setInterval(() => {
         if (attempt.state !== "waiting") return
         if (now() >= attempt.expiresAt) { settle(attempt, "expired"); return }
-        void probe.serverStatus(server).then((row) => {
+        void claude.serverStatus(server).then((row) => {
           if (row?.status === "connected") settle(attempt, "done")
         }, () => {})
       }, WATCH_MS)

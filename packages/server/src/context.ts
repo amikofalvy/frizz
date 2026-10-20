@@ -35,7 +35,7 @@ import { createCodexBackend, codexSandbox } from "./backend/codex.ts"
 import { readCodexModels } from "./backend/codex-models.ts"
 import { createAcpBackend } from "./backend/acp-transcript.ts"
 import { createAcpBridge, type AcpBridge } from "./backend/acp-bridge.ts"
-import { readClaudePreflightAuth, readCodexAuthState, readCodexBinaryState } from "./backend/auth-status.ts"
+import { readClaudeAuthState, readClaudePreflightAuth, readCodexAuthState, readCodexBinaryState } from "./backend/auth-status.ts"
 import { frizzCliEnv, withFrizzCliOnPath, type AgentBackend } from "./backend/types.ts"
 import { sanitizeProviderChildEnvironment } from "./backend/claude-agent-sdk.ts"
 import { commandWatchEnvironment, createCommandWatchService, type CommandWatchService } from "./command-watch.ts"
@@ -926,6 +926,7 @@ function createContextUnchecked(opts: ContextOptions, resources: PartialContextR
       })),
       lazyCacheDir: join(frizzRoots().data, "mcp-cache"),
     }),
+    claudeSignedIn: async () => (await readClaudeAuthState()) === "authed",
     acpAgentLabel: (id) => acpAgentSpecs(getSettings(storage, home).acpAgents).find((agent) => agent.id === id)?.label,
   })
   contextUnsubscribers.push(() => { void mcp.close(); void claudeMcpProbe?.close() })

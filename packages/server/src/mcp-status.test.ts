@@ -29,6 +29,7 @@ function deps(overrides: Partial<McpServiceDeps> = {}): McpServiceDeps {
         ? { backend: "acp", session_id: "s2", model: "acp:gemini@default" }
         : undefined,
     claudeProbe: () => probe,
+    claudeSignedIn: async () => true,
     acpAgentLabel: (id) => (id === "gemini" ? "Gemini CLI" : undefined),
     ...overrides,
   }
@@ -44,6 +45,14 @@ test("a reading comes from the thread's live session, and from the probe when th
   const fallback = createMcpService(deps({ claudeBroker: gone as unknown as ClaudeAgentBrokerBridge }))
   assert.deepEqual((await fallback.status({ slug: "claude-thread" })).servers.map((row) => `${row.name}:${row.state}`), ["notion:needs-auth", "chrome:connected"])
   assert.equal((await fallback.status({ backend: "claude" })).agent, "Claude Code")
+})
+
+test("with Claude Code signed out the probe never starts, so no Claude Code runs in a sandbox HOME", async () => {
+  let started = 0
+  const mcp = createMcpService(deps({ claudeSignedIn: async () => false, claudeProbe: () => { started += 1; return fakeProbe() } }))
+  await assert.rejects(mcp.status({ backend: "claude" }), /isn't signed in/)
+  await assert.rejects(mcp.signIn({ backend: "claude" }, "notion"), /isn't signed in/)
+  assert.equal(started, 0)
 })
 
 test("an ACP agent reads as unsupported, named", async () => {
