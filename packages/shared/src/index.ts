@@ -3797,6 +3797,11 @@ export const ThreadView = z.object({
   // this instant's order. Lifecycle metadata like the snooze: written only by the pin/unpin verb, and
   // it outranks every derived state (a pinned thread that finishes stays pinned).
   pinnedAt: z.string().optional(),
+  // The instant the human pinned this thread on the CONSOLE's "By status" view (absent = not pinned
+  // there). A second shelf, independent of `pinnedAt`: pinning on the Console does not pin on the
+  // project's board, nor the other way round. The instant is the Console's pinned band's order across
+  // every project, and like the project pin it outranks every derived state.
+  consolePinnedAt: z.string().optional(),
   /** The EVENT snooze on the resting card is armed for this exact rest — the human has said "hide this
    *  until something reports". Distinct from `snoozedUntil`, which is a wall-clock park on the whole
    *  thread: this one has no deadline and clears itself when the thread comes to a NEW rest.
@@ -4822,6 +4827,25 @@ export const ReorderPinnedThreadsInput = z.object({
   slugs: z.array(ThreadSlug).max(500),
 }).strict()
 export type ReorderPinnedThreadsInput = z.infer<typeof ReorderPinnedThreadsInput>
+
+// Pin/unpin a thread on the CONSOLE's "By status" view — its own shelf, separate from the project
+// board's (ThreadView.consolePinnedAt). Session-guarded like the project pin.
+export const SetThreadConsolePinnedInput = z.object({
+  slug: ThreadSlug,
+  sessionId: z.string().min(1),
+  pinned: z.boolean(),
+}).strict()
+export type SetThreadConsolePinnedInput = z.infer<typeof SetThreadConsolePinnedInput>
+
+// A drag in the Console's pinned band. That band spans every project, so no one project can re-deal
+// its order the way reorderPinnedThreads does: the browser deals the shelf's instants back out in the
+// new order and sends each project the new instants of ITS threads that moved. Pins and unpins
+// nothing — a slug that is not pinned on the Console is left alone. Each instant is the canonical UTC
+// form a snooze is (`Date#toISOString`), hence its validator.
+export const ReorderConsolePinnedThreadsInput = z.object({
+  pins: z.array(z.object({ slug: ThreadSlug, at: SnoozeUntil }).strict()).max(500),
+}).strict()
+export type ReorderConsolePinnedThreadsInput = z.infer<typeof ReorderConsolePinnedThreadsInput>
 
 // The recurring prompt's OPERATOR half — the Goal panel, arming and disarming in ONE call. The
 // text, the two triggers and the cadence are all views of one row, and splitting them into separate

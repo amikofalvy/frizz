@@ -1,9 +1,11 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import type { ThreadView } from "@frizz/shared"
-import { consoleCardOrder, projectBlocks } from "./consoleBoard.ts"
+import { consoleCardOrder, consolePinPlacements, projectBlocks } from "./consoleBoard.ts"
 
 const t = (id: string): ThreadView => ({ id }) as ThreadView
+const pinned = (id: string, consolePinnedAt: string, over: Partial<ThreadView> = {}): ThreadView =>
+  ({ id, kind: "session", consolePinnedAt, ...over }) as ThreadView
 
 test("by project, the Queue band and its cards group into the rail's order, keeping each project's queue order", () => {
   // As the queue orders them: oldest first across every project.
@@ -41,4 +43,71 @@ test("a thread that is starting opens its project's block, in the rail's order, 
   )
   // Without one, a project with nothing waiting or running still has no block.
   assert.deepEqual(projectBlocks([t("b~w")], [t("a~r")], ["a", "b", "c"]).map((b) => b.project), ["a", "b"])
+})
+
+test("by status, the Console-pinned cards lead in the shelf's order; a project's own pin moves nothing", () => {
+  const waiting = [
+    t("b~1"),
+    pinned("a~1", "2026-10-02T00:00:00.000Z"),
+    { ...t("c~1"), kind: "session", pinnedAt: "2026-10-01T00:00:00.000Z" } as ThreadView,
+    pinned("a~2", "2026-10-01T00:00:00.000Z"),
+    t("b~2"),
+  ]
+  assert.deepEqual(consoleCardOrder(waiting, "status", ["a", "b", "c"]).map((x) => x.id), ["a~2", "a~1", "b~1", "c~1", "b~2"])
+  // By project the Console's shelf plays no part: each block keeps its queue order.
+  assert.deepEqual(consoleCardOrder(waiting, "project", ["a", "b", "c"]).map((x) => x.id), ["a~1", "a~2", "b~1", "b~2", "c~1"])
+})
+
+// The band as the board would sort it: by instant, then key.
+function apply(shelf: ThreadView[], writes: { id: string; at: string }[]): string[] {
+  const at = new Map(shelf.map((x) => [x.id, x.consolePinnedAt!]))
+  for (const w of writes) at.set(w.id, w.at)
+  return [...at].sort(([a, x], [b, y]) => x.localeCompare(y) || a.localeCompare(b)).map(([id]) => id)
+}
+
+test("a drag in the Console's pinned band is ONE write when there is room between the new neighbours", () => {
+  const shelf = [
+    pinned("a~x", "2026-10-01T00:00:00.000Z"),
+    pinned("b~y", "2026-10-02T00:00:00.000Z"),
+    pinned("a~z", "2026-10-03T00:00:00.000Z"),
+  ]
+  // Every arrangement of the three, each reached by one write.
+  for (const next of [
+    ["a~x", "a~z", "b~y"],
+    ["b~y", "a~x", "a~z"],
+    ["b~y", "a~z", "a~x"],
+    ["a~z", "a~x", "b~y"],
+    ["a~z", "b~y", "a~x"],
+  ]) {
+    const writes = consolePinPlacements(shelf, next)
+    assert.deepEqual(apply(shelf, writes), next, `order ${next.join(",")}`)
+    assert.ok(writes.length <= 1 || next.join() === "a~z,b~y,a~x", `order ${next.join(",")} is one write`)
+  }
+  // To the top: a minute above the top row.
+  assert.deepEqual(consolePinPlacements(shelf, ["a~z", "a~x", "b~y"]), [{ id: "a~z", at: "2026-09-30T23:59:00.000Z" }])
+  // To the bottom: a millisecond past the last row, so a pin made afterwards (stamped now) still lands below it.
+  assert.deepEqual(consolePinPlacements(shelf, ["b~y", "a~z", "a~x"]), [{ id: "a~x", at: "2026-10-03T00:00:00.001Z" }])
+  assert.deepEqual(consolePinPlacements(shelf, shelf.map((x) => x.id)), [], "the same order writes nothing")
+})
+
+test("with no room between the neighbours, the shelf's own instants are dealt again, strictly increasing", () => {
+  // b and c were pinned in the same millisecond, so nothing fits between them.
+  const shelf = [
+    pinned("p~a", "2026-10-01T00:00:00.000Z"),
+    pinned("q~b", "2026-10-02T00:00:00.000Z"),
+    pinned("p~c", "2026-10-02T00:00:00.000Z"),
+    pinned("q~d", "2026-10-03T00:00:00.000Z"),
+    pinned("p~e", "2026-10-04T00:00:00.000Z"),
+  ]
+  const next = ["p~a", "q~b", "p~e", "p~c", "q~d"] // e up between the tied b and c
+  const writes = consolePinPlacements(shelf, next)
+  assert.deepEqual(apply(shelf, writes), next)
+  const at = new Map([...shelf.map((x) => [x.id, x.consolePinnedAt!] as const), ...writes.map((w) => [w.id, w.at] as const)])
+  const instants = next.map((id) => at.get(id)!)
+  assert.ok(instants.every((v, i) => i === 0 || v > instants[i - 1]!), "no two rows are left tied")
+  assert.ok(writes.every((w) => w.at <= "2026-10-04T00:00:00.000Z"), "no instant passes the shelf's latest, so a new pin still lands last")
+  assert.ok(!writes.some((w) => w.id === "p~a" || w.id === "q~b"), "a row whose instant stands is not written")
+  // A list that is not one move — stale, or naming a thread not on the shelf — is dealt the same way.
+  const stale = consolePinPlacements(shelf, ["q~d", "nope", "p~c"])
+  assert.deepEqual(apply(shelf, stale), ["q~d", "p~c", "p~a", "q~b", "p~e"], "listed rows lead; the unlisted keep their order after them")
 })

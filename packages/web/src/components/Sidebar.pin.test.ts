@@ -24,13 +24,13 @@ const base = {
 
 // Retry (on the stalled rows) is an eager send and wants the app's query client; the harness supplies
 // it exactly as Sidebar.retry.test.ts does.
-function row(extra: Partial<ThreadView>) {
+function row(extra: Partial<ThreadView>, props: { shelf?: "board" | "console" } = {}) {
   const t = { ...base, id: "thread", ...extra } as ThreadView
   return renderToStaticMarkup(
     createElement(
       QueryClientProvider,
       { client: new QueryClient({ defaultOptions: { queries: { retry: false } } }) },
-      createElement(TooltipProvider, null, createElement(ThreadRow, { t })),
+      createElement(TooltipProvider, null, createElement(ThreadRow, { t, ...props })),
     ),
   )
 }
@@ -140,4 +140,22 @@ test("a foreign (read-only) row offers no pin verb in either position", () => {
   const html = row({ foreign: true })
   assert.doesNotMatch(html, /data-sidebar-pin=/)
   assert.match(html, /data-expand-thread=/, "the door is still there")
+})
+
+// THE CONSOLE'S "BY STATUS" SHELF is a second pin, and a row shows exactly one of the two: there, its
+// mark and verb read and write the Console's pin, and its project board's pin is not drawn at all.
+test("on the Console's shelf a row speaks for the Console's pin alone", () => {
+  const CONSOLE = { consolePinnedAt: "2026-10-19T10:00:00.000Z" } as Partial<ThreadView>
+  const consolePinned = row(CONSOLE, { shelf: "console" })
+  assert.match(consolePinned, /data-rail-pin-mark/, "pinned on the Console: the mark")
+  assert.match(pinIcon(consolePinned), /aria-label="Unpin thread from All projects"/)
+  assert.match(pinIcon(consolePinned), /data-pin-shelf="console"/)
+
+  const boardPinned = row(PINNED, { shelf: "console" })
+  assert.doesNotMatch(boardPinned, /data-rail-pin-mark/, "a board pin draws no mark on the Console's shelf")
+  assert.match(pinIcon(boardPinned), /aria-label="Pin thread to All projects"/)
+
+  // And the board's rows never read the Console's pin.
+  assert.doesNotMatch(row(CONSOLE), /data-rail-pin-mark/)
+  assert.match(pinIcon(row(CONSOLE)), /aria-label="Pin thread"/)
 })

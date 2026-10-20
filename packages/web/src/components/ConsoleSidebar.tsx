@@ -1,10 +1,10 @@
-import { useMemo, type ReactNode } from "react"
+import { useCallback, useMemo, useRef, type ReactNode } from "react"
 import { useSnapshot } from "valtio"
 import { ChevronDown, ChevronUp } from "lucide-react"
 import type { ProjectCard, ThreadView } from "@frizz/shared"
 import { store } from "../store.ts"
 import { useBoardThreads } from "../hooks.ts"
-import { isPinned } from "../groups.ts"
+import { isConsolePinned, pinnedOn, type PinShelf } from "../groups.ts"
 import { prefs } from "../lib/prefs.ts"
 import { useOptimisticallySteered } from "../lib/steering.ts"
 import { useOptimisticallyArchived } from "../lib/optimisticArchive.ts"
@@ -12,6 +12,8 @@ import { useConsoleProjectList } from "../lib/consoleProjects.ts"
 import {
   RUNNING_CAP,
   consoleCardOrder,
+  consolePinPlacements,
+  consolePinned,
   consoleQueue,
   consoleRunning,
   projectBlocks,
@@ -21,7 +23,8 @@ import {
   useRunningExpanded,
   type ConsoleGroup,
 } from "../lib/consoleBoard.ts"
-import { keyProject } from "../lib/threadKey.ts"
+import { bareSlug, keyProject, threadKey } from "../lib/threadKey.ts"
+import { rpcFor } from "../api/rpc.ts"
 import { unlandedDispatches, useConsolePendingDispatches, type PendingDispatchEntry } from "../lib/pendingDispatch.ts"
 import { ProjectScope } from "../lib/projectScope.tsx"
 import { STACKED_RAIL_ANCHOR_CLASS, stackedRailAnchor } from "../lib/stackedRailAnchor.ts"
@@ -29,7 +32,7 @@ import { CONSOLE_TOP_PX } from "../lib/homeView.ts"
 import { DispatchForm } from "./NewThreadModal.tsx"
 import { useConsoleDispatchTarget } from "./ConsoleProjectChip.tsx"
 import { ProjectSquare } from "./ProjectRail.tsx"
-import { SectionHeader, StartingRow, SubAgentRows, ThreadRow, useQueueScrollspy } from "./Sidebar.tsx"
+import { PinnedBand, SectionHeader, StartingRow, SubAgentRows, ThreadRow, useQueueScrollspy } from "./Sidebar.tsx"
 import { StatusRow } from "./StatusRow.tsx"
 
 // THE CONSOLE'S SIDEBAR — a project board's sidebar, drawn from every open project at once.
@@ -44,6 +47,8 @@ import { StatusRow } from "./StatusRow.tsx"
 //     are worth including");
 //   · a switch between the two groupings, "By status" and "By project", with no label: the two words say
 //     what they do (maintainer 2026-10-11);
+//   · "By status" keeps a pin shelf of its own, apart from every project board's (lib/consoleBoard.ts
+//     PINS): a Pinned band above Queue, drawn and dragged like a board's;
 //   · it is anchored under the home switcher's band rather than centred in the window, because the band
 //     is fixed chrome at the window's top and a centred column would slide under it on a short window.
 
@@ -70,6 +75,13 @@ export function ConsoleSidebar() {
   const order = useMemo(() => projects.map((project) => project.slug), [projects])
   const waiting = consoleCardOrder(consoleQueue(all, direction), group, order)
   const running = consoleRunning(all)
+  // "By status" lifts the Console's own pins out of Queue and Running into the Pinned band above them.
+  // The card order already leads with the pinned rows' cards (consoleCardOrder), so `waiting` stays the
+  // scroll marker's order whole.
+  const pinned = useMemo(() => (group === "status" ? consolePinned(all) : []), [group, all])
+  const queueRows = group === "status" ? waiting.filter((t) => !isConsolePinned(t)) : waiting
+  const runningRows = group === "status" ? running.filter((t) => !isConsolePinned(t)) : running
+  const reorderPins = useConsolePinReorder(pinned)
   // A dispatch from the prompt box above, drawn as the Running row it is about to become — the project
   // sidebar's own treatment (Sidebar.tsx StartingRow). With the "Starting thread…" card that stood under
   // this box instead, every row moved down 93px at the click and back up when the call answered, and the
@@ -77,9 +89,12 @@ export function ConsoleSidebar() {
   // The board's ids are only gathered while one is pending.
   const pending = useConsolePendingDispatches()
   const starting = useMemo(() => (pending.length === 0 ? pending : unlandedDispatches(pending, new Set(all.map((t) => t.id)))), [pending, all])
-  const runningCount = running.length + starting.length
+  const runningCount = runningRows.length + starting.length
   const { railRef, activeId, navigateToQueueCard } = useQueueScrollspy(snap.view, snap.drawers.length, waiting.map((t) => t.id))
 
+  const square = (t: ThreadView) => <RowSquare project={bySlug.get(keyProject(t.id) ?? "")} />
+  // By status the rows speak for the Console's shelf; by project, for each project board's own.
+  const shelf: PinShelf = group === "status" ? "console" : "board"
   const row = (t: ThreadView, opts: { square: boolean; waiting: boolean }) => (
     <div key={t.id}>
       <ThreadRow
@@ -89,8 +104,9 @@ export function ConsoleSidebar() {
         active={opts.waiting && activeId === t.id}
         onQueueNavigate={navigateToQueueCard}
         // A pinned row wears its pin in the rest-time column instead (ThreadRow), as on a project's board.
-        restedAge={opts.waiting && !isPinned(t)}
-        leading={opts.square ? <RowSquare project={bySlug.get(keyProject(t.id) ?? "")} /> : undefined}
+        restedAge={opts.waiting && !pinnedOn(t, shelf)}
+        leading={opts.square ? square(t) : undefined}
+        shelf={shelf}
       />
       <SubAgentRows t={t} />
     </div>
@@ -109,17 +125,35 @@ export function ConsoleSidebar() {
         </div>
         <GroupSwitch group={group} />
         <div ref={railRef} data-sidebar-rail className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden pb-10 max-[800px]:overflow-y-visible">
-          {waiting.length === 0 && runningCount === 0 ? (
+          {pinned.length === 0 && queueRows.length === 0 && runningCount === 0 ? (
             <div className="py-1 pl-5 pr-1.5 text-[11.5px] text-muted-50">Nothing waiting or running</div>
           ) : group === "status" ? (
             <>
-              {waiting.length > 0 && <SectionHeader label="Queue" count={waiting.length} />}
-              {waiting.map((t) => row(t, { square: true, waiting: true }))}
-              {runningCount > 0 && waiting.length > 0 && <hr className="my-3 border-border/50" />}
+              {/* PINNED — the Console's own shelf, the project board's band in every respect but whose it
+                  is: out of Queue and Running whatever its rows' state, ordered by the pins, dragged to
+                  rearrange. Its waiting rows' cards lead the cards, so the marker reaches them first. */}
+              {pinned.length > 0 && (
+                <section aria-label="Pinned" data-console-pinned>
+                  <SectionHeader label="Pinned" count={pinned.length} />
+                  <PinnedBand
+                    threads={pinned}
+                    railRef={railRef}
+                    activeId={activeId}
+                    onQueueNavigate={navigateToQueueCard}
+                    shelf="console"
+                    leading={square}
+                    onReorder={reorderPins}
+                  />
+                  {queueRows.length + runningCount > 0 && <hr className="my-3 border-border/50" />}
+                </section>
+              )}
+              {queueRows.length > 0 && <SectionHeader label="Queue" count={queueRows.length} />}
+              {queueRows.map((t) => row(t, { square: true, waiting: true }))}
+              {runningCount > 0 && queueRows.length > 0 && <hr className="my-3 border-border/50" />}
               {runningCount > 0 && <SectionHeader label="Running" count={runningCount} />}
               {/* Newest first, the band's own order: a thread that starts lands at the top. */}
               {[...starting].reverse().map((entry) => startingRow(entry, { square: true }))}
-              {running.map((t) => row(t, { square: true, waiting: false }))}
+              {runningRows.map((t) => row(t, { square: true, waiting: false }))}
             </>
           ) : (
             projectBlocks(waiting, running, order, starting).map((block, i) => (
@@ -141,6 +175,44 @@ export function ConsoleSidebar() {
       </div>
     </aside>
   )
+}
+
+/**
+ * How a drag in the Console's Pinned band is written. The band spans projects, so the browser works out
+ * the new instants (lib/consoleBoard.ts consolePinPlacements) — usually one row's — and sends each project
+ * its own share. Instants it has sent and the board has not shown yet stand in for the board's, so a
+ * second drag made before the first lands is placed against the order on screen, not the one before it.
+ */
+function useConsolePinReorder(pinned: readonly ThreadView[]): (ids: readonly string[]) => Promise<unknown> {
+  const pinnedRef = useRef(pinned)
+  pinnedRef.current = pinned
+  const sent = useRef(new Map<string, string>())
+  return useCallback((ids: readonly string[]) => {
+    for (const [id, at] of sent.current) {
+      const t = pinnedRef.current.find((x) => x.id === id)
+      if (!t || t.consolePinnedAt === at) sent.current.delete(id)
+    }
+    const shelf = pinnedRef.current
+      .map((t) => (sent.current.has(t.id) ? { ...t, consolePinnedAt: sent.current.get(t.id) } : t))
+      .sort((a, b) => (a.consolePinnedAt ?? "").localeCompare(b.consolePinnedAt ?? "") || a.id.localeCompare(b.id))
+    const writes = consolePinPlacements(shelf, ids)
+    const byProject = new Map<string, { slug: string; at: string }[]>()
+    for (const write of writes) {
+      const project = keyProject(write.id)
+      if (!project) continue
+      sent.current.set(write.id, write.at)
+      let pins = byProject.get(project)
+      if (!pins) byProject.set(project, (pins = []))
+      pins.push({ slug: bareSlug(write.id), at: write.at })
+    }
+    const calls = [...byProject].map(([project, pins]) =>
+      rpcFor(project).reorderConsolePinnedThreads({ pins }).catch((error: unknown) => {
+        for (const pin of pins) sent.current.delete(threadKey(project, pin.slug))
+        throw error
+      }),
+    )
+    return Promise.all(calls)
+  }, [])
 }
 
 /**

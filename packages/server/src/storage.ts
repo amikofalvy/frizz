@@ -90,6 +90,9 @@ export interface SessionRow {
   // and the instant doubles as the pinned band's order. It survives every state change (a pinned thread
   // that finishes stays pinned); only the unpin verb clears it.
   pinned_at?: string | null
+  // The same, for the CONSOLE's "By status" view — a second shelf, independent of `pinned_at`, whose
+  // instants order the Console's pinned band across every project (ThreadView.consolePinnedAt).
+  console_pinned_at?: string | null
   // The thread's RECURRING PROMPT — one piece of text with up to three independent triggers
   // (scheduler.ts SOURCES 4, 5 and 7). `recurring_armed_at` is the GENERATION: editing the text or the
   // cadence mints a new one, so a delivery already queued under the old settings reads as superseded.
@@ -728,6 +731,12 @@ export interface Storage {
   // reorderPinnedStmts below. Pins and unpins nothing: a slug not on the shelf is ignored, and a pinned
   // thread the caller did not list keeps its place after the ones it did.
   reorderPinned(slugs: readonly string[]): void
+  // The Console's pin, the same way: the instant orders the Console's pinned band, null clears it.
+  setConsolePinnedAt(slug: string, at: string | null): void
+  // Write the instants a drag in the Console's pinned band dealt out (the browser deals them, since the
+  // band spans projects — shared ReorderConsolePinnedThreadsInput). Only a slug already pinned on the
+  // Console is written, so a reorder can never pin anything.
+  placeConsolePins(pins: readonly { slug: string; at: string }[]): void
   // Arm/clear the awaiting-background event-snooze. Session-guarded like the park above. `restedAt` is
   // the rest instant the card is snoozed FOR; the board re-surfaces it once rested_at moves past this.
   setBgSnoozeRestedAtIfCurrent(slug: string, sessionId: string, generation: number, restedAt: string | null): boolean
@@ -1122,6 +1131,8 @@ export const STORAGE_SCHEMA = `
       -- 'cli' = this thread's contract taught the frizzctl command line; NULL = it predates that and
       -- was taught the MCP tools (SessionRow.worker_surface). Also in the ALTER list below.
       worker_surface TEXT,
+      -- The Console's own pin (SessionRow.console_pinned_at). Also in the ALTER list below.
+      console_pinned_at TEXT,
       -- THE RECURRING PROMPT (scheduler.ts SOURCES 4, 5 and 7): one text, three independent triggers —
       -- every time the thread rests, every N ms on a clock, and/or every time its context is compacted.
       -- All flags 0 = off; there is no separate enable column, because another flag could only ever
@@ -1434,7 +1445,7 @@ export function ensureStorageSchema(db: Database): void {
   // a file that already exists, and every live install predates any column below — so each rides one
   // additive ALTER here, exactly the stack the schema comment above says the unified file was born
   // without. Keep the list append-only; the try/catch is the "already there" case.
-  for (const column of ["pinned_at TEXT", "acp_agent TEXT", "worker_surface TEXT"]) {
+  for (const column of ["pinned_at TEXT", "acp_agent TEXT", "worker_surface TEXT", "console_pinned_at TEXT"]) {
     try {
       db.exec(`ALTER TABLE session ADD COLUMN ${column}`)
     } catch {
@@ -1872,6 +1883,13 @@ export function createStorage(source: string | Database, projectId: string): Sto
       previous = Number.isFinite(parsed) && parsed > previous ? parsed : previous + 1
       pinnedAtStmt.run(new Date(previous).toISOString(), slug)
     })
+  })
+  const consolePinnedAtStmt = scope.prepare("UPDATE session SET console_pinned_at = ? WHERE project_id = @project_id AND slug = ?")
+  const placeConsolePinStmt = scope.prepare(
+    "UPDATE session SET console_pinned_at = ? WHERE project_id = @project_id AND slug = ? AND console_pinned_at IS NOT NULL",
+  )
+  const placeConsolePins = db.transaction((pins: readonly { slug: string; at: string }[]) => {
+    for (const pin of pins) placeConsolePinStmt.run(pin.at, pin.slug)
   })
   // The session-guarded park. Deliberately leaves snooze_prompt alone: it parks an instant without
   // arming a scheduled bump, so a caller that wants both writes both.
@@ -2866,6 +2884,8 @@ export function createStorage(source: string | Database, projectId: string): Sto
       snoozedUntilIfCurrentStmt.run(until, slug, sessionId, generation).changes === 1,
     setPinnedAt: (slug, at) => void pinnedAtStmt.run(at, slug),
     reorderPinned: (slugs) => reorderPinned(slugs),
+    setConsolePinnedAt: (slug, at) => void consolePinnedAtStmt.run(at, slug),
+    placeConsolePins: (pins) => placeConsolePins(pins),
     setBgSnoozeRestedAtIfCurrent: (slug, sessionId, generation, restedAt) =>
       bgSnoozeRestedAtIfCurrentStmt.run(restedAt, slug, sessionId, generation).changes === 1,
     setRecurringPromptIfCurrent: (slug, sessionId, generation, write) =>

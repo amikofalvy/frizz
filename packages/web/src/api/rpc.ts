@@ -103,6 +103,9 @@ export const PROJECT_SCOPED_PROCEDURES: ReadonlySet<string> = new Set([
   "claudeModels",
   "acpAgents",
   "acpAgentModels",
+  // Names its threads in a list, not by a keyed `slug`, so the key cannot route it: the Console makes
+  // one call per project through `rpcFor` (lib/consoleBoard.ts reorderConsolePins).
+  "reorderConsolePinnedThreads",
 ])
 
 /** Machine-wide procedures whose input carries a REAL slug that is not this page's thread. */

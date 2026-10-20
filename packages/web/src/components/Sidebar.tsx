@@ -8,7 +8,8 @@ import { store, openThread, scrollToQueueCard, queueCardTargetY, pushSubAgentDra
 import { rpc } from "../api/rpc.ts"
 import { useBoardThreads } from "../hooks.ts"
 import { prefs } from "../lib/prefs.ts"
-import { sectionThreads, externalThreads, orderByInteraction, partitionActive, needsAction, displayTitle, titleIsProvisional, SPINNING_UP_TITLE, isPinned, isSnoozed, parkedAwaitingHint, sessionIndicatorKind, offersRetry, futureSnoozedUntil, lastActiveLabelAt, waitNamesPr, prChecksRunning, restingOnSubAgents, restIsWorking, workingWithOpenQuestion } from "../groups.ts"
+import type { PinShelf } from "../groups.ts"
+import { sectionThreads, externalThreads, orderByInteraction, partitionActive, needsAction, displayTitle, titleIsProvisional, SPINNING_UP_TITLE, pinnedOn, isSnoozed, parkedAwaitingHint, sessionIndicatorKind, offersRetry, futureSnoozedUntil, lastActiveLabelAt, waitNamesPr, prChecksRunning, restingOnSubAgents, restIsWorking, workingWithOpenQuestion } from "../groups.ts"
 import { ageSpan, relativeAge, limitResumeClock } from "../lib/activityTime.ts"
 import { useNowMs } from "../lib/liveClock.ts"
 import { BoxSpinner, STATUS_BOX } from "./BoxSpinner.tsx"
@@ -418,7 +419,13 @@ export function Sidebar() {
 // PIN_DRAG_THRESHOLD_PX, so a click still opens the thread; the held row follows the pointer inside the
 // band while the rows it passes slide aside; the drop writes the band's whole order and holds it on
 // screen until the board carries it back. Alt+↑/↓ on a focused row moves it one slot, as on the rail.
+//
+// THE CONSOLE'S "BY STATUS" VIEW DRAWS ONE TOO (ConsoleSidebar.tsx), for its own shelf: `shelf` says
+// which pin the rows speak for, `leading` carries each row's project square, and `onReorder` is how
+// that shelf is written — one call to this project here, one per project there.
 const PIN_DRAG_THRESHOLD_PX = 4
+/** How long a drop is drawn while the board has not caught up with it, before the board is believed again. */
+const PIN_ARRANGEMENT_HOLD_MS = 10_000
 /** When the last pinned-row drag ended: the click the browser fires on release must not open the row. */
 let pinDragEndedAt = 0
 
@@ -439,38 +446,63 @@ function inPinOrder(threads: readonly ThreadView[], ids: readonly string[]): rea
   return named.length === threads.length ? named : [...named, ...threads.filter((t) => !ids.includes(t.id))]
 }
 
-function PinnedBand({ threads, railRef, activeId, onQueueNavigate }: {
+/** A project board's shelf, written in one call: the band's whole order, re-dealt by the server. */
+function reorderBoardPins(ids: readonly string[]): Promise<unknown> {
+  return rpc.reorderPinnedThreads({ slugs: [...ids] })
+}
+
+/** The band's members, order aside: a pin or an unpin changes them, a reorder does not. */
+const membersKey = (ids: readonly string[]) => [...ids].sort().join("\n")
+
+export function PinnedBand({ threads, railRef, activeId, onQueueNavigate, shelf = "board", leading, onReorder = reorderBoardPins }: {
   threads: readonly ThreadView[]
   railRef: RefObject<HTMLDivElement | null>
   activeId: string | null
   onQueueNavigate: (id: string) => void
+  /** Which pin the rows speak for: the project board's, or the Console's (groups.ts pinnedOn). */
+  shelf?: PinShelf
+  /** A mark before each row's indicator — the Console's project square. */
+  leading?: (t: ThreadView) => ReactNode
+  /** Write the band's new order, top first. */
+  onReorder?: (ids: readonly string[]) => Promise<unknown>
 }) {
   const bandRef = useRef<HTMLDivElement>(null)
   const [drag, setDrag] = useState<PinDrag | null>(null)
-  // The order the human just made, drawn until the board's own pinned order next changes — the write
-  // landing, or anything else moving the shelf, after which the board is the truth again. `base` is the
-  // board's order at the moment it was made.
-  const [arranged, setArranged] = useState<{ ids: readonly string[]; base: string } | null>(null)
-  const boardKey = threads.map((t) => t.id).join("\n")
-  const boardKeyRef = useRef(boardKey)
-  boardKeyRef.current = boardKey
+  // The order the human just made, drawn until the board AGREES with it — the write landed — or the
+  // shelf's members change (a pin or unpin anywhere: the board is the truth again), or the write fails,
+  // or PIN_ARRANGEMENT_HOLD_MS passes without the board catching up. Waiting for agreement, not for the
+  // board's next change, is what the Console needs: its band spans projects, a drop there can be
+  // written to more than one, and each project's write reaches the board in a delta of its own, so the
+  // first to land would draw an order that is neither the old one nor the new for a beat.
+  const [arranged, setArranged] = useState<{ ids: readonly string[]; members: string } | null>(null)
+  const boardIds = threads.map((t) => t.id)
+  const boardKey = boardIds.join("\n")
+  const boardMembers = membersKey(boardIds)
   useEffect(() => {
-    if (arranged && arranged.base !== boardKey) setArranged(null)
-  }, [arranged, boardKey])
+    if (arranged && (arranged.ids.join("\n") === boardKey || arranged.members !== boardMembers)) setArranged(null)
+  }, [arranged, boardKey, boardMembers])
+  useEffect(() => {
+    if (!arranged) return
+    const timer = setTimeout(() => setArranged((current) => (current === arranged ? null : current)), PIN_ARRANGEMENT_HOLD_MS)
+    return () => clearTimeout(timer)
+  }, [arranged])
   const shown = useMemo(() => {
     if (drag) {
       // The latest copy of each row the drag picked up, so a spinner still stops mid-drag.
       const byId = new Map(threads.map((t) => [t.id, t]))
       return drag.list.map((t) => byId.get(t.id) ?? t)
     }
-    return arranged && arranged.base === boardKey ? inPinOrder(threads, arranged.ids) : threads
-  }, [drag, arranged, boardKey, threads])
+    return arranged && arranged.members === boardMembers ? inPinOrder(threads, arranged.ids) : threads
+  }, [drag, arranged, boardMembers, threads])
 
+  const onReorderRef = useRef(onReorder)
+  onReorderRef.current = onReorder
   const commit = useCallback((next: readonly ThreadView[]) => {
     const ids = next.map((t) => t.id)
-    setArranged({ ids, base: boardKeyRef.current })
-    rpc.reorderPinnedThreads({ slugs: ids }).catch((error: unknown) => {
-      setArranged((current) => (current?.ids === ids ? null : current))
+    const made = { ids, members: membersKey(ids) }
+    setArranged(made)
+    onReorderRef.current(ids).catch((error: unknown) => {
+      setArranged((current) => (current === made ? null : current))
       showToast(`Reorder failed: ${String(error instanceof Error ? error.message : error).slice(0, 80)}`)
     })
   }, [])
@@ -586,7 +618,7 @@ function PinnedBand({ threads, railRef, activeId, onQueueNavigate }: {
               transition: drag && !held ? "transform 160ms ease" : undefined,
             }}
           >
-            <ThreadRow t={t} active={activeId === t.id} onQueueNavigate={onQueueNavigate} />
+            <ThreadRow t={t} active={activeId === t.id} onQueueNavigate={onQueueNavigate} shelf={shelf} leading={leading?.(t)} />
             <SubAgentRows t={t} />
           </div>
         )
@@ -814,6 +846,7 @@ export const ThreadRow = memo(function ThreadRow({
   onQueueNavigate,
   restedAge = false,
   leading,
+  shelf = "board",
 }: {
   t: ThreadView
   legacy?: boolean
@@ -823,6 +856,9 @@ export const ThreadRow = memo(function ThreadRow({
   restedAge?: boolean
   /** A mark before the indicator — the Console's project square (ConsoleSidebar.tsx). */
   leading?: ReactNode
+  /** Which pin the row's mark and pin verb speak for: its project board's, or the Console's "By status"
+   *  shelf (groups.ts isConsolePinned). One row shows ONE shelf's pin, never both. */
+  shelf?: PinShelf
 }) {
   const foreign = !legacy && t.foreign === true
   // Snoozed rows are uniformly grayed as a whole; provisional titles retain their local dim treatment.
@@ -846,7 +882,7 @@ export const ThreadRow = memo(function ThreadRow({
   const canRestart = !legacy && offersRetry(t)
   // A pinned row wears the mark in its right-edge column AND places the unpin verb rightmost in the
   // hover strip; both read this one predicate so the two can never disagree.
-  const pinned = !legacy && isPinned(t)
+  const pinned = !legacy && pinnedOn(t, shelf)
   // A ROW IS ITS TITLE, AND NOTHING ELSE (maintainer 2026-08-19: "there should never ever be any fucking
   // thing in the sidebar except for the fucking title"). There is no subtitle line on any row, in any
   // state: not the fence's PR ref, not a snooze, not the legacy `.frizz` activity gloss, not a sub-agent
@@ -984,10 +1020,10 @@ export const ThreadRow = memo(function ThreadRow({
               side so the strip reads ONE gap — pin→door 10px after the trim. The unpin needs no trim: it
               is the strip's last mark and its 11px ink already sits 10.5px from Retry. RE-MEASURE rather
               than re-guess if a glyph, its size or the gap changes. */}
-          {!foreign && !pinned && <RowPinButton t={t} className="-mr-0.5" />}
+          {!foreign && !pinned && <RowPinButton t={t} shelf={shelf} className="-mr-0.5" />}
           <ExpandThreadLink slug={t.id} size={12} className={ROW_ACTION_CLASS} />
           {canRestart && <RowRetryButton slug={t.id} />}
-          {!foreign && pinned && <RowPinButton t={t} />}
+          {!foreign && pinned && <RowPinButton t={t} shelf={shelf} />}
         </div>
       )}
       {/* Live children render as SIBLING rows under this one, not inside it — see SubAgentRows, which
@@ -1128,14 +1164,40 @@ function PinnedMark() {
 // offers to unpin, so a filled pin anywhere on the rail means "pinned" and nothing else (maintainer
 // 2026-09-02: "use the solid pin icon to make sure that the icons are consistent everywhere";
 // 2026-09-03: "the pin icon should be unfilled for unpinned threads").
-function RowPinButton({ t, className = "" }: { t: ThreadView; className?: string }) {
-  const pinned = isPinned(t)
+//
+// On the Console's "By status" view the same verb writes the CONSOLE's shelf instead, and says so: two
+// shelves now exist, and a tooltip that read the same on both would not tell the human which one a click
+// changes.
+const PIN_COPY: Record<PinShelf, { pin: string; unpin: string; pinLabel: string; unpinLabel: string }> = {
+  board: {
+    pin: "Pin — keep this thread at the very top",
+    unpin: "Unpin — return this thread to the rail's bands",
+    pinLabel: "Pin thread",
+    unpinLabel: "Unpin thread",
+  },
+  console: {
+    pin: "Pin to All projects — keep this thread at the top here",
+    unpin: "Unpin from All projects — return this thread to its band",
+    pinLabel: "Pin thread to All projects",
+    unpinLabel: "Unpin thread from All projects",
+  },
+}
+
+function setPinnedOn(t: ThreadView, shelf: PinShelf, pinned: boolean): Promise<void> {
+  const input = { slug: t.id, sessionId: t.sessionId ?? "", pinned }
+  return shelf === "console" ? rpc.setThreadConsolePinned(input) : rpc.setThreadPinned(input)
+}
+
+function RowPinButton({ t, shelf, className = "" }: { t: ThreadView; shelf: PinShelf; className?: string }) {
+  const pinned = pinnedOn(t, shelf)
+  const copy = PIN_COPY[shelf]
   const [busy, setBusy] = useState(false)
   return (
-    <Tooltip label={pinned ? "Unpin — return this thread to the rail's bands" : "Pin — keep this thread at the very top"}>
+    <Tooltip label={pinned ? copy.unpin : copy.pin}>
       <button
         data-sidebar-pin={t.id}
-        aria-label={pinned ? "Unpin thread" : "Pin thread"}
+        data-pin-shelf={shelf}
+        aria-label={pinned ? copy.unpinLabel : copy.pinLabel}
         disabled={busy}
         // Same two guards as Retry: keep DOM focus off the button so the hover reveal doesn't outlive
         // the pointer, and stop the press from reaching the row (which would also open the thread).
@@ -1143,8 +1205,7 @@ function RowPinButton({ t, className = "" }: { t: ThreadView; className?: string
         onClick={(e) => {
           e.stopPropagation()
           setBusy(true)
-          rpc
-            .setThreadPinned({ slug: t.id, sessionId: t.sessionId ?? "", pinned: !pinned })
+          setPinnedOn(t, shelf, !pinned)
             .catch((error: unknown) => showToast(`${pinned ? "Unpin" : "Pin"} failed: ${String(error instanceof Error ? error.message : error).slice(0, 80)}`))
             .finally(() => setBusy(false))
         }}

@@ -67,6 +67,8 @@ import type {
   OwnThreadTimersResult,
   SetThreadPinnedInput,
   ReorderPinnedThreadsInput,
+  SetThreadConsolePinnedInput,
+  ReorderConsolePinnedThreadsInput,
   SetThreadSnoozeInput,
   TranscriptMessage,
   TranscriptPage,
@@ -215,6 +217,10 @@ export interface Api {
   setThreadPinned(input: SetThreadPinnedInput): Promise<void>
   // The pinned band's new order after a drag, top first.
   reorderPinnedThreads(input: ReorderPinnedThreadsInput): Promise<void>
+  // The Console's own pin, for its "By status" view — a shelf apart from the project board's.
+  setThreadConsolePinned(input: SetThreadConsolePinnedInput): Promise<void>
+  // One project's share of a drag in the Console's pinned band: its moved threads' new instants.
+  reorderConsolePinnedThreads(input: ReorderConsolePinnedThreadsInput): Promise<void>
   // THE RECURRING PROMPT, armed entirely from the Goal panel: one text, and up to two triggers
   // (every rest, and/or every N minutes). Text, triggers and cadence travel together — they are one row.
   setThreadRecurringPrompt(input: SetThreadRecurringPromptInput): Promise<void>
@@ -432,6 +438,8 @@ export const PROCEDURES = {
   setThreadSnooze: "mutation",
   setThreadPinned: "mutation",
   reorderPinnedThreads: "mutation",
+  setThreadConsolePinned: "mutation",
+  reorderConsolePinnedThreads: "mutation",
   setThreadRecurringPrompt: "mutation",
   setOwnThreadRecurringPrompt: "mutation",
   setOwnThreadTitle: "mutation",

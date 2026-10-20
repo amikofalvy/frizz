@@ -52,6 +52,8 @@ import {
   type ThreadTimerView,
   SetThreadPinnedInput,
   ReorderPinnedThreadsInput,
+  SetThreadConsolePinnedInput,
+  ReorderConsolePinnedThreadsInput,
   SetThreadSnoozeInput,
   GithubStatus,
   GithubListInput,
@@ -3176,6 +3178,31 @@ export function createRouter(ctx: AppContext) {
       input: ReorderPinnedThreadsInput,
       handler: async ({ input }) => {
         ctx.storage.reorderPinned(input.slugs)
+        ctx.board.refresh()
+      },
+    }),
+
+    // The CONSOLE's pin — the "By status" view's own shelf, kept apart from the project board's pin
+    // above (ThreadView.consolePinnedAt). Same gate as the project pin: a session Frizz owns, in any
+    // state, so the Console's pin outranks Done as the board's does.
+    setThreadConsolePinned: mutation({
+      input: SetThreadConsolePinnedInput,
+      handler: async ({ input }) => {
+        currentOwnedSession(input.slug, input.sessionId)
+        const thread = (await ctx.board.snapshot()).threads.find((candidate) => candidate.id === input.slug)
+        if (!thread || thread.kind !== "session" || thread.foreign) throw new Error(`thread ${input.slug} is not editable`)
+        ctx.storage.setConsolePinnedAt(input.slug, input.pinned ? new Date().toISOString() : null)
+        ctx.board.refresh()
+      },
+    }),
+
+    // A drag in the Console's pinned band, as THIS project's share of it: the new instants of its own
+    // threads that moved. The browser deals them, because the band spans every project and no one
+    // project's storage holds the whole shelf (shared ReorderConsolePinnedThreadsInput).
+    reorderConsolePinnedThreads: mutation({
+      input: ReorderConsolePinnedThreadsInput,
+      handler: async ({ input }) => {
+        ctx.storage.placeConsolePins(input.pins)
         ctx.board.refresh()
       },
     }),

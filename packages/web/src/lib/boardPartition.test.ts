@@ -1,8 +1,8 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { activeBandThread, sectionOf, type ThreadView } from "@frizz/shared"
-import { externalThreads, isPinned, orderActive, orderByInteraction, orderQueue, queued, sectionThreads, type SectionedThreads } from "../groups.ts"
-import { consoleQueue, consoleRunning } from "./consoleBoard.ts"
+import { externalThreads, isConsolePinned, isPinned, orderActive, orderByInteraction, orderQueue, queued, sectionThreads, type SectionedThreads } from "../groups.ts"
+import { consolePinned, consoleQueue, consoleRunning } from "./consoleBoard.ts"
 import { optimisticallySteered, overlayEach, overlayLive } from "./steering.ts"
 import { partitionBoard, settledThread } from "./boardPartition.ts"
 
@@ -54,6 +54,7 @@ function randomThread(id: string, r: () => number): ThreadView {
     kind: r() < 0.03 ? undefined : "session",
     foreign: r() < 0.05,
     pinnedAt: r() < 0.05 ? `2026-10-0${1 + Math.floor(r() * 9)}T00:00:00.000Z` : undefined,
+    consolePinnedAt: r() < 0.05 ? `2026-10-0${1 + Math.floor(r() * 9)}T00:00:00.000Z` : undefined,
     state: archived ? "archived" : "open",
     archived,
     runtime: pick(["turn-idle", "turn-idle", "turn-idle", "exited", "running", "spawning"] as const),
@@ -107,6 +108,9 @@ function checkAgainstReference(threads: readonly ThreadView[], label: string): v
     assert.deepEqual(ids(consoleQueue(threads, direction)), ids(orderQueue(threads.filter(queued), direction)), `${label}: Console queue, ${direction}`)
   }
   assert.deepEqual(ids(consoleRunning(threads)), ids(orderByInteraction(threads.filter(activeBandThread))), `${label}: Console running`)
+  // Its pinned band reads the settled threads too: a Console pin outranks Done.
+  const consoleShelf = threads.filter(isConsolePinned).sort((a, b) => (a.consolePinnedAt ?? "").localeCompare(b.consolePinnedAt ?? "") || a.id.localeCompare(b.id))
+  assert.deepEqual(ids(consolePinned(threads)), ids(consoleShelf), `${label}: Console pinned`)
   const now = Date.parse("2026-10-14T00:00:00.000Z")
   const steer = (t: ThreadView) => optimisticallySteered(t, undefined, now)
   const live = overlayLive(threads, steer)

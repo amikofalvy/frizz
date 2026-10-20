@@ -1981,6 +1981,7 @@ function sessionThreadView(
     // already-delivered (or superseded) bump the row has not been swept clean of yet.
     snoozePrompt: snoozedUntil ? row.snooze_prompt ?? undefined : undefined,
     pinnedAt: row.pinned_at ?? undefined,
+    consolePinnedAt: row.console_pinned_at ?? undefined,
     // The event-snooze, as a fact the CHAT can read. `awaitingBackground` still ignores it — that flag
     // states whether the thread is waiting, which the snooze does not change — so the suppression is a
     // presentation rule the client applies, not a second opinion about the thread's state.

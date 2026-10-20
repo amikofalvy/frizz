@@ -1332,6 +1332,50 @@ test("reorderPinned re-deals the shelf's own instants onto the dragged order, an
   }
 })
 
+test("console_pinned_at: its own shelf — a pre-column file gains it, it never touches the project pin, and a placement pins nothing", () => {
+  const dir = mkdtempSync(join(tmpdir(), "frizz-storage-console-pin-"))
+  const path = join(dir, "ui.db")
+  // Every live install's file predates the column, so the ALTER in ensureStorageSchema must add it.
+  const preColumn = new Database(path)
+  const stripped = STORAGE_SCHEMA.replace(/^\s*console_pinned_at\s+TEXT,\n/m, "")
+  assert.notEqual(stripped, STORAGE_SCHEMA, "the strip found the column line (keep this regex with the DDL)")
+  preColumn.exec(stripped)
+  preColumn.close()
+
+  let s = createStorage(path, "p")
+  try {
+    for (const slug of ["a", "b", "loose"]) s.upsertSession(row({ slug, state: "open" }))
+    s.setConsolePinnedAt("a", "2026-10-01T00:00:00.000Z")
+    s.setConsolePinnedAt("b", "2026-10-02T00:00:00.000Z")
+    s.setPinnedAt("loose", "2026-10-03T00:00:00.000Z")
+    assert.equal(s.getSession("a")?.pinned_at, null, "a Console pin is not a project pin")
+    assert.equal(s.getSession("loose")?.console_pinned_at, null, "nor the other way round")
+    s.close()
+
+    s = createStorage(path, "p")
+    assert.equal(s.getSession("a")?.console_pinned_at, "2026-10-01T00:00:00.000Z", "the pin survives a restart")
+    s.setState("a", "archived")
+    assert.equal(s.getSession("a")?.console_pinned_at, "2026-10-01T00:00:00.000Z", "Archive leaves it in place")
+
+    s.placeConsolePins([
+      { slug: "a", at: "2026-10-02T00:00:00.000Z" },
+      { slug: "b", at: "2026-10-01T00:00:00.000Z" },
+      { slug: "loose", at: "2026-09-01T00:00:00.000Z" },
+      { slug: "nope", at: "2026-09-01T00:00:00.000Z" },
+    ])
+    assert.equal(s.getSession("a")?.console_pinned_at, "2026-10-02T00:00:00.000Z")
+    assert.equal(s.getSession("b")?.console_pinned_at, "2026-10-01T00:00:00.000Z")
+    assert.equal(s.getSession("loose")?.console_pinned_at, null, "a placement never pins anything")
+    assert.equal(s.getSession("loose")?.pinned_at, "2026-10-03T00:00:00.000Z", "and never moves a project pin")
+
+    s.setConsolePinnedAt("a", null)
+    assert.equal(s.getSession("a")?.console_pinned_at, null, "unpin clears it")
+  } finally {
+    s.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 // ── the batched registry reads ──────────────────────────────────────────────────────────────────────
 // The board reads five per-thread tables for EVERY row it assembles, and it used to ask each of them
 // one thread at a time: 2,790 statements per rebuild on the maintainer's 558-thread board, all of it

@@ -297,6 +297,21 @@ export function isPinned(t: ThreadView): boolean {
   return t.kind === "session" && t.foreign !== true && typeof t.pinnedAt === "string"
 }
 
+// PINNED ON THE CONSOLE — the "By status" view's own shelf (maintainer 2026-10-19: "a separate pin
+// system specifically for the By Status page"). Independent of isPinned: a thread pinned on its
+// project's board is not pinned on the Console, nor the other way round, and each shelf has its own
+// order. Same eligibility as the board's pin, and it outranks state the same way.
+export function isConsolePinned(t: ThreadView): boolean {
+  return t.kind === "session" && t.foreign !== true && typeof t.consolePinnedAt === "string"
+}
+
+/** Which shelf a row's pin speaks for: its project board's, or the Console's "By status" view's. */
+export type PinShelf = "board" | "console"
+
+export function pinnedOn(t: ThreadView, shelf: PinShelf): boolean {
+  return shelf === "console" ? isConsolePinned(t) : isPinned(t)
+}
+
 // The wait kinds that truthfully earn the parked/hourglass presentation. A timer is only a park while
 // its valid scheduler instant is still in the future; malformed or elapsed timer prose must not
 // advertise a durable future wake. Legacy machine waits (pr/ci/session) intentionally do not qualify.
