@@ -2539,3 +2539,88 @@ html[data-vt-door="expand"]::view-transition-old(thread-chat) {
     animation: none !important;
   }
 }
+
+/* THE PROMPT BOX'S MCP MENU (components/McpPlug.tsx), as settled on the mockup sheet with the maintainer
+   on 2026-10-19 (.frizz/threads/477379cf…/mcp-mockup.html): one-line rows, a divider between them, the
+   name and the right-hand text or buttons on ONE baseline, and the row's content centred as a block. */
+.mcp-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: 8px;
+  align-items: baseline;
+  align-content: center;
+  min-height: 32px;
+  /* 11px, not the header's 13: the check's ink starts 1.9px into its box, so this puts its ink under the
+     header's first letter. */
+  padding: 4px 10px 4px 11px;
+}
+.mcp-row + .mcp-row { border-top: 1px solid var(--color-border); }
+.mcp-row:hover { background: color-mix(in oklab, var(--color-panel-2) 60%, transparent); }
+.mcp-name {
+  font-size: 12.5px;
+  line-height: 1.3;
+  color: var(--color-fg);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mcp-name-ignored { color: color-mix(in oklab, var(--color-fg) 55%, transparent); }
+/* The mark: a 14px octicon (GitHub sets a 16px mark beside 14px text; this is that ratio at 12.5px). Its
+   BOX is centred on the name's cap band by the browser — an inline-block's baseline is its bottom edge, so
+   raising that edge by half the cap height less half the box puts the box's centre mid-cap, in any font
+   and at any size. The dot and the X are symmetric in the 16px grid, so their ink is centred too; the
+   check's ink sits 0.49 grid units low in it (y 4.22–12.75): 0.42px at 14px, lifted by that much. */
+.mcp-mark {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  vertical-align: calc(0.5cap - 7px);
+  margin-right: 6px;
+}
+.mcp-mark-check { translate: 0 -0.42px; }
+.mcp-btn {
+  font: inherit;
+  font-size: 11px;
+  line-height: 16px;
+  font-weight: 500;
+  color: var(--color-fg);
+  background: transparent;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 5px;
+  padding: 1px 7px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 120ms, color 120ms, opacity 120ms;
+}
+.mcp-btn:hover { background: var(--color-panel-2); }
+.mcp-btn:disabled { opacity: 0.6; cursor: default; }
+.mcp-btn-primary { background: var(--color-fg); color: var(--color-bg); border-color: var(--color-fg); }
+.mcp-btn-primary:hover { background: color-mix(in oklab, var(--color-fg) 88%, var(--color-bg)); }
+.mcp-btn-ghost { border-color: transparent; color: var(--color-muted); padding: 1px 6px; }
+.mcp-btn-ghost:hover { color: var(--color-fg); background: var(--color-panel-2); }
+/* The sign-in card, and an error, span the row under the name column (mark 14px + its 6px margin). */
+.mcp-signin {
+  grid-column: 1 / 3;
+  margin: 6px 0 4px 20px;
+  padding: 9px 10px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--color-bg) 55%, transparent);
+}
+.mcp-signin-sub { color: var(--color-muted); font-size: 11px; margin: 4px 0 0 21px; line-height: 1.45; }
+.mcp-signin-paste { display: flex; gap: 6px; margin: 9px 0 0 21px; }
+.mcp-signin-paste input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--color-fg);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 4px 7px;
+  outline: none;
+}
+.mcp-signin-paste input:focus { border-color: var(--color-input-focus, var(--color-accent)); }
+.mcp-row-error { grid-column: 1 / 3; margin: 2px 0 2px 20px; font-size: 11px; line-height: 1.45; color: var(--gh-fg-danger); }

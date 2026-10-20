@@ -33,6 +33,16 @@ export interface Prefs {
   // should auto-wrap, just like the prompt box") or keep to one line and scroll their block sideways.
   // lib/codeWrap.ts mirrors it onto <html>, where the stylesheet reads it.
   wrapCode: boolean
+  // MCP servers the operator told the prompt box's plug menu to IGNORE: `<backend>:<server>` → the state
+  // it was in when ignored. An ignored server keeps its row (dimmed, last) but no longer puts the dot on
+  // the plug — until its state changes, when the entry is dropped (components/McpPlug.tsx). Per browser,
+  // like the rest of this file: it decides what this window draws, not what the agent mounts.
+  mcpIgnored: Record<string, string>
+}
+
+function stringRecord(v: unknown): Record<string, string> {
+  if (v === null || typeof v !== "object" || Array.isArray(v)) return {}
+  return Object.fromEntries(Object.entries(v as Record<string, unknown>).filter((entry): entry is [string, string] => typeof entry[1] === "string"))
 }
 
 function coerceQueueOrder(v: unknown, fallback: QueueDirection): QueueDirection {
@@ -56,6 +66,7 @@ export function parseStoredPrefs(raw: string | null): Prefs {
     railFilesCollapsed: false,
     dictation: true,
     wrapCode: true,
+    mcpIgnored: {},
     diffsRedefaulted: true,
   }
   try {
@@ -77,6 +88,7 @@ export function parseStoredPrefs(raw: string | null): Prefs {
       railFilesCollapsed: typeof stored.railFilesCollapsed === "boolean" ? stored.railFilesCollapsed : fallback.railFilesCollapsed,
       dictation: typeof stored.dictation === "boolean" ? stored.dictation : fallback.dictation,
       wrapCode: typeof stored.wrapCode === "boolean" ? stored.wrapCode : fallback.wrapCode,
+      mcpIgnored: stringRecord(stored.mcpIgnored),
     }
   } catch {
     return fallback

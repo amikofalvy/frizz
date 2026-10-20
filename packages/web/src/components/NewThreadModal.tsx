@@ -1,10 +1,11 @@
 import * as RadixDialog from "@radix-ui/react-dialog"
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { useIsMutating, useMutation, useQuery } from "@tanstack/react-query"
-import { acpModelSlug, type AccountBackend, type DispatchInput } from "@frizz/shared"
+import { acpModelSlug, type AccountBackend, type DispatchInput, type McpTarget } from "@frizz/shared"
 import { rpc, rpcFor } from "../api/rpc.ts"
 import { showToast, store } from "../store.ts"
 import { Composer } from "./Composer.tsx"
+import { McpPlug } from "./McpPlug.tsx"
 import { GithubTrigger, useGithubTriggerVisible } from "./GithubTrigger.tsx"
 import { ProfileGridSelector } from "./ProfileGridSelector.tsx"
 import { SETTINGS_WRITE_KEY } from "../hooks/useSettingsAutosave.tsx"
@@ -241,6 +242,12 @@ function useDispatchForm(onDispatched?: () => void, projectPicker?: ReactNode) {
     </>
   )
 
+  // What the MCP plug asks about: the agent the model chip picks, since there is no thread yet. Undefined
+  // while the profile is still loading, so the plug never reads one agent's servers under another's chip.
+  const mcpTarget: McpTarget | undefined = resolved
+    ? { backend: resolved.backend, ...(resolved.backend === "acp" ? { model: resolved.model } : {}) }
+    : undefined
+
   return {
     prompt,
     setPrompt,
@@ -248,6 +255,7 @@ function useDispatchForm(onDispatched?: () => void, projectPicker?: ReactNode) {
     busy: dispatch.isPending || savingSettings,
     footer,
     githubTriggerVisible,
+    mcpTarget,
     error: dispatch.isError ? (dispatch.error as Error).message : null,
     pendingDispatch,
     accountModals,
@@ -285,6 +293,7 @@ export function DispatchForm({
         busy={form.busy}
         footer={form.footer}
         leftAction={form.githubTriggerVisible ? <GithubTrigger /> : undefined}
+        railMcp={form.mcpTarget ? <McpPlug target={form.mcpTarget} /> : undefined}
       />
       {form.error && (
         <span className="px-0.5 text-[11px] text-danger truncate">{form.error}</span>
