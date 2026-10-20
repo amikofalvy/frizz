@@ -66,7 +66,11 @@ import {
 } from "./adoption-recovery.ts"
 import { acquireSharedOrphanReaper } from "./orphan-reaper.ts"
 import { hibernationEnabled, startThreadHibernator } from "./thread-hibernation.ts"
-import { liveBrokerRecords } from "./backend/claude-broker-host.ts"
+import { liveBrokerRecords, resolveClaudeExecutableAbsolute } from "./backend/claude-broker-host.ts"
+import { createClaudeMcpProbe, type ClaudeMcpProbe } from "./backend/claude-mcp-probe.ts"
+import { inheritWorkerEnvironment } from "./backend/worker-env.ts"
+import { acpAgentSpecs } from "./backend/acp-agents.ts"
+import { createMcpService, type McpService } from "./mcp-status.ts"
 import {
   createRetryableCleanup,
   createShutdownBarrier,
@@ -160,6 +164,9 @@ export interface AppContext {
   // Session-broker bridge for Claude: the detached daemon that owns every claude thread's SDK session.
   // Undefined only under the FRIZZ_CLAUDE_BROKER_BRIDGE="0" kill switch, which leaves claude no transport.
   claudeBroker?: ClaudeAgentBrokerBridge
+  /** The prompt box's MCP menu: readings and sign-ins (mcp-status.ts). Optional so a hand-built test
+   *  context need not carry one. */
+  mcp?: McpService
   board: BoardManager
   tailer: Tailer
   /** What each thread's latest question-fence sync refused — written by every sync (the registrar, the
@@ -899,6 +906,29 @@ function createContextUnchecked(opts: ContextOptions, resources: PartialContextR
       })
     : undefined
   resources.claudeBroker = claudeBroker
+
+  // The prompt box's MCP menu (mcp-status.ts). Its Claude probe is a real Claude Code process, so it is
+  // made on the first read that needs one and closed with the project.
+  let claudeMcpProbe: ClaudeMcpProbe | undefined
+  const mcp = createMcpService({
+    getSession: (slug) => storage.getSession(slug),
+    claudeBroker,
+    codexAppServer,
+    claudeProbe: () => claudeMcpProbe ??= createClaudeMcpProbe({
+      projectDir: project.dir,
+      executablePath: resolveClaudeExecutableAbsolute(opts.claudeBin ?? "claude"),
+      // The environment a worker of THIS project runs with, so `${VAR}` in `.mcp.json` resolves the same.
+      env: inheritWorkerEnvironment(projectScopedEnvironment(process.env, {
+        projectId: project.id,
+        projectDir: project.dir,
+        stateDir: project.stateDir,
+        ...(project.identityScope ? { identityScope: project.identityScope } : {}),
+      })),
+      lazyCacheDir: join(frizzRoots().data, "mcp-cache"),
+    }),
+    acpAgentLabel: (id) => acpAgentSpecs(getSettings(storage, home).acpAgents).find((agent) => agent.id === id)?.label,
+  })
+  contextUnsubscribers.push(() => { void mcp.close(); void claudeMcpProbe?.close() })
   if (claudeBroker) {
     contextUnsubscribers.push(storage.subscribeSessionLifecycle((event) => {
       claudeBroker.releaseSession(
@@ -1211,6 +1241,7 @@ function createContextUnchecked(opts: ContextOptions, resources: PartialContextR
     codexAppServer,
     acpBridge,
     claudeBroker,
+    mcp,
     board,
     tailer,
     questionFaults,

@@ -119,6 +119,21 @@ export function lazyMcpCacheKey(server: StdioMcpServer, cwd: string): string {
   return createHash("sha256").update(identity).digest("hex").slice(0, 32)
 }
 
+/** How many tools the cache says a stdio server has — what the prompt box's MCP menu shows for a server no
+ *  session has started. `undefined` with no cache yet (the server has never been started for this cwd). */
+export function lazyMcpCachedToolCount(server: StdioMcpServer, cwd: string, cacheDir: string): number | undefined {
+  try {
+    const parsed = JSON.parse(readFileSync(join(cacheDir, `${lazyMcpCacheKey(server, cwd)}.json`), "utf8")) as CacheRecord
+    if (parsed?.version !== CACHE_VERSION || !parsed.answers || typeof parsed.answers !== "object") return undefined
+    for (const [key, answer] of Object.entries(parsed.answers)) {
+      if (!key.startsWith("tools/list")) continue
+      const tools = (answer as { result?: { tools?: unknown } })?.result?.tools
+      if (Array.isArray(tools)) return tools.length
+    }
+  } catch {}
+  return undefined
+}
+
 function listKey(method: string, params: unknown): string {
   if (params === null || typeof params !== "object" || Array.isArray(params)) return method
   const { _meta: _ignored, ...rest } = params as Record<string, unknown>
