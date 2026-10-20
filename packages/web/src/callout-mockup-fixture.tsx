@@ -13,6 +13,11 @@ import "./styles.css"
 // transcript: "Why does this look so saturated? I really don't like it", then: "I think these
 // GitHub-flavored Markdown callouts need a better UI in general. Why don't you mock up some options?"
 //
+// PICKED: G, the header bar, with the calm ink, 2026-10-20 ("header bar."). Shipped as styles.css
+// § Callouts with the inks as theme.css `--frizz-callout-*`. The sheet stays as the record of what was
+// weighed, but every shape here is drawn OVER the base styles, and the base is now G — so the other
+// sections no longer show what they showed then. Check out 0fafff76 to see them as they were.
+//
 // WHY IT IS SO LOUD (read from the code and the shot on 2026-10-19): the warning's rule, icon and title
 // all paint `--color-attention`, which in dark is Tailwind's `amber-400`, oklch(0.828 0.189 84). That is
 // the brightest colour in the callout set (the other four sit at L 0.69-0.75) and it lies OUTSIDE sRGB,

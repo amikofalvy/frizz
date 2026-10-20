@@ -1173,6 +1173,11 @@ a[href] {
 .card-md .md-body pre code {
   background: none;
 }
+/* …and inside a CALLOUT, which sits on the canvas fill (styles.css § Callouts): light's panel-2 chip
+   (#fafafa) on that #f7f7f7 was all but invisible. `:not(pre) >` so a fence inside one keeps no chip. */
+.md-body .md-callout :not(pre) > code {
+  background: color-mix(in srgb, var(--color-fg) 8%, transparent);
+}
 /* Inline-only markdown (answer chips, the recommendation caption): honor inline emphasis/strong/del/
    links without md-body's block chrome. Code shares the prose chip above; emphasis maps to weight/style. */
 .md-inline strong {
@@ -1319,32 +1324,41 @@ html[data-code-wrap="off"] {
    blockquote (lib/callouts.ts), a `<details>` section (lib/disclosure.ts), and the inline `<kbd>`,
    `<sub>`, `<sup>` and `<mark>` the sanitizer admits.
 
-   CALLOUTS. A callout IS a blockquote and is drawn as one: the same 2px rule and the same inset as
-   `.md-body blockquote`, with the rule in the type's colour and a title row above the body. No fill and
-   no frame — a tinted banner out-shouts the code blocks and cards it sits between, and the type is
-   already said twice, by the icon and by the word. The body takes the PROSE colour, not the quote's
-   muted one: a quote is somebody else's words, a callout is the part the author most wants read.
-
-   The five colours are the theme's own status tokens, each already tuned for both themes. */
+   CALLOUTS. A callout is a BLOCK, drawn as a code block is — the same fill, hairline, shared corner and
+   1em inset, so its body's text starts where a fence's code does — with the title in a header strip
+   across its top: the type's ink on a 9% wash of it, over an 18% hairline. Picked 2026-10-20 from eight
+   shapes (packages/web/src/callout-mockup-fixture.tsx). It was a quote's 2px rule in the type's colour
+   with a bare title above the body until then, and the maintainer found it "so saturated": the rule,
+   icon and title were all one full-strength status colour, and the warning's was amber-400, which a
+   P3 screen paints beyond sRGB. The inks are now their own five tokens (theme.css `--frizz-callout-*`),
+   calm and inside sRGB. The body takes the PROSE colour, not a quote's muted one: a quote is somebody
+   else's words, a callout is the part the author most wants read. */
 .md-body .md-callout {
   --md-callout-ink: var(--color-muted);
-  border-left-color: var(--md-callout-ink);
+  border: 1px solid var(--color-border);
+  border-radius: var(--block-radius);
+  background: var(--color-bg);
+  padding: 0 1em 0.75em;
   color: inherit;
 }
+/* A callout with no body is its header alone, so the inset under the strip has nothing to hold. */
+.md-body .md-callout:has(> .md-callout-title:last-child) {
+  padding-bottom: 0;
+}
 .md-body .md-callout-note {
-  --md-callout-ink: var(--color-shell);
+  --md-callout-ink: var(--color-callout-note);
 }
 .md-body .md-callout-tip {
-  --md-callout-ink: var(--color-live);
+  --md-callout-ink: var(--color-callout-tip);
 }
 .md-body .md-callout-important {
-  --md-callout-ink: var(--color-watch);
+  --md-callout-ink: var(--color-callout-important);
 }
 .md-body .md-callout-warning {
-  --md-callout-ink: var(--color-attention);
+  --md-callout-ink: var(--color-callout-warning);
 }
 .md-body .md-callout-caution {
-  --md-callout-ink: var(--color-danger);
+  --md-callout-ink: var(--color-callout-caution);
 }
 /* The body keeps the prose rhythm (--md-step between its blocks); only its outer edges close up, as
    `.md-body`'s own do. Three classes, because the last block is often a `.md-code` wrapper, whose
@@ -1355,8 +1369,10 @@ html[data-code-wrap="off"] {
 .md-body .md-callout > :last-child {
   margin-bottom: 0;
 }
-/* The title binds to the body it labels, the way a heading does: a tight gap, where a full --md-step
-   read as a label floating over an unrelated paragraph. */
+/* The header strip. Its negative side margins undo the box's inset, so the wash runs the box's whole
+   inner width, and its top corners take the box's INNER curve — the corner minus the hairline — so the
+   wash stops at the border without the box clipping its contents (a body can hold a scrolling fence or
+   a section whose focus ring must show). The icon's ink starts on the body's own left edge, 1em in. */
 .md-body .md-callout > .md-callout-title {
   /* The glyph's dead space: how far its ink stands in from each side of its 1em box, which is the
      glyph's own viewBox geometry (set per type below). And the gap the eye reads between icon and
@@ -1366,13 +1382,21 @@ html[data-code-wrap="off"] {
   /* Where the title's text starts: the icon's INK width plus that gap. A wrapped title hangs under
      its own first word, not under the icon. */
   --md-callout-gutter: calc(1em - 2 * var(--md-callout-trim) + var(--md-callout-gap));
-  margin-bottom: 0;
-  padding-left: var(--md-callout-gutter);
+  margin: 0 -1em;
+  padding: 0.4em 1em 0.4em calc(1em + var(--md-callout-gutter));
+  border-bottom: 1px solid color-mix(in oklab, var(--md-callout-ink) 18%, transparent);
+  border-radius: calc(var(--block-radius) - 1px) calc(var(--block-radius) - 1px) 0 0;
+  background: color-mix(in oklab, var(--md-callout-ink) 9%, transparent);
   font-weight: 600;
   color: var(--md-callout-ink);
 }
+.md-body .md-callout > .md-callout-title:last-child {
+  border-bottom: 0;
+  border-radius: calc(var(--block-radius) - 1px);
+}
+/* The body under the strip: the box's own 0.75em inset, the space a fence leaves above its code. */
 .md-body .md-callout > .md-callout-title + * {
-  margin-top: 0.3em;
+  margin-top: 0.75em;
 }
 /* The type's icon: a lucide glyph carried as a mask, for the reason the task marks give — the
    sanitizer drops inline `<svg>` with its subtree, and a mask in the stylesheet keeps lucide's exact
@@ -1400,7 +1424,12 @@ html[data-code-wrap="off"] {
    five types. Each type's trim hangs its box that far outside the column on the left — the ink
    starts on the body's own left edge — and takes as much off the right. After it: 6.13px to 7.13px
    at 14px, which is the 5.88px asked for plus the first letter's own side bearing (the W of Warning
-   0.25px, the I of Important 1.25px); 5.88px in a card and 5.63px in a chip. */
+   0.25px, the I of Important 1.25px); 5.88px in a card and 5.63px in a chip.
+   Those readings carry up to ±0.5px of SUB-PIXEL PHASE: the masked box is painted on a whole pixel
+   and the text is not, so the painted gap moves with where the callout happens to sit. The layout gap
+   is the same everywhere (19.29px from the note's box to its N at 14px); the header bar's 1px border
+   alone moved the fixture's readings to 6.63px-7.50px (2026-10-20). Leave it — it is not a
+   correction to make per placement. */
 .md-body .md-callout-title::before {
   content: "";
   display: inline-block;
@@ -1448,7 +1477,8 @@ html[data-code-wrap="off"] {
    children, because a body written without blank lines is a bare text node no selector can reach. */
 .md-body details {
   /* The label's left edge, and the body's: `.md-body blockquote`'s own inset (its 2px rule + 0.8em),
-     so a section's body, a quote and a callout stand on one left edge. */
+     so a section's body and a quote stand on one left edge. (A callout left this family on 2026-10-20:
+     it is a block now, and its body stands where a fence's code does.) */
   --md-summary-inset: calc(0.8em + 2px);
   margin: var(--md-step) 0;
   padding-left: var(--md-summary-inset);

@@ -79,7 +79,19 @@ try {
         row.style.whiteSpace = "nowrap"
         row.scrollIntoView({ block: "center" })
         const r = row.getBoundingClientRect()
-        return { x: r.left + scrollX, y: r.top + scrollY, w: Math.min(r.width, 320), h: r.height, font: parseFloat(getComputedStyle(row).fontSize) }
+        const cs = getComputedStyle(row)
+        // A row with a fill of its own (a callout's header strip) is read INSIDE that fill: from just
+        // left of the glyph, over the text line only, so neither the strip's rounded corner, its padding
+        // nor its hairline is mistaken for ink. The glyph is the `::before`, first in the row, so its
+        // box starts at the content edge plus its own (negative) margin.
+        const washed = cs.backgroundColor !== "rgba(0, 0, 0, 0)"
+        const glyphLeft = r.left + parseFloat(cs.borderLeftWidth) + parseFloat(cs.paddingLeft) + parseFloat(getComputedStyle(row, "::before").marginLeft)
+        const lineTop = r.top + parseFloat(cs.borderTopWidth) + parseFloat(cs.paddingTop)
+        const lineHeight = r.height - parseFloat(cs.borderTopWidth) - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom) - parseFloat(cs.borderBottomWidth)
+        const font = parseFloat(cs.fontSize)
+        return washed
+          ? { washed, x: glyphLeft + scrollX, y: lineTop + scrollY, w: 160, h: lineHeight, font }
+          : { washed, x: r.left + scrollX, y: r.top + scrollY, w: Math.min(r.width, 320), h: r.height, font }
       }, selector)
       if (!box) {
         failures.push(`${name}: no element matched ${selector}`)
@@ -88,8 +100,9 @@ try {
       // Let the chevron's quarter-turn finish before a section that was just laid out is read.
       await new Promise((r) => setTimeout(r, 250))
       const PAD = 3
+      const padY = box.washed ? 0 : PAD
       const b64 = await page.screenshot({
-        clip: { x: box.x - PAD, y: box.y - PAD, width: box.w + PAD * 2, height: box.h + PAD * 2 },
+        clip: { x: box.x - PAD, y: box.y - padY, width: box.w + PAD * 2, height: box.h + padY * 2 },
         encoding: "base64",
         captureBeyondViewport: true,
       })

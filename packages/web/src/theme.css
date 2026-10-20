@@ -58,6 +58,11 @@
   --color-attention-detail: var(--frizz-attention-detail);
   --color-attention: var(--frizz-attention);
   --color-attention-fill: var(--frizz-attention-fill);
+  --color-callout-note: var(--frizz-callout-note);
+  --color-callout-tip: var(--frizz-callout-tip);
+  --color-callout-important: var(--frizz-callout-important);
+  --color-callout-warning: var(--frizz-callout-warning);
+  --color-callout-caution: var(--frizz-callout-caution);
   --color-success: var(--frizz-success);
   --color-planning: var(--frizz-planning);
   --color-planned: var(--frizz-planned);
@@ -223,6 +228,17 @@
   --frizz-attention-detail: var(--color-amber-200);
   --frizz-attention: var(--color-amber-400);
   --frizz-attention-fill: var(--color-amber-500);
+  /* The five `> [!TYPE]` callout inks (styles.css § Callouts). Not the status tokens: amber-400 and
+     red-400 lie outside sRGB and are the brightest of the set, so a P3 screen painted the warning more
+     vivid than any hex (maintainer 2026-10-19: "Why does this look so saturated?"). One OKLCH lightness
+     and chroma for all five — L 0.76 / C 0.115 here, L 0.50 / C 0.105 in light — on the status hues,
+     every value inside sRGB. Light's is a step darker than the dark set's mirror so each title holds
+     4.7:1 on its own tinted header. */
+  --frizz-callout-note: #7db5f9;
+  --frizz-callout-tip: #72c78f;
+  --frizz-callout-important: #c09fed;
+  --frizz-callout-warning: #d7a955;
+  --frizz-callout-caution: #f1938d;
   --frizz-success: var(--color-green-400);
   --frizz-planning: var(--color-sky-400);
   --frizz-planned: var(--color-violet-400);
@@ -391,6 +407,11 @@
   --frizz-attention-detail: #745000;
   --frizz-attention: #825700;
   --frizz-attention-fill: #9a6700;
+  --frizz-callout-note: #35659d;
+  --frizz-callout-tip: #277447;
+  --frizz-callout-important: #705394;
+  --frizz-callout-warning: #825b00;
+  --frizz-callout-caution: #964845;
   --frizz-success: #1a7f37;
   --frizz-planning: #0969da;
   --frizz-planned: #8250df;
@@ -558,6 +579,11 @@
     --frizz-attention-detail: #745000;
     --frizz-attention: #825700;
     --frizz-attention-fill: #9a6700;
+    --frizz-callout-note: #35659d;
+    --frizz-callout-tip: #277447;
+    --frizz-callout-important: #705394;
+    --frizz-callout-warning: #825b00;
+    --frizz-callout-caution: #964845;
     --frizz-success: #1a7f37;
     --frizz-planning: #0969da;
     --frizz-planned: #8250df;
