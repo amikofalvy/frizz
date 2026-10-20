@@ -24,6 +24,13 @@ import "./styles.css"
 //     Composer onInterruptSubmit). With the box empty it does nothing: the composer's `canSend` gate
 //     refuses it. Outside the box it does nothing either.
 //
+// ROUND TWO, the same day, on candidates A–F: "I'm going to need some more permutations of this because you
+// did not nail it in any of those. Try versions where it's in a keycap, but it's to the left of the Send Now
+// label." So G–N all put a keycap to the LEFT of the words and vary everything else: the arrow kept or
+// dropped, the cap's drawing (lipped, flat, filled), one key or two, the Return glyph, the words' underline,
+// and whether the cap lifts with the words on hover. A ⌘⏎ press now presses the cap itself. Round one
+// stays below them, folded, as the record.
+//
 // THE BEHAVIOUR EVERY CANDIDATE SHARES: with nothing typed, ⌘⏎ presses Send now — with the caret in the
 // empty box or with focus anywhere else in the thread — and does exactly what a click would at that
 // moment. With words typed it keeps today's meaning and sends them now. Only the way the control shows
@@ -124,9 +131,225 @@ type Candidate = {
   name: string
   says: string
   line: (props: LineProps) => ReactNode
-  /** E puts the chord in the empty box instead. */
-  /** What the box says, given what it says today. */
+  /** E puts the chord in the empty box instead: what the box says, given what it says today. */
   placeholder?: (run: Run, today: string) => string
+}
+
+// ── round two: a keycap to the left of the words ─────────────────────────────────────────────────────
+
+// The cap is prose's <kbd> (styles.css § KEYS) at the line's size: 0.87em sans on the words' baseline,
+// lifted by half the difference between the two cap heights so the two cap bands share a centre at any
+// size. It stays INLINE inside a plain wrapper — a flex item is blockified, and a block ignores
+// vertical-align — so its border and lip never enter the line box. Its looks:
+//   lip   panel fill, a strong hairline and a 2px bottom lip: a key. A press drops it onto the lip.
+//   flat  the hairline alone, no fill, no lip: an outline.
+//   fill  a soft fill and no border: a chip.
+// `data-lift` makes the cap part of the link: hovering lifts its glyphs and border with the words.
+const KEYCAP_CSS = `
+.sn-kbd {
+  --sn-kbd-size: 0.87;
+  position: relative;
+  top: 0;
+  font-family: var(--font-sans);
+  font-size: calc(1em * var(--sn-kbd-size));
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  padding: 0 0.4em;
+  border-radius: 0.35em;
+  color: var(--color-muted);
+  vertical-align: calc(0.5cap / var(--sn-kbd-size) - 0.5cap);
+  transition: top 70ms, border-bottom-width 70ms, color 150ms, border-color 150ms, background-color 150ms;
+}
+.sn-kbd + .sn-kbd { margin-left: 0.25em; }
+.sn-kbd[data-look="lip"] { border: 1px solid var(--color-border-strong); border-bottom-width: 2px; background: var(--color-panel); }
+.sn-kbd[data-look="lip"][data-pressed] { border-bottom-width: 1px; top: 1px; color: var(--color-fg); }
+.sn-kbd[data-look="flat"] { border: 1px solid var(--color-border-strong); }
+.sn-kbd[data-look="fill"] { background: color-mix(in srgb, var(--color-fg) 9%, transparent); }
+.sn-kbd:is([data-look="flat"], [data-look="fill"])[data-pressed] { background: color-mix(in srgb, var(--color-fg) 18%, transparent); color: var(--color-fg); }
+button:is(:hover, :focus-visible) .sn-kbd[data-lift] { color: var(--color-fg); border-color: var(--color-muted); }
+`
+
+type Look = "lip" | "flat" | "fill"
+const ONE_KEY = [CHORD]
+const TWO_KEYS = MAC ? ["⌘", "⏎"] : ["Ctrl", "⏎"]
+const RETURN_ARROW = [MAC ? "⌘↩" : "Ctrl ↩"]
+
+// The gap after the cap is set to the INK gap the shipped arrow keeps from the words — 5.5px at the
+// line's 11.5px (scripts/ink-gaps.mjs, sans, 2026-10-19) — not to a box value: the arrow's stroke leaves
+// ~1.8px of its box empty on each side, while a cap's ink is its own border. Before the words the S's own
+// side bearing (~0.4px) is the rest of it; before the arrow, the arrow's empty side is.
+const CAP_TO_WORDS = "mr-[0.44em]"
+const CAP_TO_ARROW = "mr-[0.32em]"
+
+function Keycap({ keys = ONE_KEY, look = "lip", pressed, lift, className = "" }: { keys?: string[]; look?: Look; pressed: boolean; lift?: boolean; className?: string }) {
+  return (
+    <span aria-hidden className={`shrink-0 no-underline ${className}`}>
+      {keys.map((key) => (
+        <kbd key={key} className="sn-kbd" data-look={look} data-pressed={pressed || undefined} data-lift={lift || undefined}>
+          {key}
+        </kbd>
+      ))}
+    </span>
+  )
+}
+
+// The button with no gap of its own: in round two every mark sets its own distance to the next.
+function CapButton({ run, onSend, pressed, children }: Omit<LineProps, "boxReady"> & { children: ReactNode }) {
+  return (
+    <button
+      type="button"
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={onSend}
+      title={`${TITLE[run]} (${CHORD})`}
+      className={`flex items-baseline outline-none transition-colors duration-150 hover:text-fg focus-visible:text-fg ${pressed ? "text-fg" : ""}`}
+    >
+      {children}
+    </button>
+  )
+}
+
+const ROUND_TWO: Candidate[] = [
+  {
+    key: "G",
+    name: "Keycap, then the arrow and the words",
+    says: `[${CHORD}] ↑ Send now. Today's control, untouched, with the key in front of it. The cap is prose's keycap at the line's size: panel fill, a strong hairline and a heavier bottom lip.`,
+    line: ({ run, onSend, pressed }) => (
+      <div className={line}>
+        <CapButton run={run} onSend={onSend} pressed={pressed}>
+          <Keycap pressed={pressed} className={CAP_TO_ARROW} />
+          <Arrow />
+          <span className="ml-1"><Words /></span>
+        </CapButton>
+      </div>
+    ),
+  },
+  {
+    key: "H",
+    name: "Keycap in place of the arrow",
+    says: `[${CHORD}] Send now. The key takes the arrow's place, so the line is still two marks: what to press, and what it does.`,
+    line: ({ run, onSend, pressed }) => (
+      <div className={line}>
+        <CapButton run={run} onSend={onSend} pressed={pressed}>
+          <Keycap pressed={pressed} className={CAP_TO_WORDS} />
+          <Words />
+        </CapButton>
+      </div>
+    ),
+  },
+  {
+    key: "I",
+    name: "A flat keycap",
+    says: "H with the cap drawn as an outline: the hairline alone, no fill and no lip. Lighter, and closer to the weight of the words beside it.",
+    line: ({ run, onSend, pressed }) => (
+      <div className={line}>
+        <CapButton run={run} onSend={onSend} pressed={pressed}>
+          <Keycap look="flat" pressed={pressed} className={CAP_TO_WORDS} />
+          <Words />
+        </CapButton>
+      </div>
+    ),
+  },
+  {
+    key: "J",
+    name: "A filled keycap",
+    says: "H with the cap drawn as a soft chip: a faint fill and no border at all. The quietest cap that still reads as one.",
+    line: ({ run, onSend, pressed }) => (
+      <div className={line}>
+        <CapButton run={run} onSend={onSend} pressed={pressed}>
+          <Keycap look="fill" pressed={pressed} className={CAP_TO_WORDS} />
+          <Words />
+        </CapButton>
+      </div>
+    ),
+  },
+  {
+    key: "K",
+    name: "Two keys",
+    says: `[${TWO_KEYS[0]}] [${TWO_KEYS[1]}] Send now. One cap per key, the way a keyboard shows a chord. Wider, and each cap is a small square.`,
+    line: ({ run, onSend, pressed }) => (
+      <div className={line}>
+        <CapButton run={run} onSend={onSend} pressed={pressed}>
+          <Keycap keys={TWO_KEYS} pressed={pressed} className={CAP_TO_WORDS} />
+          <Words />
+        </CapButton>
+      </div>
+    ),
+  },
+  {
+    key: "L",
+    name: "Return drawn as ↩",
+    says: `[${RETURN_ARROW[0]}] Send now. H with Return as the arrow macOS menus draw for it, in place of ⏎.`,
+    line: ({ run, onSend, pressed }) => (
+      <div className={line}>
+        <CapButton run={run} onSend={onSend} pressed={pressed}>
+          <Keycap keys={RETURN_ARROW} pressed={pressed} className={CAP_TO_WORDS} />
+          <Words />
+        </CapButton>
+      </div>
+    ),
+  },
+  {
+    key: "M",
+    name: "Keycap and plain words",
+    says: "H without the underline. The cap already says this is something to press, so the words drop the link's underline and lift on hover alone.",
+    line: ({ run, onSend, pressed }) => (
+      <div className={line}>
+        <CapButton run={run} onSend={onSend} pressed={pressed}>
+          <Keycap pressed={pressed} className={CAP_TO_WORDS} />
+          <span>Send now</span>
+        </CapButton>
+      </div>
+    ),
+  },
+  {
+    key: "N",
+    name: "A keycap that lifts with the words",
+    says: "H as one control: hovering lifts the cap's glyphs and border along with the words, so the key reads as part of the link rather than a label beside it.",
+    line: ({ run, onSend, pressed }) => (
+      <div className={line}>
+        <CapButton run={run} onSend={onSend} pressed={pressed}>
+          <Keycap pressed={pressed} lift className={CAP_TO_WORDS} />
+          <Words />
+        </CapButton>
+      </div>
+    ),
+  },
+]
+
+// The shipped line, for the strip's reference tile.
+const TODAY: Candidate = {
+  key: "today",
+  name: "Today",
+  says: "",
+  line: ({ run, onSend, pressed }) => (
+    <div className={line}>
+      <SendNowButton run={run} onSend={onSend} pressed={pressed}>
+        <Arrow />
+        <Words />
+      </SendNowButton>
+    </div>
+  ),
+}
+
+// Every round-two line side by side at 2x, with today's for reference, so the eight can be compared
+// without scrolling between frames. Not live: the frames below are.
+function Strip() {
+  const noop = () => {}
+  return (
+    <div className="mb-12 grid grid-cols-3 gap-3 max-[1000px]:grid-cols-2">
+      {[TODAY, ...ROUND_TWO].map((c) => (
+        <div key={c.key} data-strip-tile={c.key} className="rounded-xl border border-border bg-bg px-4 pb-4 pt-3">
+          <div className="mb-3 text-[11px] font-medium text-muted-60">
+            {c.key === "today" ? "Today" : `${c.key} · ${c.name}`}
+          </div>
+          <div style={{ zoom: 2 }}>
+            <c.line run="steer" onSend={noop} pressed={false} boxReady={false} />
+          </div>
+        </div>
+      ))}
+    </div>
+  )
 }
 
 const CANDIDATES: Candidate[] = [
@@ -368,6 +591,7 @@ function Sheet() {
     <TooltipProvider>
       <div className="min-h-screen bg-panel px-10 py-10 text-sm text-fg max-[700px]:px-4">
         <div className="mx-auto max-w-[1180px]">
+          <style>{KEYCAP_CSS}</style>
           <h1 className="mb-2 text-[20px] font-semibold">{CHORD} for Send now</h1>
           <p className="mb-3 max-w-[760px] text-[13px] leading-[20px] text-muted">
             Today {CHORD} only sends words typed in the prompt box; with the box empty it does nothing, and Send now under the
@@ -380,12 +604,28 @@ function Sheet() {
             The candidates differ only in how the control shows the chord. Every frame is live: click into its prompt box and
             press {CHORD} with it empty, or type something and press Enter to queue another message. Reset puts a frame back.
           </p>
-          {CANDIDATES.map((c) => (
+          <h2 className="mb-2 text-[17px] font-semibold">Round two: a keycap to the left of Send now</h2>
+          <p className="mb-5 max-w-[760px] text-[13px] leading-[20px] text-muted">
+            G to N, side by side at twice their size, with today&rsquo;s line for reference. Each has its live frames further down,
+            where {CHORD} presses the cap.
+          </p>
+          <Strip />
+          {ROUND_TWO.map((c) => (
             <Section key={c.key} id={c.key} name={c.name} says={c.says}>
               <CandidateFrame candidate={c} initial="steer" />
               <CandidateFrame candidate={c} initial="held" />
             </Section>
           ))}
+          <details className="mt-4">
+            <summary className="mb-8 cursor-pointer text-[15px] font-semibold text-muted">Round one: A to F, none of them right</summary>
+
+            {CANDIDATES.map((c) => (
+              <Section key={c.key} id={c.key} name={c.name} says={c.says}>
+                <CandidateFrame candidate={c} initial="steer" />
+                <CandidateFrame candidate={c} initial="held" />
+              </Section>
+            ))}
+          </details>
         </div>
       </div>
     </TooltipProvider>
