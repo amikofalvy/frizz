@@ -11,6 +11,7 @@ import { useOpsHeldForTranscript } from "../lib/opsAhead.ts"
 import { placeQuestions, registeredStandingAt, type QuestionPlacement } from "../lib/questionShadow.ts"
 import { useTranscriptHeldForBoard } from "../lib/restAhead.ts"
 import { queuedRunOf, type QueuedRun } from "../lib/restReply.ts"
+import { useSendNowKey } from "../lib/sendNowKey.ts"
 import { SendScopeContext, useComposerSendHandle, useComposerSendPresent, useSendScope, type SendScope } from "../lib/sendScope.tsx"
 import { settledQuestionPositions, type SettledPlacement } from "../lib/settledQuestions.ts"
 import { stepsDoneReplies } from "../lib/stepsAnswer.ts"
@@ -34,7 +35,9 @@ import { RegisteredAnsweringProvider, openQuestionsOf, useArrivedQuestions, useF
 //     question a message carries or restates, which answers it pairs with. A surface draws a message as
 //     `<ThreadMessage m index>` (ChatView.tsx), which reads all of it from here,
 //   · the thread's slug, for everything in the transcript that acts on its thread (ThreadSlugContext),
-//   · how the surface leaves the page when its thread is handed back, where it does (QueueDismissContext).
+//   · how the surface leaves the page when its thread is handed back, where it does (QueueDismissContext),
+//   · ⌘⏎ with nothing typed pressing Send now under the queued messages, from anywhere in the surface
+//     (lib/sendNowKey).
 //
 // It exists because those were wired by hand in each shell, so a feature built in one was simply absent
 // from the other and nothing said so: a file dropped anywhere on a queue card went into its prompt box
@@ -331,6 +334,9 @@ export function ThreadSurface({
   // Inside a page that is this thread's alone, the PAGE is the zone (ThreadPageZone): the handlers go
   // up to it, and this root binds none. Handed over after every render, since they close over it.
   const pageZone = useContext(ThreadPageZoneContext)
+  // ⌘⏎ for Send now, after whatever the surface itself does with the key: the queue card's root sends
+  // answers staged on its cards on the same chord, and those come first.
+  const sendNowKey = useSendNowKey(surface.slug, surface.queuedRun)
   const zone = surface.zone
   useEffect(() => {
     if (!pageZone) return
@@ -348,7 +354,7 @@ export function ThreadSurface({
             <ThreadTranscriptContext.Provider value={surface.transcript}>
               <QueuedRunContext.Provider value={surface.queuedRun}>
                 <ThreadSurfaceBoxContext.Provider value={surface.box}>
-                  <div {...root} {...(pageZone ? null : zone)} data-thread-surface={surface.slug}>
+                  <div {...root} {...(pageZone ? null : zone)} data-thread-surface={surface.slug} onKeyDown={(e) => { root.onKeyDown?.(e); sendNowKey(e) }}>
                     {children}
                   </div>
                 </ThreadSurfaceBoxContext.Provider>

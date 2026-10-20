@@ -1,7 +1,8 @@
-import { useCallback, useState, useSyncExternalStore } from "react"
+import { useCallback, useSyncExternalStore } from "react"
 import { subscribe } from "valtio"
 import { rpc } from "../api/rpc.ts"
 import { showToast, store, threadBySlug } from "../store.ts"
+import type { QueuedRun } from "./restReply.ts"
 
 // PUSH IT THROUGH NOW.
 //
@@ -10,7 +11,7 @@ import { showToast, store, threadBySlug } from "../store.ts"
 // pay for that wait up front (⌘⏎ sends AND interrupts), but that forces the decision at the moment of
 // typing, before they know how long the worker is going to take. This is the same capability offered
 // AFTERWARDS, from the one place on screen for the whole wait: under the queued messages
-// (ChatView QueuedSendNow).
+// (ChatView QueuedSendNow), and on ⌘⏎ with nothing typed (lib/sendNowKey).
 //
 // There is nothing to send here — the words are already queued. All that is left is asking the runtime
 // to push them through: it moves a running command or sub-agent to the background and the turn takes
@@ -20,76 +21,98 @@ import { showToast, store, threadBySlug } from "../store.ts"
 // It acts on the QUEUE, so with several bubbles queued it delivers all of them, in order — which is why
 // it is one control under the run rather than one per bubble (maintainer 2026-10-15).
 
-// Which surfaces can offer this at all: the same broker-backed-Claude boundary as unqueue (a codex
-// steer goes straight into the running turn, so there is no queue to jump), plus a turn that is
+/** What one press of Send now does, one step at a time: messages Frizz is HOLDING for the rest go to the
+ *  agent's next step without interrupting it (`release`); once nothing is held, a queued steer is pushed
+ *  through now (`interrupt`) where the runtime can be preempted. Null when there is nothing it can do,
+ *  which is also when the control draws nothing. */
+export type SendNowStep = "release" | "interrupt"
+export function sendNowStep(run: QueuedRun, interruptible: boolean): SendNowStep | null {
+  if (run.held > 0) return "release"
+  if (run.steered > 0 && interruptible) return "interrupt"
+  return null
+}
+
+// Which surfaces can push a steer through at all: the same broker-backed-Claude boundary as unqueue (a
+// codex steer goes straight into the running turn, so there is no queue to jump), plus a turn that is
 // actually RUNNING — with the worker at rest there is nothing to interrupt and the button would be a
 // dead click. Mirrors `canInterrupt` in ThreadComposerBox, which gates ⌘⏎ on the same two facts.
+export function deliverQueuedNowSupported(slug: string | null): boolean {
+  if (!slug) return false
+  const thread = threadBySlug(store.board, slug)
+  return thread?.backend !== "codex" && thread?.runtime === "running"
+}
+
 export function useDeliverQueuedNowSupported(slug: string | null): boolean {
   // useSyncExternalStore over a SCALAR, not useSnapshot — the same reason useUnqueueSupported does it:
   // this runs in every user bubble in the transcript, and a snapshot proxy would re-render all of them
   // on every board push.
   return useSyncExternalStore(
     (onChange) => subscribe(store, onChange),
-    () => {
-      if (!slug) return false
-      const thread = threadBySlug(store.board, slug)
-      return thread?.backend !== "codex" && thread?.runtime === "running"
-    },
+    () => deliverQueuedNowSupported(slug),
     () => false,
   )
 }
 
-export function useDeliverQueuedNow(slug: string | null): {
-  deliverNow: () => void
-  releaseHeld: () => void
-  pending: boolean
-} {
-  const [pending, setPending] = useState(false)
+// IN FLIGHT, PER THREAD — not per control. The click and the keystroke are one press, and one thread
+// can be drawn by two surfaces at once (its queue card and its drawer), so the spinner and the guard
+// against a second press both read this one set.
+const inFlight = new Set<string>()
+const listeners = new Set<() => void>()
+function setInFlight(slug: string, on: boolean): void {
+  if (on === inFlight.has(slug)) return
+  if (on) inFlight.add(slug)
+  else inFlight.delete(slug)
+  for (const notify of listeners) notify()
+}
 
-  const deliverNow = useCallback(() => {
-    if (!slug || pending) return
-    // Resolved at CLICK time, not render time — a thread re-dispatched under an open drawer must not
-    // interrupt the session the bubble was painted for. The server enforces this too.
-    const sessionId = threadBySlug(store.board, slug)?.sessionId
-    if (!sessionId) { showToast("This thread has no live session to send to"); return }
-    setPending(true)
-    void rpc.deliverQueuedNow({ slug, sessionId }).then(
-      (result) => {
-        setPending(false)
-        // Nothing optimistic here, and nothing needed: the server moves the queue's delivery-ledger
-        // entries to `delivered` under the same landed interrupt and pushes a transcript frame, so the
-        // bubbles un-gray on this round trip rather than on the tailer. Keeping the claim server-side
-        // is what makes it survive a reload and reach every other open tab. A refusal is spoken, since
-        // the operator asked for something and did not get it.
-        // `released`: messages Frizz was holding for the rest went to the runtime. On a runtime with
-        // no interrupt that is the whole of "send now", and it is not a refusal.
-        if (!result.interrupted && !result.released) showToast(result.reason ?? "That message could not be pushed through")
-      },
-      (error: unknown) => {
-        setPending(false)
-        showToast(`Couldn't push it through — ${(error instanceof Error ? error.message : String(error)).slice(0, 160)}`)
-      },
-    )
-  }, [pending, slug])
+export function useSendNowPending(slug: string | null): boolean {
+  return useSyncExternalStore(
+    useCallback((onChange: () => void) => {
+      listeners.add(onChange)
+      return () => listeners.delete(onChange)
+    }, []),
+    () => (slug ? inFlight.has(slug) : false),
+    () => false,
+  )
+}
 
-  // SEND WHAT FRIZZ IS HOLDING, WITHOUT INTERRUPTING — the "Send now" under a message sent to the queue.
-  // The operator stopped waiting for the rest; the message goes in as the steer it would have been.
-  const releaseHeld = useCallback(() => {
-    if (!slug || pending) return
-    const sessionId = threadBySlug(store.board, slug)?.sessionId
-    if (!sessionId) { showToast("This thread has no live session to send to"); return }
-    setPending(true)
-    void rpc.deliverQueuedNow({ slug, sessionId, releaseOnly: true }).then(
-      (result) => {
-        setPending(false)
+/** PRESS SEND NOW for this thread: the step its queued run is at (sendNowStep), asked of the server.
+ *  The click and ⌘⏎ both come here. Returns whether a press was made, so a keystroke with nothing to
+ *  press can be left to whatever else wants it. */
+export function pressSendNow(slug: string, run: QueuedRun): boolean {
+  const step = sendNowStep(run, deliverQueuedNowSupported(slug))
+  if (!step) return false
+  if (inFlight.has(slug)) return true
+  // Resolved at PRESS time, not render time — a thread re-dispatched under an open drawer must not
+  // interrupt the session the bubble was painted for. The server enforces this too.
+  const sessionId = threadBySlug(store.board, slug)?.sessionId
+  if (!sessionId) {
+    showToast("This thread has no live session to send to")
+    return true
+  }
+  setInFlight(slug, true)
+  const releaseOnly = step === "release"
+  void rpc.deliverQueuedNow({ slug, sessionId, ...(releaseOnly ? { releaseOnly: true } : {}) }).then(
+    (result) => {
+      setInFlight(slug, false)
+      // Nothing optimistic here, and nothing needed: the server moves the queue's delivery-ledger
+      // entries to `delivered` under the same landed interrupt and pushes a transcript frame, so the
+      // bubbles un-gray on this round trip rather than on the tailer. Keeping the claim server-side
+      // is what makes it survive a reload and reach every other open tab. A refusal is spoken, since
+      // the operator asked for something and did not get it.
+      // `released`: messages Frizz was holding for the rest went to the runtime. On a runtime with
+      // no interrupt that is the whole of "send now", and it is not a refusal.
+      if (releaseOnly) {
         if (!result.released) showToast(result.reason ?? "That message could not be sent now")
-      },
-      (error: unknown) => {
-        setPending(false)
-        showToast(`Couldn't send it now — ${(error instanceof Error ? error.message : String(error)).slice(0, 160)}`)
-      },
-    )
-  }, [pending, slug])
-
-  return { deliverNow, releaseHeld, pending }
+      } else if (!result.interrupted && !result.released) {
+        showToast(result.reason ?? "That message could not be pushed through")
+      }
+    },
+    (error: unknown) => {
+      setInFlight(slug, false)
+      const why = (error instanceof Error ? error.message : String(error)).slice(0, 160)
+      showToast(releaseOnly ? `Couldn't send it now — ${why}` : `Couldn't push it through — ${why}`)
+    },
+  )
+  return true
 }

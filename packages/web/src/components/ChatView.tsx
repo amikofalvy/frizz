@@ -3,7 +3,7 @@ import { createPortal } from "react-dom"
 import { useSnapshot } from "valtio"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual"
-import { AlertTriangle, ArrowDown, ArrowUp, Bot, Check, ChevronRight, FileText, HelpCircle, Hourglass, KeyRound, ListChecks, Loader2, Radar, TerminalSquare, type LucideIcon } from "lucide-react"
+import { AlertTriangle, ArrowDown, Bot, Check, ChevronRight, FileText, HelpCircle, Hourglass, KeyRound, ListChecks, Loader2, Radar, TerminalSquare, type LucideIcon } from "lucide-react"
 import { awaitingFenceTitle, awaitingSteps, RETRY_FOLLOW_UP } from "@frizz/shared"
 import type { AskQuestion, AwaitingHint, BgShellView, PendingAsk, RegisteredQuestionView, SubAgentView, ThreadView as ThreadViewData, TranscriptEdit, TranscriptMessage, TranscriptPart, TranscriptTodo, TranscriptToolCall } from "@frizz/shared"
 import { store, pushDrawer, pushSubAgentDrawer, pushBackgroundShellDrawer, showToast } from "../store.ts"
@@ -47,7 +47,7 @@ import { limitResumeClock } from "../lib/activityTime.ts"
 import { dayAndTime, messageStamp, restGapAt } from "../lib/messageTime.ts"
 import { useUnqueueFollowUp, useUnqueueSupported } from "../lib/unqueueFollowUp.ts"
 import { useFailedDeliveryActions } from "../lib/failedDelivery.ts"
-import { useDeliverQueuedNow, useDeliverQueuedNowSupported } from "../lib/deliverQueuedNow.ts"
+import { pressSendNow, sendNowStep, useDeliverQueuedNowSupported, useSendNowPending } from "../lib/deliverQueuedNow.ts"
 import { SessionMessageLine } from "./SessionMessageLine.tsx"
 import { lastAskIndex, messagePresentationText } from "../lib/messagePresentation.ts"
 import { inQueuedTail, withRestReplyInline } from "../lib/restReply.ts"
@@ -3238,35 +3238,52 @@ function FailedSendRow({ deliveryId, text, rawText, error }: { deliveryId: strin
 // pushes the queue through now, and the runtime moves a running command to the background or cuts the
 // turn (router deliverQueuedNow). So a held run takes two presses to interrupt.
 //
+// ⌘⏎ PRESSES IT whenever nothing is typed (lib/sendNowKey), and it wears that chord on a flat keycap to
+// the left of its words, where an arrow stood until 2026-10-19. The maintainer chose the cap from
+// fourteen drawn candidates over three rounds (send-now-shortcut-mockup-fixture, O): an outline cap,
+// left of the words, whose glyphs turn white and hairline grey with the words on hover, on a 50ms fade
+// ("the transition time needs to be much faster" than the 150ms default). The cap is `.send-now-key`
+// (styles.css).
+//
 // It carries its own leading spacer and draws nothing when there is nothing it can do, so a surface
-// mounts it under its queued tail unconditionally. The arrow is a 1em glyph on the words' baseline,
-// lifted to the middle of their cap band (`1cap`), so it sits on the words in any face at any size.
+// mounts it under its queued tail unconditionally.
 export function QueuedSendNow() {
   const slug = useContext(ThreadSlugContext)
   const run = useContext(QueuedRunContext)
   const interruptible = useDeliverQueuedNowSupported(slug)
-  const { deliverNow, releaseHeld, pending } = useDeliverQueuedNow(slug)
+  const pending = useSendNowPending(slug)
   if (!slug || !run) return null
-  const releasing = run.held > 0
-  if (!releasing && !(run.steered > 0 && interruptible)) return null
+  const step = sendNowStep(run, interruptible)
+  if (!step) return null
   const several = run.held + run.steered > 1
-  const glyph = "size-[1em] shrink-0 self-baseline translate-y-[calc(0.5em_-_0.5cap)]"
   return (
     <>
       <VSpace h={HUMAN_RUN_STEP} />
-      <div data-queued-send-now={releasing ? "release" : "interrupt"} className="flex items-baseline justify-end text-[11.5px] leading-[16px] text-muted">
+      <div data-queued-send-now={step} className="flex items-baseline justify-end text-[11.5px] leading-[16px] text-muted">
         <button
           type="button"
+          data-send-now
           // Same as every submit affordance beside a live input: never blur on the click path.
           onMouseDown={(e) => e.preventDefault()}
-          onClick={releasing ? releaseHeld : deliverNow}
+          onClick={() => pressSendNow(slug, run)}
           disabled={pending}
-          title={releasing
+          aria-keyshortcuts="Meta+Enter Control+Enter"
+          title={`${step === "release"
             ? several ? "Send them now — the agent reads them at its next step" : "Send it now — the agent reads it at its next step"
-            : "Send now — the worker reads the queue immediately, and a command it is running carries on in the background"}
-          className="flex items-baseline gap-1 outline-none transition-colors hover:text-fg focus-visible:text-fg disabled:opacity-50"
+            : "Send now — the worker reads the queue immediately, and a command it is running carries on in the background"} (⌘⏎)`}
+          className="flex items-baseline outline-none transition-colors duration-50 hover:text-fg focus-visible:text-fg disabled:opacity-50"
         >
-          {pending ? <Loader2 aria-hidden className={`${glyph} animate-spin`} strokeWidth={2.4} /> : <ArrowUp aria-hidden className={glyph} strokeWidth={2.4} />}
+          {pending ? (
+            // The spinner takes the cap's place while the press is in flight, at the arrow's old 1em size
+            // and cap-band lift, and the words keep their place.
+            <Loader2 aria-hidden className="mr-1 size-[1em] shrink-0 self-baseline translate-y-[calc(0.5em_-_0.5cap)] animate-spin" strokeWidth={2.4} />
+          ) : (
+            // An INLINE <kbd> in a plain wrapper: a flex item is blockified, and a block ignores the
+            // vertical-align that sets the cap on the words' cap band.
+            <span aria-hidden className="mr-[0.44em] shrink-0">
+              <kbd className="send-now-key">⌘⏎</kbd>
+            </span>
+          )}
           <span className="underline decoration-border underline-offset-2">Send now</span>
         </button>
       </div>

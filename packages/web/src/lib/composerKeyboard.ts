@@ -19,7 +19,8 @@ export type ComposerKeyboardEvent = {
 //   Enter               → the ordinary send (queued behind the worker's current turn if it has one)
 //   Shift-Enter         → a newline (Option-Enter too — the browser default, repaired on macOS Chrome)
 //   ⌘/Ctrl-Enter        → the FORCED send: interrupt-and-send where a worker is mid-turn, otherwise
-//                         just a send
+//                         just a send. With the box EMPTY it presses Send now under the queued
+//                         messages instead (maintainer 2026-10-19; lib/sendNowKey)
 //
 // Ctrl is ⌘'s Windows/Linux twin throughout the app (⌘K / Ctrl-K, ⌘I / Ctrl-I), so it is the forced
 // chord there and never a newline. The staged-answer box and the typed interaction form send on both
@@ -49,7 +50,16 @@ export function shouldSubmitComposerEnter(event: ComposerKeyboardEvent, canSubmi
  * `canSubmit` is the same gate as the ordinary send.
  */
 export function shouldInterruptSubmitComposerEnter(event: ComposerKeyboardEvent, canSubmit: boolean): boolean {
-  return canSubmit && isEnter(event) && (event.metaKey || event.ctrlKey)
+  return canSubmit && isForcedSendChord(event)
+}
+
+/**
+ * The forced chord itself — ⌘/Ctrl-Enter, not Shift or Option, not an IME confirmation — whatever
+ * answers it. A prompt box with something in it answers it with its forced send; with nothing in it the
+ * chord is Send now's under the queued messages (lib/sendNowKey).
+ */
+export function isForcedSendChord(event: ComposerKeyboardEvent): boolean {
+  return isEnter(event) && (event.metaKey || event.ctrlKey)
 }
 
 /**

@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { canInterruptAndSend, shouldInterruptSubmitComposerEnter, shouldRestoreOptionEnterNewline, shouldSubmitComposerEnter, shouldSubmitStagedEnter, type ComposerKeyboardEvent } from "./composerKeyboard.ts"
+import { canInterruptAndSend, isForcedSendChord, shouldInterruptSubmitComposerEnter, shouldRestoreOptionEnterNewline, shouldSubmitComposerEnter, shouldSubmitStagedEnter, type ComposerKeyboardEvent } from "./composerKeyboard.ts"
 
 function key(overrides: Partial<ComposerKeyboardEvent> = {}): ComposerKeyboardEvent {
   return {
@@ -73,6 +73,23 @@ test("forced send never fires on an IME confirmation", () => {
   assert.equal(shouldInterruptSubmitComposerEnter(key({ metaKey: true, isComposing: true }), true), false)
   assert.equal(shouldInterruptSubmitComposerEnter(key({ metaKey: true, keyCode: 229 }), true), false)
   assert.equal(shouldInterruptSubmitComposerEnter(key({ metaKey: true, keyCode: 13 }), true), true)
+})
+
+// ---- isForcedSendChord — the chord with nothing typed, which presses Send now (lib/sendNowKey) ----
+
+test("the forced chord on its own is Command- or Ctrl-Enter, whatever the box holds", () => {
+  assert.equal(isForcedSendChord(key({ metaKey: true })), true)
+  assert.equal(isForcedSendChord(key({ ctrlKey: true })), true)
+  assert.equal(isForcedSendChord(key()), false, "a plain Enter is never the chord")
+  assert.equal(isForcedSendChord(key({ metaKey: true, shiftKey: true })), false)
+  assert.equal(isForcedSendChord(key({ metaKey: true, altKey: true })), false)
+  assert.equal(isForcedSendChord(key({ metaKey: true, isComposing: true })), false)
+  assert.equal(isForcedSendChord(key({ metaKey: true, keyCode: 229 })), false)
+  assert.equal(isForcedSendChord(key({ key: "a", metaKey: true })), false)
+  // The forced send is exactly the chord, gated: never one without the other.
+  for (const e of [key({ metaKey: true }), key({ ctrlKey: true }), key(), key({ metaKey: true, shiftKey: true })]) {
+    assert.equal(shouldInterruptSubmitComposerEnter(e, true), isForcedSendChord(e))
+  }
 })
 
 // ---- shouldSubmitStagedEnter — the ```question card's inputs and the typed interaction form ----

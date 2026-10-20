@@ -5,7 +5,7 @@ import { ATTACHMENT_ACCEPT, ATTACHMENT_MAX_BYTES, isAllowedAttachmentName, type 
 import { showToast } from "../store.ts"
 import { joinComposerValue, splitComposerValue } from "../lib/imagePaths.ts"
 import { splitProseByTokens } from "../lib/composerContext.ts"
-import { shouldInterruptSubmitComposerEnter, shouldRestoreOptionEnterNewline, shouldSubmitComposerEnter } from "../lib/composerKeyboard.ts"
+import { isForcedSendChord, shouldInterruptSubmitComposerEnter, shouldRestoreOptionEnterNewline, shouldSubmitComposerEnter } from "../lib/composerKeyboard.ts"
 import { queueComposerHandlesOptionEnter } from "../lib/queueComposerKeyboard.ts"
 import { composerRail, SEND_SPLIT_WIDTH } from "../lib/iconRhythm.ts"
 import type { SendMode } from "../lib/sendMode.ts"
@@ -210,7 +210,8 @@ export function Composer({
   // bolt icon to mean force push. That doesn't make any sense."). Preempting is now offered where the
   // waiting messages actually ARE: one Send now under the queued run (ChatView QueuedSendNow), which
   // needs no message payload because the send is already in the provider's queue. The shortcut stays
-  // because it is a real send path with muscle memory behind it — only the picture was wrong.
+  // because it is a real send path with muscle memory behind it — only the picture was wrong. With the
+  // box EMPTY the same chord presses that Send now (lib/sendNowKey), so ⌘⏎ always means "send now".
   onInterruptSubmit?: () => void
   // See ComposerSendControl. Desktop layouts only; the phone bar keeps its own primary button.
   send?: ComposerSendControl
@@ -636,6 +637,15 @@ export function Composer({
       e.stopPropagation()
       dictation.cancel()
       ;(onInterruptSubmit ?? onSubmit)()
+      return
+    }
+    // With the box EMPTY the chord is left to bubble: the thread's surface reads it as Send now under
+    // the queued messages (lib/sendNowKey). So while the box holds anything it cannot send yet — an
+    // upload in flight, a busy runtime — the chord is still the box's, and marked taken here: words typed
+    // and a ⌘⏎ must never push the queue through in their place. Marked, not stopped: the queue card's
+    // own handler still sees it, as it did before Send now had a key.
+    if (armed && isForcedSendChord(keyboardEvent)) {
+      e.preventDefault()
       return
     }
     if (shouldRestoreOptionEnterNewline(keyboardEvent)) {
