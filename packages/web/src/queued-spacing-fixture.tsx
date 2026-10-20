@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { createRoot } from "react-dom/client"
 import type { BoardSnapshot, ThreadView as ThreadViewModel, TranscriptMessage } from "@frizz/shared"
 import { ThreadView } from "./components/ChatView.tsx"
+import { StandaloneThreadPage } from "./components/StandaloneThreadPage.tsx"
 import { TodosView } from "./components/TodosView.tsx"
 import { TooltipProvider } from "./components/Tooltip.tsx"
 import { store } from "./store.ts"
@@ -117,17 +118,31 @@ window.fetch = async (input, init) => {
     calls.push(JSON.parse(String(init?.body ?? "{}")))
     return new Response(JSON.stringify({ result: { interrupted: true } }), { headers: { "content-type": "application/json" } })
   }
+  // A typed message sent from the prompt box — so a ⌘⏎ with words in the box can be told apart from one
+  // that pressed Send now.
+  if (url.pathname === "/_frizz/rpc/followUp") {
+    const calls = ((window as unknown as { __followUpCalls?: unknown[] }).__followUpCalls ??= [])
+    calls.push(JSON.parse(String(init?.body ?? "{}")))
+    return new Response(JSON.stringify({ result: null }), { headers: { "content-type": "application/json" } })
+  }
   if (url.pathname.startsWith("/_frizz/rpc/")) {
     return new Response(JSON.stringify({ result: {} }), { headers: { "content-type": "application/json" } })
   }
   return originalFetch(input, init)
 }
 
-// ?surface=drawer renders the thread drawer; default renders the queue card. Both are the REAL
-// components, so whichever surface drops the gap shows it here.
+// ?surface=drawer renders the thread drawer, ?surface=full the full-screen page; default renders the
+// queue card. All are the REAL components, so whichever surface drops the gap shows it here.
 const surface = PARAMS.get("surface") ?? "card"
 
 function Fixture() {
+  if (surface === "full") {
+    return (
+      <div className="relative h-screen bg-bg text-fg text-sm">
+        <StandaloneThreadPage slug={SLUG} />
+      </div>
+    )
+  }
   if (surface === "drawer") {
     return (
       <div className="relative h-screen bg-bg text-fg text-sm">

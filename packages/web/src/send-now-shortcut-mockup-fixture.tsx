@@ -16,6 +16,10 @@ import "./styles.css"
 // Command+Enter. That applies even if the focus is currently in the prompt box and you have nothing
 // written. It should also probably show that as a shortcut. Mock it up."
 //
+// PICKED: O, the same day — the flat keycap left of the words, its glyphs white and hairline grey on
+// hover, on a 50ms fade. Shipped as ChatView QueuedSendNow (`.send-now-key` in styles.css) with the
+// chord in lib/sendNowKey; the sheet stays as the record of what was weighed.
+//
 // WHAT IS TRUE TODAY (read from the code on 2026-10-19):
 //   · Send now is one quiet "↑ Send now" link under the queued messages (ChatView QueuedSendNow). A run
 //     sent to the queue goes to the agent's next step on the first press; a run waiting for the agent's

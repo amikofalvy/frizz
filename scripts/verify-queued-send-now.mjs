@@ -4,9 +4,15 @@
 // queue, and a message sent to the queue carried a "Queued until the agent rests · Send now · Take
 // back" line of its own. The maintainer (2026-10-15): "we definitely don't need the Send Now button under
 // every one of the messages . it applies to all three", and of the line: "I don't think we need the
-// little message that says 'Queued until the agent rests'". So: one `↑ Send now` under the run, always
+// little message that says 'Queued until the agent rests'". So: one Send now under the run, always
 // visible, that stops waiting one step at a time — a held run goes to the agent's next step
 // (`releaseOnly`), a queued steer is pushed through now.
+//
+// ⌘⏎ PRESSES IT (2026-10-19) whenever nothing is typed: from the empty prompt box, from anywhere else in
+// the thread's surface, and from a page with nothing focused. With words typed, ⌘⏎ is still the prompt
+// box's own forced send. The control wears the chord on a flat keycap to the left of its words, where
+// an arrow stood (send-now-shortcut-mockup-fixture, O). All three surfaces are driven: the drawer, the
+// full page and the queue card.
 //
 // Everything here needs a REAL browser: the control is mounted by each surface under its own queued
 // tail (the drawer's virtualized rows, the queue card's block), so where it lands, what it says and
@@ -56,7 +62,8 @@ const read = (page) => page.evaluate((sel) => {
   const c = controls[0]
   const lb = last?.getBoundingClientRect()
   const cb = c?.getBoundingClientRect()
-  const label = c?.querySelector("button span")
+  // The words, after the keycap's wrapper.
+  const label = c?.querySelector("button > span:last-child")
   return {
     count: controls.length,
     sendNows: sendNows.length,
@@ -94,14 +101,14 @@ try {
     if (bolt.some((l) => /interrupt/i.test(l))) fail(`the composer carries an interrupt button: ${JSON.stringify(bolt)}`)
     else pass("no interrupt button in the composer rail")
 
-    // 3. OPTICAL: the arrow's ink centred on the words' CAP BAND (visual-review Rule 2). The text node
+    // 3. OPTICAL: the keycap's box centred on the words' CAP BAND (visual-review Rule 2). The text node
     //    is wrapped in its own inline span and probed inside it, so the probe reads the inline baseline
-    //    rather than a flex line's centre. Measured at the shipped size and at double it: the glyph is
-    //    1em and lifted by `1cap`, so the residual must hold at both.
+    //    rather than a flex line's centre. Measured at the shipped size and at double it: the cap is
+    //    sized and lifted in `em`/`cap`, so the residual must hold at both. The old arrow is gone.
     const optical = (fontSize) => page.evaluate((sel, fontSize) => {
       const c = document.querySelector(sel)
       if (fontSize) c.style.fontSize = fontSize
-      const label = c.querySelector("button span")
+      const label = c.querySelector("button > span:last-child")
       const node = [...label.childNodes].find((n) => n.nodeType === 3)
       const span = document.createElement("span")
       label.insertBefore(span, node)
@@ -121,29 +128,45 @@ try {
       const ctx = document.createElement("canvas").getContext("2d")
       ctx.font = font
       const cap = ctx.measureText("H").actualBoundingBoxAscent
-      const paths = [...c.querySelectorAll("svg path, svg line, svg polyline")].map((p) => p.getBoundingClientRect())
-      const top = Math.min(...paths.map((r) => r.top)), bottom = Math.max(...paths.map((r) => r.bottom))
-      const right = Math.max(...paths.map((r) => r.right))
+      // The cap's border IS its ink: its box is what the eye reads beside the words.
+      const key = c.querySelector("kbd").getBoundingClientRect()
       const textLeft = (() => { const range = document.createRange(); range.selectNodeContents(label); return range.getBoundingClientRect().left })()
+      const svgs = c.querySelectorAll("svg").length
+      const glyphs = c.querySelector("kbd").textContent
       if (fontSize) c.style.fontSize = ""
-      // NEGATIVE = the arrow's ink sits BELOW the cap band's centre.
-      return { residual: (baseline - cap / 2) - (top + bottom) / 2, fontSize: size, inkGap: textLeft - right }
+      // NEGATIVE = the cap sits BELOW the cap band's centre.
+      return { residual: (baseline - cap / 2) - (key.top + key.bottom) / 2, fontSize: size, gap: textLeft - key.right, em: parseFloat(size), svgs, glyphs }
     }, CONTROL, fontSize)
     const shipped = await optical(null)
     const doubled = await optical("23px")
-    if (Math.abs(shipped.residual) > 0.3) fail(`arrow ink ${shipped.residual.toFixed(2)}px off the cap band at ${shipped.fontSize}`)
-    else pass(`arrow ink on the cap band at ${shipped.fontSize} (${shipped.residual.toFixed(2)}px residual)`)
-    if (Math.abs(doubled.residual) > 0.6) fail(`arrow ink ${doubled.residual.toFixed(2)}px off the cap band at ${doubled.fontSize}`)
+    if (shipped.glyphs !== "⌘⏎" || shipped.svgs !== 0) fail(`the control draws ${shipped.svgs} svg(s) and a cap reading "${shipped.glyphs}", expected the ⌘⏎ cap and no arrow`)
+    else pass("the control wears a ⌘⏎ keycap and no arrow")
+    if (Math.abs(shipped.residual) > 0.6) fail(`keycap ${shipped.residual.toFixed(2)}px off the cap band at ${shipped.fontSize}`)
+    else pass(`keycap centred on the words' cap band at ${shipped.fontSize} (${shipped.residual.toFixed(2)}px residual)`)
+    if (Math.abs(doubled.residual) > 1.2) fail(`keycap ${doubled.residual.toFixed(2)}px off the cap band at ${doubled.fontSize}`)
     else pass(`…and at ${doubled.fontSize} (${doubled.residual.toFixed(2)}px), so it tracks the type`)
-    console.log(`      arrow ink → "S" box: ${shipped.inkGap.toFixed(2)}px`)
+    // 0.44em from the cap's border to the words' box: the 5.5px of ink the arrow kept from the words.
+    if (!near(shipped.gap, 0.44 * shipped.em, 0.3)) fail(`keycap → words ${shipped.gap.toFixed(2)}px, expected ${(0.44 * shipped.em).toFixed(2)}px`)
+    else pass(`keycap → words ${shipped.gap.toFixed(2)}px (0.44em)`)
 
-    // 4. HOVER brightens it, and the bubbles keep their own take-back lift — that is still per message.
-    const before = await page.$eval(`${CONTROL} button`, (b) => getComputedStyle(b).color)
+    // 4. HOVER brightens it — the words, and the keycap's glyphs to the words' colour and its hairline
+    //    to grey — on a 50ms fade. The bubbles keep their own take-back lift, which is still per message.
+    const tone = () => page.$eval(`${CONTROL} button`, (b) => {
+      const k = getComputedStyle(b.querySelector("kbd"))
+      return { words: getComputedStyle(b).color, key: k.color, hairline: k.borderTopColor, fade: [getComputedStyle(b).transitionDuration, k.transitionDuration] }
+    })
+    const before = await tone()
     await page.hover(`${CONTROL} button`)
     await new Promise((r) => setTimeout(r, 250))
-    const after = await page.$eval(`${CONTROL} button`, (b) => getComputedStyle(b).color)
-    if (before === after) fail(`hover leaves the control's colour at ${before}`)
-    else pass(`hover lifts the control (${before} → ${after})`)
+    const after = await tone()
+    if (before.words === after.words) fail(`hover leaves the control's colour at ${before.words}`)
+    else pass(`hover lifts the control (${before.words} → ${after.words})`)
+    if (after.key !== after.words || before.key === after.key) fail(`hover leaves the keycap's glyphs at ${after.key}, words at ${after.words}`)
+    else pass(`hover lifts the keycap's glyphs with the words (${before.key} → ${after.key})`)
+    if (before.hairline === after.hairline || after.hairline === after.words) fail(`hover takes the keycap's hairline ${before.hairline} → ${after.hairline}, expected a lift short of the words`)
+    else pass(`hover lifts the keycap's hairline to grey (${before.hairline} → ${after.hairline})`)
+    if (before.fade.some((d) => d !== "0.05s" && !d.startsWith("0.05s,"))) fail(`fades run ${JSON.stringify(before.fade)}, expected 50ms`)
+    else pass(`the fade is 50ms (${before.fade.join(" / ")})`)
     await page.hover(`[data-frizz-msg="q2"] [data-unqueue]`)
     await new Promise((r) => setTimeout(r, 300))
     const lift = await page.$eval(`[data-frizz-msg="q2"] [data-unqueue]`, (b) => Number(getComputedStyle(b).opacity))
@@ -191,7 +214,77 @@ try {
     await page.close()
   }
 
-  // 8. NEGATIVE CONTROLS. Codex takes a steer straight into its turn, so a queued steer there has
+  // 8. ⌘⏎ PRESSES IT, on every surface, from wherever nothing is typed — and with words typed it is still
+  //    the prompt box's own send. Each case opens a fresh page, so the calls it reads are its own.
+  const BOX = "[data-thread-composer-box] textarea"
+  const chord = async (page, mod = "Meta", extra) => {
+    await page.keyboard.down(mod)
+    if (extra) await page.keyboard.down(extra)
+    await page.keyboard.press("Enter")
+    if (extra) await page.keyboard.up(extra)
+    await page.keyboard.up(mod)
+    await new Promise((r) => setTimeout(r, 400))
+  }
+  const calls = (page) => page.evaluate(() => ({ push: window.__pushNowCalls ?? [], typed: window.__followUpCalls ?? [] }))
+  const focusOn = {
+    box: (page) => page.focus(BOX),
+    // A focusable element of the surface that edits nothing: the drawer's transcript, or a card's own
+    // header button, focused the way a keyboard user lands on it.
+    transcript: (page) => page.evaluate(() => {
+      const el = document.querySelector("[data-drawer-transcript-scroll]") ?? document.querySelector("[data-thread-surface] button:not([data-send-now])")
+      el.focus()
+      return el !== null && document.activeElement === el
+    }),
+    nothing: (page) => page.evaluate(() => { document.activeElement?.blur(); return document.activeElement === document.body }),
+  }
+  for (const [query, where, expect, mod, extra] of [
+    ["surface=drawer", "box", "interrupt"],
+    ["surface=drawer", "box", "interrupt", "Control"],
+    ["surface=drawer", "transcript", "interrupt"],
+    ["surface=drawer", "nothing", "interrupt"],
+    ["surface=drawer&held=1", "box", "release"],
+    ["surface=full", "box", "interrupt"],
+    ["surface=full", "nothing", "interrupt"],
+    ["", "box", "interrupt"],
+    ["held=1", "transcript", "release"],
+    ["surface=drawer", "box", null, "Meta", "Shift"],
+    ["surface=drawer&backend=codex", "box", null],
+    ["surface=drawer&queued=0", "box", null],
+  ]) {
+    const page = await open(query)
+    const name = `⌘⏎ ${mod === "Control" ? "(Ctrl) " : ""}${extra ? `+${extra} ` : ""}${query || "card"}, focus on ${where}`
+    const landed = await focusOn[where](page)
+    if (landed === false) { fail(`${name}: could not put focus there`); await page.close(); continue }
+    await chord(page, mod, extra)
+    const { push, typed } = await calls(page)
+    if (typed.length) fail(`${name}: sent a typed message ${JSON.stringify(typed)}`)
+    else if (expect === null) {
+      if (push.length) fail(`${name}: pressed Send now where it should not — ${JSON.stringify(push)}`)
+      else pass(`${name}: nothing pressed`)
+    } else if (push.length !== 1) fail(`${name}: expected one Send now press, saw ${JSON.stringify(push)}`)
+    else if ((push[0].releaseOnly === true) !== (expect === "release") || push[0].slug !== "queued-spacing" || !push[0].sessionId) fail(`${name}: bad press ${JSON.stringify(push[0])}`)
+    else {
+      // The caret stays where it was: pressing Send now from the box leaves you in the box.
+      const kept = where !== "box" || await page.evaluate((sel) => document.activeElement === document.querySelector(sel), BOX)
+      if (!kept) fail(`${name}: pressed (${expect}) but took the caret out of the prompt box`)
+      else pass(`${name} → ${expect}`)
+    }
+    await page.close()
+  }
+  // With words typed, ⌘⏎ stays the prompt box's: the words go now, and Send now is not pressed.
+  {
+    const page = await open("surface=drawer")
+    await page.focus(BOX)
+    await page.keyboard.type("stop and read this")
+    await chord(page)
+    const { push, typed } = await calls(page)
+    if (push.length) fail(`typed + ⌘⏎ pressed Send now: ${JSON.stringify(push)}`)
+    else if (typed.length !== 1 || !String(typed[0].message).includes("stop and read this") || typed[0].interrupt !== true) fail(`typed + ⌘⏎: ${JSON.stringify(typed)}`)
+    else pass("typed + ⌘⏎ sends the words now (interrupt), and Send now is left alone")
+    await page.close()
+  }
+
+  // 9. NEGATIVE CONTROLS. Codex takes a steer straight into its turn, so a queued steer there has
   //    nothing to push; a run Frizz holds still releases. And with nothing queued, nothing draws.
   for (const [query, expected, why] of [
     ["surface=drawer&backend=codex", 0, "codex steer: no queue to push, no control"],
@@ -206,7 +299,7 @@ try {
     await page.close()
   }
 
-  // 9. NARROW. The run's right edge is the pane's, so the control must stay inside it.
+  // 10. NARROW. The run's right edge is the pane's, so the control must stay inside it.
   {
     const page = await open("surface=drawer", 420)
     const r = await read(page)

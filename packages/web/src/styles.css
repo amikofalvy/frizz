@@ -1571,6 +1571,30 @@ html[data-code-wrap="off"] {
   background: color-mix(in srgb, var(--color-bg) 60%, transparent);
   border-color: color-mix(in srgb, var(--color-fg) 14%, transparent);
 }
+/* SEND NOW'S KEY — the ⌘⏎ under the queued messages (ChatView QueuedSendNow). The prose cap above drawn
+   FLAT: the strong hairline alone, no fill and no bottom lip, at 0.87 of the line's 11.5px. The same
+   lift puts its cap band's centre on the words' (a whole-box residual of -0.46px against the words' cap
+   band, sans, 2026-10-19 — under a pixel, left alone), and it stays inline for the same reason, so its
+   border never enters the 16px line. On hover it lifts with the words — glyphs to the words' white,
+   hairline to grey — on the button's own 50ms. */
+.send-now-key {
+  --send-now-key-size: 0.87;
+  font-family: var(--font-sans);
+  font-size: calc(1em * var(--send-now-key-size));
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  padding: 0 0.4em;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 0.35em;
+  color: var(--color-muted);
+  vertical-align: calc(0.5cap / var(--send-now-key-size) - 0.5cap);
+  transition: color 50ms, border-color 50ms;
+}
+[data-send-now]:is(:hover, :focus-visible) .send-now-key {
+  color: var(--color-fg);
+  border-color: var(--color-muted);
+}
 /* SCRIPTS. The UA's `vertical-align: super` raises the fragment's whole inline box, which pushes the
    line box taller: 26.6px against 23.8px in transcript prose, 23.25px against 20px in a card, 19.5px
    against 16.5px on a chip's label (measured 2026-10-11, sans). A fragment with `line-height: 0`
