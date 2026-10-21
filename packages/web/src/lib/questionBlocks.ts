@@ -49,6 +49,9 @@ export type MessageSegment =
   // its `id:` names a registered row the way `registeredId` does, so it is a placement too. See
   // splitMessageQuestions.
   | { kind: "question"; text: string; questionKind: QuestionKind; danger: boolean; registeredId?: string; fence?: Exclude<QuestionFenceRead, { form: "invalid" }> }
+  // An `id:`-only fence the server REFUSED: it names a question that was never asked, or one already
+  // withdrawn or dismissed (splitMessageQuestions). Drawn as a note saying so, never as a card.
+  | { kind: "refusedRef"; id: string }
 
 // Opening fence begins a line: ```question, an OPTIONAL info-string of one or more space-separated
 // tokens (e.g. ```question multi, ```question danger), then a newline;
@@ -166,6 +169,13 @@ export function splitMessageQuestions(text: string, fenceGrammar: boolean, refus
   for (const b of blocks) {
     out.push(...splitQuestionBlocks(text.slice(at, b.start)))
     at = b.end
+    // A REFUSED REFERENCE says so (2026-10-21). Its code block was two words — `id: clerk-local-dev-key` —
+    // sitting where the worker's prose promised a card, and the human could not tell a reference to
+    // nothing from a stray snippet. A refused ASK stays a code block: its question is still worth reading.
+    if (b.read.form === "ref" && isRefused(b.read, refused)) {
+      out.push({ kind: "refusedRef", id: b.read.id })
+      continue
+    }
     if (b.read.form === "invalid" || isRefused(b.read, refused)) {
       // Its own prose run, so the legacy reader never sees it and markdown draws the fence as code.
       out.push({ kind: "prose", text: text.slice(b.start, b.end) })
@@ -190,6 +200,8 @@ export function splitMessageQuestions(text: string, fenceGrammar: boolean, refus
 // `questionFaults` and hands them in here as `refused`). It is not a question the human is being asked, so
 // it draws no card — neither a card of its own nor, the worse reading, the card of the row its id happens
 // to name — and every reader below that asks "which questions does this message name" leaves it out.
+// (A refused `id:`-only REFERENCE is the one exception to the code block: it is a `refusedRef` segment,
+// drawn as a note, because its bytes say nothing a reader can use.)
 
 /** Is this readable fence one the server refused (by its lowercased id)? */
 function isRefused(read: Exclude<QuestionFenceRead, { form: "invalid" }>, refused: ReadonlySet<string> | undefined): boolean {

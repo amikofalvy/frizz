@@ -490,6 +490,21 @@ export function ClosedQuestionCard({ spec, state, wrap }: { spec: AskedQuestion;
 }
 const NOT_ANSWERED = { chosenIdxs: [] }
 
+/** An `id:`-only fence the server REFUSED (lib/questionBlocks `refusedRef`): the worker pointed at a card
+ *  that is not there. One muted line in the fence's slot, naming the id and why no card is drawn — where
+ *  the bare code block `id: …` used to sit and read as a stray snippet. `closed` is the row's state when
+ *  the id names a question that was asked and has since closed; absent, nothing ever asked it. */
+export function RefusedQuestionReference({ id, closed }: { id: string; closed?: ClosedQuestionView["state"] }) {
+  const why = closed === "withdrawn" ? "a question the worker withdrew"
+    : closed === "dismissed" ? "a question that was dismissed"
+    : "a question this thread never asked"
+  return (
+    <p data-question-refused={id} className="md-inline text-[13px] leading-snug text-muted">
+      Refers to <code>{id}</code>, {why}.
+    </p>
+  )
+}
+
 /** Mounted ONCE per thread surface, by the surface's shell (ThreadSurface) — INSIDE its
  *  QueueDismissContext, which the send reads. */
 export function RegisteredAnsweringProvider({ thread, children }: { thread: ThreadView | undefined; children: ReactNode }) {

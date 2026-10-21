@@ -87,7 +87,7 @@ test("a refused fence is prose to the splitter and names nothing to the placemen
   const refused = new Set(["store"])
   const segs = splitMessageQuestions(text, true, refused)
   assert.deepEqual(segs.map((s) => s.kind), ["prose", "prose", "prose", "question", "prose"])
-  assert.equal(segs[1].text.trimEnd(), choice("store", "Which region?"), "the worker's own bytes, fence and all — markdown draws the code block")
+  assert.equal(segs[1].kind === "prose" && segs[1].text.trimEnd(), choice("store", "Which region?"), "the worker's own bytes, fence and all — markdown draws the code block")
   assert.equal(segs[3].kind === "question" && segs[3].fence?.id, "fresh")
   assert.deepEqual(questionFenceIdsIn(text, refused), ["fresh"])
   assert.equal(hasQuestionBlock(text, refused), true)
@@ -96,8 +96,12 @@ test("a refused fence is prose to the splitter and names nothing to the placemen
   assert.deepEqual(splitMessageQuestions(text, true).map((s) => s.kind), ["prose", "question", "prose", "question", "prose"])
   assert.deepEqual(splitMessageQuestions(text, true, new Set()).map((s) => s.kind), ["prose", "question", "prose", "question", "prose"])
   assert.deepEqual(questionFenceIdsIn(text), ["store", "fresh"])
-  // A reference to nothing is refused too, and is then visibly text rather than nothing at all.
-  assert.deepEqual(splitMessageQuestions(`See:\n\n${fence("id: ghost")}`, true, new Set(["ghost"])).map((s) => s.kind), ["prose", "prose"])
+  // A reference to nothing is refused too, and is then a note naming what it pointed at (2026-10-21) — not
+  // nothing at all, and not the bare `id: ghost` code block a reader could not tell from a stray snippet.
+  assert.deepEqual(splitMessageQuestions(`See:\n\n${fence("id: ghost")}`, true, new Set(["ghost"])), [{ kind: "prose", text: "See:\n\n" }, { kind: "refusedRef", id: "ghost" }])
+  assert.equal(hasQuestionBlock(`See:\n\n${fence("id: ghost")}`, new Set(["ghost"])), false, "and it asks nothing")
+  // Unrefused, the same fence is still a placement for its row.
+  assert.deepEqual(splitMessageQuestions(`See:\n\n${fence("id: ghost")}`, true).map((s) => s.kind), ["prose", "question"])
 })
 
 test("a refused late follow-up claims nothing: its parent's card does not move, and the fence is a code block", () => {

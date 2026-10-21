@@ -56,6 +56,10 @@
 //      open: one correction, carrying the paragraph that says the fixed message carries no done fence.
 //   N. The scripted worker's own `ending=question` knob (scripted-claude.mjs), which other recordings use:
 //      it asks with a fence, the question registers, and `answerQuestions` wakes its `reply=` turn.
+//   P. References to questions never asked, with the human's message queued right behind the rest (the
+//      pullfrog thread, 2026-10-21). No tick sees that rest idle, so its correction cannot come there: it
+//      comes at the worker's NEXT rest, saying the human was never asked and has written since, and the
+//      two questions asked properly then register. Until that day the human's message dropped it untold.
 //   F. A restart mid-wait. One question open and standing, a second fence broken, and the server stopped
 //      after that rest reached the transcript and before the scheduler's next tick could correct it. Booted
 //      again on the same HOME it adopts the broker daemon it did not fork, delivers the correction once,
@@ -931,6 +935,64 @@ const CASES = [
       t.check("…into its `reply=done` turn: the thread signs off with nothing open", rest2.text.includes("```done") && done.questions.length === 0 && done.lastFence?.kind === "done", `lastFence ${done.lastFence?.kind}`)
       await w.quiet()
       t.check("nothing else was sent: no correction, no reminder", w.since(rest1.index).length === 1, `${w.since(rest1.index).length} message(s) after the question`)
+    },
+  },
+
+  {
+    key: "P",
+    title: "references to questions never asked, with the human's message right behind the rest: corrected at the next rest",
+    async run(t) {
+      // The pullfrog shape (2026-10-21). The worker rests on `id:` references to two questions no fence ever
+      // asked, and the human's next message is queued milliseconds later — before a tick can see the rest
+      // idle. The human typing is not the worker being told, so the correction waits for its next rest.
+      const typed = "Let's also make sure the preview repo teardown is working."
+      const asks = (id, question) => fence(`id: ${id}`, "kind: text", `question: ${question}`)
+      const w = await t.worker("ghost", [
+        { name: "rests on references to questions it never asked", on: FIRST, text: `Signing in waits on the two cards I posted earlier.\n\n${fence("id: pullfrogdev-local-key")}\n\n${fence("id: clerk-local-dev-key")}` },
+        { name: "answers the human, held open", on: typed, tools: [t.hold("teardown")], text: "Teardown checks out: every preview repo is deleted when its pull request closes." },
+        {
+          name: "asks the two questions properly", on: QUESTION_FENCE_CORRECTION_LEAD, tools: [t.hold("fix")],
+          text: `Those two were never asked. Here they are.\n\n${asks("pullfrogdev-local-key", "The pullfrogdev App's private key")}\n\n${asks("clerk-local-dev-key", "The Clerk development instance's secret key")}`,
+        },
+      ])
+      const first = await w.start(FIRST)
+      const rest1 = await w.restAfter(first)
+      await api.mutate("followUp", { slug: w.slug, sessionId: w.sessionId, message: typed })
+      t.note(`the human's message was sent ${secs(Date.now() - Date.parse(rest1.at))} after the rest`)
+      const human = await w.start(typed, { after: rest1.index })
+      t.check("the human's message reaches the worker as a typed message, not a wake", !human.wake)
+      // Held inside the reply's turn: the references are refused on the board, and nothing was sent for them.
+      const faulted = await until("both references refused on the board", async () => {
+        const thread = await w.board()
+        const ids = new Set((thread?.questionFaults ?? []).map((f) => f.id))
+        return ids.has("pullfrogdev-local-key") && ids.has("clerk-local-dev-key") ? thread : undefined
+      }, BOARD_MS)
+      t.check("the board refuses both references and registers nothing", faulted.questions.length === 0 && w.questions().length === 0, JSON.stringify(faulted.questionFaults?.map((f) => f.id)))
+      const race = w.deliveries().filter((d) => d.fence_id === `park:question-fence:${rest1.at}`)
+      t.check("the race was reproduced: no tick corrected the first rest before the human's message", race.length === 0, race.map((d) => d.state).join(", "))
+
+      w.release("teardown")
+      const rest2 = await w.restAfter(human)
+      const correction = await w.start(QUESTION_FENCE_CORRECTION_LEAD, { after: rest2.index, timeoutMs: WAKE_MS, what: "the correction" }).catch(() => undefined)
+      t.check("the correction reaches the worker at its next rest, though the human typed past the references", correction !== undefined,
+        correction ? undefined : `${w.deliveries().map((d) => `${d.fence_id} ${d.state}`).join(", ") || "nothing queued"}`)
+      if (!correction) return
+      t.note(`correction reached the worker ${secs(Date.parse(correction.at) - Date.parse(rest2.at))} after its next rest`)
+      t.check("…keyed to that rest", w.deliveries().some((d) => d.fence_id === `park:question-fence:${rest2.at}`))
+      t.check("…saying the human has NOT been asked", correction.text.startsWith(`${QUESTION_FENCE_CORRECTION_LEAD}could not register, so the human has NOT been asked:`), correction.text.split("\n")[0])
+      t.check("…naming both ids as never asked, with `frizzctl activity` as the way to check",
+        ["pullfrogdev-local-key", "clerk-local-dev-key"].every((id) => correction.text.includes(`- \`${id}\` — \`id: ${id}\` alone references a question, and no question of yours uses that id, so the human was never asked it`)) && correction.text.includes("`frizzctl activity` lists the questions you have open"))
+      t.check("…and saying the human has written since", correction.text.includes("The human has written to you since the message that carried this fence"))
+      t.check("no sign-off reminder for the bare rest it took", w.count(SIGNOFF_NUDGE_MARKER) === 0)
+
+      w.release("fix")
+      const rest3 = await w.restAfter(correction)
+      const after = await w.settled(rest3)
+      const handles = after.questions.map((q) => q.spec.handle).sort()
+      t.check("the two questions, asked properly, register and the thread queues on them", JSON.stringify(handles) === JSON.stringify(["clerk-local-dev-key", "pullfrogdev-local-key"]) && after.needsYou === true, JSON.stringify(handles))
+      t.check("…and the board lists no fault any more", !after.questionFaults?.length, JSON.stringify(after.questionFaults))
+      await w.quiet()
+      t.check("exactly one correction in all", w.count(QUESTION_FENCE_CORRECTION_LEAD) === 1, `${w.count(QUESTION_FENCE_CORRECTION_LEAD)} in the transcript`)
     },
   },
 

@@ -86,7 +86,7 @@ import { ChildOpRow } from "./ChildOpRow.tsx"
 import { ThreadLinks } from "./ThreadLinks.tsx"
 import { TRANSCRIPT_META_LABEL_CLASS, transcriptMetaChevronClass } from "../lib/transcriptMetaLabels.ts"
 import { InteractionStack } from "./InteractionCards.tsx"
-import { ClosedQuestionCard, RegisteredQuestionCard, RegisteredQuestionStack, SettledQuestionCard, SettledQuestionStack, UnregisteredQuestionCard, type FenceQuestionRow, type SettledQuestion } from "./RegisteredQuestionCards.tsx"
+import { ClosedQuestionCard, RefusedQuestionReference, RegisteredQuestionCard, RegisteredQuestionStack, SettledQuestionCard, SettledQuestionStack, UnregisteredQuestionCard, type FenceQuestionRow, type SettledQuestion } from "./RegisteredQuestionCards.tsx"
 // The shared card chrome and THE question card both live in their own modules now, so every
 // surface can render them without importing the thread view. QuestionBlockCard in particular is
 // shared with the native-AskUserQuestion path, which reaches it through InteractionCards.tsx —
@@ -3693,6 +3693,12 @@ function MessageBody({ m, answering, dense, paired, textOnly, showSendButton, st
               : <ProseHtml key={partKey} md={p.text} wrap={dense} />,
             )
           }
+          continue
+        }
+        // …except a refused `id:`-only REFERENCE, which says what it pointed at instead.
+        if (seg.kind === "refusedRef") {
+          const closed = resolveQuestionName(seg.id, fenceQuestions ?? [])?.closed
+          push(<RefusedQuestionReference key={`${keyBase}-${fi}-r${si}`} id={seg.id} closed={closed} />)
           continue
         }
         qi.n += 1
