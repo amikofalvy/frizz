@@ -17,7 +17,11 @@ import { createScheduler } from "./scheduler.ts"
 import { createStorage, type SessionRow } from "./storage.ts"
 import { applyEvent, applyRecord, newTailState, type SessionTelemetry, type Tailer } from "./tailer.ts"
 
-const at = (minute: number) => new Date(Date.parse("2026-10-20T10:00:00.000Z") + minute * 60_000).toISOString()
+// Every fixture instant sits a week AHEAD of the real clock. The code compares a message's time with
+// Date.now() (a Goal armed now refuses only questions written after it), and a fixed date stopped
+// working the day the clock passed it: these were "2026-10-20T10:00Z", six days ahead when written.
+const T0 = Date.now() + 7 * 86_400_000
+const at = (minute: number) => new Date(T0 + minute * 60_000).toISOString()
 const fence = (info: string, body: string) => `\`\`\`${info}\n${body}\n\`\`\``
 const choice = (id: string) => fence("question", `id: ${id}\nkind: choice\nquestion: SQLite or a JSON file?\noptions:\n  - label: SQLite\n  - label: JSON file`)
 /** `kind: choice` with no options: refused by the registrar, so it draws a correction. */
