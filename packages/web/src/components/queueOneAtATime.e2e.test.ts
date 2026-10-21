@@ -11,6 +11,10 @@ import test from "node:test"
 // must be read in a turn that began after the previous one's turn ended. A second thread is the negative
 // control: three ordinary steers sent mid-turn, which land in ONE turn, so the transcript check can fail.
 //
+// The tick is STICKY and the same in every tab (maintainer 2026-10-20, lib/sendMode.ts): it is still on
+// once the queue has drained and the agent has rested, a second tab opens on it in another thread, and
+// a pick there reaches the first tab without a reload and outlives one.
+//
 // The worker is the scripted one, so nothing signs in:
 //   nub scripts/adhoc-stack.mjs --port=<port> --project=<a throwaway git repo> --claude-bin=$PWD/scripts/scripted-claude.mjs
 //   FRIZZ_QUEUE_ONE_AT_A_TIME_E2E_URL=http://127.0.0.1:<port> FRIZZ_QUEUE_ONE_AT_A_TIME_E2E_HOME=<the stack's "home"> \
@@ -134,10 +138,31 @@ test("messages sent to the queue from the prompt box reach the worker one turn e
     assert.ok(endAfter(t.turnEnds, u1) < u2, `ONE-2 was read after ONE-1's turn ended (ONE-1 at ${u1}, its end at ${endAfter(t.turnEnds, u1)}, ONE-2 at ${u2})`)
     assert.ok(endAfter(t.turnEnds, u2) < u3, `ONE-3 was read after ONE-2's turn ended (ONE-2 at ${u2}, its end at ${endAfter(t.turnEnds, u2)}, ONE-3 at ${u3})`)
     assert.ok(sawModeHeldAcrossRest, "the Send menu stayed on the queue while it drained")
-    await page.waitForFunction((sel) => document.querySelector(sel)?.getAttribute("data-send-mode") === "steer", { timeout: 10_000 }, split)
+    // Rested with nothing held: the tick stays where the operator put it.
+    await new Promise((resolve) => setTimeout(resolve, 1500))
+    assert.equal(await modeNow(), "queue", "the Send menu is still on the queue after the agent rests")
     if (shots) await page.screenshot({ path: join(shots, "3-drained.png") })
 
-    // 4. THE CONTROL: the steers share one turn — which is what makes the check above able to fail.
+    // 4. EVERY TAB. A second tab, on the other thread, opens on the queue; a pick there reaches this tab
+    //    live, and a reload keeps it.
+    const other = await browser.newPage()
+    await other.setViewport({ width: 1100, height: 900, deviceScaleFactor: 2 })
+    other.on("pageerror", (e) => errors.push(String(e)))
+    const otherFull = `main[data-standalone-thread] [data-thread-surface="${control.slug}"]`
+    await other.goto(`${baseUrl}/project/${projectSlug}/thread/${control.slug}/full`, { waitUntil: "networkidle2" })
+    await other.waitForSelector(`${otherFull} [data-send-split]`)
+    assert.equal(await other.$eval(`${otherFull} [data-send-split]`, (el) => el.getAttribute("data-send-mode")), "queue", "another tab, on another thread, opens on the queue")
+    await other.click(`${otherFull} [data-send-menu]`)
+    await other.waitForSelector(`[data-send-modes] [data-send-mode-row="steer"]`)
+    if (shots) await other.screenshot({ path: join(shots, "4-other-tab-menu.png"), clip: await menuClip(other, otherFull) })
+    await other.click(`[data-send-modes] [data-send-mode-row="steer"]`)
+    await page.waitForFunction((sel) => document.querySelector(sel)?.getAttribute("data-send-mode") === "steer", { timeout: 5000 }, split)
+    await page.reload({ waitUntil: "networkidle2" })
+    await page.waitForSelector(split)
+    assert.equal(await modeNow(), "steer", "the pick outlives a reload")
+    await other.close()
+
+    // 5. THE CONTROL: the steers share one turn — which is what makes the check above able to fail.
     for (;;) {
       const c = readTranscript(control.sessionId)
       const reads = [1, 2, 3].map((n) => c.readAt(`CTRL-${n} `))

@@ -1,4 +1,3 @@
-import { useEffect, useRef } from "react"
 import { proxy, useSnapshot } from "valtio"
 
 // HOW THE PROMPT BOX'S SEND GOES OUT while the agent is working (maintainer 2026-10-11). The button
@@ -13,35 +12,51 @@ import { proxy, useSnapshot } from "valtio"
 // A third way, the FORCED send that interrupts the turn, is deliberately not a row: it stays on
 // ⌘/Ctrl-Enter and on the Send now under the queued messages.
 //
-// PER THREAD, IN MEMORY, AND BACK TO STEER WHEN THE AGENT RESTS. Queueing is a decision about the turn
-// in front of the operator — "not now, after this" — so it ends with that turn: a tick that outlived it
-// would silently hold the first message of some later turn, which nobody asked for. Module scope
-// because one thread is steerable from several mounted prompt boxes at once (the queue card and the
-// drawer), and they must agree.
+// ONE CHOICE FOR EVERY PROMPT BOX, KEPT UNTIL THE OPERATOR CHANGES IT (maintainer 2026-10-20: "that
+// value needs to be sticky and apply across all tabs"). The tick used to be per thread, in memory, and
+// went back to steer whenever the agent rested, so every thread and every reload opened on steer. Now
+// it is the operator's way of sending: ticked in one prompt box it holds in every other — every thread,
+// every project, every tab of this browser — and through a reload. It is remembered in this browser
+// (like lib/homeView.ts), and a tab follows another tab's pick live through the `storage` event.
 //
-// The turn in front of the operator lasts until the QUEUE has drained, though, not only the turn that
-// was running when they ticked it: the agent rests for a moment between two queued messages, and a reset
-// there would make the next message typed a steer into the turn answering the first.
+// A queue tick left on cannot hold a message back for no reason: a send is only held while there is a
+// turn to queue behind (ThreadComposerBox), and the placeholder says "Queue a message…" whenever it
+// would be.
 export type SendMode = "steer" | "queue"
 
-const modes = proxy({ of: {} as Record<string, SendMode> })
+const KEY = "frizz:send-mode"
 
-export function setSendMode(slug: string, mode: SendMode): void {
-  if (mode === "steer") delete modes.of[slug]
-  else modes.of[slug] = mode
+function read(): SendMode {
+  try {
+    return localStorage.getItem(KEY) === "queue" ? "queue" : "steer"
+  } catch {
+    return "steer"
+  }
 }
 
-/** The ticked row for this thread. `running` is "a turn is in flight" and `queued` is "something this
- *  thread queued is held or on its way" — the edge to neither is what resets the tick. */
-export function useSendMode(slug: string, running: boolean, queued = false): SendMode {
-  const mode = useSnapshot(modes).of[slug] ?? "steer"
-  const busy = running || (mode === "queue" && queued)
-  const was = useRef(busy)
-  useEffect(() => {
-    if (was.current && !busy) setSendMode(slug, "steer")
-    was.current = busy
-  }, [busy, slug])
-  return mode
+const send = proxy({ mode: typeof window === "undefined" ? ("steer" as SendMode) : read() })
+
+// Guarded for the unit tests, which import the store (and so this) under a stubbed `window`.
+if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+  // Another tab ticked a row: follow it. A null key is that tab clearing all of storage.
+  window.addEventListener("storage", (event) => {
+    if (event.key === KEY || event.key === null) send.mode = read()
+  })
+}
+
+export function setSendMode(mode: SendMode): void {
+  if (send.mode !== mode) send.mode = mode
+  try {
+    if (mode === "steer") localStorage.removeItem(KEY)
+    else localStorage.setItem(KEY, mode)
+  } catch {
+    // Storage refused (a private window): the choice holds for this page and is not remembered.
+  }
+}
+
+/** The ticked row, the same in every prompt box. */
+export function useSendMode(): SendMode {
+  return useSnapshot(send).mode
 }
 
 /** What the placeholder says an empty prompt box is for. A staged answer outranks everything: the box

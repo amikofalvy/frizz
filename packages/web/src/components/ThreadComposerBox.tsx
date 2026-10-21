@@ -125,7 +125,7 @@ export function ThreadComposerBox({
   // goes out one message per turn, and the agent rests for a moment between two of them.
   const held = useContext(QueuedRunContext)?.held ?? 0
   const behind = running || held > 0
-  const mode = useSendMode(slug, running, held > 0 || thread?.deliveryInFlight === true)
+  const mode = useSendMode()
   // ONE placeholder for both surfaces, decided here from the thread — the queue card said "Reply to the
   // agent…" and the drawer "Follow up…" until 2026-10-09, and only the card said when the box was the
   // way AROUND an open question. An external session keeps its own sentence: it says what sending does,
@@ -332,7 +332,7 @@ export function ThreadComposerBox({
         fileDrop={fileDrop}
         // An external session keeps the ↑: sending there takes the session over, and there is no turn
         // of Frizz's to steer or queue behind until it has.
-        send={thread?.foreign ? undefined : { mode, onMode: (next) => setSendMode(slug, next), running: behind, staged }}
+        send={thread?.foreign ? undefined : { mode, onMode: setSendMode, running: behind, staged }}
       />
       {controls.status}
       {signInFor && <SignInModal backend={signInFor} onClose={() => setSignInFor(null)} onAuthed={() => setSignInFor(null)} />}
