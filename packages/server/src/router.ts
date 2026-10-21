@@ -690,7 +690,10 @@ function projectCard(entry: RegistryEntry, stale: boolean): ProjectCard {
     path: entry.path,
     lastOpenedAt: entry.lastOpenedAt,
     stale,
-    iconVersion: entry.iconScannedAt,
+    // The picture's own hash where it is known, so the URL changes when the picture does and never
+    // otherwise. A miss has no hash, and takes the scan time: an old miss must be a NEW url, because
+    // the request for it is what runs the rescan (see iconStatus below).
+    iconVersion: entry.iconHash ?? entry.iconScannedAt,
     // `iconScannedAt` alone cannot answer this: it is stamped whenever a scan RAN, found or not. See
     // ProjectCard.iconStatus for why the never-scanned case has to stay distinguishable.
     //

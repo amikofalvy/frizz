@@ -49,7 +49,7 @@ test("'Look for an icon again' scans on the spot and returns what it found", asy
   // The card answers the click itself. It used to come back `unknown`, leaving the looking to the
   // square's image request — which a square whose last request had failed never made.
   assert.equal(card.iconStatus, "icon")
-  assert.ok(card.iconVersion, "a fresh version, so the square's URL is one no earlier failure answered for")
+  assert.ok(card.iconVersion, "a version, so the square asks for the icon it found")
   assert.equal(readRegistry(home).projects[0]?.icon?.endsWith("logo.svg"), true)
 })
 

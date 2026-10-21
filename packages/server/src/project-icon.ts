@@ -3,7 +3,8 @@ import { homedir } from "node:os"
 import { basename, dirname, extname, join, relative, sep } from "node:path"
 import { imageDimensions, MEASURABLE_IMAGE_EXTENSIONS, svgDeclaresColour, type ImageDimensions } from "./image-header.ts"
 import { projectStateDir } from "./frizz-paths.ts"
-import { readRegistry, resolveProjectIcon } from "./project-registry.ts"
+import { iconContentHash, readRegistry, recordProjectIconHash, resolveProjectIcon } from "./project-registry.ts"
+import { projectIconRendition, RENDITION_VERSION } from "./icon-renditions.ts"
 
 // FINDING A PROJECT'S OWN ICON, in the project.
 //
@@ -444,7 +445,15 @@ export function iconMediaType(path: string): string | undefined {
 
 export type ProjectIconResult =
   | { status: 400 | 404 }
-  | { status: 200; contentType: string; body: Buffer }
+  | {
+      status: 200
+      contentType: string
+      body: Buffer
+      /** The ORIGINAL file's `iconContentHash` — what a current URL carries as `v`. */
+      hash: string
+      /** Names these exact bytes: the original, or one rendition of it. */
+      etag: string
+    }
 
 /**
  * Serve a project's icon by project id — the whole of what `/_frizz/project-icon` does.
@@ -459,10 +468,14 @@ export type ProjectIconResult =
  *
  * CONFINED to the project's own tree or its state dir. `/local-image` is deliberately unconfined and
  * says so; this one has no reason to be, since it only ever answers with a file it found itself.
+ *
+ * `size` asks for a rendition (icon-renditions.ts) — a PNG that many device pixels across.
+ * Where there is none to give (an SVG, a JPEG, an original already that small) the original is the
+ * answer, which a square draws exactly as it did before renditions existed.
  */
 export function resolveProjectIconResponse(
   id: string | undefined,
-  options: { home?: string } = {},
+  options: { home?: string; size?: number } = {},
 ): ProjectIconResult {
   if (!id) return { status: 400 }
   const home = options.home ?? homedir()
@@ -490,9 +503,17 @@ export function resolveProjectIconResponse(
   })
   if (!roots.some((root) => real === root || real.startsWith(root + sep))) return { status: 404 }
 
+  let body: Buffer
   try {
-    return { status: 200, contentType, body: readFileSync(real) }
+    body = readFileSync(real)
   } catch {
     return { status: 404 }
   }
+  const hash = iconContentHash(body)
+  if (entry.iconHash !== hash) recordProjectIconHash(id, path, hash, home)
+  const rendition = options.size ? projectIconRendition(id, body, hash, options.size, { home }) : undefined
+  if (rendition) {
+    return { status: 200, contentType: "image/png", body: rendition, hash, etag: `W/"${hash}-${options.size}.v${RENDITION_VERSION}"` }
+  }
+  return { status: 200, contentType, body, hash, etag: `W/"${hash}"` }
 }

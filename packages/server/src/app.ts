@@ -10,7 +10,7 @@ import { DEFAULT_PORT, ATTACHMENT_MAX_BASE64_CHARS, isAllowedAttachmentName, typ
 import { createRouter } from "./router.ts"
 import type { AppContext } from "./context.ts"
 import { allowedLocalCorsOrigin, isTrustedLocalHttpRequest } from "./local-origin.ts"
-import { compress, negotiateEncoding, shouldCompress } from "./compression.ts"
+import { compress, MIN_COMPRESS_BYTES, negotiateEncoding, shouldCompress } from "./compression.ts"
 import { localImageHeaders, localImageStream, resolveLocalImage } from "./local-image.ts"
 import { localFileHeaders, resolveServedLocalFile } from "./local-file.ts"
 import { resolveProjectIconResponse } from "./project-icon.ts"
@@ -241,19 +241,38 @@ export function createApp(ctx: AppContext, options: AppOptions = {}) {
   // is no `<slug>` segment in the URL for exactly that reason, which also means it lands here on the
   // launching project's app (splitTenantRequest finds no known slug and falls through).
   //
-  // Cached hard on the client — a 404 included. Forty squares is forty requests on a cold load and
-  // none at all thereafter, and the icons of a project on this machine do not change under anyone.
+  // A URL whose `v` is the icon's content hash names those bytes for good, so it is served from the
+  // browser's cache at once on every load — `stale-while-revalidate` — while the revalidation goes out
+  // behind it. That request still matters: it is what runs the lazy rescan (resolveProjectIcon), so an
+  // icon committed later is still found. It costs a 304 when nothing changed. Until 2026-10-21 this was
+  // a bare `max-age=300` with no validator, and `v` was the scan TIME, restamped by every rescan: each
+  // load more than five minutes after the last, and every rescan, downloaded every icon again in full.
+  //
+  // A URL whose `v` is not the current hash — a card from before a change, or a project never scanned —
+  // is revalidated every time instead, since the bytes it is answered with are not the ones it names.
   app.get(frizzRoute("/project-icon"), (c) => {
-    const r = resolveProjectIconResponse(c.req.query("id"))
+    const size = Number(c.req.query("s")) || undefined
+    const r = resolveProjectIconResponse(c.req.query("id"), { size })
     if (r.status !== 200) return c.text(String(r.status), r.status)
-    return c.body(Uint8Array.from(r.body), 200, {
+    const headers: Record<string, string> = {
       "content-type": r.contentType,
-      "cache-control": "private, max-age=300",
+      "cache-control": c.req.query("v") === r.hash ? "private, max-age=300, stale-while-revalidate=2592000" : "private, no-cache",
+      etag: r.etag,
       // An SVG icon is a file out of somebody's repository. It renders through <img>, where scripting
       // is already off; this makes that unconditional rather than a property of how it is embedded.
       "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox",
       "x-content-type-options": "nosniff",
-    })
+    }
+    const known = (c.req.header("if-none-match") ?? "").split(",").map((tag) => tag.trim().replace(/^W\//u, ""))
+    if (known.includes(r.etag.replace(/^W\//u, "")) || known.includes("*")) return c.body(null, 304, headers)
+    // An SVG is text and has no rendition, so compression is its size win: the logos on the maintainer's
+    // machine shrink 3–6x as brotli (keyward's 2.8 KB to 0.5 KB). A PNG is compressed already. The
+    // ETag is weak, so one tag serves either encoding.
+    const encoding = r.contentType === "image/svg+xml" ? negotiateEncoding(c.req.header("accept-encoding")) : null
+    if (encoding && r.body.byteLength >= MIN_COMPRESS_BYTES) {
+      return c.body(compress(r.body, encoding), 200, { ...headers, "content-encoding": encoding, vary: "Accept-Encoding" })
+    }
+    return c.body(Uint8Array.from(r.body), 200, headers)
   })
 
   app.get(frizzRoute("/local-visualization"), (c) => {

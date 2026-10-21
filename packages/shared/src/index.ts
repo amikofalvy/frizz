@@ -6777,12 +6777,15 @@ export const ProjectCard = z.object({
   /** The directory is gone — moved or deleted. The card stays so it can be reopened or forgotten. */
   stale: z.boolean(),
   /**
-   * When this project's icon was last established, or absent if it never has been.
+   * A hash of the icon's bytes; for a project with no icon, when it was last scanned. Absent if it
+   * never has been.
    *
    * Carried purely so the client can hang it off the `/_frizz/project-icon` URL: the icon bytes are
    * cached hard (a rail of forty squares is forty requests, and none of them should recur), which
    * means a newly uploaded icon would otherwise stay invisible behind the cached old one. A changed
    * version is a changed URL, so the swap is immediate without weakening the caching for everyone.
+   * It is the HASH, not the scan time, because a rescan restamps the time every ten minutes whether
+   * or not the picture changed, and every restamp was a fresh download of every icon.
    *
    * Deliberately NOT "does this project have an icon". Answering that for a project nobody has
    * scanned yet would mean scanning it, and this list is one file read on purpose.

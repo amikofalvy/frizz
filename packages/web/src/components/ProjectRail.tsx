@@ -11,6 +11,8 @@ import { useBoardLoaded, useBoardThreads } from "../hooks.ts"
 import { showToast } from "../store.ts"
 import { projectHref, projectSlug } from "../lib/base-path.ts"
 import { homeHref, useHomeView } from "../lib/homeView.ts"
+import { useDevicePixelRatio } from "../lib/devicePixelRatio.ts"
+import { projectIconKey, rememberProjectIcon, seenProjectIcon } from "../lib/projectIconSeen.ts"
 import { useOptimisticallyArchived } from "../lib/optimisticArchive.ts"
 import { useOptimisticallySteered } from "../lib/steering.ts"
 import { dropIndex, edgeScrollVelocity, moveItem, shiftFor } from "../lib/railReorder.ts"
@@ -73,33 +75,43 @@ export function monogram(name: string): string {
   return (words[0]![0]! + words[1]![0]!).toUpperCase()
 }
 
-/** The icon URL for a project, versioned so a replaced icon is a different URL. See ProjectCard. */
-export function projectIconSrc(project: ProjectCard): string {
+/**
+ * The icon URL for a project, versioned so a replaced icon is a different URL (see ProjectCard), and
+ * sized: `px` asks for a copy that many device pixels across (server icon-renditions.ts).
+ */
+export function projectIconSrc(project: ProjectCard, px?: number): string {
   const version = project.iconVersion ? `&v=${encodeURIComponent(project.iconVersion)}` : ""
-  return `/_frizz/project-icon?id=${encodeURIComponent(project.id)}${version}`
+  const size = px ? `&s=${px}` : ""
+  return `/_frizz/project-icon?id=${encodeURIComponent(project.id)}${version}${size}`
 }
 
 /**
  * The square itself: the project's icon, or its monogram until we know there isn't one.
  *
- * The monogram is what renders while the icon loads AND if it never does, with the `<img>` laid over
- * it and revealed only on load. That ordering is deliberate — a rail of forty squares fetches forty
- * icons, and the alternative (blank until loaded) is a rail that assembles itself in front of you.
+ * The monogram is what renders if the icon never loads. A picture arriving for the first time fades
+ * in over the tile; one this browser has drawn before (lib/projectIconSeen.ts) is drawn at once, which
+ * is what keeps opening the grid or reloading from replaying the fade on every square.
  */
 export function ProjectSquare({ project, size }: { project: ProjectCard; size: number }) {
-  const [loaded, setLoaded] = useState(false)
+  const iconKey = projectIconKey(project)
+  const seen = seenProjectIcon(iconKey)
+  const [loaded, setLoaded] = useState(seen !== undefined)
   // A near-square mark fills the tile; a genuinely letterboxed one is contained and padded. Measured:
   // a 372x368 screenshot is 1.1% off square and looked WRONG contained — object-contain letterboxed
   // it and the 6% padding inset it again, so a full-bleed square read as a stamp with a gap around it.
   // A real logo (.github/logo.webp, 300x331) is 9.4% off, so 5% separates the two cleanly.
-  const [fills, setFills] = useState(false)
+  const [fills, setFills] = useState(seen ?? false)
   const hue = monogramHue(project.id)
   // Draw the image unless we KNOW there is nothing to draw. Skipping it for a project that has simply
   // never been scanned deadlocks the feature — the image request is what triggers the lazy scan, so
   // no request means no scan means never any icon. `iconVersion` cannot decide this on its own: it is
   // stamped whenever a scan RAN, found or not. See ProjectCard.iconStatus.
   const hasIcon = project.iconStatus !== "none"
-  const src = projectIconSrc(project)
+  // Its EXACT size in device pixels — 80 for the rail at 2x — so the copy the server sends is drawn
+  // pixel for pixel. A copy any bigger is resampled again in the browser, and that softened the
+  // pixel-art marks. Not `srcset`: it offers a fixed list of densities, and a zoomed page (2.2x at
+  // 110%) falls between them.
+  const src = projectIconSrc(project, Math.round(size * useDevicePixelRatio()))
   // The URL that failed, not a flag. A flag outlived the failure: once one request 404'd, the square
   // rendered no image for the rest of the page's life, so a later rescan, an upload or a found icon
   // never showed until a reload. A new `iconVersion` is a new URL, and gets its own request.
@@ -158,10 +170,11 @@ export function ProjectSquare({ project, size }: { project: ProjectCard; size: n
         decoding="async"
         onLoad={(event) => {
           const img = event.currentTarget
-          if (img.naturalWidth > 0 && img.naturalHeight > 0) {
-            setFills(Math.abs(img.naturalWidth / img.naturalHeight - 1) <= 0.05)
-          }
+          // A sized copy keeps the original's proportions, so the ratio is the original's.
+          const filling = img.naturalWidth > 0 && img.naturalHeight > 0 ? Math.abs(img.naturalWidth / img.naturalHeight - 1) <= 0.05 : fills
+          setFills(filling)
           setLoaded(true)
+          rememberProjectIcon(iconKey, filling)
         }}
         onError={() => setFailedSrc(src)}
         // object-contain, never cover: a logo cropped to fill its square is a mangled logo, and the

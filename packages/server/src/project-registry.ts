@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, dirname, join } from "node:path"
@@ -59,6 +60,16 @@ export interface RegistryEntry {
    * happened to come round. Bumping ICON_SCAN_VERSION re-asks every project at once.
    */
   iconScanVersion?: number
+  /**
+   * A hash of the icon file's BYTES (`iconContentHash`), and the card's `iconVersion` whenever it is
+   * known. It replaced `iconScannedAt` there because a rescan restamps that every ten minutes, whether or
+   * not it found a different picture, and each new stamp was a new URL — so every icon on the machine
+   * was downloaded again at least that often. The hash changes only when the picture does.
+   *
+   * Set by an upload and by a scan; the icon route corrects it whenever the file it serves no longer
+   * matches, which covers a file edited in place and an entry written before this existed.
+   */
+  iconHash?: string
   /**
    * The operator's own position for this project in the rail, ascending.
    *
@@ -565,10 +576,39 @@ function updateEntry(
  * overwrites it, because a person choosing a picture outranks anything a heuristic finds.
  */
 export function setProjectIcon(id: string, path: string, home = homedir()): RegistryEntry | undefined {
+  const hash = iconFileHash(path)
   return updateEntry(id, (entry) => {
     entry.icon = path
     entry.iconSource = "custom"
     entry.iconScannedAt = new Date().toISOString()
+    if (hash) entry.iconHash = hash
+    else delete entry.iconHash
+  }, home)
+}
+
+/** What an icon is known by — its URL version, its ETag, its renditions — from its bytes alone. */
+export function iconContentHash(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex").slice(0, 16)
+}
+
+function iconFileHash(path: string): string | undefined {
+  try {
+    return iconContentHash(readFileSync(path))
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Record the hash of the icon file as the route just READ it, when it differs from what the entry
+ * holds: the file was edited in place, or the entry predates `iconHash`. Writing the registry is
+ * what announces the change, so every open tab re-reads the list and moves to the new URL.
+ */
+export function recordProjectIconHash(id: string, path: string, hash: string, home = homedir()): void {
+  const entry = readRegistry(home).projects.find((p) => p.id === id)
+  if (!entry || entry.icon !== path || entry.iconHash === hash) return
+  updateEntry(id, (target) => {
+    target.iconHash = hash
   }, home)
 }
 
@@ -578,6 +618,7 @@ export function clearProjectIcon(id: string, home = homedir()): RegistryEntry | 
     delete entry.icon
     delete entry.iconSource
     delete entry.iconScannedAt
+    delete entry.iconHash
   }, home)
 }
 
@@ -629,6 +670,8 @@ export function resolveProjectIcon(
   if (!existsSync(entry.path)) return undefined
 
   const found = detect(entry.path)
+  // Hashed on every scan, so a rescan that lands on the same picture keeps the same URL.
+  const hash = found ? iconFileHash(found) : undefined
   updateEntry(id, (target) => {
     if (found) {
       target.icon = found
@@ -637,6 +680,8 @@ export function resolveProjectIcon(
       delete target.icon
       delete target.iconSource
     }
+    if (hash) target.iconHash = hash
+    else delete target.iconHash
     target.iconScannedAt = new Date(now()).toISOString()
     target.iconScanVersion = version
   }, home)
