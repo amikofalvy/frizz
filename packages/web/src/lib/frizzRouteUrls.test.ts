@@ -31,7 +31,9 @@ function sourceFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const path = join(dir, entry.name)
     if (entry.isDirectory()) return sourceFiles(path)
-    return /\.tsx?$/.test(entry.name) ? [path] : []
+    // Tests are not the client: an e2e test matching the requests a page makes (`.endsWith("/rpc/followUp")`)
+    // names a route without building a URL, and twice in two days that tripped this guard and held a release.
+    return /\.tsx?$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name) ? [path] : []
   })
 }
 
