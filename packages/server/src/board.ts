@@ -1135,6 +1135,9 @@ export function deriveNeedsYou(
   // stale ```awaiting fence from the rest BEFORE the kill must not bury it. The operator's own snooze
   // still wins (futureSnooze, checked first), so a card can be parked deliberately.
   if (limitPause) return true
+  // Completion is a handoff even when an older background registration still holds. Keep this
+  // above the legacy park/CI excusals; only a newer delivery (checked above) can spend the handoff.
+  if (tele?.lastFence?.kind === "done") return true
   // THE WORKER'S OWN ANSWER (2026-10-01). A thread dispatched at or after NEEDS_INPUT_REQUIRED_AT says
   // with `status:` (2026-10-05; `needs_input:` before it, still read) whether its rest needs the human,
   // and every per-wait rule below is the guess that answer replaces — so none of them is consulted for
@@ -1227,11 +1230,7 @@ export function deriveNeedsYou(
   // rendered twice on one queue card (maintainer 2026-08-25: "I already hit the snooze button… but it's
   // still in the queue"). Checked against the registry, not the declaration: a fence naming a fired
   // timer is a bare rest, and a bare rest is not snoozable.
-  if (runtime !== "exited" && (hasLiveOwnWork(tele, registeredPrWatches) || hasParkedTimerWatch(tele, armedTimerIds)) && tele?.lastFence?.kind !== "done") return !bgSnoozeArmed(row)
-  // A final ```done fence is a CHECKED completion handoff: show its success card in the queue until the
-  // human explicitly Archives the thread. Like a question, merely viewing it does not resolve it. The
-  // at-rest gate above prevents a stale fence from carding while a follow-up turn is still running.
-  if (tele?.lastFence?.kind === "done") return true
+  if (runtime !== "exited" && (hasLiveOwnWork(tele, registeredPrWatches) || hasParkedTimerWatch(tele, armedTimerIds))) return !bgSnoozeArmed(row)
   // Bare rest is itself the handoff. It remains queued until the human explicitly sends more work,
   // snoozes it, or archives it; merely opening/seeing the thread cannot silently clear the card.
   return true

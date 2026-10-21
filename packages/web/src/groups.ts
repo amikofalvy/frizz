@@ -644,7 +644,9 @@ export function sessionIndicatorKind(t: ThreadView): SessionIndicatorKind {
   // back until the window resets). PRESENCE, not `autoResume`: a pause frizz will not resume by itself
   // (an unknown phrasing, an aged-out fault) is still a limit kill, and the tip says which story holds.
   if (t.limitPause && t.foreign !== true) return "limit"
-  if (t.lastFence?.kind === "done" && atRest(t)) return "done"
+  // A cardless rest can be a follow-up whose delivery spinner has expired before the transcript
+  // catches up. Its fence still describes the PREVIOUS turn: keep the queue excusal, not its checkmark.
+  if (t.lastFence?.kind === "done" && atRest(t)) return t.foreign !== true && t.needsYou === false ? "rest" : "done"
   // AWAITING A PR — GitHub's own mark, in whichever band the row sits (awaitingPrWatch). ABOVE the
   // background dot because a watched PR is not this machine's work: a dev server the thread also left
   // running is not what it is waiting FOR, and the dot said "something here is alive" about a wait whose
