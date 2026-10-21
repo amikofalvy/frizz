@@ -61,6 +61,7 @@ const messages = [
   ["The board at three widths:", "", "```lightbox", shot("phone-375x812.png"), shot("tablet-768x1024.png"), shot("desktop-1440x900.png"), "```"],
   ["One file was cleaned up:", "", "```lightbox", shot("first-1440x900.png"), shot("missing-1440x900.png"), shot("last-1440x900.png"), "```"],
   ["The flow, recorded:", "", "```lightbox", `${shot("flow-start-1440x900.png")}  Start`, `${shot("flow-320x180.webm")}  The whole flow`, "```"],
+  ["A tall one, captioned at length:", "", "```lightbox", `${shot("settings-phone-390x844.png")}  The settings page on a phone after the fix, every toggle in one column and the save bar pinned to the bottom`, "```"],
 ].map((lines) => lines.join("\n"))
 
 const DONE_BODY = ["Shipped the new settings page.", "", "```lightbox", `${shot("card-before-1440x900.png")}  Before`, `${shot("card-after-1440x900.png")}  After`, "```"].join("\n")

@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { isLightboxVideo, lightboxImageFor, lightboxLabel, parseLightboxBody, resolveLightboxPath } from "./lightbox.ts"
+import { isLightboxVideo, lightboxFileName, lightboxImage, lightboxImageFor, lightboxLabel, parseLightboxBody, resolveLightboxPath } from "./lightbox.ts"
 
 test("a lightbox body is one picture per non-blank line, in order", () => {
   assert.deepEqual(parseLightboxBody("/tmp/a.png\n\n  /tmp/b.jpg  \n/tmp/c.webp\n"), [
@@ -91,28 +91,46 @@ test("only a LOCAL raster image resolves — remote URLs and non-image files nev
   }
 })
 
-test("a picture is labelled by its caption, else by its file name", () => {
-  assert.deepEqual(lightboxLabel({ target: "/tmp/a.png", caption: "Before" }, "/tmp/a.png"), { label: "Before", captioned: true })
-  assert.deepEqual(lightboxLabel({ target: "/tmp/shots/after.png" }, "/tmp/shots/after.png"), { label: "after.png", captioned: false })
-  assert.deepEqual(lightboxLabel({ target: "shots/gone.png" }, null), { label: "gone.png", captioned: false })
+test("a tile is labelled by its caption, else by its title, else by its file name", () => {
+  assert.equal(lightboxLabel({ target: "/tmp/a.png", caption: "Before" }, "/tmp/a.png"), "Before")
+  assert.equal(lightboxLabel({ target: "/tmp/shots/after.png" }, "/tmp/shots/after.png"), "after.png")
+  assert.equal(lightboxLabel({ target: "shots/gone.png" }, null), "gone.png")
   // A delivered picture's file is a hash-named cache copy: its title names it, and a caption still wins.
-  assert.deepEqual(lightboxLabel({ target: "/c/465ab1.png", title: "The two pages" }, "/c/465ab1.png"), { label: "The two pages", captioned: true })
-  assert.deepEqual(lightboxLabel({ target: "/c/465ab1.png", caption: "Before", title: "The two pages" }, "/c/465ab1.png"), { label: "Before", captioned: true })
+  assert.equal(lightboxLabel({ target: "/c/465ab1.png", title: "The two pages" }, "/c/465ab1.png"), "The two pages")
+  assert.equal(lightboxLabel({ target: "/c/465ab1.png", caption: "Before", title: "The two pages" }, "/c/465ab1.png"), "Before")
+})
+
+test("the viewer's header names a picture by its title or its file, and its caption goes under it", () => {
+  assert.deepEqual(lightboxImage({ target: "/tmp/a.png", caption: "Before" }, "/tmp/a.png"), { path: "/tmp/a.png", label: "a.png", titled: false, caption: "Before" })
+  assert.deepEqual(lightboxImage({ target: "shots/after.png" }, "/repo/shots/after.png"), { path: "/repo/shots/after.png", label: "after.png", titled: false })
+  assert.deepEqual(lightboxImage({ target: "/c/465ab1.png", title: "The two pages" }, "/c/465ab1.png"), { path: "/c/465ab1.png", label: "The two pages", titled: true })
+  assert.deepEqual(lightboxImage({ target: "/c/465ab1.png", caption: "Before", title: "The two pages" }, "/c/465ab1.png"), {
+    path: "/c/465ab1.png",
+    label: "The two pages",
+    titled: true,
+    caption: "Before",
+  })
 })
 
 test("a picture drawn some other way is captioned by its alt text, unless the alt only names the file", () => {
   // `![The settings page](/tmp/s.png)`.
-  assert.deepEqual(lightboxImageFor("/tmp/s.png", " The settings page "), { path: "/tmp/s.png", label: "The settings page", captioned: true })
+  assert.deepEqual(lightboxImageFor("/tmp/s.png", " The settings page "), { path: "/tmp/s.png", label: "s.png", titled: false, caption: "The settings page" })
   // A bare picture line: BlockImage's alt is the basename.
-  assert.deepEqual(lightboxImageFor("/tmp/shots/s.png", "s.png"), { path: "/tmp/shots/s.png", label: "s.png", captioned: false })
+  assert.deepEqual(lightboxImageFor("/tmp/shots/s.png", "s.png"), { path: "/tmp/shots/s.png", label: "s.png", titled: false })
   // `![](~/shots/s.png)`: the sanitizer fills an empty alt with the path as written.
-  assert.deepEqual(lightboxImageFor("/Users/me/shots/s.png", "~/shots/s.png"), { path: "/Users/me/shots/s.png", label: "s.png", captioned: false })
-  assert.deepEqual(lightboxImageFor("/tmp/s.png", ""), { path: "/tmp/s.png", label: "s.png", captioned: false })
-  assert.deepEqual(lightboxImageFor("/tmp/s.png", null), { path: "/tmp/s.png", label: "s.png", captioned: false })
+  assert.deepEqual(lightboxImageFor("/Users/me/shots/s.png", "~/shots/s.png"), { path: "/Users/me/shots/s.png", label: "s.png", titled: false })
+  assert.deepEqual(lightboxImageFor("/tmp/s.png", ""), { path: "/tmp/s.png", label: "s.png", titled: false })
+  assert.deepEqual(lightboxImageFor("/tmp/s.png", null), { path: "/tmp/s.png", label: "s.png", titled: false })
   // A tool's picture card: served from a hash-named cache copy, called by the file it was a copy of.
   assert.deepEqual(lightboxImageFor("/tmp/frizz-tool-images-ab/9f2c.png", "Read: shots/board.png"), {
     path: "/tmp/frizz-tool-images-ab/9f2c.png",
     label: "board.png",
-    captioned: false,
+    titled: false,
   })
+})
+
+test("a download saves under the file's own name, never a title", () => {
+  assert.equal(lightboxFileName(lightboxImage({ target: "/tmp/a.png", caption: "Before" }, "/tmp/a.png")), "a.png")
+  assert.equal(lightboxFileName(lightboxImage({ target: "/c/465ab1.png", title: "The two pages" }, "/c/465ab1.png")), "465ab1.png")
+  assert.equal(lightboxFileName(lightboxImageFor("/tmp/frizz-tool-images-ab/9f2c.png", "Read: shots/board.png")), "board.png")
 })

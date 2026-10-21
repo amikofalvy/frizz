@@ -1,5 +1,7 @@
 import assert from "node:assert/strict"
-import { readFileSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import test from "node:test"
 import { crc32, deflateSync } from "node:zlib"
 
@@ -46,9 +48,9 @@ function png(width: number, height: number): Buffer {
 
 const DESKTOP = { width: 1000, height: 900, deviceScaleFactor: 1 }
 const PHONE = { width: 390, height: 844, deviceScaleFactor: 1, isMobile: true, hasTouch: true }
-// Every gallery tile on the fixture page: 2 + 3 + 2 + 2 in the transcript's galleries (the missing file
-// is listed, not tiled), 2 in the done card and 2 in the question option. One of them is a video.
-const TILES = 13
+// Every gallery tile on the fixture page: 2 + 3 + 2 + 2 + 1 in the transcript's galleries (the missing
+// file is listed, not tiled), 2 in the done card and 2 in the question option. One of them is a video.
+const TILES = 14
 const VIDEO_TILES = 1
 
 async function launch(viewport: typeof DESKTOP | typeof PHONE = DESKTOP) {
@@ -101,6 +103,7 @@ const viewer = (page: Page) => page.evaluate(() => {
   return {
     counter: v.querySelector("[data-lightbox-counter]")?.textContent ?? null,
     title: v.querySelector("h2")?.textContent ?? null,
+    caption: v.querySelector("[data-lightbox-caption]")?.textContent ?? null,
     picture: decodeURIComponent(v.querySelector("img")?.getAttribute("src")?.split("path=")[1] ?? ""),
   }
 })
@@ -169,7 +172,7 @@ test("a lightbox fence lays its pictures out in justified rows at their real sha
         missing: [...gallery.querySelectorAll("[data-lightbox-missing]")].map((el) => el.textContent),
       }
     }))
-    assert.equal(galleries.length, 4)
+    assert.equal(galleries.length, 5)
     // The three widths of one page share ONE row, at one height, each at its own shape, edge to edge.
     const [widths] = galleries[1].rows
     assert.equal(galleries[1].rows.length, 1)
@@ -194,11 +197,11 @@ test("the viewer pages with the arrow keys, stops at the ends, and Escape closes
     const tiles = await page.$$("[data-fixture-message='0'] [data-lightbox-tile]")
     await tiles[1].click() // "After", the second of the first gallery
     await page.waitForSelector("[data-lightbox]")
-    assert.deepEqual(await viewer(page), { counter: "2 / 2", title: "After", picture: "/fixture/lightbox/after-1440x900.png" })
+    assert.deepEqual(await viewer(page), { counter: "2 / 2", title: "after-1440x900.png", caption: "After", picture: "/fixture/lightbox/after-1440x900.png" })
     await page.keyboard.press("ArrowRight")
     assert.equal((await viewer(page))?.counter, "2 / 2", "the last picture is the end, not a wrap")
     await page.keyboard.press("ArrowLeft")
-    assert.deepEqual(await viewer(page), { counter: "1 / 2", title: "Before", picture: "/fixture/lightbox/before-1440x900.png" })
+    assert.deepEqual(await viewer(page), { counter: "1 / 2", title: "before-1440x900.png", caption: "Before", picture: "/fixture/lightbox/before-1440x900.png" })
     await page.keyboard.press("Escape")
     await page.waitForFunction(() => !document.querySelector("[data-lightbox]"))
     assert.deepEqual(await pageKeys(page), [], "a key the viewer handled must not reach the page")
@@ -238,13 +241,146 @@ test("the header's buttons are the thread header's squares with its tooltips, an
       const box = b.getBoundingClientRect()
       return [b.getAttribute("aria-label"), box.width, box.height, b.querySelector("svg")!.getBoundingClientRect().width]
     }))
-    assert.deepEqual(buttons, [["Zoom out", 28, 28, 14], ["Zoom in", 28, 28, 14], ["Open in default viewer", 28, 28, 14], ["Close", 28, 28, 15]])
+    assert.deepEqual(buttons, [["Zoom out", 28, 28, 14], ["Zoom in", 28, 28, 14], ["Download", 28, 28, 14], ["Open in default viewer", 28, 28, 14], ["Close", 28, 28, 15]])
 
     await page.hover('[data-lightbox] button[aria-label="Open in default viewer"]')
     await page.waitForFunction(() => document.querySelector("[role=tooltip]")?.textContent === "Open in default viewer", { timeout: 5000 })
     await page.keyboard.press("Escape")
     await page.waitForFunction(() => !document.querySelector("[data-lightbox]"), { timeout: 5000 })
     assert.deepEqual(await pageKeys(page), [], "the Escape that closed the viewer must not reach the page")
+    assert.deepEqual(errors, [])
+  } finally {
+    await browser.close()
+  }
+})
+
+// The caption stays with its picture in the viewer, as it is under the picture's tile: directly beneath
+// it, centred on it, and inside the stage, with the picture giving up the height it takes — a picture
+// bound by the stage's HEIGHT is the case that shows it, since there the two would otherwise overlap.
+test("a caption sits under the viewer's picture, steps aside while it is magnified, and Download saves the file", { skip: !baseUrl, timeout: 120_000 }, async () => {
+  const { browser, page, errors } = await launch()
+  const dir = mkdtempSync(join(tmpdir(), "lightbox-download-"))
+  try {
+    const layout = () => page.evaluate(() => {
+      const v = document.querySelector("[data-lightbox]")!
+      const media = v.querySelector<HTMLImageElement | HTMLVideoElement>("[data-lightbox-stage] img, [data-lightbox-stage] video")!
+      const caption = v.querySelector<HTMLElement>("[data-lightbox-caption]")
+      const stage = v.querySelector<HTMLElement>("[data-lightbox-stage]")!
+      const box = (el: Element) => { const r = el.getBoundingClientRect(); return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height } }
+      const s = getComputedStyle(stage)
+      const stageBox = box(stage)
+      return {
+        picture: box(media),
+        natural: media instanceof HTMLImageElement ? media.naturalWidth / media.naturalHeight : media.videoWidth / media.videoHeight,
+        caption: caption && { ...box(caption), lines: Math.round((caption.getBoundingClientRect().height - parseFloat(getComputedStyle(caption).paddingTop)) / parseFloat(getComputedStyle(caption).lineHeight)), opacity: getComputedStyle(caption).opacity },
+        content: { top: stageBox.top + parseFloat(s.paddingTop), bottom: stageBox.bottom - parseFloat(s.paddingBottom) },
+        describedBy: v.getAttribute("aria-describedby") === caption?.id,
+      }
+    })
+    const assertUnder = (l: Awaited<ReturnType<typeof layout>>, what: string) => {
+      const { picture, caption, content } = l
+      assert.ok(caption, `${what}: no caption`)
+      assert.ok(close(caption.top, picture.bottom), `${what}: the caption is not directly under the picture: ${JSON.stringify(l)}`)
+      assert.ok(close(caption.left + caption.width / 2, picture.left + picture.width / 2), `${what}: the caption is off the picture's centre: ${JSON.stringify(l)}`)
+      assert.ok(caption.bottom <= content.bottom + 0.5, `${what}: the caption runs past the stage: ${JSON.stringify(l)}`)
+      assert.ok(close(picture.width / picture.height, l.natural, 0.01), `${what}: the picture was squashed: ${JSON.stringify(l)}`)
+      // Picture and caption centre in the stage as one.
+      assert.ok(close(picture.top - content.top, content.bottom - caption.bottom, 1), `${what}: the pair is not centred: ${JSON.stringify(l)}`)
+      assert.ok(l.describedBy, `${what}: the dialog is not described by its caption`)
+    }
+
+    // A wide picture, bound by the stage's width.
+    await (await page.$("[data-fixture-message='0'] [data-lightbox-tile]"))!.click()
+    await pictureReady(page)
+    const wide = await layout()
+    assertUnder(wide, "wide")
+    assert.equal(wide.caption!.lines, 1)
+
+    // Magnified, the picture owns the stage and the caption steps aside — and comes back at fit.
+    await page.mouse.click(wide.picture.left + wide.picture.width / 2, wide.picture.top + wide.picture.height / 2)
+    assert.ok((await zoomOf(page)).scale > 1)
+    await page.waitForFunction(() => getComputedStyle(document.querySelector("[data-lightbox-caption]")!).opacity === "0", { timeout: 5000 })
+    assert.equal(await page.$eval("[data-lightbox-caption]", (el) => getComputedStyle(el).pointerEvents), "none")
+    await page.keyboard.press("0")
+    assert.equal((await zoomOf(page)).scale, 1)
+    await page.waitForFunction(() => getComputedStyle(document.querySelector("[data-lightbox-caption]")!).opacity === "1", { timeout: 5000 })
+
+    // A click on the caption is not a click on the backdrop: the viewer stays open.
+    const caption = (await (await page.$("[data-lightbox-caption]"))!.boundingBox())!
+    await page.mouse.click(caption.x + caption.width / 2, caption.y + caption.height - 4)
+    await new Promise((r) => setTimeout(r, 200))
+    assert.notEqual(await viewer(page), null, "a click on the caption closed the viewer")
+
+    // Download saves the picture under its file's own name, byte for byte.
+    const session = await browser.target().createCDPSession()
+    await session.send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: dir, eventsEnabled: true })
+    const began = new Promise<string>((resolve) => session.on("Browser.downloadWillBegin", (e) => resolve(e.suggestedFilename)))
+    const finished = new Promise<string>((resolve) => session.on("Browser.downloadProgress", (e) => { if (e.state !== "inProgress") resolve(e.state) }))
+    await page.click('[data-lightbox] button[aria-label="Download"]')
+    assert.equal(await began, "before-1440x900.png")
+    assert.equal(await finished, "completed")
+    assert.ok(readFileSync(join(dir, "before-1440x900.png")).equals(png(1440, 900)), "the download is not the picture's bytes")
+    assert.notEqual(await viewer(page), null, "downloading closed the viewer")
+    await page.keyboard.press("Escape")
+    await page.waitForFunction(() => !document.querySelector("[data-lightbox]"))
+
+    // A tall picture, bound by the stage's height, under a caption that wraps: the picture shortens by
+    // the caption's height and the caption still sits under it, inside the stage.
+    await (await page.$("[data-fixture-message='4'] [data-lightbox-tile]"))!.click()
+    await pictureReady(page)
+    const tall = await layout()
+    assertUnder(tall, "tall")
+    assert.ok(close(tall.caption!.bottom, tall.content.bottom), `the tall picture does not take the stage's height: ${JSON.stringify(tall)}`)
+    await page.keyboard.press("Escape")
+    await page.waitForFunction(() => !document.querySelector("[data-lightbox]"))
+
+    // An uncaptioned picture has no caption and reserves nothing: the 812px phone shot fits the 828px
+    // stage at its own size, centred.
+    await (await page.$("[data-fixture-message='1'] [data-lightbox-tile]"))!.click() // phone-375x812
+    await pictureReady(page)
+    const bare = await layout()
+    assert.equal(bare.caption, null)
+    assert.equal(await page.$eval("[data-lightbox-stage] img", (img) => (img as HTMLElement).style.maxHeight), "")
+    assert.ok(close(bare.picture.height, 812) && close(bare.picture.top - bare.content.top, bare.content.bottom - bare.picture.bottom),
+      `an uncaptioned picture lost height: ${JSON.stringify(bare)}`)
+    assert.equal(await page.$eval("[data-lightbox]", (v) => v.hasAttribute("aria-describedby")), false)
+    assert.deepEqual(errors, [])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+    await browser.close()
+  }
+})
+
+// On a phone the stage is narrow, so the long caption wraps over several lines — and still sits under the
+// picture, which shrinks to leave it room.
+test("on a phone, a caption that wraps still sits under the picture, inside the stage", { skip: !baseUrl, timeout: 120_000 }, async () => {
+  const { browser, page, errors } = await launch(PHONE)
+  try {
+    for (const message of ["0", "4"]) {
+      await (await page.$(`[data-fixture-message='${message}'] [data-lightbox-tile]`))!.tap()
+      await pictureReady(page)
+      const l = await page.evaluate(() => {
+        const v = document.querySelector("[data-lightbox]")!
+        const img = v.querySelector<HTMLImageElement>("[data-lightbox-stage] img")!
+        const caption = v.querySelector<HTMLElement>("[data-lightbox-caption]")!
+        const stage = v.querySelector<HTMLElement>("[data-lightbox-stage]")!
+        const p = img.getBoundingClientRect()
+        const c = caption.getBoundingClientRect()
+        const s = stage.getBoundingClientRect()
+        return {
+          ratio: p.width / p.height,
+          natural: img.naturalWidth / img.naturalHeight,
+          gap: c.top - p.bottom,
+          centre: c.left + c.width / 2 - (p.left + p.width / 2),
+          overflow: c.bottom - (s.bottom - parseFloat(getComputedStyle(stage).paddingBottom)),
+          lines: Math.round((c.height - parseFloat(getComputedStyle(caption).paddingTop)) / parseFloat(getComputedStyle(caption).lineHeight)),
+        }
+      })
+      assert.ok(close(l.gap, 0) && close(l.centre, 0) && l.overflow <= 0.5 && close(l.ratio, l.natural, 0.01), `message ${message}: ${JSON.stringify(l)}`)
+      if (message === "4") assert.ok(l.lines >= 2, `the long caption did not wrap: ${JSON.stringify(l)}`)
+      await page.keyboard.press("Escape")
+      await page.waitForFunction(() => !document.querySelector("[data-lightbox]"))
+    }
     assert.deepEqual(errors, [])
   } finally {
     await browser.close()
@@ -380,7 +516,7 @@ test("the zoom buttons, the + − 0 keys and a ctrl-wheel or trackpad pinch zoom
 
     // Paging lands on the next picture at fit.
     await page.keyboard.press("ArrowRight")
-    assert.equal((await viewer(page))?.title, "After")
+    assert.equal((await viewer(page))?.caption, "After")
     const next = await zoomOf(page)
     assert.deepEqual([next.scale, next.x, next.y], [1, 0, 0])
     assert.deepEqual(errors, [])
@@ -401,7 +537,7 @@ test("on a phone, a pinch zooms the picture, one finger pans it, a double tap to
         .filter((b) => getComputedStyle(b).display !== "none")
         .map((b) => [b.getAttribute("aria-label"), b.getBoundingClientRect().width, b.getBoundingClientRect().height]),
     }))
-    assert.deepEqual(chrome, { coarse: true, buttons: [["Open in default viewer", 44, 44], ["Close", 44, 44]] })
+    assert.deepEqual(chrome, { coarse: true, buttons: [["Download", 44, 44], ["Open in default viewer", 44, 44], ["Close", 44, 44]] })
 
     const fit = await zoomOf(page)
     const cx = fit.rect.left + fit.rect.width / 2
@@ -492,14 +628,14 @@ test("on a phone's answer sheet, a picture in an option opens the viewer without
     // tap reaches the row's handler too, which must leave it alone.
     await (await page.$("[data-answer-sheet] [data-lightbox-tile]"))!.tap()
     await page.waitForSelector("[data-lightbox]")
-    assert.deepEqual(await viewer(page), { counter: "1 / 2", title: "Desktop", picture: "/fixture/lightbox/sheet-desktop-1440x900.png" })
+    assert.deepEqual(await viewer(page), { counter: "1 / 2", title: "sheet-desktop-1440x900.png", caption: "Desktop", picture: "/fixture/lightbox/sheet-desktop-1440x900.png" })
     // A pick here would also have moved the sheet on to its next step, taking the other option with it.
     assert.deepEqual(await page.evaluate(() => window.__sheetPicks), [], "looking at the gallery picked its option")
     await (await page.$("[data-lightbox] button[aria-label='Close']"))!.tap()
     await page.waitForFunction(() => !document.querySelector("[data-lightbox]"))
     await (await page.$("[data-answer-sheet] [data-answer-option] img[data-local-path]"))!.tap()
     await page.waitForSelector("[data-lightbox]")
-    assert.deepEqual(await viewer(page), { counter: null, title: "One column", picture: "/fixture/lightbox/sheet-one-col-1440x900.png" })
+    assert.deepEqual(await viewer(page), { counter: null, title: "sheet-one-col-1440x900.png", caption: "One column", picture: "/fixture/lightbox/sheet-one-col-1440x900.png" })
     await (await page.$("[data-lightbox] button[aria-label='Close']"))!.tap()
     await page.waitForFunction(() => !document.querySelector("[data-lightbox]"))
     assert.deepEqual(await page.evaluate(() => window.__sheetPicks), [], "looking at a picture picked an option")
@@ -545,7 +681,7 @@ test("a fence is a gallery on a done card and in a question option, and any pict
     assert.equal(card.length, 2)
     await card[1].click()
     await page.waitForSelector("[data-lightbox]")
-    assert.deepEqual(await viewer(page), { counter: "2 / 2", title: "After", picture: "/fixture/lightbox/card-after-1440x900.png" })
+    assert.deepEqual(await viewer(page), { counter: "2 / 2", title: "card-after-1440x900.png", caption: "After", picture: "/fixture/lightbox/card-after-1440x900.png" })
     await page.keyboard.press("Escape")
     await page.waitForFunction(() => !document.querySelector("[data-lightbox]"))
 
@@ -554,12 +690,12 @@ test("a fence is a gallery on a done card and in a question option, and any pict
     const option = await page.$$("[data-fixture-question] [data-question-option]")
     await (await option[0].$("[data-lightbox-tile]"))!.click()
     await page.waitForSelector("[data-lightbox]")
-    assert.deepEqual(await viewer(page), { counter: "1 / 2", title: "Desktop", picture: "/fixture/lightbox/two-col-1440x900.png" })
+    assert.deepEqual(await viewer(page), { counter: "1 / 2", title: "two-col-1440x900.png", caption: "Desktop", picture: "/fixture/lightbox/two-col-1440x900.png" })
     await page.keyboard.press("Escape")
     await page.waitForFunction(() => !document.querySelector("[data-lightbox]"))
     await (await option[1].$("img[data-local-path]"))!.click()
     await page.waitForSelector("[data-lightbox]")
-    assert.deepEqual(await viewer(page), { counter: null, title: "One column", picture: "/fixture/lightbox/one-col-1440x900.png" })
+    assert.deepEqual(await viewer(page), { counter: null, title: "one-col-1440x900.png", caption: "One column", picture: "/fixture/lightbox/one-col-1440x900.png" })
     await page.keyboard.press("Escape")
     await page.waitForFunction(() => !document.querySelector("[data-lightbox]"))
     assert.deepEqual(await page.evaluate(() => window.__chips), [], "looking at a picture picked an option")
@@ -572,9 +708,9 @@ test("a fence is a gallery on a done card and in a question option, and any pict
     // named by its alt text when it has one and by its file otherwise.
     await page.click("[data-fixture-loose] .md-body img[data-local-path]")
     await page.waitForSelector("[data-lightbox]")
-    assert.deepEqual(await viewer(page), { counter: "1 / 2", title: "The settings page", picture: "/fixture/lightbox/settings-1200x800.png" })
+    assert.deepEqual(await viewer(page), { counter: "1 / 2", title: "settings-1200x800.png", caption: "The settings page", picture: "/fixture/lightbox/settings-1200x800.png" })
     await page.keyboard.press("ArrowRight")
-    assert.deepEqual(await viewer(page), { counter: "2 / 2", title: "terminal-1000x700.png", picture: "/fixture/lightbox/terminal-1000x700.png" })
+    assert.deepEqual(await viewer(page), { counter: "2 / 2", title: "terminal-1000x700.png", caption: null, picture: "/fixture/lightbox/terminal-1000x700.png" })
     await page.keyboard.press("Escape")
     await page.waitForFunction(() => !document.querySelector("[data-lightbox]"))
     await page.click("[data-fixture-loose] figure img[data-local-path]")
@@ -585,7 +721,7 @@ test("a fence is a gallery on a done card and in a question option, and any pict
     // A LINK to a picture names that one picture.
     await page.click("[data-fixture-loose] a[data-local-image]")
     await page.waitForSelector("[data-lightbox]")
-    assert.deepEqual(await viewer(page), { counter: null, title: "the log view", picture: "/fixture/lightbox/log-800x600.png" })
+    assert.deepEqual(await viewer(page), { counter: null, title: "log-800x600.png", caption: "the log view", picture: "/fixture/lightbox/log-800x600.png" })
     assert.deepEqual(errors, [])
   } finally {
     await browser.close()
@@ -626,11 +762,12 @@ test("a video is a tile of its first frame with a play mark, and plays in the vi
       return {
         counter: v.querySelector("[data-lightbox-counter]")?.textContent,
         title: v.querySelector("h2")?.textContent,
+        caption: v.querySelector("[data-lightbox-caption]")?.textContent,
         controls: v.querySelector("video")!.controls,
         buttons: [...v.querySelectorAll<HTMLElement>("header button")].map((b) => b.getAttribute("aria-label")),
       }
     })
-    assert.deepEqual(opened, { counter: "2 / 2", title: "The whole flow", controls: true, buttons: ["Open in default player", "Close"] })
+    assert.deepEqual(opened, { counter: "2 / 2", title: "flow-320x180.webm", caption: "The whole flow", controls: true, buttons: ["Download", "Open in default player", "Close"] })
     // It plays as it opens: the click that opened it asked for it.
     await page.waitForFunction(() => {
       const v = document.querySelector<HTMLVideoElement>("[data-lightbox] video")
@@ -664,7 +801,7 @@ test("a video is a tile of its first frame with a play mark, and plays in the vi
     assert.equal(await page.$("[data-lightbox] video"), null, "the video unmounted, and stopped, as it paged away")
     assert.deepEqual(
       await page.$$eval("[data-lightbox] header button", (bs) => bs.map((b) => b.getAttribute("aria-label"))),
-      ["Zoom out", "Zoom in", "Open in default viewer", "Close"],
+      ["Zoom out", "Zoom in", "Download", "Open in default viewer", "Close"],
     )
     await page.keyboard.press("Escape")
     await page.waitForFunction(() => !document.querySelector("[data-lightbox]"))

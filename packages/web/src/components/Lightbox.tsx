@@ -1,12 +1,12 @@
 import * as RadixDialog from "@radix-ui/react-dialog"
-import { ChevronLeft, ChevronRight, ExternalLink, Play, X, ZoomIn, ZoomOut } from "lucide-react"
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode, type RefObject } from "react"
+import { ChevronLeft, ChevronRight, Download, ExternalLink, Play, X, ZoomIn, ZoomOut } from "lucide-react"
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode, type RefObject } from "react"
 import { createPortal } from "react-dom"
 import { useSnapshot } from "valtio"
 import { closeLightbox, openLightbox, stepLightbox, store } from "../store.ts"
 import { useFenceIslands } from "../lib/fenceIslands.ts"
 import { justifyRows } from "../lib/justifiedRows.ts"
-import { isLightboxVideo, lightboxLabel, parseLightboxBody, resolveLightboxPath, type LightboxEntry, type LightboxImage } from "../lib/lightbox.ts"
+import { isLightboxVideo, lightboxFileName, lightboxImage, lightboxLabel, parseLightboxBody, resolveLightboxPath, type LightboxEntry, type LightboxImage } from "../lib/lightbox.ts"
 import { useBackClosesLayer } from "../lib/backDismiss.ts"
 import { HEADER_ICON_SQUARE } from "../lib/headerIcon.ts"
 import { openLocalPath } from "../lib/local-file-links.ts"
@@ -50,7 +50,6 @@ interface Tile {
   /** The resolved absolute path, or null when the line names nothing the image proxy can serve. */
   path: string | null
   label: string
-  captioned: boolean
 }
 
 /**
@@ -64,7 +63,7 @@ export function LightboxGallery({ entries, baseDir, framed = true }: { entries: 
   const tiles = useMemo<Tile[]>(
     () => entries.map((entry) => {
       const path = resolveLightboxPath(entry.target, base)
-      return { entry, path, ...lightboxLabel(entry, path) }
+      return { entry, path, label: lightboxLabel(entry, path) }
     }),
     [entries, base],
   )
@@ -91,7 +90,7 @@ export function LightboxGallery({ entries, baseDir, framed = true }: { entries: 
   // the viewer names each one. Once any picture has a caption every tile carries a label line, in one
   // register, so the rows stay level.
   const labelled = tiles.some((tile) => tile.entry.caption)
-  const images: LightboxImage[] = shown.map((tile) => ({ path: tile.path!, label: tile.label, captioned: tile.captioned }))
+  const images: LightboxImage[] = shown.map((tile) => lightboxImage(tile.entry, tile.path!))
 
   if (shown.length === 0) {
     return (
@@ -238,6 +237,23 @@ function useContentWidth(el: HTMLElement | null): number {
   return width
 }
 
+// An element's height, read before paint and kept current; 0 while there is no element.
+function useBoxHeight(el: HTMLElement | null): number {
+  const [height, setHeight] = useState(0)
+  useLayoutEffect(() => {
+    if (!el) {
+      setHeight(0)
+      return
+    }
+    const read = () => setHeight(el.getBoundingClientRect().height)
+    read()
+    const observer = new ResizeObserver(read)
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [el])
+  return height
+}
+
 /**
  * The ```lightbox fences inside one block of rendered Markdown, drawn as galleries — for every surface
  * that renders a worker's Markdown as ONE string of sanitized HTML rather than through the transcript's
@@ -337,6 +353,13 @@ function LightboxViewer({ images, index }: { images: readonly LightboxImage[]; i
   // A video plays rather than zooms: it has no picture element for the zoom to measure, so every zoom
   // path below is a no-op on one, and its gestures are the player's own (see onPointerDown).
   const video = isLightboxVideo(path)
+  // A caption is drawn UNDER the picture, as it is under the picture's tile, and the picture gives up the
+  // room it takes: it may be as tall as the stage less the caption, measured, so a caption that wraps to
+  // a second line on a phone still sits just below the picture and never over it.
+  const captionId = useId()
+  const [captionEl, setCaptionEl] = useState<HTMLElement | null>(null)
+  const captionHeight = useBoxHeight(captionEl)
+  const reserve = image?.caption ? captionHeight : 0
 
   // The view lives in a ref as well as in state: pointer and wheel events arrive faster than React
   // renders, and each must build on the one before it, not on the last render's copy.
@@ -596,7 +619,9 @@ function LightboxViewer({ images, index }: { images: readonly LightboxImage[]; i
       suppressClick.current = false
       return
     }
-    if ((e.target as Element).closest("button, video")) return
+    // The caption is the picture's, not the backdrop: a click on it, or the one that ends selecting it,
+    // closes nothing.
+    if ((e.target as Element).closest("button, video, [data-lightbox-caption]")) return
     const mouse = pointerType.current === "mouse"
     if (e.target === pictureRef.current) {
       if (mouse) toggleZoom({ x: e.clientX, y: e.clientY })
@@ -620,7 +645,7 @@ function LightboxViewer({ images, index }: { images: readonly LightboxImage[]; i
           ref={contentRef}
           data-lightbox
           aria-modal="true"
-          aria-describedby={undefined}
+          aria-describedby={image.caption ? captionId : undefined}
           onEscapeKeyDown={handleDialogEscape}
           onOpenAutoFocus={(e) => {
             e.preventDefault()
@@ -639,8 +664,10 @@ function LightboxViewer({ images, index }: { images: readonly LightboxImage[]; i
             className="flex shrink-0 items-center gap-3 pb-2 pl-[max(env(safe-area-inset-left),16px)] pr-[max(env(safe-area-inset-right),16px)] pt-[max(env(safe-area-inset-top),12px)]"
             style={{ opacity: fade }}
           >
+            {/* The header names the FILE — or a picture's title, where its file name is a hash — and a
+                caption is drawn under the picture instead, so nothing is said twice. */}
             <div className="min-w-0 flex-1">
-              <RadixDialog.Title className={`truncate text-[13px] font-medium leading-5 text-white/90 ${image.captioned ? "" : "font-mono-keep"}`}>
+              <RadixDialog.Title className={`truncate text-[13px] font-medium leading-5 text-white/90 ${image.titled ? "" : "font-mono-keep"}`}>
                 {image.label}
               </RadixDialog.Title>
               <div className="truncate font-mono-keep text-[11px] leading-4 text-white/45">{image.path}</div>
@@ -668,6 +695,9 @@ function LightboxViewer({ images, index }: { images: readonly LightboxImage[]; i
                   </ViewerButton>
                 </>
               )}
+              <ViewerButton label="Download" onClick={() => download(image)}>
+                <Download size={14} strokeWidth={2} className={TOUCH_GLYPH} />
+              </ViewerButton>
               <ViewerButton label={video ? "Open in default player" : "Open in default viewer"} onClick={() => openLocalPath(image.path, true)}>
                 <ExternalLink size={14} strokeWidth={2} className={TOUCH_GLYPH} />
               </ViewerButton>
@@ -677,7 +707,8 @@ function LightboxViewer({ images, index }: { images: readonly LightboxImage[]; i
             </div>
           </header>
           {/* `overflow-hidden`: a magnified picture is clipped to the stage rather than painted over the
-              header, and it may fill the stage's padding too — the padding only frames the picture at fit. */}
+              header, and it may fill the stage's padding too — the padding only frames the picture at fit.
+              A COLUMN, so the caption stacks under the picture and the two centre as one. */}
           <div
             ref={attachStage}
             data-lightbox-stage
@@ -688,12 +719,30 @@ function LightboxViewer({ images, index }: { images: readonly LightboxImage[]; i
             onPointerCancel={onPointerEnd}
             // Magnified, the whole stage offers the drag — on the STAGE rather than the picture because a
             // drag captures the pointer to the stage, and a captured pointer wears its captor's cursor.
-            className={`relative flex min-h-0 flex-1 items-center justify-center overflow-hidden px-3 pb-[max(env(safe-area-inset-bottom),16px)] sm:px-16 ${zoomed ? (shown.panning ? "cursor-grabbing" : "cursor-grab") : ""}`}
+            className={`relative flex min-h-0 flex-1 flex-col items-center justify-center overflow-hidden px-3 pb-[max(env(safe-area-inset-bottom),16px)] sm:px-16 ${zoomed ? (shown.panning ? "cursor-grabbing" : "cursor-grab") : ""}`}
             style={{ touchAction: "none" }}
           >
             {video
-              ? <ViewerVideo key={image.path} image={image} view={shown} videoRef={videoRef} />
-              : <ViewerPicture key={image.path} image={image} view={shown} pictureRef={pictureRef} />}
+              ? <ViewerVideo key={image.path} image={image} view={shown} reserve={reserve} videoRef={videoRef} />
+              : <ViewerPicture key={image.path} image={image} view={shown} reserve={reserve} pictureRef={pictureRef} />}
+            {/* It follows a swipe's pull with the picture and fades with the header; magnified, it
+                steps aside, since the picture then owns the whole stage. `pt-3` is its gap from the
+                picture, inside the box that is measured, so the reserve carries it too. */}
+            {image.caption && (
+              <p
+                ref={setCaptionEl}
+                id={captionId}
+                data-lightbox-caption
+                className={`max-w-2xl shrink-0 text-balance pt-3 text-center text-[13px] leading-5 text-white/75 ${zoomed ? "pointer-events-none" : ""}`}
+                style={{
+                  transform: `translate(${shown.pull.x}px, ${shown.pull.y}px)`,
+                  transition: `${shown.animate ? SETTLE : "transform 0s"}, opacity 150ms ease-out`,
+                  opacity: zoomed ? 0 : fade,
+                }}
+              >
+                {image.caption}
+              </p>
+            )}
             {many && index > 0 && (
               <PageButton side="left" onClick={() => stepLightbox(-1)} />
             )}
@@ -707,6 +756,19 @@ function LightboxViewer({ images, index }: { images: readonly LightboxImage[]; i
   )
 }
 
+// The file itself, from the route already showing it, through a same-origin `download` anchor, named
+// for the file (lightboxFileName). It is the one way to KEEP a picture from a phone or from any browser
+// but the computer's own: "Open in default viewer" opens it on the computer Frizz runs on. The anchor
+// carries no `data-local-path`, so the delegated link handlers let its click through.
+function download(image: LightboxImage): void {
+  const anchor = document.createElement("a")
+  anchor.href = localImageUrl(image.path)
+  anchor.download = lightboxFileName(image)
+  document.body.append(anchor)
+  anchor.click()
+  anchor.remove()
+}
+
 function Unavailable({ what, path }: { what: string; path: string }) {
   return (
     <div className="pointer-events-none max-w-md text-center">
@@ -716,7 +778,10 @@ function Unavailable({ what, path }: { what: string; path: string }) {
   )
 }
 
-function ViewerPicture({ image, view, pictureRef }: { image: LightboxImage; view: ViewState; pictureRef: RefObject<HTMLImageElement | null> }) {
+// `reserve` is the caption's height under the picture, which the fitted picture leaves free.
+const fitHeight = (reserve: number) => (reserve ? `calc(100% - ${reserve}px)` : undefined)
+
+function ViewerPicture({ image, view, reserve, pictureRef }: { image: LightboxImage; view: ViewState; reserve: number; pictureRef: RefObject<HTMLImageElement | null> }) {
   const [broken, setBroken] = useState(false)
   if (broken) return <Unavailable what="Image" path={image.path} />
   const { scale, x, y } = view.zoom
@@ -730,6 +795,7 @@ function ViewerPicture({ image, view, pictureRef }: { image: LightboxImage; view
       // At fit the cursor offers the zoom; magnified, it inherits the stage's drag.
       className={`block max-h-full max-w-full select-none object-contain ${scale > 1 ? "" : "cursor-zoom-in"}`}
       style={{
+        maxHeight: fitHeight(reserve),
         transform: `translate(${x + view.pull.x}px, ${y + view.pull.y}px) scale(${scale})`,
         transition: view.animate ? SETTLE : "none",
         // The hairline is the picture's edge: agent screenshots are overwhelmingly dark UI, which on a
@@ -747,7 +813,7 @@ function ViewerPicture({ image, view, pictureRef }: { image: LightboxImage; view
 // that asked for it — and inline on a phone rather than taking the screen over. It does not zoom, and a
 // swipe only pages from the backdrop around it, so its scrubber is never mistaken for a swipe. It
 // follows a swipe's pull like a picture does, and wears the picture's hairline edge for the same reason.
-function ViewerVideo({ image, view, videoRef }: { image: LightboxImage; view: ViewState; videoRef: RefObject<HTMLVideoElement | null> }) {
+function ViewerVideo({ image, view, reserve, videoRef }: { image: LightboxImage; view: ViewState; reserve: number; videoRef: RefObject<HTMLVideoElement | null> }) {
   const [broken, setBroken] = useState(false)
   if (broken) return <Unavailable what="Video" path={image.path} />
   return (
@@ -762,6 +828,7 @@ function ViewerVideo({ image, view, videoRef }: { image: LightboxImage; view: Vi
       onError={() => setBroken(true)}
       className="block max-h-full max-w-full rounded-md bg-black"
       style={{
+        maxHeight: fitHeight(reserve),
         transform: `translate(${view.pull.x}px, ${view.pull.y}px)`,
         transition: view.animate ? SETTLE : "none",
         boxShadow: "0 0 0 1px rgb(255 255 255 / 0.1)",
@@ -791,7 +858,9 @@ function ViewerVideo({ image, view, videoRef }: { image: LightboxImage; view: Vi
 //
 // Measured with scripts/ink-gaps.mjs on the real viewer (dsf 4, sans, 2026-10-11), counter to close:
 // 20.28 / 18 / 18 / 20px of ink, inside the 18.25–20.75px the card's strip keeps, and the close glyph's
-// ink 21px from the window edge, where a sheet's close stands 21.75px from its own (SheetClose).
+// ink 21px from the window edge, where a sheet's close stands 21.75px from its own (SheetClose). With
+// Download added (2026-10-21), zoom out to close reads 18 / 18 / 18 / 20px, and Download's mean contrast
+// 280 sits with its neighbours' 299.
 const VIEWER_ICON_ON = "icon-hover-outline text-[#787a7d] transition-colors hover:bg-white/[0.04] hover:text-[#e6e7e9]"
 // The strip's `disabled:opacity-40`, as a tone (40% of the rest tone's lift off black): an opacity
 // would fade the focus ring with the glyph.

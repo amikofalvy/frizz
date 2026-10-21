@@ -38,14 +38,19 @@ export interface LightboxEntry {
 
 /**
  * One picture — or video (isLightboxVideo) — the overlay can show: an absolute path the image proxy
- * serves, and its label.
+ * serves, what its header calls it, and the caption it draws under it.
  */
 export interface LightboxImage {
   path: string
-  /** What the picture is called on screen — the caption, else the entry's title, else the file's basename. */
+  /**
+   * What the viewer's header calls the picture: the entry's title, else the file's own name. Never the
+   * caption, which the viewer draws under the picture instead, so the header does not say it twice.
+   */
   label: string
-  /** True when `label` is prose — a caption or a title — rather than a file name, which is set in mono. */
-  captioned: boolean
+  /** True when `label` is a title — prose — rather than a file name, which is set in mono. */
+  titled: boolean
+  /** The worker's caption, drawn under the picture in the viewer as it is under the picture's tile. */
+  caption?: string
 }
 
 // `- /a.png`, `* /a.png`, `1. /a.png`, `2) /a.png`.
@@ -121,11 +126,27 @@ export function isLightboxVideo(path: string): boolean {
   return isProxiedVideoPath(path)
 }
 
-/** What a tile and the overlay call a picture: the worker's caption, else its title, else the file's own name. */
-export function lightboxLabel(entry: LightboxEntry, path: string | null): { label: string; captioned: boolean } {
-  if (entry.caption) return { label: entry.caption, captioned: true }
-  if (entry.title) return { label: entry.title, captioned: true }
-  return { label: basename(path ?? entry.target), captioned: false }
+/** What a tile calls a picture: the worker's caption, else its title, else the file's own name. */
+export function lightboxLabel(entry: LightboxEntry, path: string | null): string {
+  return entry.caption ?? entry.title ?? basename(path ?? entry.target)
+}
+
+/** The viewer's picture for a gallery entry the proxy serves at `path`. */
+export function lightboxImage(entry: LightboxEntry, path: string): LightboxImage {
+  const image: LightboxImage = entry.title
+    ? { path, label: entry.title, titled: true }
+    : { path, label: basename(path), titled: false }
+  if (entry.caption) image.caption = entry.caption
+  return image
+}
+
+/**
+ * The name a download saves the picture under: the file's own name, which an untitled picture's label
+ * already is — the one a tool's picture was copied from, not the hash-named cache copy it is served from
+ * (lightboxImageFor). A titled picture's title is prose, so it saves under its file's name.
+ */
+export function lightboxFileName(image: LightboxImage): string {
+  return image.titled ? basename(image.path) : image.label
 }
 
 // Text that names a file rather than describing one: what the sanitizer writes into an empty alt
@@ -137,11 +158,12 @@ const NAMES_A_FILE = /\.(?:png|jpe?g|gif|webp|mp4|m4v|webm|mov)$/i
  * The overlay's picture for an image the transcript drew some other way — a bare path line (BlockImage),
  * a Markdown image, a tool's picture card — from its `<img>`'s path and alt text. The alt is the caption
  * when an author wrote one (`![The settings page](/abs/x.png)`); alt text that only names a file is not
- * a caption, and the picture is called by that file's name. That name is the ALT's, not the served
- * path's: a tool's picture is served from a hash-named cache copy, and its alt names the file it was.
+ * a caption. Either way the header calls the picture by its file's name, and that name is the ALT's
+ * when the alt names one, not the served path's: a tool's picture is served from a hash-named cache
+ * copy, and its alt names the file it was.
  */
 export function lightboxImageFor(path: string, alt: string | null | undefined): LightboxImage {
   const text = alt?.trim() ?? ""
-  const captioned = text !== "" && !NAMES_A_FILE.test(text)
-  return { path, label: captioned ? text : basename(text || path), captioned }
+  if (text !== "" && !NAMES_A_FILE.test(text)) return { path, label: basename(path), titled: false, caption: text }
+  return { path, label: basename(text || path), titled: false }
 }
