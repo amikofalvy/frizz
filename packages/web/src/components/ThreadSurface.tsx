@@ -282,10 +282,7 @@ export function useThreadSurface(source: ThreadSurfaceSource, options: ThreadSur
   const inFlightAnswers = useMemo(() => unrenderedAnswers(messages, thread?.answersInFlight), [messages, thread?.answersInFlight])
   const opsThread = useOpsHeldForTranscript(thread, messages)
   const run = useMemo(() => queuedRunOf(messages), [messages])
-  const queuedRun = useMemo<QueuedRun>(
-    () => ({ held: run.held, steered: run.steered, next: run.next, alone: run.alone }),
-    [run.held, run.steered, run.next, run.alone],
-  )
+  const queuedRun = useMemo<QueuedRun>(() => ({ held: run.held, steered: run.steered }), [run.held, run.steered])
   const transcript = useMemo<ThreadTranscript>(
     () => ({
       thread,

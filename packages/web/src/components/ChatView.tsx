@@ -3233,10 +3233,11 @@ function FailedSendRow({ deliveryId, text, rawText, error }: { deliveryId: strin
 // candidates (queued-send-now-mockup-fixture, B) and dropped the line's status words with it. A message
 // still takes itself back on a click, which its hover lift offers.
 //
-// It means STOP WAITING, one step at a time. Messages Frizz is holding for the rest go to the agent's
-// next step without interrupting it (deliverQueuedNow `releaseOnly`); once nothing is held, a press
-// pushes the queue through now, and the runtime moves a running command to the background or cuts the
-// turn (router deliverQueuedNow). So a held run takes two presses to interrupt.
+// It means STOP WAITING, one step at a time. The next message Frizz is holding for the rest goes to the
+// agent's next step without interrupting it (deliverQueuedNow `releaseOnly`) — ONE per press, as the
+// queue goes out one message per turn (2026-10-20); once nothing is held, a press pushes the queue
+// through now, and the runtime moves a running command to the background or cuts the turn (router
+// deliverQueuedNow). So a held run takes a press per held message, and one more to interrupt.
 //
 // ⌘⏎ PRESSES IT whenever nothing is typed (lib/sendNowKey), and it wears that chord on a flat keycap to
 // the left of its words, where an arrow stood until 2026-10-19. The maintainer chose the cap from
@@ -3255,11 +3256,8 @@ export function QueuedSendNow() {
   if (!slug || !run) return null
   const step = sendNowStep(run, interruptible)
   if (!step) return null
-  // A release hands over what the next rest would have (QueuedRun.next): with messages queued one at
-  // a time that is the next one, however many are waiting behind it.
-  const releaseTitle = run.alone && run.held > 1
-    ? "Send the next one now — the agent reads it at its next step"
-    : run.next > 1 ? "Send them now — the agent reads them at its next step" : "Send it now — the agent reads it at its next step"
+  // A release hands over one held message, the next; with more held behind it the words say which.
+  const releaseTitle = run.held > 1 ? "Send the next one now — the agent reads it at its next step" : "Send it now — the agent reads it at its next step"
   return (
     <>
       <VSpace h={HUMAN_RUN_STEP} />

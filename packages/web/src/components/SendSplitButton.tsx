@@ -7,9 +7,9 @@ import type { SendMode } from "../lib/sendMode.ts"
 // THE THREAD PROMPT BOX'S SEND (maintainer 2026-10-11). One button for everything the box can send —
 // the typed message, the answers staged on the question cards above it, or both as one turn — so it
 // always reads "Send": "broad enough to encapsulate the fact that it may also be sending question
-// answers". The caret beside it opens the ways a send can go out while the agent is working; the
-// ticked one is what the button and Enter do. The forced send that interrupts the turn is not a row:
-// it stays on ⌘/Ctrl-Enter and on the Send now under the queued messages.
+// answers". The caret beside it opens the two ways a send can go out while the agent is working; the
+// ticked one is what the button and Enter do. The third way, the forced send that interrupts the
+// turn, is not a row: it stays on ⌘/Ctrl-Enter and on the Send now under the queued messages.
 //
 // IT IS WHITE WHENEVER THERE IS SOMETHING TO SEND, which includes an answer staged on a card with the
 // box still empty. The caret stays live when the button is dim: choosing how the next message goes
@@ -32,14 +32,13 @@ import type { SendMode } from "../lib/sendMode.ts"
 const LABEL_PAD_LEFT = 9
 const CARET_PAD_LEFT = 4.5
 
-// "Queue one at a time" (2026-10-20) is the queue's hold with one message per turn: everything sent to
-// the queue goes out together when the agent rests, and these go out one rest apart.
 const ROWS: readonly { mode: SendMode; name: string; says: string }[] = [
   { mode: "steer", name: "Send as steer", says: "The agent reads it at its next step." },
-  { mode: "queue", name: "Send to queue", says: "Frizz holds it until the agent comes to rest." },
-  { mode: "one-at-a-time", name: "Queue one at a time", says: "Each queued message gets a turn of its own." },
+  // The queue goes out one message per turn (2026-10-20), and the row says so: until then it read "Frizz
+  // holds it until the agent comes to rest", and everything queued went out at that one rest.
+  { mode: "queue", name: "Send to queue", says: "Each queued message gets a turn of its own." },
 ]
-const ROW_NAME: Record<SendMode, string> = { steer: "Send as steer", queue: "Send to queue", "one-at-a-time": "Queue one at a time" }
+const ROW_NAME: Record<SendMode, string> = { steer: "Send as steer", queue: "Send to queue" }
 
 export function SendSplitButton({
   armed,
@@ -55,7 +54,7 @@ export function SendSplitButton({
   armed: boolean
   busy?: boolean
   mode: SendMode
-  /** There is something to queue behind — the only time the rows differ. */
+  /** There is something to queue behind — the only time the two rows differ. */
   running: boolean
   /** The rail offset (lib/iconRhythm composerRail). */
   right: number | undefined
@@ -160,7 +159,7 @@ export function SendSplitButton({
                 )
               })}
             </RadixMenu.RadioGroup>
-            {!running && <div className="px-2 pb-1 pt-1.5 text-[11px] leading-[15px] text-muted-70">The agent is at rest, so each of these sends now.</div>}
+            {!running && <div className="px-2 pb-1 pt-1.5 text-[11px] leading-[15px] text-muted-70">The agent is at rest, so both send now.</div>}
           </RadixMenu.Content>
         </RadixMenu.Portal>
       </RadixMenu.Root>

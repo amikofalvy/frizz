@@ -178,7 +178,7 @@ import { appServerTurnStalled, resolveLiveWatchTarget, resolveRecurringPrompt, r
 import { runThreadUpdate } from "./frizz.ts"
 import { repairThreadFile } from "./repair.ts"
 import { reopenArchivedThreadForFollowUp, resumeThread, wakeParkedThreadForFollowUp } from "./resume.ts"
-import { appendDelivery, beginDelivery, cancelDelivery, deliverOutstandingDeliveries, deliveryItem, dismissFailedDelivery, dropHeldDelivery, forgetDelivery, heldDeliveries, heldReleaseBatch, holdDelivery, ownTurnMustWait, parseDeliveryLedger, recordDeliveryFailure, retireOutstandingDeliveries } from "./delivery-ledger.ts"
+import { appendDelivery, beginDelivery, cancelDelivery, deliverOutstandingDeliveries, deliveryItem, dismissFailedDelivery, dropHeldDelivery, forgetDelivery, heldDeliveries, heldSendMustWait, holdDelivery, nextHeldRelease, parseDeliveryLedger, recordDeliveryFailure, retireOutstandingDeliveries } from "./delivery-ledger.ts"
 import { noteSubAgentsEndedByInterrupt, runningSubAgentsOf } from "./interrupt-ended.ts"
 import {
   readEarlierThreadTranscriptPage,
@@ -1428,19 +1428,18 @@ export function createRouter(ctx: AppContext) {
       if (answers.length > 0) return
       throw new Error("There is nothing to send")
     }
-    const send: z.infer<typeof FollowUpInput> = { ...input, message, answers: undefined, hold: undefined, ownTurn: undefined }
+    const send: z.infer<typeof FollowUpInput> = { ...input, message, answers: undefined, hold: undefined }
     if (input.hold && !input.interrupt && !input.freshProcess && !replay) {
       const row = ctx.storage.getSession(input.slug)
       // Only something the server can SEE is worth waiting behind: a turn the tailer reads as running,
-      // messages already held (the queue is FIFO, so a send must not overtake them on a rest), and, for
-      // one at a time, a send whose turn has not ended. Unknown telemetry sends now: a message delivered
-      // early is a steer, a message held for a rest that never registers is lost time.
+      // messages already held (the queue is FIFO, so a send must not overtake them on a rest), or a send
+      // whose turn has not ended (the queue goes out one turn at a time). Unknown telemetry sends now: a
+      // message delivered early is a steer, a message held for a rest that never registers is lost time.
       const inFlight = ctx.tailer.get(input.slug)?.turn === "in-flight"
       const items = row ? parseDeliveryLedger(row.delivery_ledger) : []
-      const behind = inFlight || items.some((item) => item.state === "held") || (input.ownTurn === true && ownTurnMustWait(items))
-      if (row && row.session_id === input.sessionId && behind) {
+      if (row && row.session_id === input.sessionId && (inFlight || heldSendMustWait(items))) {
         const id = input.deliveryId ?? randomUUID()
-        if (holdDelivery(ctx.storage, input.slug, { id, text: message, ownTurn: input.ownTurn === true })) {
+        if (holdDelivery(ctx.storage, input.slug, { id, text: message })) {
           watchHeld(input.slug)
           ctx.transcriptChange.emit([input.slug])
           ctx.board.refresh()
@@ -1455,13 +1454,13 @@ export function createRouter(ctx: AppContext) {
 
   // RELEASE WHAT FRIZZ IS HOLDING FOR THIS THREAD'S REST, oldest first, through the ordinary follow-up
   // path and under each message's own id — so the gray bubble the operator has been looking at is the
-  // one that becomes the delivered message. The first one opens the next turn; any after it land in
-  // that turn as it starts, in order. A message sent "one at a time" goes out alone and only once the
-  // turn before it has ended, so a run of them is one turn each, one rest apart (heldReleaseBatch).
+  // one that becomes the delivered message. ONE per rest: the oldest opens the next turn, and the one
+  // after it waits until that turn has ended, so each message sent to the queue is a turn of its own
+  // (nextHeldRelease, which also says how "ended" is read).
   //
   // `force` is the operator's "send now" on a held bubble: the turn is still running and they want it
-  // read anyway, so it goes in as the steer it would have been. It hands over what the next rest would
-  // have — one message, when that is one sent one at a time — not the whole queue.
+  // read anyway, so it goes in as the steer it would have been. It too hands over the next message, not
+  // the whole queue.
   //
   // A release that throws leaves that message `failed` with its words kept (keepFailedFollowUp), which
   // is the same Retry / Edit / Dismiss the operator gets for any send that did not land.
@@ -1474,23 +1473,18 @@ export function createRouter(ctx: AppContext) {
     if (!items.some((item) => item.state === "held")) { heldSlugs.delete(slug); return 0 }
     if (!opts.force && ctx.tailer.get(slug)?.turn === "in-flight") return 0
     if (hasPendingPermissionChange(row)) return 0 // the sweep comes back for it
-    const batch = heldReleaseBatch(items, { force: opts.force })
-    if (batch.length === 0) return 0 // one at a time, and the turn ahead of it is not over yet
+    const item = nextHeldRelease(items, { force: opts.force })
+    if (!item) return 0 // the turn ahead of it is not over yet
     releasingHeld.add(slug)
-    let released = 0
     try {
-      for (const item of batch) {
-        try {
-          await deliverFollowUp({ slug, sessionId: row.session_id, message: item.text, deliveryId: item.id }, { release: true })
-          released++
-        } catch (error) {
-          frizzLog.warn("server", `${slug}: releasing held follow-up ${item.id} failed: ${error instanceof Error ? error.message : String(error)}`)
-        }
-      }
+      await deliverFollowUp({ slug, sessionId: row.session_id, message: item.text, deliveryId: item.id }, { release: true })
+      return 1
+    } catch (error) {
+      frizzLog.warn("server", `${slug}: releasing held follow-up ${item.id} failed: ${error instanceof Error ? error.message : String(error)}`)
+      return 0
     } finally {
       releasingHeld.delete(slug)
     }
-    return released
   }
 
   // WHEN a held message is released. The tailer's in-flight → idle edge is the moment the operator
@@ -2792,8 +2786,9 @@ export function createRouter(ctx: AppContext) {
       handler: async ({ input }) => {
         const row = currentOwnedSession(input.slug, input.sessionId)
         if (!row) throw new Error("This thread is no longer the session this tab is looking at")
-        // What Frizz was HOLDING for the rest goes to the runtime first — the operator has just said not
-        // to wait — and then the interrupt below pushes the whole queue through, those included. On a
+        // The next message Frizz was HOLDING for the rest goes to the runtime first — the operator has just
+        // said not to wait — and then the interrupt below pushes the runtime's queue through, it included.
+        // One message, as a rest would hand over: the queue goes out one at a time (nextHeldRelease). On a
         // runtime with no interrupt the release is the entire act, and it is a steer there, read at the
         // agent's next step.
         const released = await releaseHeldFollowUps(input.slug, { force: true })

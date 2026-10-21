@@ -472,12 +472,11 @@ export function appendQueuedMessage(
   text: string,
   // `held`: the operator sent it TO THE QUEUE while a turn runs, so the bubble says it is waiting for
   // the agent's rest from the first frame — the server's own copy (deliveryState "held") says the same.
-  // `ownTurn`: sent with "Queue one at a time", which the Send now under the run reads (restReply).
-  opts: { deliveryId?: string; held?: boolean; ownTurn?: boolean } = {},
+  opts: { deliveryId?: string; held?: boolean } = {},
 ) {
   qc.setQueryData<TranscriptData>(["transcript", slug], (prev) => {
     const messages = prev?.messages ?? []
-    return { ...prev, messages: [...messages, { role: "user", text, tools: [], parts: [], queued: true, deliveryId: opts.deliveryId, ...(opts.held ? { deliveryState: "held" as const } : {}), ...(opts.held && opts.ownTurn ? { ownTurn: true } : {}) }] }
+    return { ...prev, messages: [...messages, { role: "user", text, tools: [], parts: [], queued: true, deliveryId: opts.deliveryId, ...(opts.held ? { deliveryState: "held" as const } : {}) }] }
   })
   // NOTHING SCROLLS THE PAGE HERE. This smooth-scrolled the DOCUMENT to its bottom on every send until
   // 2026-10-12, from when the thread view was itself the page scroll. It has not been for months — a

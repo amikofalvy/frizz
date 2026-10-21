@@ -18,17 +18,16 @@ import type { QueuedRun } from "./restReply.ts"
 // the queue in, or — with nothing it can move — aborts the turn, which leaves queued input intact for
 // the next one to open on (router deliverQueuedNow). Either way no new delivery path was needed.
 //
-// It acts on the QUEUE, so with several bubbles queued it delivers all of them, in order — which is why
-// it is one control under the run rather than one per bubble (maintainer 2026-10-15). Messages queued
-// one at a time are the exception: a press hands over the next one alone, which is what the agent's
-// next rest would have done (the server's heldReleaseBatch).
+// It acts on the QUEUE, so it is one control under the run rather than one per bubble (maintainer
+// 2026-10-15). Queued steers all go at once; messages Frizz is holding for the rest go one per press,
+// the next each time, because the queue goes out one message per turn (2026-10-20).
 
 /** What one press of Send now does, one step at a time: messages Frizz is HOLDING for the rest go to the
  *  agent's next step without interrupting it (`release`); once nothing is held, a queued steer is pushed
  *  through now (`interrupt`) where the runtime can be preempted. Null when there is nothing it can do,
  *  which is also when the control draws nothing. */
 export type SendNowStep = "release" | "interrupt"
-export function sendNowStep(run: Pick<QueuedRun, "held" | "steered">, interruptible: boolean): SendNowStep | null {
+export function sendNowStep(run: QueuedRun, interruptible: boolean): SendNowStep | null {
   if (run.held > 0) return "release"
   if (run.steered > 0 && interruptible) return "interrupt"
   return null

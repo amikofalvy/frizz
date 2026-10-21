@@ -24,7 +24,7 @@ import type { PhoneBarApi } from "./Composer.tsx"
 import { RegisteredAnsweringContext } from "./RegisteredQuestionCards.tsx"
 import { SendScopeContext } from "../lib/sendScope.tsx"
 import { useStepsAnswer, withStepsDone } from "../lib/stepsAnswer.ts"
-import { holdsForRest, sendPlaceholder, setSendMode, useSendMode } from "../lib/sendMode.ts"
+import { sendPlaceholder, setSendMode, useSendMode } from "../lib/sendMode.ts"
 import { QueuedRunContext } from "../lib/threadContexts.ts"
 import { useThreadSurfaceBox } from "./ThreadSurface.tsx"
 
@@ -121,8 +121,8 @@ export function ThreadComposerBox({
   const staged = (registered?.staged ?? 0) + (scope?.fencedCount ?? 0) + (stepsAnswer.staged ? 1 : 0)
   // "A turn is in flight" — the only time sending as a steer and sending to the queue differ…
   const running = thread?.runtime === "running"
-  // …or messages already held for the rest, which a message sent to the queue waits behind even with
-  // the agent at rest: between two messages queued one at a time, the agent rests for a moment.
+  // …or messages already queued, which a new one waits behind even with the agent at rest: the queue
+  // goes out one message per turn, and the agent rests for a moment between two of them.
   const held = useContext(QueuedRunContext)?.held ?? 0
   const behind = running || held > 0
   const mode = useSendMode(slug, running, held > 0 || thread?.deliveryInFlight === true)
@@ -230,12 +230,10 @@ export function ThreadComposerBox({
       onSuccess: () => answers?.onSuccess(),
       ...(answers ? { answers: answers.answers, displayText: shown } : {}),
       // "Send to queue" is the ticked row AND there is something to queue behind. The forced send never
-      // queues: ⌘/Ctrl-Enter means now. One at a time also waits on a message already handed over
-      // whose turn has not started, which the board calls a delivery in flight; the server is the
-      // judge of that, and sends it at once if nothing is ahead after all.
-      ...(holdsForRest(mode) && !interrupt && (behind || (mode === "one-at-a-time" && thread?.deliveryInFlight === true))
-        ? { hold: true, ...(mode === "one-at-a-time" ? { ownTurn: true } : {}) }
-        : {}),
+      // queues: ⌘/Ctrl-Enter means now. A message already handed over whose turn has not started (the
+      // board's delivery in flight) counts too, since the queue gives each message a turn of its own;
+      // the server is the judge of that one, and sends at once if nothing is ahead after all.
+      ...(mode === "queue" && !interrupt && (behind || thread?.deliveryInFlight === true) ? { hold: true } : {}),
       // Re-sending words an earlier failure handed back replaces that failure's bubble — see
       // lib/failedDelivery.ts.
       supersedes: takeSupersededFailure(key, outgoing),

@@ -1,7 +1,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import type { ChatMessage } from "../hooks.ts"
-import { inQueuedTail, queuedRunOf, restReplyIndex, withRestReplyInline } from "./restReply.ts"
+import { inQueuedTail, restReplyIndex, withRestReplyInline } from "./restReply.ts"
 import { withoutRedundantRestDividers } from "./restDividers.ts"
 import { buildVirtualTranscriptMessageRows } from "./virtualTranscript.ts"
 
@@ -75,19 +75,4 @@ test("the inline reply draws the same rows and the same rest hairline as its lan
   assert.deepEqual(after, ["assistant+0", "assistant/event+14", "user+14"])
   // …whereas a ghost left in the tail drew neither the hairline nor a row of its own.
   assert.deepEqual(shape([prose(), rest(), ghost()]), ["assistant+0"])
-})
-
-// THE RUN the one Send now under the queued tail reads: what one press releases. Messages queued
-// together go together; one queued one at a time goes alone and ends the run before it — the server's
-// heldReleaseBatch, read off the bubbles so the button's words say what the press will do.
-test("a queued run counts what one release hands over", () => {
-  const held = (id: string, ownTurn = false) => ghost({ sourceId: id, deliveryState: "held", ...(ownTurn ? { ownTurn: true } : {}) })
-  const steer = (id: string) => ghost({ sourceId: id, deliveryState: "enqueued" })
-  assert.deepEqual(queuedRunOf([]), { held: 0, steered: 0, next: 0, alone: false })
-  assert.deepEqual(queuedRunOf([steer("s"), held("a"), held("b")]), { held: 2, steered: 1, next: 2, alone: false })
-  assert.deepEqual(queuedRunOf([held("1", true), held("2", true), held("3", true)]), { held: 3, steered: 0, next: 1, alone: true })
-  assert.deepEqual(queuedRunOf([held("a"), held("b"), held("1", true), held("c")]), { held: 4, steered: 0, next: 2, alone: false })
-  assert.deepEqual(queuedRunOf([held("1", true), held("a"), held("b")]), { held: 3, steered: 0, next: 1, alone: true })
-  // A failed send carries its own row and is waiting on nothing.
-  assert.deepEqual(queuedRunOf([ghost({ deliveryState: "failed" }), held("a")]), { held: 1, steered: 0, next: 1, alone: false })
 })
