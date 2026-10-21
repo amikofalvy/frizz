@@ -11,7 +11,7 @@ import type { QuestionSighting } from "./backend/types.ts"
 import type { BoardManager } from "./board.ts"
 import type { AppContext } from "./context.ts"
 import type { Project } from "./project.ts"
-import { createQuestionFaultBook, createQuestionRegistrar, QUESTION_FENCES_REGISTER_FROM, questionFenceCorrection, standingQuestions, syncQuestionFences } from "./question-fences.ts"
+import { createQuestionFaultBook, createQuestionRegistrar, QUESTION_FAULTS_OUTLIVE_HUMAN_FROM, QUESTION_FENCES_REGISTER_FROM, questionFenceCorrection, standingQuestions, syncQuestionFences } from "./question-fences.ts"
 import { createRouter } from "./router.ts"
 import { createStorage, type SessionRow } from "./storage.ts"
 import type { Tailer } from "./tailer.ts"
@@ -363,7 +363,7 @@ test("restating a question without its follow-up places the card — it is still
 
 // ── SOURCE 14: the correction for a fence that could not register ─────────────────────────────────────
 
-async function correctionHarness(sightings: QuestionSighting[], tele: { lastUserAt?: string; lastAssistantAt?: string; turn?: string } = {}) {
+async function correctionHarness(sightings: QuestionSighting[], tele: { lastUserAt?: string; lastAssistantAt?: string; turn?: string; questionCorrectedAt?: string } = {}) {
   const { createScheduler } = await import("./scheduler.ts")
   const h = storageHarness()
   h.storage.upsertSession(row("t"))
@@ -376,7 +376,7 @@ async function correctionHarness(sightings: QuestionSighting[], tele: { lastUser
     fetchGithubReview: async () => [],
     tailer: {
       get: () => ({
-        turn: tele.turn ?? "idle", lastAssistantAt: restedAt, lastActivityAt: restedAt, lastUserAt: tele.lastUserAt,
+        turn: tele.turn ?? "idle", lastAssistantAt: restedAt, lastActivityAt: restedAt, lastUserAt: tele.lastUserAt, questionCorrectedAt: tele.questionCorrectedAt,
         subAgents: [], bgShells: [], pendingQuestion: false, permPrompt: false, questionSightings: sightings,
       }),
     } as never,
@@ -402,24 +402,59 @@ test("a fence that could not register is corrected at rest, once, and the sign-o
   } finally { h.close() }
 })
 
-test("no correction mid-turn, none for an older rest's fence, and none once the same id registered later in the rest", async () => {
+test("no correction mid-turn, none for a fault already corrected, and none once the same id registered later in the rest", async () => {
   const bad = { at: at(1), text: fence("id: settings-store\nkind: choice\nquestion: SQLite?") }
   const midTurn = await correctionHarness([bad], { turn: "in-flight" })
   try {
     await midTurn.s.tick()
     assert.deepEqual(midTurn.queued(), [])
   } finally { midTurn.close() }
-  const olderRest = await correctionHarness([bad], { lastUserAt: at(2), lastAssistantAt: at(3) })
+  const told = await correctionHarness([bad], { questionCorrectedAt: at(2), lastUserAt: at(2), lastAssistantAt: at(3) })
   try {
-    await olderRest.s.tick()
-    assert.deepEqual(olderRest.queued().filter((r) => r.fence_id.startsWith("park:")), [], "the human spoke since; that rest is over")
-  } finally { olderRest.close() }
+    await told.s.tick()
+    assert.deepEqual(told.queued().filter((r) => r.fence_id.startsWith("park:")), [], "a delivered correction already named it")
+  } finally { told.close() }
   const fixed = await correctionHarness([bad, { at: at(2), text: choice("settings-store") }])
   try {
     await fixed.s.tick()
     assert.deepEqual(fixed.queued(), [], "the worker fixed it in the same rest; the registered question signs the rest off")
     assert.equal(fixed.storage.listThreadQuestions("t").length, 1)
   } finally { fixed.close() }
+})
+
+// The pullfrog shape (2026-10-21): the worker rested on `id:` references to two questions no fence had
+// ever asked, and the human's next message landed 150ms later — before any tick saw the thread idle. The
+// human typing is not the worker being told: the fault waits for the worker's next rest.
+test("a refused fence the human typed past before any tick saw the rest is corrected at the worker's next rest", async () => {
+  const refs = { at: at(1), text: `Signing in waits on the two cards I posted earlier.\n\n${fence("id: pullfrogdev-local-key")}\n\n${fence("id: clerk-local-dev-key")}` }
+  const h = await correctionHarness([refs], { lastUserAt: at(1.0025), lastAssistantAt: at(15) })
+  try {
+    await h.s.tick()
+    const rows = h.queued().filter((r) => r.fence_id.startsWith("park:question-fence"))
+    assert.equal(rows.length, 1, "one correction, at the next rest")
+    assert.equal(rows[0].fence_id, `park:question-fence:${at(15)}`)
+    assert.match(rows[0].message, /^⚠️ Your ```question fence could not register, so the human has NOT been asked:/)
+    assert.match(rows[0].message, /- `pullfrogdev-local-key` — `id: pullfrogdev-local-key` alone references a question, and no question of yours uses that id, so the human was never asked it/)
+    assert.match(rows[0].message, /- `clerk-local-dev-key` — /)
+    assert.match(rows[0].message, /`frizzctl activity` lists the questions you have open/)
+    assert.match(rows[0].message, /The human has written to you since the message that carried this fence/)
+  } finally { h.close() }
+  // A fault from before the cutover keeps the old boundary, so shipping this wakes no resting thread for one.
+  const before = Date.parse(QUESTION_FAULTS_OUTLIVE_HUMAN_FROM)
+  const old = (minutes: number) => new Date(before - 60 * 60_000 + minutes * 60_000).toISOString()
+  const legacy = await correctionHarness([{ at: old(0), text: fence("id: never-asked") }], { lastUserAt: old(1), lastAssistantAt: old(2) })
+  try {
+    await legacy.s.tick()
+    assert.deepEqual(legacy.queued().filter((r) => r.fence_id.startsWith("park:")), [])
+  } finally { legacy.close() }
+  // A fault at THIS rest reads as it always did: no word about the human having written since.
+  const fresh = await correctionHarness([{ at: at(3), text: fence("id: never-asked") }], { lastUserAt: at(2) })
+  try {
+    await fresh.s.tick()
+    const [row] = fresh.queued().filter((r) => r.fence_id.startsWith("park:question-fence"))
+    assert.ok(row, "corrected")
+    assert.doesNotMatch(row.message, /The human has written to you since/)
+  } finally { fresh.close() }
 })
 
 // ── A follow-up that arrives LATER (2026-10-13) ───────────────────────────────────────────────────────
@@ -749,11 +784,14 @@ test("a reference to an ANSWERED question is a no-op; one to a withdrawn or dism
     assert.deepEqual(Object.fromEntries(out.faults.map((f) => [f.id, f.faults[0]])), {
       "withdrawn": "`withdrawn` is a question you withdrew, so there is nothing left to reference and the human is not being asked — if you still need it answered, ask it again under a new id",
       "dismissed": "`dismissed` was dismissed by the human without an answer, so there is nothing left to reference and no answer is coming — decide it yourself, or ask it again under a new id if the work cannot go on without one",
-      "never-asked": "`id: never-asked` alone references a question, and no question of yours uses that id — to ask a new one, give the fence a `kind:` and a `question:`",
+      "never-asked": "`id: never-asked` alone references a question, and no question of yours uses that id, so the human was never asked it and no answer is coming — `frizzctl activity` lists the questions you have open; to ask this one, write the whole fence, with a `kind:` and a `question:`",
     })
     assert.deepEqual(out.refs, [], "and a settled question is not placed as standing")
-    // A correction made only of these reads as 'it placed nothing', never 'the human has NOT been asked'.
-    assert.match(questionFenceCorrection(out.faults), /could not register, so it placed nothing:/)
+    // A correction made only of references to CLOSED questions reads as 'it placed nothing'…
+    const closed = out.faults.filter((f) => f.id !== "never-asked")
+    assert.match(questionFenceCorrection(closed), /could not register, so it placed nothing:/)
+    // …but one to an id nothing ever asked is a question the human has NOT been asked.
+    assert.match(questionFenceCorrection(out.faults), /could not register, so the human has NOT been asked:/)
   } finally { h.close() }
   // At the scheduler: resting on a reference to an answered question earns no correction and no bump.
   const answered = await correctionHarness([{ at: at(0), text: choice("settings-store") }, { at: at(5), text: fence("id: settings-store") }], { lastUserAt: at(3) })

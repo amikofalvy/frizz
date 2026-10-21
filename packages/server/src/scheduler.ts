@@ -2,7 +2,7 @@ import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 import { createHash, randomUUID } from "node:crypto"
 import { awaitingNeedsInput, needsInputRequired, DONE_FENCE_CORRECTION_LEAD, doneOverOpenQuestionsBody, type DoneBlockingQuestion, questionFencesLive, PARK_CORRECTION_NAMES_LEAD, PARK_CORRECTION_NEEDS_INPUT_LEAD, PARK_CORRECTION_RETIRED_LEAD, interruptEndedSubAgentsMessage, type InterruptEndedSubAgent, parkExpiredWakeMessage, parkFinishedWakeMessage, prWatchExpiredWakeMessage, ownWatchExpiredWakeMessage, commandWatchPassedWakeMessage, commandWatchExpiredWakeMessage, commandWatchCancelledWakeMessage, questionAnswerMessage, questionsCancelledWakeMessage, type QuestionAnswer, type QuestionDismissal, RETIRED_AWAITING_REPLACEMENT, retiredAwaitingKindsIn, compactionPromptMessage, limitResumeSteer, limitModelSwitchSteer, formatGithubWakeSteer, GithubWakeItem, type GithubWatchStatus, type GithubIssueStatus, prWatchWakeMessage, prWatchGoneWakeMessage, issueWatchWakeMessage, shellDoneMessage, restPromptMessage, schedulePromptMessage, timerPromptMessage, signoffNudgeMessage, type SignoffLiveOps, liveOpsLines, mergedWakeMessage, type OffMergePath, wakeDeliveryToken, wakeTimeHeader, stripWakeTimeHeader, type QuotaSnapshot } from "@frizz/shared"
-import { autonomousGoalOf, questionFenceCorrection, QUESTION_FENCES_REGISTER_FROM, standingQuestions, syncQuestionFences, type QuestionFaultBook } from "./question-fences.ts"
+import { autonomousGoalOf, questionFenceCorrection, QUESTION_FAULTS_OUTLIVE_HUMAN_FROM, QUESTION_FENCES_REGISTER_FROM, standingQuestions, syncQuestionFences, type QuestionFaultBook } from "./question-fences.ts"
 import { GITHUB_ISSUE_STATUS_SETTING, GITHUB_STATUS_SETTING, liveActivityOf, parkExpiresAt, parkIsHonoured, parkOnHuman, readAwaitingPark, unaccountedItems } from "./awaiting.ts"
 import type { CommandWatchRow, PrWatchRow, SessionRow, Storage, ThreadQuestionRow } from "./storage.ts"
 import type { CommandRunResult, CommandWatchService } from "./command-watch.ts"
@@ -1132,6 +1132,9 @@ const DONE_OVER_QUESTION_CAUSE = "done-open-question"
  *  the ```question fence's own cutover, and a refold of an older transcript must not wake a thread that
  *  has rested on a done card for a week to tell it about a rule it was never under. */
 const DONE_GATE_FROM_MS = Date.parse(QUESTION_FENCES_REGISTER_FROM)
+/** From this instant a refused ```question fence stays owed its correction across the human's typed
+ *  messages (SOURCE 14). */
+const FAULTS_OUTLIVE_HUMAN_FROM_MS = Date.parse(QUESTION_FAULTS_OUTLIVE_HUMAN_FROM)
 function parkFenceId(cause: string, spokeAt: string): string {
   return `${PARK_FENCE_PREFIX}:${cause}:${spokeAt}`
 }
@@ -2305,17 +2308,28 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   // so: a malformed fence draws as an inert block, and the rest reads as signed off.
   //
   // ONE CORRECTION PER REST, at rest only, for the faults the worker has NOT BEEN TOLD ABOUT: the ones in
-  // messages newer than both the human's last typed message (`restFromAt`, the boundary a question
-  // stands across) and the last correction of this kind Frizz delivered (`questionCorrectedAt`). Older
-  // than the first, the human has moved the thread on and the mistake is moot; older than the second, it
-  // was in that correction. A refold after a restart replays the whole ring, and both instants come from
-  // the transcript, so it reads the same window. Until 2026-10-13 the window opened at the newest USER
-  // RECORD of any kind, so a broken fence written mid-turn was forgotten if a timer or another wake
-  // landed before the worker went idle: its question never reached the human and nothing said so.
-  // A fault the worker already fixed later — the same id registered or referenced after it — is not
-  // news. Counted against PARK_BUMP_MAX with the other fence corrections; a fence that registers gives
-  // the allowance back (syncQuestionFences) — which is why this correction is ALSO bounded by the human's
-  // last typed message (correctionAllowedSinceHuman).
+  // messages newer than the last correction of this kind Frizz delivered (`questionCorrectedAt`) — older
+  // than that, it was in that correction. A refold after a restart replays the whole ring, and the instant
+  // comes from the transcript, so it reads the same window. A fault the worker already fixed later — the
+  // same id registered or referenced after it — is not news.
+  //
+  // THE HUMAN TYPING IS NOT THE WORKER BEING TOLD (2026-10-21). Until then the window also closed at the
+  // human's last typed message (`restFromAt`), on the reading that the human had moved the thread on and
+  // the mistake was moot. It is not moot: the worker still believes what its fence said. A pullfrog worker
+  // rested on two `id:` references to questions no fence had ever asked, and the human's next message
+  // landed 150ms after each rest — the queue delivered it as the turn ended, before a tick could see the
+  // thread idle — so both faults fell outside the window untold. The worker kept writing "signing in waits
+  // on the two cards I posted earlier", its compaction summary listed both as open, and the human saw two
+  // bare `id:` code blocks where the cards should have been. So a fault now waits for the worker's next
+  // rest, whatever the human wrote in between, and the correction says that the human has written since
+  // (their message may already settle it). A fault from before QUESTION_FAULTS_OUTLIVE_HUMAN_FROM keeps
+  // the old boundary, so the change does not wake every resting thread with an old untold fault.
+  //
+  // Until 2026-10-13 the window opened at the newest USER RECORD of any kind, so a broken fence written
+  // mid-turn was forgotten if a timer or another wake landed before the worker went idle: its question
+  // never reached the human and nothing said so. Counted against PARK_BUMP_MAX with the other fence
+  // corrections; a fence that registers gives the allowance back (syncQuestionFences) — which is why this
+  // correction is ALSO bounded by the human's last typed message (correctionAllowedSinceHuman).
   /** Each thread whose CURRENT rest wrote a ```question fence that could not register, keyed to that
    *  rest's instant — rebuilt by evalQuestionFences on every tick, corrected or not (the cap may have
    *  silenced it). SOURCE 12 reads it so an honoured park beside such a fence does not hand back the
@@ -2342,7 +2356,12 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       if (tele.lastUserAt && Date.parse(spokeAt) <= Date.parse(tele.lastUserAt)) continue
       if (tele.authFault || tele.apiFault) continue
       const instant = (at: string | undefined) => (at ? Date.parse(at) : Number.NEGATIVE_INFINITY)
-      const restFrom = Math.max(instant(tele.restFromAt ?? tele.lastUserAt), instant(tele.questionCorrectedAt))
+      const humanAt = instant(tele.restFromAt ?? tele.lastUserAt)
+      const correctedAt = instant(tele.questionCorrectedAt)
+      const untold = (at: string): boolean => {
+        const atMs = Date.parse(at)
+        return atMs > correctedAt && (atMs >= FAULTS_OUTLIVE_HUMAN_FROM_MS || atMs > humanAt)
+      }
       const rows = deps.storage.listThreadQuestions(row.slug)
       const fixedAfter = (id: string | undefined, at: string): boolean => {
         if (!id) return false
@@ -2351,8 +2370,9 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         const fixedByRef = sync.refs.some((r) => Date.parse(r.at) > atMs && rows.some((q) => q.id === r.rowId && q.handle === id))
         return fixedByRow || fixedByRef
       }
-      const faults = sync.faults.filter((f) => Date.parse(f.at) > restFrom && !fixedAfter(f.id, f.at))
+      const faults = sync.faults.filter((f) => untold(f.at) && !fixedAfter(f.id, f.at))
       if (faults.length === 0) continue
+      const typedPast = faults.some((f) => Date.parse(f.at) < humanAt)
       // Only a fault written at THIS rest withholds the allowance: that is the worker repeating the
       // mistake. An older one still waiting to be told (the cap silenced it) must not also pin the count.
       if (faults.some((f) => Date.parse(f.at) > instant(tele.lastUserAt))) questionFaultRests.set(row.slug, spokeAt)
@@ -2376,8 +2396,8 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       // rest that closed on a done fence; every other rest gets the text unchanged.
       const closedOnDone = underDone.length === 0 && tele.lastFence?.kind === "done"
       const correction = underDone.length > 0
-        ? `${questionFenceCorrection(faults)}\n\nSeparately, your \`\`\`done fence ${doneOverOpenQuestionsBody(underDone)}`
-        : questionFenceCorrection(faults, { closedOnDone })
+        ? `${questionFenceCorrection(faults, { typedPast })}\n\nSeparately, your \`\`\`done fence ${doneOverOpenQuestionsBody(underDone)}`
+        : questionFenceCorrection(faults, { closedOnDone, typedPast })
       const item = outbox.enqueue({
         id: deliveryId,
         slug: row.slug,

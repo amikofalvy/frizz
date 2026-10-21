@@ -46,6 +46,12 @@ import type { Storage, ThreadQuestionRow } from "./storage.ts"
 export const QUESTION_FENCES_REGISTER_FROM = "2026-10-13T20:00:00Z"
 const REGISTER_FROM_MS = Date.parse(QUESTION_FENCES_REGISTER_FROM)
 
+/** A refused fence written from this instant on is owed its correction until one reaches the worker,
+ *  however much the human has typed since (scheduler SOURCE 14). One written before it keeps the old
+ *  boundary, under which the human's next typed message dropped it untold: without this cutover the first
+ *  tick after the change shipped would wake every resting thread with an old untold fault in its fold. */
+export const QUESTION_FAULTS_OUTLIVE_HUMAN_FROM = "2026-10-21T22:00:00Z"
+
 /** A fence that could not register, with the instant of the message that carried it. */
 export interface QuestionFenceFault {
   at: string
@@ -471,7 +477,11 @@ function readQuestionFences(storage: QuestionFenceStorage, input: QuestionFenceS
     for (const id of assembled.refs) {
       const row = index.get(id)
       if (!row) {
-        fault(id, `\`id: ${id}\` alone references a question, and no question of yours uses that id — to ask a new one, give the fence a \`kind:\` and a \`question:\``)
+        // NAMED AS WHAT IT IS: a question the human was never asked. A worker writes this from a belief —
+        // a compaction summary listing "open" questions it never fenced, a card it meant to post — and
+        // the belief outlives the turn: on 2026-10-21 one wrote "signing in waits on the two cards I
+        // posted earlier" over two ids no fence had ever asked, and kept waiting on them.
+        fault(id, `\`id: ${id}\` alone references a question, and no question of yours uses that id, so the human was never asked it and no answer is coming — \`frizzctl activity\` lists the questions you have open; to ask this one, write the whole fence, with a \`kind:\` and a \`question:\``)
       } else if (!settledBefore(row)) ref(row)
       // AN ANSWERED QUESTION REFERENCED AGAIN IS NOT A MISTAKE WORTH A TURN. Its answer reaches the worker
       // as its own message (or already did), so the reference simply places nothing — where a fault here
@@ -564,8 +574,10 @@ export function standingQuestions(
  *  The worker's natural fix is the same message with the fence repaired — and the done fence still under
  *  it, which the scheduler then corrects at the next rest (SOURCE 15): two turns for one message's worth of
  *  news. One sentence here saves the second. Every other rest gets the text as it has always read. */
-export function questionFenceCorrection(faults: readonly QuestionFenceFault[], opts: { closedOnDone?: boolean } = {}): string {
-  const asks = faults.some((f) => f.faults.some((x) => !/alone references|nothing left to reference/.test(x)))
+export function questionFenceCorrection(faults: readonly QuestionFenceFault[], opts: { closedOnDone?: boolean; typedPast?: boolean } = {}): string {
+  // Only a reference to a question that WAS asked and has since closed "placed nothing": a reference to an
+  // id nothing ever asked is a question the human has not been asked, and the lead says so.
+  const asks = faults.some((f) => f.faults.some((x) => !/nothing left to reference/.test(x)))
   const lines = [
     `${QUESTION_FENCE_CORRECTION_LEAD}could not register, so ${asks ? "the human has NOT been asked" : "it placed nothing"}:`,
     "",
@@ -577,9 +589,15 @@ export function questionFenceCorrection(faults: readonly QuestionFenceFault[], o
     "`description:`, `recommended: true` and an indented `detail: |` block. Anything else the human needs",
     "goes below a `---` line as markdown. A fence with `id:` alone references a question you already asked.",
   ]
+  if (opts.typedPast) lines.push("", QUESTION_FENCE_TYPED_PAST_HINT)
   if (opts.closedOnDone) lines.push("", QUESTION_FENCE_UNDER_DONE_HINT)
   return lines.join("\n")
 }
+
+/** The sentence SOURCE 14's correction gains when a fence it names is older than the human's last typed
+ *  message: what they wrote may already settle it, and the worker should not ask it again for nothing. */
+export const QUESTION_FENCE_TYPED_PAST_HINT =
+  "The human has written to you since the message that carried this fence; if what they wrote already settles it, there is nothing to ask again."
 
 /** The sentence SOURCE 14's correction gains when the rest it corrects closed on a ```done fence. */
 export const QUESTION_FENCE_UNDER_DONE_HINT =
