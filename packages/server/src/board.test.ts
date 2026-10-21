@@ -2122,6 +2122,14 @@ test("a registered shell watch parks the thread with no fence at all", () => {
   assert.equal(hasRegisteredBackgroundPark(tele(), [registeredWatch()], NOW), false)
 })
 
+test("a completed legacy handoff queues even while an older shell watch remains live", () => {
+  const finished = tele({ bgShells: [LIVE_SHELL], lastFence: { kind: "done", body: "Finished", hints: [] } })
+  assert.equal(hasRegisteredBackgroundPark(finished, [registeredWatch()], NOW), true, "control: the shell watch holds")
+  assert.equal(deriveNeedsYou(row(), finished, "turn-idle", false, NOW, undefined, true, false, {}, new Set(), new Set(), [registeredWatch()]), true)
+  assert.equal(deriveNeedsYou(row({ delivery_ledger: ledger("pending") }), finished, "turn-idle", false, NOW), false, "a newer follow-up still supersedes the old handoff")
+  assert.equal(deriveNeedsYou(row({ snoozed_until: new Date(NOW + 60_000).toISOString() }), finished, "turn-idle", false, NOW), false, "operator snooze still wins")
+})
+
 test("ANY live registered watch parks, where a fence needs ALL of its names live", () => {
   // The two rules differ because the objects do. A fence is one sentence about every name in it, so one
   // dead name means the sentence has stopped describing reality. A registration is its own row, made at

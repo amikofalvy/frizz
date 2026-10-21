@@ -34,6 +34,18 @@ function shell(over: Partial<NonNullable<ThreadView["bgShells"]>[number]> = {}):
   return { label: "vite dev", startedAt: "2026-08-14T00:00:00.000Z", state: "running", id: "s1", ...over }
 }
 
+test("a cardless completion is a previous handoff, not a checked row in Running", () => {
+  const done = thread({ kind: "session", state: "open", needsYou: true, lastFence: { kind: "done", body: "Finished", hints: [] } })
+  assert.equal(sessionIndicatorKind(done), "done")
+  const pending = { ...done, needsYou: false }
+  assert.equal(partitionActive([pending]).running.length, 1, "an unobserved follow-up still keeps its place")
+  assert.equal(sessionIndicatorKind(pending), "rest", "after the delivery spinner expires the old checkmark must not return")
+  assert.equal(sessionIndicatorKind({ ...pending, runtime: "running" }), "working")
+  assert.equal(sessionIndicatorKind({ ...pending, state: "archived" }), "archived")
+  assert.equal(sessionIndicatorKind({ ...pending, pendingQuestion: true }), "needs-input")
+  assert.equal(sessionIndicatorKind({ ...pending, foreign: true }), "done", "external sessions never have queue cards")
+})
+
 // ---- needsAction: the queue definition ----
 
 test("needsAction: needs-human AT REST cards — but only with a SESSION (humanBlocked derived from status)", () => {
