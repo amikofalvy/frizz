@@ -22,7 +22,11 @@ import { applyEvent, applyRecord, newTailState, type Tailer } from "./tailer.ts"
 const fence = (body: string) => `\`\`\`question\n${body}\n\`\`\``
 const choice = (id: string, question = "SQLite or a JSON file?") =>
   fence(`id: ${id}\nkind: choice\nquestion: ${question}\noptions:\n  - label: SQLite\n    recommended: true\n  - label: JSON file`)
-const at = (minute: number) => new Date(Date.parse("2026-10-20T10:00:00.000Z") + minute * 60_000).toISOString()
+// Every fixture instant sits a week AHEAD of the real clock. The code compares a message's time with
+// Date.now() (a Goal armed now refuses only questions written after it), and a fixed date stopped
+// working the day the clock passed it: these were "2026-10-20T10:00Z", six days ahead when written.
+const T0 = Date.now() + 7 * 86_400_000
+const at = (minute: number) => new Date(T0 + minute * 60_000).toISOString()
 
 function storageHarness() {
   const dir = mkdtempSync(join(tmpdir(), "frizz-question-fences-adv-"))

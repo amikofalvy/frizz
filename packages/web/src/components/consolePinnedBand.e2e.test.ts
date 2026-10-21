@@ -91,7 +91,7 @@ test("the Console's By status view pins, orders and drags a shelf of its own", {
     page.on("pageerror", (e) => errors.push(String(e)))
     page.on("console", (m) => { if (m.type() === "error" && !/404|favicon/i.test(m.text())) errors.push(m.text()) })
     const reorderCalls: string[] = []
-    page.on("request", (r) => { if (r.url().includes("/rpc/reorderConsolePinnedThreads")) reorderCalls.push(new URL(r.url()).pathname.split("/")[2]!) })
+    page.on("request", (r) => { if (/\/rpc\/reorderConsolePinnedThreads\b/.test(r.url())) reorderCalls.push(new URL(r.url()).pathname.split("/")[2]!) })
     await page.evaluateOnNewDocument(() => localStorage.setItem("frizz:console-group", "status"))
     await page.goto(`${baseUrl}/console`, { waitUntil: "networkidle2" })
     await page.waitForSelector(`[data-sidebar-item="${kA3}"]`, { timeout: 20_000 })
