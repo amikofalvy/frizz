@@ -4,7 +4,7 @@ import { useVirtualizer } from "@tanstack/react-virtual"
 import { useSnapshot } from "valtio"
 import { AlarmClock, Check, ChevronRight, CircleDashed, Ellipsis, Github, Hourglass, Loader2, Pin, PinOff, RotateCcw, Timer } from "lucide-react"
 import { hasLiveSubAgents, type BoardSnapshot, type ThreadView } from "@frizz/shared"
-import { store, openThread, scrollToQueueCard, queueCardTargetY, pushSubAgentDrawer, showToast, queueCardViewportTop } from "../store.ts"
+import { store, openThread, pushSubAgentDrawer, showToast } from "../store.ts"
 import { rpc } from "../api/rpc.ts"
 import { useBoardThreads } from "../hooks.ts"
 import { prefs } from "../lib/prefs.ts"
@@ -33,7 +33,7 @@ import { unlandedDispatches, usePendingDispatches, type PendingDispatchEntry } f
 import { STACKED_RAIL_ANCHOR_CLASS, stackedRailAnchor } from "../lib/stackedRailAnchor.ts"
 import { useProjectScope } from "../lib/projectScope.tsx"
 import { clampToSlots, edgeScrollVelocity, heldStep, moveItem, nearestSlot, shiftFor, type RowSlot } from "../lib/railReorder.ts"
-import { activeSidebarSection, markerRow, queueCardGeometry, queueNavigationSettled, railRevealDelta, scrolledToDocumentBottom } from "../lib/sidebarScrollspy.ts"
+import { activeSidebarSection, markerRow, queueCardGeometry, railRevealDelta, scrolledToDocumentBottom } from "../lib/sidebarScrollspy.ts"
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, ReactElement, ReactNode, RefObject } from "react"
 
 // THE LEFT SIDEBAR — the thread list as a FLOATING column (no border, no fill: it floats in the
@@ -99,7 +99,6 @@ export const SIDEBAR_COLUMN_CLASS =
 export function useQueueScrollspy(view: string, drawerCount: number, queueIds: readonly string[]): {
   railRef: RefObject<HTMLDivElement | null>
   activeId: string | null
-  navigateToQueueCard: (id: string) => void
 } {
   const railRef = useRef<HTMLDivElement>(null)
   const [readingId, setActiveId] = useState<string | null>(null)
@@ -108,22 +107,10 @@ export function useQueueScrollspy(view: string, drawerCount: number, queueIds: r
   const whileQueued = useRef<readonly string[]>([])
   if (readingId && queueIds.includes(readingId)) whileQueued.current = queueIds
   const activeId = markerRow(readingId, queueIds, whileQueued.current)
-  // A click-to-card navigation in flight: the row that was clicked, plus where its scroll landed. Both
-  // halves matter — see the release conditions in syncActiveSection.
-  const pendingNavigation = useRef<{ id: string; landedY: number } | null>(null)
 
   const syncActiveSection = useCallback(() => {
     // Fading cards included: a card still holds the reader's place until it unmounts (queueCardGeometry).
     const items = queueCardGeometry({ includeLeaving: true })
-    const pending = pendingNavigation.current
-    if (pending) {
-      const target = items.find((item) => item.id === pending.id)
-      if (queueNavigationSettled(target, window.scrollY, pending.landedY, queueCardViewportTop())) pendingNavigation.current = null
-      else {
-        setActiveId(pending.id)
-        return
-      }
-    }
     const nextActiveId = activeSidebarSection(items, window.innerHeight, scrolledToDocumentBottom())
     // Scroll/resize observations can fire several times per frame. Preserve the same primitive
     // state value to avoid a needless row-tree update when the selected card has not changed.
@@ -171,16 +158,7 @@ export function useQueueScrollspy(view: string, drawerCount: number, queueIds: r
     if (Math.abs(delta) > 0.5) rail.scrollTop += delta
   }, [activeId])
 
-  // Called AFTER scrollToQueueCard, which has either scrolled or (with a drawer dismissing over the
-  // still-locked page) parked the landing for the unlock ~210ms out. So the landing is read off the
-  // CARD, not off window.scrollY: the two agree once the page has settled, and only the card knows the
-  // answer while the lock is still holding scrollY at 0.
-  const navigateToQueueCard = useCallback((id: string) => {
-    pendingNavigation.current = { id, landedY: queueCardTargetY(id) ?? window.scrollY }
-    setActiveId(id)
-  }, [])
-
-  return { railRef, activeId, navigateToQueueCard }
+  return { railRef, activeId }
 }
 
 export function Sidebar() {
@@ -218,7 +196,7 @@ export function Sidebar() {
   // The two bands of the Active section: RESTED is the cue (one row per queue card), RUNNING the rows
   // with no card. Split here rather than at the render so the scroll marker can be told the cue's order.
   const { running, rested } = useMemo(() => partitionActive(activeThreads), [activeThreads])
-  const { railRef, activeId, navigateToQueueCard } = useQueueScrollspy(snap.view, snap.drawers.length, rested.map((t) => t.id))
+  const { railRef, activeId } = useQueueScrollspy(snap.view, snap.drawers.length, rested.map((t) => t.id))
   // A dispatch from the prompt box above, drawn as the Running row it is about to become — see StartingRow.
   // The board's ids are only gathered while one is pending.
   const pending = usePendingDispatches(useProjectScope())
@@ -287,7 +265,7 @@ export function Sidebar() {
           {sections.pinned.length > 0 && (
             <section aria-label="Pinned">
               <SectionHeader label="Pinned" count={sections.pinned.length} />
-              <PinnedBand threads={sections.pinned} railRef={railRef} activeId={activeId} onQueueNavigate={navigateToQueueCard} />
+              <PinnedBand threads={sections.pinned} railRef={railRef} activeId={activeId} />
               {/* The separating rule is drawn only when the Rested/Active section actually follows:
                   Snoozed, Done and External each draw their OWN rule above themselves, so drawing one
                   here too would double it whenever that section is empty. */}
@@ -313,7 +291,7 @@ export function Sidebar() {
               {rested.length > 0 && <SectionHeader label="Queue" count={rested.length} />}
               {rested.map((t) => (
                 <div key={t.id}>
-                  <ThreadRow t={t} active={activeId === t.id} onQueueNavigate={navigateToQueueCard} restedAge />
+                  <ThreadRow t={t} active={activeId === t.id} restedAge />
                   <SubAgentRows t={t} />
                 </div>
               ))}
@@ -327,7 +305,7 @@ export function Sidebar() {
                   reader — and the marker is handed to the row that took its place (markerRow). */}
               {running.map((t) => (
                 <div key={t.id}>
-                  <ThreadRow t={t} onQueueNavigate={navigateToQueueCard} />
+                  <ThreadRow t={t} />
                   <SubAgentRows t={t} />
                 </div>
               ))}
@@ -360,7 +338,7 @@ export function Sidebar() {
               {!collapsed.snoozed &&
                 heldThreads.map((t) => (
                   <div key={t.id}>
-                    <ThreadRow t={t} active={activeId === t.id} onQueueNavigate={navigateToQueueCard} />
+                    <ThreadRow t={t} active={activeId === t.id} />
                     <SubAgentRows t={t} />
                   </div>
                 ))}
@@ -380,7 +358,7 @@ export function Sidebar() {
                 onToggle={() => (store.sidebarCollapsed.inactive = !store.sidebarCollapsed.inactive)}
               />
               {!collapsed.inactive && (
-                <DoneBand threads={inactiveThreads} railRef={railRef} activeId={activeId} onQueueNavigate={navigateToQueueCard} />
+                <DoneBand threads={inactiveThreads} railRef={railRef} activeId={activeId} />
               )}
             </div>
           )}
@@ -407,7 +385,7 @@ export function Sidebar() {
                   that problem. */}
               {!collapsed.external &&
                 externalSessions.map((t) => (
-                  <ThreadRow key={t.id} t={t} active={activeId === t.id} onQueueNavigate={navigateToQueueCard} restedAge />
+                  <ThreadRow key={t.id} t={t} active={activeId === t.id} restedAge />
                 ))}
             </section>
           )}
@@ -459,11 +437,10 @@ function reorderBoardPins(ids: readonly string[]): Promise<unknown> {
 /** The band's members, order aside: a pin or an unpin changes them, a reorder does not. */
 const membersKey = (ids: readonly string[]) => [...ids].sort().join("\n")
 
-export function PinnedBand({ threads, railRef, activeId, onQueueNavigate, shelf = "board", leading, onReorder = reorderBoardPins }: {
+export function PinnedBand({ threads, railRef, activeId, shelf = "board", leading, onReorder = reorderBoardPins }: {
   threads: readonly ThreadView[]
   railRef: RefObject<HTMLDivElement | null>
   activeId: string | null
-  onQueueNavigate: (id: string) => void
   /** Which pin the rows speak for: the project board's, or the Console's (groups.ts pinnedOn). */
   shelf?: PinShelf
   /** A mark before each row's indicator — the Console's project square. */
@@ -623,7 +600,7 @@ export function PinnedBand({ threads, railRef, activeId, onQueueNavigate, shelf 
               transition: drag && !held ? "transform 160ms ease" : undefined,
             }}
           >
-            <ThreadRow t={t} active={activeId === t.id} onQueueNavigate={onQueueNavigate} shelf={shelf} leading={leading?.(t)} />
+            <ThreadRow t={t} active={activeId === t.id} shelf={shelf} leading={leading?.(t)} />
             <SubAgentRows t={t} />
           </div>
         )
@@ -742,12 +719,10 @@ function DoneBand({
   threads,
   railRef,
   activeId,
-  onQueueNavigate,
 }: {
   threads: ThreadView[]
   railRef: RefObject<HTMLDivElement | null>
   activeId: string | null
-  onQueueNavigate: (id: string) => void
 }) {
   const listRef = useRef<HTMLDivElement>(null)
   const [scrollMargin, setScrollMargin] = useState(0)
@@ -800,7 +775,7 @@ function DoneBand({
             // inside the band, so the offset comes back off.
             style={{ transform: `translateY(${item.start - scrollMargin}px)` }}
           >
-            <ThreadRow t={t} active={activeId === t.id} onQueueNavigate={onQueueNavigate} />
+            <ThreadRow t={t} active={activeId === t.id} />
             <SubAgentRows t={t} />
           </div>
         )
@@ -848,7 +823,6 @@ export const ThreadRow = memo(function ThreadRow({
   t,
   legacy,
   active = false,
-  onQueueNavigate,
   restedAge = false,
   leading,
   shelf = "board",
@@ -856,7 +830,6 @@ export const ThreadRow = memo(function ThreadRow({
   t: ThreadView
   legacy?: boolean
   active?: boolean
-  onQueueNavigate?: (id: string) => void
   /** Show the right-justified rest-time column. The CUE's rows only — see RestedAge. */
   restedAge?: boolean
   /** A mark before the indicator — the Console's project square (ConsoleSidebar.tsx). */
@@ -918,17 +891,11 @@ export const ThreadRow = memo(function ThreadRow({
         {active && <span data-sidebar-scroll-marker className="absolute inset-y-0 left-1 w-[2px] rounded-full bg-accent" />}
       </span>
       <button
-        onClick={() => {
-          // A queued (needsYou) thread already has its full card in the main column. A sidebar click
-          // just SCROLLS to that card — it does NOT open a redundant drawer over it (maintainer
-          // 2026-07-15: "it should not open the thread drawer, just auto-scroll to the item in the
-          // queue"). Only fall through to the drawer when no card is mounted (not queued/not rendered).
-          if (t.needsYou && scrollToQueueCard(t.id)) {
-            onQueueNavigate?.(t.id)
-            return
-          }
-          openThread(t.id)
-        }}
+        // ALWAYS the drawer, even for a queued thread whose card is on screen (maintainer 2026-10-21:
+        // "clicking an item in the sidebar should always open the full thread in the drawer. Even if
+        // it's already visible in the queue"). It scrolled to that card instead from 2026-07-15 until
+        // then; the palette, a transcript link and a notification still do (store.openThread).
+        onClick={() => openThread(t.id, { evenIfQueued: true })}
         aria-current={active ? "location" : undefined}
         className="min-w-0 flex-1 flex items-start gap-2 pb-1 pl-5 pr-1.5 pt-1 text-left"
       >

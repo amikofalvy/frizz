@@ -99,7 +99,7 @@ export function ConsoleSidebar() {
   const pending = useConsolePendingDispatches()
   const starting = useMemo(() => (pending.length === 0 ? pending : unlandedDispatches(pending, new Set(all.map((t) => t.id)))), [pending, all])
   const runningCount = runningRows.length + starting.length
-  const { railRef, activeId, navigateToQueueCard } = useQueueScrollspy(snap.view, snap.drawers.length, waiting.map((t) => t.id))
+  const { railRef, activeId } = useQueueScrollspy(snap.view, snap.drawers.length, waiting.map((t) => t.id))
 
   const square = (t: ThreadView) => <RowSquare project={bySlug.get(keyProject(t.id) ?? "")} />
   // By status the rows speak for the Console's shelf; by project, for each project board's own.
@@ -111,7 +111,6 @@ export function ConsoleSidebar() {
         // Waiting rows only: a running row has no queue card, and the marker a just-sent row arrives
         // with is handed to the row that took its place (markerRow in lib/sidebarScrollspy).
         active={opts.waiting && activeId === t.id}
-        onQueueNavigate={navigateToQueueCard}
         // A pinned row wears its pin in the rest-time column instead (ThreadRow), as on a project's board.
         restedAge={opts.waiting && !pinnedOn(t, shelf)}
         leading={opts.square ? square(t) : undefined}
@@ -157,7 +156,6 @@ export function ConsoleSidebar() {
                       threads={pinned}
                       railRef={railRef}
                       activeId={activeId}
-                      onQueueNavigate={navigateToQueueCard}
                       shelf="console"
                       leading={square}
                       onReorder={reorderPins}

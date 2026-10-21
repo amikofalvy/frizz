@@ -46,7 +46,7 @@ function currentToken(): number | undefined {
  * reader up restores that layer's same-URL entry with nothing left to own it: the sheet is gone and its
  * entry stays. The page then sits one dead step above the router's own entry for the same URL. Back
  * did nothing visible, and the phone thread header's ← (which pops when the router pushed the entry,
- * lib/router appPushedCurrentEntry) popped onto the SAME thread and looked broken.
+ * lib/historyEntry appPushedCurrentEntry) popped onto the SAME thread and looked broken.
  *
  * No layer survives a document load, so any layer entry the document boots on is stale. Step off it
  * before anything else can push: a same-URL pop the router ignores (routes.tsx re-applies the URL

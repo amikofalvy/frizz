@@ -1,7 +1,7 @@
 import type { CompletionHold, ThreadView } from "@frizz/shared"
 import { rpc } from "../api/rpc.ts"
 import { closeDrawersById, openThread, showToast, store } from "../store.ts"
-import { appPushedCurrentEntry } from "./router.ts"
+import { appPushedCurrentEntry } from "./historyEntry.ts"
 import { displayTitle, needsAction, sectionThreads } from "../groups.ts"
 import { prefs } from "./prefs.ts"
 import { archivingAtNow, clearArchived, markArchived, optimisticallyArchived } from "./optimisticArchive.ts"

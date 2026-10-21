@@ -914,7 +914,8 @@ function IntermediateSummary({ toolCount, onExpand }: { toolCount: number; onExp
 // never churn identity render-to-render.
 const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, onUnresolve }: { thread: ThreadView; leaving: boolean; frozen: boolean; onResolve: (slug: string) => void; onUnresolve: (slug: string) => void }) {
   // Tracks only vtReturnTarget (valtio re-renders on accessed keys alone), so the memo'd card
-  // re-renders just when a /full exit primes or clears it — see the root div's viewTransitionName.
+  // re-renders just when a /full exit primes or clears it — see the root div's viewTransitionName,
+  // which reads the drawer stack too, but only while this card IS the target.
   const vtSnap = useSnapshot(store)
   // The Console draws a cap above the stuck header (below), clear of its floating home switcher.
   const onConsole = isConsolePath()
@@ -1517,10 +1518,15 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve, 
       // viewTransitionName: while this thread is the primed return target of a /full exit
       // (store.primeFullscreenReturn), the card is the reverse morph's destination — the /full
       // column shrinks back into it. Inert otherwise; the forward direction tags imperatively
-      // instead (ExpandThreadLink), because only the clicked surface may wear the name.
+      // instead (ExpandThreadLink), because only the clicked surface may wear the name. Unless the
+      // return reopened this thread's DRAWER over the card (one the rail opened — a queued thread's
+      // drawer since 2026-10-21): the sheet takes the name then, and a second element wearing it
+      // would make the browser skip the transition altogether.
       style={{
         ...(bottomScrollReserve ? { marginBottom: bottomScrollReserve } : null),
-        ...(vtSnap.vtReturnTarget === thread.id ? { viewTransitionName: "thread-chat" } : null),
+        ...(vtSnap.vtReturnTarget === thread.id && !vtSnap.drawers.some((d) => d.kind === "thread" && d.slug === thread.id && !d.closing)
+          ? { viewTransitionName: "thread-chat" }
+          : null),
       }}
       // Enter (or ⌘/Ctrl-Enter) from the card at rest sends the staged answers, provided at least
       // one block is answered — the same send as the prompt box's button (sendAnswers goes through it). Every input

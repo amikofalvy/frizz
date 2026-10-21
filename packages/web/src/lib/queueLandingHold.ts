@@ -17,8 +17,8 @@
 // makes that safe is telling a LAYOUT shift from a READER's scroll, and two signals do it:
 //   · INPUT. A wheel, a touch, a pointer press or a key on this page means a person is acting on it,
 //     and the hold ends on the spot — before the scroll that input produces has even been dispatched.
-//     A pointer press on a sidebar row ends it too, and that row's own scrollToQueueCard arms a fresh
-//     hold for the new card, which is the order the events arrive in.
+//     A pointer press on a palette entry ends it too, and that door's own scrollToQueueCard arms a
+//     fresh hold for the new card, which is the order the events arrive in.
 //   · GEOMETRY, for a scroll with no input event behind it (dragging the page's own scrollbar sends
 //     none). A scroll that moved scrollY while the card's DOCUMENT offset and the document height
 //     both stayed put cannot have been caused by layout — content moving above the card changes the

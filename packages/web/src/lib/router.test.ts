@@ -1,8 +1,9 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import type { BoardSnapshot, ThreadView } from "@frizz/shared"
-import { markDrawerClosing, openThread, pushDrawer, resolveRoutedThread, scrollToQueueCard, store } from "../store.ts"
-import { appPushedCurrentEntry, primeRoute, queueDestination, startRouter } from "./router.ts"
+import { markDrawerClosing, noteStandaloneThreadRender, openThread, primeFullscreenReturn, pushDrawer, resolveRoutedThread, scrollToQueueCard, store } from "../store.ts"
+import { primeRoute, queueDestination, startRouter } from "./router.ts"
+import { appPushedCurrentEntry } from "./historyEntry.ts"
 
 function resetStore(): void {
   store.drawers = []
@@ -95,6 +96,114 @@ test("a queued thread with no card mounted still falls through to the drawer", (
   }
   assert.equal(store.drawers.length, 1)
   assert.equal(store.drawers[0]?.slug, "queued-thread")
+})
+
+// The page's history entry, as react-router writes it: `idx` 0 is the entry the document loaded on, and
+// every push counts up from there (lib/historyEntry).
+function onHistoryEntry(idx: number): () => void {
+  const globals = globalThis as typeof globalThis & { history?: History }
+  const previous = globals.history
+  globals.history = { state: { usr: null, key: `k${idx}`, idx } } as unknown as History
+  return () => {
+    globals.history = previous
+  }
+}
+
+// The sidebar's rows open the drawer even for a queued thread whose card is right there (maintainer
+// 2026-10-21); every other door to it still lands on the card.
+test("a sidebar row opens a queued thread's drawer over its mounted card", () => {
+  resetStore()
+  boardWith([{ id: "queued-thread", needsYou: true }, { id: "session-less", needsYou: true }])
+  ;(store.board!.threads[1] as { runtime?: string }).runtime = "none"
+  const restore = mountQueueCard("queued-thread")
+  try {
+    openThread("queued-thread", { evenIfQueued: true })
+    assert.deepEqual(store.drawers.map(({ kind, slug }) => ({ kind, slug })), [{ kind: "thread", slug: "queued-thread" }])
+
+    // CONTROL — the same thread through any other door scrolls to the card and dismisses that drawer.
+    openThread("queued-thread")
+    assert.equal(store.drawers.filter((d) => !d.closing).length, 0)
+
+    // A session-less queued thread still routes to its document, as a row always did.
+    openThread("session-less", { evenIfQueued: true })
+    assert.deepEqual(store.drawers.filter((d) => !d.closing).map(({ kind, slug }) => ({ kind, slug })), [{ kind: "doc", slug: "session-less" }])
+  } finally {
+    restore()
+    resetStore()
+  }
+})
+
+// A `/thread/<slug>` entry the app pushed was a drawer: the store→URL sync writes that address only for
+// an open thread layer. So Back/Forward onto it (or a reload of it) reopens the drawer the rail opened
+// over a queued thread's card, where a cold arrival — idx 0 — still lands on the card.
+test("a parked route for a QUEUED thread on an entry the app pushed reopens its drawer", () => {
+  resetStore()
+  const restoreCard = mountQueueCard("queued-thread")
+  const restoreHistory = onHistoryEntry(3)
+  try {
+    primeRoute("/thread/queued-thread")
+    boardWith([{ id: "queued-thread", needsYou: true }])
+    resolveRoutedThread()
+    assert.deepEqual(
+      store.drawers.map(({ kind, slug, routed }) => ({ kind, slug, routed })),
+      [{ kind: "thread", slug: "queued-thread", routed: true }],
+    )
+    assert.equal(store.routeThreadSlug, null)
+  } finally {
+    restoreHistory()
+    restoreCard()
+  }
+
+  // CONTROL — the identical route on the document's own entry lands on the card.
+  resetStore()
+  const restoreCold = mountQueueCard("queued-thread")
+  const restoreColdHistory = onHistoryEntry(0)
+  try {
+    primeRoute("/thread/queued-thread")
+    boardWith([{ id: "queued-thread", needsYou: true }])
+    resolveRoutedThread()
+    assert.equal(store.drawers.length, 0)
+  } finally {
+    restoreColdHistory()
+    restoreCold()
+    resetStore()
+  }
+})
+
+// Leaving /full back to a queued thread's drawer (the door was pressed in a drawer the rail opened):
+// the return must mount that drawer in the board's FIRST commit, as it does for any drawer, or the
+// reverse morph has nothing named to shrink into. On a cold entry the card is the surface instead.
+test("returning from /full to an app-pushed entry remounts a queued thread's drawer in the first commit", () => {
+  resetStore()
+  const globals = globalThis as typeof globalThis & { window?: Window }
+  const previousWindow = globals.window
+  globals.window = { setTimeout: () => 0 } as unknown as Window
+  const restoreHistory = onHistoryEntry(2)
+  try {
+    boardWith([{ id: "queued-thread", needsYou: true }])
+    noteStandaloneThreadRender("queued-thread")
+    primeFullscreenReturn("queued-thread")
+    assert.deepEqual(store.drawers.map(({ kind, slug, routed }) => ({ kind, slug, routed })), [{ kind: "thread", slug: "queued-thread", routed: true }])
+    assert.equal(store.vtReturnTarget, "queued-thread")
+  } finally {
+    restoreHistory()
+  }
+
+  // CONTROL — a cold entry: no drawer, the card wears the name.
+  resetStore()
+  const restoreCold = onHistoryEntry(0)
+  try {
+    boardWith([{ id: "queued-thread", needsYou: true }])
+    noteStandaloneThreadRender("queued-thread")
+    primeFullscreenReturn("queued-thread")
+    assert.equal(store.drawers.length, 0)
+    assert.equal(store.vtReturnTarget, "queued-thread")
+  } finally {
+    restoreCold()
+    globals.window = previousWindow
+    store.vtReturnTarget = null
+    resetStore()
+  }
 })
 
 test("resolveRoutedThread is inert without a board or a parked slug", () => {
@@ -310,7 +419,7 @@ test("Back onto a thread a lateral move replaced pops without writing history", 
   }
 })
 
-// A link (or a sidebar row, the palette, a notification) from inside thread A's drawer to a QUEUED
+// A link (or the palette, a notification) from inside thread A's drawer to a QUEUED
 // thread B: B's surface is its card in the main column, so the door dismisses A's drawer and scrolls
 // there. The URL then reads the board — but that is a NAVIGATION, not a close. Replacing A's entry with
 // the board left two board entries in a row, so the next Back did nothing visible and A was unreachable
@@ -347,7 +456,7 @@ test("following a door to a queued thread's card pushes, so Back returns to the 
     assert.deepEqual(writes, [], "Back was a pop")
     assert.deepEqual(store.drawers.filter((d) => !d.closing).map((d) => d.slug), ["thread-a"])
 
-    // The sidebar row calls the card door directly; the same push.
+    // The card door taken directly; the same push.
     assert.equal(scrollToQueueCard("queued-b"), true)
     await settle()
     assert.deepEqual(writes, [{ path: "/", replace: false }])
