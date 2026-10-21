@@ -599,6 +599,11 @@ a writer. Only an explicit user instruction naming the interruption permits it.`
 // SendUserFile is not taught either: it is not in a dispatched worker's tool list, and no transcript on
 // the maintainer's machine has ever called it.
 //
+// "Self-contained" is spelled out because a page that loads files beside it fails only for the human: on
+// the maintainer's Mac, Chrome (the .html handler) is denied the Documents folder by the OS, so \`open\`
+// hands it the page alone and every relative image breaks, while the worker's own headless check, run
+// under a terminal that holds that access, draws them all (2026-10-21, three option galleries in a row).
+//
 // "Above any closing signal fence" because parseSignalFence (tailer.ts) is END-anchored: a gallery
 // written after a \`\`\`done would turn the sign-off into prose and leave the rest unsigned. And not INSIDE
 // one either: its own closing \`\`\` line would close the signal fence early. The surfaces named after it
@@ -636,7 +641,17 @@ HTML page carrying every candidate, linked in your message as \`[name](file:///a
 screenshot it, judge the screenshots, or put them in a lightbox or a question option in its place: the
 human reads the real page in their own browser faster and better than any picture of it (maintainer
 2026-10-06: *"you should always just generate an artifact or an HTML page or whatever and just link me
-to it. You don't need to take screenshots; that just made it harder for me to gauge"*).`
+to it. You don't need to take screenshots; that just made it harder for me to gauge"*).
+
+**SELF-CONTAINED MEANS THE ONE FILE, AND NOTHING BESIDE IT.** Every image, stylesheet, font and
+script the page uses goes INSIDE it: a screenshot as a \`data:\` URI, never a relative \`src\` to a
+file in the same folder. The browser that opens the link may be allowed that one file and nothing
+else. On macOS a browser denied the folder the page sits in (Documents, Desktop and Downloads each
+need the human's permission) is still handed the page it was asked to open, and refused every file
+beside it, so each image draws as a broken icon. Your own headless browser cannot catch this, since
+it inherits your terminal's folder access: check the page COPIED ALONE into an empty directory
+before you link it (maintainer 2026-10-21, after galleries of screenshots reached them as broken
+images: *"You keep making this mistake"*).`
 
 // The Markdown components the web app draws beyond CommonMark (packages/web/src/lib: codeBlock.ts and the
 // codeTabs / codeLines / codeDiff it builds from, callouts.ts, disclosure.ts; a diagram is

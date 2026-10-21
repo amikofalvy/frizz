@@ -677,6 +677,16 @@ human reads the real page in their own browser faster and better than any pictur
 2026-10-06: *"you should always just generate an artifact or an HTML page or whatever and just link me
 to it. You don't need to take screenshots; that just made it harder for me to gauge"*).
 
+**SELF-CONTAINED MEANS THE ONE FILE, AND NOTHING BESIDE IT.** Every image, stylesheet, font and
+script the page uses goes INSIDE it: a screenshot as a `data:` URI, never a relative `src` to a
+file in the same folder. The browser that opens the link may be allowed that one file and nothing
+else. On macOS a browser denied the folder the page sits in (Documents, Desktop and Downloads each
+need the human's permission) is still handed the page it was asked to open, and refused every file
+beside it, so each image draws as a broken icon. Your own headless browser cannot catch this, since
+it inherits your terminal's folder access: check the page COPIED ALONE into an empty directory
+before you link it (maintainer 2026-10-21, after galleries of screenshots reached them as broken
+images: *"You keep making this mistake"*).
+
 ## Markdown that Frizz draws as more than text
 
 Each of these is drawn wherever your Markdown is: a message, the body of `frizzctl done`, a
