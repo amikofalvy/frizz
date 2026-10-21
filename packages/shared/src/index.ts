@@ -2132,6 +2132,7 @@ export function parseTimerWake(text: string): TimerWake | null {
  *  re-plan or re-report. */
 export function limitResumeSteer(window: LimitWindow): string {
   const which = window === "weekly" ? "weekly usage limit" : window === "session" ? "session usage limit" : window === "model" ? "model usage limit" : "usage limit"
+  if (window === "unknown") return "⏳ Capacity is available again after the usage limit that interrupted you. Continue exactly where you left off."
   return `⏳ The ${which} that interrupted you has reset. Continue exactly where you left off.`
 }
 
@@ -2162,6 +2163,7 @@ const LIMIT_RESUME = /^⏳ The (weekly usage limit|session usage limit|model usa
 /** Which window reset, or `null` when this is not a limit-resume wake. The chat draws one hairline from
  *  it; the amber pause card already standing above it carries the weight of the interruption itself. */
 export function parseLimitResumeWake(text: string): { window: LimitWindow } | null {
+  if (text.trim() === limitResumeSteer("unknown")) return { window: "unknown" }
   const m = LIMIT_RESUME.exec(text.trim())
   if (!m) return null
   return { window: m[1] === "weekly usage limit" ? "weekly" : m[1] === "session usage limit" ? "session" : m[1] === "model usage limit" ? "model" : "unknown" }
@@ -4378,6 +4380,15 @@ export const ProviderQuota = z.object({
   planType: z.string().optional(), // "pro" / "max" / etc. when the source reports it
   windows: z.array(QuotaWindow),
   detail: z.string().optional(), // why unavailable, or an extra note
+  // Recovery evidence from a LIVE Codex read only. Rollout quota has no account identity or freshness
+  // guarantee and must never wake a failed thread. accountKey is a hash, not a credential/account id.
+  codexRecovery: z.object({
+    observedAt: z.number(), // request start, unix milliseconds (not the later cache/read time)
+    accountKey: z.string().optional(),
+    creditsAvailable: z.boolean().optional(),
+    ordinaryUsageAllowed: z.boolean().nullable().optional(), // null is explicitly unavailable
+    blocked: z.boolean().optional(), // explicit workspace/spend-control denial beats apparent headroom
+  }).optional(),
 })
 export type ProviderQuota = z.infer<typeof ProviderQuota>
 

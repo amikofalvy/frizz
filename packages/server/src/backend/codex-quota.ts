@@ -1,6 +1,7 @@
 import { join } from "node:path"
 import { readdirSync, statSync, openSync, readSync, fstatSync, closeSync } from "node:fs"
 import { spawn } from "node:child_process"
+import { createHash } from "node:crypto"
 import type { ProviderQuota, QuotaWindow } from "@frizz/shared"
 import { defaultCodexHome } from "./codex.ts"
 import { resolveCodexExecutable } from "./codex-executable.ts"
@@ -215,15 +216,28 @@ function toLiveWindow(raw: unknown): QuotaWindow | undefined {
 }
 
 /** Parse an `account/rateLimits/read` result into a ProviderQuota. Pure; undefined if unusable. */
-export function parseCodexQuotaFromRateLimits(result: unknown): ProviderQuota | undefined {
+export function parseCodexQuotaFromRateLimits(result: unknown, observedAt = Date.now()): ProviderQuota | undefined {
   if (!result || typeof result !== "object") return undefined
   const rl = (result as Record<string, unknown>).rateLimits
   if (!rl || typeof rl !== "object") return undefined
   const r = rl as Record<string, unknown>
+  const allowed = (result as Record<string, unknown>).ordinaryUsageAllowed
+  const ordinaryUsageAllowed = !("ordinaryUsageAllowed" in result) ? undefined : typeof allowed === "boolean" ? allowed : null
   const windows = [toLiveWindow(r.primary), toLiveWindow(r.secondary)].filter((x): x is QuotaWindow => x !== undefined)
-  if (windows.length === 0) return undefined
+  const credits = r.credits && typeof r.credits === "object" ? r.credits as Record<string, unknown> : undefined
+  const creditsAvailable = credits?.unlimited === true || credits?.hasCredits === true ? true
+    : credits?.unlimited === false && credits?.hasCredits === false ? false : undefined
+  const reached = r.rateLimitReachedType
+  const individual = r.individualLimit && typeof r.individualLimit === "object" ? r.individualLimit as Record<string, unknown> : undefined
+  const blocked = r.spendControlReached === true ||
+    (typeof reached === "string" && reached !== "rate_limit_reached") ||
+    (typeof individual?.remainingPercent === "number" && individual.remainingPercent <= 0)
+  if (windows.length === 0 && creditsAvailable === undefined && ordinaryUsageAllowed !== true) return undefined
   const planType = typeof r.planType === "string" ? r.planType : undefined
-  return { status: "ok", planType, windows }
+  return { status: "ok", planType, windows, codexRecovery: {
+    observedAt, creditsAvailable, ...(ordinaryUsageAllowed !== undefined ? { ordinaryUsageAllowed } : {}),
+    ...(blocked ? { blocked: true } : {}),
+  } }
 }
 
 // One short-lived `codex app-server` (~0.7-0.9s measured end to end): initialize → initialized →
@@ -238,6 +252,8 @@ export function queryCodexRateLimits(
   timeoutMs = 12_000,
 ): Promise<ProviderQuota | undefined> {
   return new Promise((resolve) => {
+    const observedAt = Date.now()
+    const accountId = readCodexAccountId(codexHome)
     let child: ReturnType<typeof spawn>
     try {
       // DELIBERATELY BARE — no codexAppServerArgv here. This is a short-lived read of the quota
@@ -313,7 +329,15 @@ export function queryCodexRateLimits(
           send({ jsonrpc: "2.0", method: "initialized" })
           send({ jsonrpc: "2.0", id: 2, method: "account/rateLimits/read", params: {} })
         } else if (msg.id === 2) {
-          finish(parseCodexQuotaFromRateLimits(msg.result))
+          const quota = parseCodexQuotaFromRateLimits(msg.result, observedAt)
+          if (quota) {
+            // auth.json can change while the subprocess is answering. Its quota remains useful for
+            // display, but is not recovery evidence for the account the next turn would load.
+            const reported = msg.result && typeof msg.result === "object" ? (msg.result as Record<string, unknown>).accountId : undefined
+            if (readCodexAccountId(codexHome) !== accountId || (accountId && typeof reported === "string" && reported !== accountId)) delete quota.codexRecovery
+            else if (accountId) quota.codexRecovery!.accountKey = createHash("sha256").update(accountId).digest("hex")
+          }
+          finish(quota)
         }
       }
     })

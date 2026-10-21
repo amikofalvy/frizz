@@ -9,6 +9,8 @@ import type { CommandRunResult, CommandWatchService } from "./command-watch.ts"
 import type { Tailer } from "./tailer.ts"
 import type { SessionTelemetry } from "./tailer.ts"
 import type { LimitFault } from "./backend/types.ts"
+import { codexLimitFault, codexLimitRecovery } from "./backend/codex-usage-limit.ts"
+import type { ProviderError } from "@frizz/shared"
 import { limitFaultResetKey, limitPauseIsStale, mayHaveLiveBackgroundWork, quotaWindowKeyFor, quotaWindowRecovered, scopedQuotaWindow, scopedQuotaWindowRecovered, textResetInstant } from "./backend/usage-limit.ts"
 import { claudeFallbackModel, claudeModelFromLimitName, claudeProfile, normalizeObservedThreadModel } from "./backend/thread-profiles.ts"
 import { createWakeDeliveryStore, WAKE_QUIET_WINDOW_MS, type WakeDelivery } from "./wake-store.ts"
@@ -1304,6 +1306,7 @@ export interface SchedulerDeps {
   // limit message's own text can't say (every weekly limit, since its clock carries no date). Absent
   // in tests that exercise the text path; a read that throws is treated as indeterminate.
   readQuota?: () => Promise<QuotaSnapshot>
+  codexTurnLiveness?: (slug: string, sessionId: string) => { bridgeTurn: boolean; providerError?: ProviderError } | undefined
   fetchPr?: (ref: PrRef) => Promise<PrStatus | undefined>
   // Tests may keep injecting the historical bare array/undefined result. Production uses the
   // structured result so the scheduler can distinguish auth, timeout, network, API, and shape faults.
@@ -1462,11 +1465,27 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
 
   type DeliveryContext = "confirmed" | "superseded" | "current-idle" | "current-busy" | "unknown"
 
+  function limitTelemetry(row: SessionRow): SessionTelemetry | undefined {
+    const tele = deps.tailer.get(row.slug)
+    const live = row.backend === "codex" ? deps.codexTurnLiveness?.(row.slug, row.session_id) : undefined
+    if (live?.bridgeTurn) return tele ? { ...tele, turn: "in-flight" } : undefined
+    const error = live?.providerError
+    if (!error || error.retrying || !error.at || (tele?.lastActivityAt && error.at < tele.lastActivityAt)) return tele
+    // Same canonical timestamp as the board: the app-server echo and rollout record describe ONE
+    // interruption, not two opportunities to wake it. Newer user/output records supersede either.
+    const same = tele?.providerError?.message === error.message && tele?.providerError?.code === error.code
+    const at = same ? tele?.providerError?.at ?? error.at : error.at
+    return {
+      subAgents: [], bgShells: [], ...tele, turn: "idle", permPrompt: false, pendingQuestion: false,
+      limitFault: codexLimitFault(error, at),
+    }
+  }
+
   function deliveryContext(item: WakeDelivery): DeliveryContext {
     const row = deps.storage.getSession(item.slug)
     if (!row || row.session_id !== item.sessionId) return "superseded"
     if (row.state === "archived" || row.archived === 1) return "superseded"
-    const tele = deps.tailer.get(item.slug)
+    const tele = isLimitFenceId(item.fenceId) ? limitTelemetry(row) : deps.tailer.get(item.slug)
     if (!tele) return "unknown"
     if (tele.lastUserText?.includes(wakeDeliveryToken(item.id))) return "confirmed"
     // A limit wake is bound to its interruption, not to a fence: it stays deliverable exactly as long
@@ -1766,12 +1785,19 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     const out: LimitCandidate[] = []
     for (const row of deps.storage.allSessions()) {
       if (row.state === "archived" || row.archived === 1) continue
-      const tele = deps.tailer.get(row.slug)
+      const tele = limitTelemetry(row)
       const fault = tele?.limitFault
+      const spent = spentCodexResume.get(row.slug)
+      if (!fault && spent && !tele?.apiFault && Date.parse(tele?.lastAssistantAt ?? "") > spent.at) {
+        spentCodexResume.delete(row.slug) // real successful output, not just a retry request
+      }
       if (!fault || tele?.turn !== "idle") continue
       // The boot guard, and the same age policy the board renders — so a card never promises a wake
-      // the waker has already written off.
-      if (limitPauseIsStale(fault.window, Date.parse(fault.at), nowMs)) continue
+      // the waker has already written off. A Codex fault names no window, but Codex meters a weekly
+      // one (on a Pro account it is the only one reported, 2026-10-21), so its bound is the weekly
+      // span: the unknown window's 5h would write off every weekly cap more than 41h from its reset.
+      // The live capacity reading, not this clock, decides when it wakes.
+      if (limitPauseIsStale(fault.codex ? "weekly" : fault.window, Date.parse(fault.at), nowMs)) continue
       out.push({
         slug: row.slug,
         sessionId: row.session_id,
@@ -1796,6 +1822,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   // In memory on purpose: a frizz restart costs one extra attempt per thread, and a durable table for a
   // guard this cheap would be a migration in exchange for nothing.
   const spentEarlyResume = new Map<string, string>()
+  const spentCodexResume = new Map<string, { key: string; at: number }>()
 
   // Has this fault's window come back? Two independent triggers, whichever fires first:
   //   (1) the ORIGINAL window RESET — its own reset clock (5-hour session: exact, local, free) or, for a
@@ -1812,6 +1839,20 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   ): boolean | undefined {
     const faultAtMs = Date.parse(c.fault.at)
     const provider = quota?.[c.backend]
+
+    if (c.backend === "codex") {
+      // Unknown Codex windows never borrow Claude's reset-clock heuristic. The live read must
+      // postdate the failure and the minimum age also lets pre-failure quota memo entries expire.
+      if (!Number.isFinite(faultAtMs) || nowMs - faultAtMs < LIMIT_HEADROOM_MIN_FAULT_AGE_MS) return undefined
+      const recovery = codexLimitRecovery(c.fault, provider, nowMs)
+      if (recovery === "blocked") {
+        spentCodexResume.delete(c.slug)
+        return false
+      }
+      if (!recovery || spentCodexResume.get(c.slug)?.key === recovery.key) return undefined
+      spentCodexResume.set(c.slug, { key: recovery.key, at: nowMs })
+      return true
+    }
 
     // (2) Account-availability: the blown window is no longer near-full on the signed-in account. Only
     // trusted once the fault is old enough that a warmed reading necessarily post-dates it (so we read a
@@ -1926,7 +1967,9 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       // A model-scoped cap the thread can simply step down from needs no recovery at all — the account
       // is not out of capacity, this model is. Everything else waits for its window.
       const fallback = modelFallbackFor(c)
-      if (!fallback && limitRecovered(c, quota, nowMs) !== true) continue
+      // The awaited live request may have STARTED after this tick's original clock sample. Compare
+      // its freshness against the current clock, or valid post-tick evidence reads as future data.
+      if (!fallback && limitRecovered(c, quota, now()) !== true) continue
       // Persist the new pair BEFORE the wake is enqueued: the delivery forks `claude` from this row, so
       // a wake that raced ahead of the write would restart the thread on the model that just capped.
       if (fallback) deps.storage.setProfile(c.slug, fallback.model, fallback.effort)
@@ -1939,6 +1982,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         message: fallback ? limitModelSwitchSteer(fallback.capped, fallback.label) : limitResumeSteer(c.fault.window),
         reason: fallback
           ? `${fallback.capped} limit — restarting on ${fallback.label} (interrupted ${c.fault.at})`
+          : c.backend === "codex" ? `Codex capacity recovered (interrupted ${c.fault.at})`
           : `${c.fault.window} usage limit reset (interrupted ${c.fault.at})`,
       }, nowMs).delivery
       log(`waker: queued ${c.slug} — ${item.reason}`)
@@ -4516,6 +4560,9 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     const adopted: WakeDelivery[] = []
     for (const sibling of outbox.pendingFor(carrier.slug, carrier.sessionId)) {
       if (sibling.id === carrier.id || isQuestionAnswerFenceId(sibling.fenceId)) continue
+      // Codex limit wakes must pass their asynchronous live-capacity check as a carrier, never slip
+      // into a timer/report frame on an earlier quota reading.
+      if (isLimitFenceId(sibling.fenceId) && deps.storage.getSession(sibling.slug)?.backend === "codex") continue
       const context = deliveryContext(sibling)
       if (context === "confirmed") {
         outbox.confirm(sibling.id, now())
@@ -4587,7 +4634,20 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         settleSnooze(item)
         continue
       }
-      if (!isDeliverableNow(item, context, claimedAt)) {
+      let codexCapacity = true
+      const row = deps.storage.getSession(item.slug)
+      if (isLimitFenceId(item.fenceId) && row?.backend === "codex") {
+        const fault = limitTelemetry(row)?.limitFault
+        try {
+          const recovery = fault && codexLimitRecovery(fault, (await deps.readQuota?.())?.codex, now())
+          codexCapacity = !!recovery && recovery !== "blocked"
+        } catch {
+          codexCapacity = false
+        }
+      }
+      // The live read awaited above can race a manual follow-up, archival, or a new turn. Re-read
+      // supersession/busy state at the actual delivery boundary, not from before that await.
+      if (!codexCapacity || !isDeliverableNow(item, deliveryContext(item), claimedAt)) {
         const deferredAt = now()
         outbox.deferFailure(
           item.id,
