@@ -21,7 +21,8 @@ const baseUrl = process.env.FRIZZ_AWAITING_STEPS_E2E_URL
 //      survives a reload, the prompt box arms its Send and says it will carry a note, and a second click
 //      unticks it.
 //   3. The prompt box sends it — Enter in the empty box sends the word alone, and a typed note rides under
-//      it in the same reply — bound to the thread's session, and the card leaves the queue.
+//      it in the same reply — bound to the thread's session, and the card leaves the queue. Enter on the
+//      ticked box itself is the same send, whether it was ticked by click or by key.
 
 const CARD = "[data-awaiting-background]"
 const BOX = `${CARD} [data-steps-complete] button[role=checkbox]`
@@ -175,6 +176,52 @@ test("a steps card's one box stages an answer the prompt box sends", {
     const withNote = await rpcs("followUp")
     assert.equal(withNote.length, 1)
     assert.equal(withNote[0].body.message, "Done\n\nSigned in as acme-bot.", "the word, then the human's note under it")
+    await page.waitForFunction((sel) => !document.querySelector(sel), { timeout: 10_000 }, CARD)
+
+    // ---- 3c. Enter on the ticked box itself sends it, as Enter after picking an option does ----
+    // (2026-10-21: a mouse tick left focus on the page body, where Enter reached nothing, and a box holding
+    // keyboard focus took Enter as a click and UNticked the answer it was asked to send.)
+    const focused = () => page.evaluate((sel) => !!document.activeElement?.closest(sel), `${CARD} [data-steps-complete]`)
+    for (const [how, tick] of [
+      ["clicked", async () => {
+        await page.click(BOX)
+        // Focus parks on the row, which draws nothing: a mouse tick must not light the keyboard ring.
+        assert.deepEqual(await page.$eval(`${CARD} [data-steps-complete]`, (row) => ({
+          ring: row.querySelector("button")!.matches(":focus-visible"),
+          outline: getComputedStyle(row).outlineStyle,
+        })), { ring: false, outline: "none" }, "a mouse tick draws no focus ring")
+      }],
+      // Unticked, Enter is the button's own: it ticks, and sends nothing — there is nothing to send yet.
+      ["ticked from the keyboard", async () => {
+        await page.focus(BOX)
+        await page.keyboard.press("Enter")
+        assert.equal((await box()).checked, "true", "Enter on the unticked box ticks it")
+        assert.equal((await rpcs("followUp")).length, 0, "and sends nothing")
+      }],
+    ] as const) {
+      await page.reload({ waitUntil: "networkidle0" })
+      await page.waitForSelector(BOX)
+      await record()
+      await tick()
+      await page.waitForFunction((sel) => document.querySelector(sel)?.getAttribute("aria-checked") === "true", {}, BOX)
+      assert.equal(await focused(), true, `the ${how} box holds focus`)
+      await page.keyboard.press("Enter")
+      await page.waitForFunction(() => (window as unknown as { __rpc: Sent[] }).__rpc.some((c) => c.rpc === "followUp"), { timeout: 10_000 })
+      assert.deepEqual((await rpcs("followUp")).map((c) => c.body.message), ["Done"], `Enter on the ${how} box sends the word, once`)
+      await page.waitForFunction((sel) => !document.querySelector(sel), { timeout: 10_000 }, CARD)
+    }
+
+    // …and a caret in the prompt box stays there through a click on the box: it is the note being written.
+    await page.reload({ waitUntil: "networkidle0" })
+    await page.waitForSelector(BOX)
+    await record()
+    await page.type(COMPOSER, "Signed in.")
+    await page.click(BOX)
+    await page.waitForFunction((sel) => document.querySelector(sel)?.getAttribute("aria-checked") === "true", {}, BOX)
+    assert.equal(await page.evaluate((c) => document.activeElement === document.querySelector(c), COMPOSER), true, "the caret stays in the prompt box")
+    await page.keyboard.press("Enter")
+    await page.waitForFunction(() => (window as unknown as { __rpc: Sent[] }).__rpc.some((c) => c.rpc === "followUp"), { timeout: 10_000 })
+    assert.deepEqual((await rpcs("followUp")).map((c) => c.body.message), ["Done\n\nSigned in."])
     await page.waitForFunction((sel) => !document.querySelector(sel), { timeout: 10_000 }, CARD)
 
     assert.deepEqual(errors, [], "a clean console")

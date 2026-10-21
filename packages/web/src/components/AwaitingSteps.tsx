@@ -8,17 +8,19 @@
 // switch over to be a big checkbox that says 'I have completed this.' Once you've checked it you should
 // have the ability to submit it as an answer just as you can with any other question"). Ticking the box
 // STAGES the answer, as picking an option does; the surface's one send — the prompt box's Send, or Enter
-// in it — carries it with whatever is typed there (lib/stepsAnswer, ThreadComposerBox). What reaches the
-// worker is still an ordinary reply, the word `Done`, with the human's note under it. Until then the
-// card's Done button sent the word on the click, and a note had to follow as a second message.
+// in it or on the ticked box — carries it with whatever is typed there (lib/stepsAnswer,
+// ThreadComposerBox). What reaches the worker is still an ordinary reply, the word `Done`, with the
+// human's note under it. Until then the card's Done button sent the word on the click, and a note had to
+// follow as a second message.
 //
 // A surface with no prompt box to send it (a phone thread page, a collapsed queue card) draws the card's
 // own Send under the box instead — the same fallback the question cards' "Send answers" keeps.
-import { useId, useState } from "react"
+import { useContext, useId, useRef, useState } from "react"
 import { Check } from "lucide-react"
 import { STEPS_COMPLETE, STEPS_DONE } from "../lib/awaitingPresentation.ts"
+import { shouldSubmitStagedEnter } from "../lib/composerKeyboard.ts"
 import { useEagerFollowUp } from "../lib/eagerComposerSubmission.ts"
-import { usePromptBoxSends } from "../lib/sendScope.tsx"
+import { SendScopeContext, usePromptBoxSends } from "../lib/sendScope.tsx"
 import { useStepsChecked } from "../lib/stepsAnswer.ts"
 import { useMarkdownHtml } from "../lib/useMarkdown.ts"
 import { LinkedHtml } from "./LinkedHtml.tsx"
@@ -79,9 +81,11 @@ export function StepsComplete({ slug, steps, onReplied, onReplyFailed }: {
   onReplyFailed?: () => void
 }) {
   const [checked, setChecked] = useStepsChecked(slug, steps)
+  const sendScope = useContext(SendScopeContext)
   const promptBoxSends = usePromptBoxSends()
   const followUp = useEagerFollowUp(slug)
   const labelId = useId()
+  const rowRef = useRef<HTMLDivElement>(null)
   // Latched on the click and released only by a rollback: between the send and the worker's turn
   // starting the card is still on screen, and a second click would send twice.
   const [sent, setSent] = useState(false)
@@ -108,9 +112,31 @@ export function StepsComplete({ slug, steps, onReplied, onReplyFailed }: {
           as much as the square. The control is a stretched, empty button over the row, named by the label,
           exactly as a chip's is. `mt-3` sets it off from the steps as a control rather than a sixth step. */}
       <div
+        ref={rowRef}
         data-steps-complete
         data-checked={checked}
-        className={`${BOX_ROW} transition-colors ${
+        // The row is the box's keyboard rest after a mouse tick, as the options grid is a chip's: tabIndex
+        // -1, so script reaches it and Tab skips it, and no ring, because the human clicked.
+        tabIndex={-1}
+        // ENTER ON A TICKED BOX IS THE SURFACE'S SEND — on this row, or on the box holding keyboard focus.
+        // A native checkbox in a form submits on Enter and toggles on Space, and until 2026-10-21 the
+        // button took Enter as a click and unticked the answer the human had just staged. Unticked, Enter
+        // keeps the button's own activation and ticks it: there is nothing of the box's to send yet.
+        onKeyDown={(e) => {
+          if (!checked || !shouldSubmitStagedEnter({
+            key: e.key,
+            altKey: e.altKey,
+            ctrlKey: e.ctrlKey,
+            metaKey: e.metaKey,
+            shiftKey: e.shiftKey,
+            isComposing: e.nativeEvent.isComposing,
+            keyCode: e.nativeEvent.keyCode,
+          })) return
+          e.preventDefault()
+          e.stopPropagation()
+          if (!sendScope?.composer.run()) sendAlone()
+        }}
+        className={`${BOX_ROW} outline-none transition-colors ${
           checked ? "border-selection-border bg-selection text-fg" : "border-border text-fg/90 hover:border-border-strong hover:bg-elevated"
         }`}
       >
@@ -119,7 +145,15 @@ export function StepsComplete({ slug, steps, onReplied, onReplyFailed }: {
           role="checkbox"
           aria-checked={checked}
           aria-labelledby={labelId}
-          onClick={() => setChecked(!checked)}
+          onClick={(e) => {
+            setChecked(!checked)
+            // A mouse tick parks focus on the row, so Enter sends right after it — until 2026-10-21 focus
+            // stayed on the page body, where Enter reached nothing. Not when the box already holds focus
+            // (a keyboard tick keeps its ring), and not out of a text box: a caret there is the human
+            // writing the note that rides this answer, and Enter in it sends anyway.
+            const active = document.activeElement
+            if (active !== e.currentTarget && !isTextEntry(active)) rowRef.current?.focus()
+          }}
           onMouseDown={(e) => e.preventDefault()}
           className="absolute inset-0 rounded-md outline-none focus-visible:ring-1 focus-visible:ring-focus-ink-60"
         />
@@ -176,6 +210,10 @@ export function StepsCompleted() {
       <span className="ml-2 font-medium">{STEPS_COMPLETE}</span>
     </div>
   )
+}
+
+function isTextEntry(el: Element | null): boolean {
+  return el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement || (el instanceof HTMLElement && el.isContentEditable)
 }
 
 // The row and its square, shared by the live box and the settled one so they cannot drift apart.
