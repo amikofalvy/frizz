@@ -4661,6 +4661,11 @@ export const FollowUpInput = z.object({
   // thread comes to rest, so it opens the next turn instead of steering this one. At rest it is an
   // ordinary send — there is nothing to wait for. See `held` in the server's delivery-ledger.ts.
   hold: z.boolean().optional(),
+  // QUEUE ONE AT A TIME — with `hold`: this message gets a turn of its own. It waits until everything
+  // sent before it has been read and that turn has ended (so it is held even at rest while anything is
+  // still ahead of it), and nothing queued after it goes out until its own turn has ended. Without
+  // `hold` it means nothing. See heldReleaseBatch in the server's delivery-ledger.ts.
+  ownTurn: z.boolean().optional(),
   // Generated once before the optimistic clear so a transport replay can be idempotent.
   deliveryId: z.string().min(1).max(200).optional(),
   // Retire the worker's live process before delivering, so this message lands in a `claude` that has
@@ -6540,6 +6545,10 @@ export const TranscriptMessage = z.object({
   deliveryState: z.enum(["sending", "pending", "enqueued", "delivered", "unconfirmed", "failed", "held"]).optional(),
   // Why a "failed" send failed, verbatim from the transport. Set only alongside deliveryState "failed".
   deliveryError: z.string().optional(),
+  // Set only alongside deliveryState "held": it was sent with "Queue one at a time", so it goes out in a
+  // turn of its own (FollowUpInput.ownTurn). The Send now under the queued run reads it to say how much
+  // one press hands over.
+  ownTurn: z.boolean().optional(),
   // FRIZZ wrote this user turn, not the human: it is a scheduler wake delivery (isWakeDelivery). The
   // client renders it as a first-party card rather than the human's off-white right-justified bubble,
   // which was claiming the operator had typed a message the watcher composed. Additive + optional: an

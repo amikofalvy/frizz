@@ -14,8 +14,10 @@ import {
   deliverOutstandingDeliveries,
   dropHeldDelivery,
   heldDeliveries,
+  heldReleaseBatch,
   holdDelivery,
   MAX_LEDGER_ITEMS,
+  ownTurnMustWait,
   parseDeliveryLedger,
   projectDeliveryLedger,
   retireOutstandingDeliveries,
@@ -128,4 +130,51 @@ test("a held send always projects its own gray bubble, never adopting one with t
     { sourceId: out[1].sourceId, queued: out[1].queued, deliveryId: out[1].deliveryId, deliveryState: out[1].deliveryState },
     { sourceId: "delivery:d-held", queued: true, deliveryId: "d-held", deliveryState: "held" },
   )
+})
+
+// "Queue one at a time": a held message carrying `ownTurn` goes out ALONE, and only once nothing handed
+// over before it is still on its way. What a release takes is decided here, in one place, for the rest
+// and for Send now alike.
+test("one release takes the run sent together, or the one message sent alone", () => {
+  const ids = (items: DeliveryLedgerItem[]) => heldReleaseBatch(items).map((i) => i.id)
+  const a = held({ id: "a" })
+  const b = held({ id: "b" })
+  const own1 = held({ id: "own1", ownTurn: true })
+  const own2 = held({ id: "own2", ownTurn: true })
+  assert.deepEqual(ids([]), [])
+  assert.deepEqual(ids([a, b]), ["a", "b"], "Send to queue: everything held goes together, as it always has")
+  assert.deepEqual(ids([own1, own2]), ["own1"])
+  assert.deepEqual(ids([a, b, own1, own2]), ["a", "b"], "the run stops before the message sent alone")
+  assert.deepEqual(ids([own1, a, b]), ["own1"], "and nothing sent after it joins its turn")
+})
+
+test("a message sent alone waits for every send ahead of it, and holds back every send after it", () => {
+  const ids = (items: DeliveryLedgerItem[], force = false) => heldReleaseBatch(items, { force }).map((i) => i.id)
+  const own = held({ id: "own", ownTurn: true })
+  const a = held({ id: "a" })
+  const sent = (state: DeliveryLedgerItem["state"], ownTurn = false): DeliveryLedgerItem =>
+    ({ id: `x-${state}`, text: "earlier", state, at: iso(T0), updatedAt: iso(T0), ...(ownTurn ? { ownTurn: true as const } : {}) })
+  for (const state of ["sending", "pending", "enqueued", "delivered"] as const) {
+    assert.deepEqual(ids([sent(state), own]), [], `behind a ${state} send, whose turn has not ended`)
+    assert.deepEqual(ids([sent(state), own], true), ["own"], "unless the operator pressed Send now")
+  }
+  for (const state of ["failed", "unconfirmed", "cancelled"] as const) {
+    assert.deepEqual(ids([sent(state), own]), ["own"], `a ${state} send is not on its way, so it holds nothing up`)
+  }
+  assert.deepEqual(ids([sent("delivered", true), a]), [], "a run sent together waits for the turn of a message sent alone")
+  assert.deepEqual(ids([sent("delivered"), a]), ["a"], "…but not for an ordinary send, which is the release it always was")
+})
+
+test("a held message keeps `ownTurn` through its release, and its bubble says so while held", () => {
+  const l = ledger()
+  try {
+    holdDelivery(l.storage, "t", { id: "d-1", text: "alone", now: T0, ownTurn: true })
+    assert.equal(ownTurnMustWait(l.items()), true, "a later message sent alone waits behind it")
+    const bubble = projectDeliveryLedger([], l.items())[0]
+    assert.deepEqual([bubble.deliveryState, bubble.ownTurn], ["held", true])
+    beginDelivery(l.storage, "t", { id: "d-1", text: "alone", now: T0 + 1_000, release: true })
+    appendDelivery(l.storage, "t", { id: "d-1", text: "alone", state: "delivered", now: T0 + 2_000 })
+    assert.deepEqual([l.items()[0].state, l.items()[0].ownTurn], ["delivered", true], "the delivered copy is what holds the next one back")
+    assert.equal(projectDeliveryLedger([], l.items())[0].ownTurn, undefined, "only a held bubble carries it")
+  } finally { l.dispose() }
 })

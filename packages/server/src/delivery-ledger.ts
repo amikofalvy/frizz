@@ -158,6 +158,11 @@ export interface DeliveryLedgerItem {
   // the ledger's bubble keeps a HUMAN's words on screen through a failure, and a caller with no id of
   // its own keeps its own words, its call failing loudly instead (forgetDelivery on failure).
   silent?: true
+  // Sent with "Queue one at a time": this held message gets a turn of its OWN. It is released only once
+  // everything handed over before it has been read and that turn has ended, and nothing held is
+  // released after it until its own turn has ended too. Kept through the release (beginDelivery spreads
+  // the item), because the delivered copy is what holds the next one back. See heldReleaseBatch.
+  ownTurn?: true
 }
 
 // The form every text comparison in this module runs in.
@@ -441,13 +446,13 @@ export function dismissFailedDelivery(storage: Storage, slug: string, id: string
  * Idempotent on id — a replay of the same call finds its own entry and changes nothing. Returns false
  * only when there is no session row to hold it on, which the caller must treat as a failed send.
  */
-export function holdDelivery(storage: Storage, slug: string, send: { id: string; text: string; now?: number }): boolean {
+export function holdDelivery(storage: Storage, slug: string, send: { id: string; text: string; now?: number; ownTurn?: boolean }): boolean {
   const row = storage.getSession(slug)
   if (!row) return false
   const items = parseDeliveryLedger(row.delivery_ledger)
   if (items.some((existing) => existing.id === send.id)) return true
   const now = new Date(send.now ?? Date.now()).toISOString()
-  items.push({ id: send.id, text: send.text, state: "held", at: now, updatedAt: now })
+  items.push({ id: send.id, text: send.text, state: "held", at: now, updatedAt: now, ...(send.ownTurn ? { ownTurn: true as const } : {}) })
   storage.setDeliveryLedger(slug, serializeDeliveryLedger(trimLedger(items)))
   return true
 }
@@ -457,6 +462,47 @@ export function heldDeliveries(storage: Storage, slug: string): DeliveryLedgerIt
   const row = storage.getSession(slug)
   if (!row?.delivery_ledger) return []
   return parseDeliveryLedger(row.delivery_ledger).filter((item) => item.state === "held")
+}
+
+// A send some transport has been handed and the transcript has not shown landing yet.
+const OUTSTANDING: ReadonlySet<DeliveryState> = new Set(["sending", "pending", "enqueued", "delivered"])
+
+/**
+ * WHAT ONE RELEASE HANDS THE AGENT, oldest first: the held messages that go out together the next time
+ * the thread rests, or the next time the operator presses Send now (`force`).
+ *
+ * Messages sent with "Send to queue" go out together: the first opens the turn and the rest land in it
+ * as it starts. A message sent with "Queue one at a time" (`ownTurn`) goes out ALONE, and it waits for
+ * its turn:
+ *
+ *  • it is released only when nothing handed over before it is still on its way — no `sending`,
+ *    `pending`, `enqueued` or `delivered` item. A delivered item leaves the ledger when its transcript
+ *    record lands, and that record opens the turn, so "nothing outstanding and the turn idle" (the
+ *    caller's half) is "the turn that read it has ended". Without this the 5s sweep found the thread
+ *    still idle in the second or two between a release and its turn starting, and released the next
+ *    message into the same turn.
+ *  • nothing after it is released while it is outstanding, so its turn stays its own.
+ *
+ * `force` skips the wait — the operator has said not to — but not the grouping: Send now hands over
+ * exactly what the next rest would have.
+ */
+export function heldReleaseBatch(items: readonly DeliveryLedgerItem[], opts: { force?: boolean } = {}): DeliveryLedgerItem[] {
+  const held = items.filter((item) => item.state === "held")
+  if (held.length === 0) return []
+  const head = held[0]
+  if (!opts.force) {
+    const outstanding = items.filter((item) => OUTSTANDING.has(item.state))
+    if (head.ownTurn ? outstanding.length > 0 : outstanding.some((item) => item.ownTurn)) return []
+  }
+  if (head.ownTurn) return [head]
+  const end = held.findIndex((item) => item.ownTurn)
+  return end < 0 ? held : held.slice(0, end)
+}
+
+/** Is a message that wants a turn of its own sent now still behind something? Then it is held, even at
+ *  rest: behind a held message (the queue is FIFO), or behind a send whose turn has not ended. */
+export function ownTurnMustWait(items: readonly DeliveryLedgerItem[]): boolean {
+  return items.some((item) => item.state === "held" || OUTSTANDING.has(item.state))
 }
 
 /**
@@ -1169,6 +1215,7 @@ export function projectDeliveryLedger(messages: TranscriptMessage[], items: Deli
       deliveryId: item.id,
       deliveryState: item.state,
       ...(item.state === "failed" && item.error ? { deliveryError: item.error } : {}),
+      ...(item.state === "held" && item.ownTurn ? { ownTurn: true } : {}),
     })
   }
   return messages

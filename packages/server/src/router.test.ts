@@ -8,7 +8,7 @@ import { Hono } from "hono"
 import { mountRouter } from "@frizz/rpc/server"
 import { DISPATCH_TASK_BANNER_MARKER, formatThreadMessage, parseThreadMessage, type BoardSnapshot, type Settings, type ThreadView, type TranscriptMessage } from "@frizz/shared"
 import { deriveDeliveryInFlight, deriveNeedsYou, type BoardManager } from "./board.ts"
-import { appendDelivery, parseDeliveryLedger, projectDeliveryLedger } from "./delivery-ledger.ts"
+import { appendDelivery, holdDelivery, parseDeliveryLedger, projectDeliveryLedger, serializeDeliveryLedger } from "./delivery-ledger.ts"
 import { createWakeDeliveryStore } from "./wake-store.ts"
 import { Bus, Emitter } from "./bus.ts"
 import { createClaudeBackend } from "./backend/claude.ts"
@@ -2358,6 +2358,107 @@ test("releasing a held message on request delivers it as a steer and preempts no
   assert.deepEqual(result, { interrupted: false, released: 1 })
   assert.deepEqual(order, ["followUp"], "no interruptTurn")
   assert.equal(ledger()[0].state, "enqueued", "in the provider's queue now, read at the agent's next step")
+  h.storage.close()
+})
+
+// ── "Queue one at a time": each held message gets a turn of its own ──────────────────────────────────
+// The same hold, released one message per rest. `land` is the correlator seeing a released message's
+// record reach the transcript, which drops it from the ledger — the moment its turn has started.
+function oneAtATimeHarness() {
+  const harnessed = holdHarness()
+  const { h, slug, ledger } = harnessed
+  const land = (id: string) => h.storage.setDeliveryLedger(slug, serializeDeliveryLedger(ledger().filter((i) => i.id !== id)))
+  const queue = (id: string, message: string, ownTurn = true) =>
+    h.router.followUp.handler({ input: { slug, sessionId: harnessed.sid, message, deliveryId: id, hold: true, ...(ownTurn ? { ownTurn: true } : {}) } })
+  return { ...harnessed, land, queue }
+}
+
+test("messages queued one at a time go out one per turn, each after the turn before it has ended", async () => {
+  const { h, sent, ledger, rest, land, queue, setTurn } = oneAtATimeHarness()
+  await queue("d-1", "fix the parser")
+  await queue("d-2", "then add tests")
+  await queue("d-3", "then update the docs")
+  assert.equal(sent.length, 0, "nothing goes out while the turn runs")
+  await rest()
+  assert.deepEqual(sent.map((s) => s.deliveryId), ["d-1"], "the rest hands over the first one alone")
+  assert.deepEqual(ledger().map((i) => [i.id, i.state]), [["d-1", "delivered"], ["d-2", "held"], ["d-3", "held"]])
+  // The second or two between the release and its turn starting: the thread still reads idle, and the
+  // sweep (or a late edge) must not hand the next one into the same turn.
+  await rest()
+  assert.deepEqual(sent.map((s) => s.deliveryId), ["d-1"], "the next waits while the first has not landed")
+  land("d-1")
+  setTurn("in-flight")
+  await rest()
+  assert.deepEqual(sent.map((s) => s.deliveryId), ["d-1", "d-2"], "its turn ended, so the next one opens a turn of its own")
+  land("d-2")
+  setTurn("in-flight")
+  await rest()
+  assert.deepEqual(sent.map((s) => s.deliveryId), ["d-1", "d-2", "d-3"])
+  h.storage.close()
+})
+
+test("a message queued all together never joins a one-at-a-time message's turn, either side of it", async () => {
+  const { h, sent, rest, land, queue, setTurn } = oneAtATimeHarness()
+  await queue("d-a", "together a", false)
+  await queue("d-b", "together b", false)
+  await queue("d-own", "alone", true)
+  await queue("d-c", "together c", false)
+  await queue("d-d", "together d", false)
+  await rest()
+  assert.deepEqual(sent.map((s) => s.deliveryId), ["d-a", "d-b"], "the run sent together goes out together, and stops before the one sent alone")
+  await rest()
+  assert.deepEqual(sent.map((s) => s.deliveryId), ["d-a", "d-b"], "the one sent alone waits for that turn to end")
+  land("d-a"); land("d-b"); setTurn("in-flight")
+  await rest()
+  assert.deepEqual(sent.map((s) => s.deliveryId), ["d-a", "d-b", "d-own"])
+  await rest()
+  assert.deepEqual(sent.map((s) => s.deliveryId), ["d-a", "d-b", "d-own"], "and nothing joins its turn")
+  land("d-own"); setTurn("in-flight")
+  await rest()
+  assert.deepEqual(sent.map((s) => s.deliveryId), ["d-a", "d-b", "d-own", "d-c", "d-d"])
+  h.storage.close()
+})
+
+test("sent one at a time at rest, it goes now when nothing is ahead and is held when something is", async () => {
+  const { h, sent, ledger, rest, queue, setTurn } = oneAtATimeHarness()
+  setTurn("idle")
+  await queue("d-now", "nothing ahead of me")
+  assert.deepEqual(sent.map((s) => s.deliveryId), ["d-now"], "at rest with nothing ahead, it is an ordinary send")
+  // d-now is delivered but its turn has not shown up yet: a second one must wait for that turn.
+  await queue("d-next", "after that one")
+  assert.deepEqual(sent.map((s) => s.deliveryId), ["d-now"])
+  assert.deepEqual(ledger().map((i) => [i.id, i.state]), [["d-now", "delivered"], ["d-next", "held"]])
+  // A message sent to the queue all together at that moment must not overtake the one held ahead of it.
+  await queue("d-plain", "and this", false)
+  assert.deepEqual(ledger().map((i) => [i.id, i.state]).slice(1), [["d-next", "held"], ["d-plain", "held"]])
+  await rest()
+  assert.deepEqual(sent.map((s) => s.deliveryId), ["d-now"])
+  h.storage.close()
+})
+
+test("a send to the queue at rest is released at once when nothing blocks the messages already held", async () => {
+  const { h, slug, sent, queue, setTurn } = oneAtATimeHarness()
+  // A message held from before a server restart, with the thread already at rest and no sweep yet.
+  holdDelivery(h.storage, slug, { id: "d-old", text: "from before" })
+  setTurn("idle")
+  await queue("d-new", "and now this", false)
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.deepEqual(sent.map((s) => s.deliveryId), ["d-old", "d-new"], "in order: the new one did not overtake the old")
+  h.storage.close()
+})
+
+test("Send now under messages queued one at a time hands over the next one, not the whole queue", async () => {
+  const { h, slug, sid, sent, ledger, order, queue } = oneAtATimeHarness()
+  await queue("d-1", "first")
+  await queue("d-2", "second")
+  await queue("d-3", "third")
+  assert.deepEqual(await h.router.deliverQueuedNow.handler({ input: { slug, sessionId: sid, releaseOnly: true } }), { interrupted: false, released: 1 })
+  assert.deepEqual(sent.map((s) => s.deliveryId), ["d-1"])
+  // The operator said not to wait, so a second press does not wait for the first one's turn either.
+  assert.deepEqual(await h.router.deliverQueuedNow.handler({ input: { slug, sessionId: sid, releaseOnly: true } }), { interrupted: false, released: 1 })
+  assert.deepEqual(sent.map((s) => s.deliveryId), ["d-1", "d-2"])
+  assert.deepEqual(ledger().map((i) => [i.id, i.state]), [["d-1", "enqueued"], ["d-2", "enqueued"], ["d-3", "held"]])
+  assert.deepEqual(order, ["followUp", "followUp"], "and nothing was interrupted")
   h.storage.close()
 })
 
