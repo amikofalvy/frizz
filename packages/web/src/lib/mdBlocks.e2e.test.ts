@@ -136,9 +136,9 @@ test("callouts, sections and inline keys render, stay sanitized, and a section s
       }
     })
     const distinct = (values: string[]) => new Set(values).size
-    // The box is one neutral block for every type; the type is said by the header's wash, the title's ink
-    // and the glyph (styles.css § Callouts).
-    assert.equal(distinct(callouts.types.map((type) => type.frame)), 1, `every type draws the same frame: ${callouts.types.map((type) => type.frame).join(" ")}`)
+    // Every part of the box is coded to its type: the frame, the header's wash, the title's ink and the
+    // glyph (styles.css § Callouts). A neutral grey frame around a coloured header read as a foreign box.
+    assert.equal(distinct(callouts.types.map((type) => type.frame)), 5, `each type draws its own frame: ${callouts.types.map((type) => type.frame).join(" ")}`)
     assert.equal(distinct(callouts.types.map((type) => type.wash)), 5, `each type washes its own header: ${callouts.types.map((type) => type.wash).join(" ")}`)
     assert.equal(distinct(callouts.types.map((type) => type.title)), 5)
     assert.equal(distinct(callouts.types.map((type) => type.glyph)), 5, "each type carries its own glyph")
