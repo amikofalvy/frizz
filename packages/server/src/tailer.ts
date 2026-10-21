@@ -17,6 +17,7 @@ import { normalizeObservedThreadModel, validateThreadProfile } from "./backend/t
 import { dispatchProfileCell } from "./subagent-profile.ts"
 import { resolveRuntimeTurn, type ClaudeRuntimeTask } from "./backend/claude-runtime-ingest.ts"
 import { classifyLimitRecord } from "./backend/usage-limit.ts"
+import { codexLimitFault } from "./backend/codex-usage-limit.ts"
 import { claudeBrokerDiagnosticLogPath } from "./backend/claude-broker-diagnostics.ts"
 import { claudeBrokerRecordPath, readBrokerRecord } from "./backend/claude-broker-host.ts"
 import { parseDeliveryLedger, correlateDeliveryRecord, ageDeliveries, serializeDeliveryLedger, isPromptDeliveryAttachment, type DeliveryLedgerItem } from "./delivery-ledger.ts"
@@ -2725,6 +2726,7 @@ export function applyEvent(state: FoldState, ev: NormalizedEvent): void {
       state.turn = "idle"
       state.apiFault = true
       state.providerError = ev.error
+      state.limitFault = codexLimitFault(ev.error, ev.at)
       state.lastAssistant = ev.error.message
       state.lastAssistantLine = firstTextLine(ev.error.message)
       state.lastFence = undefined
@@ -2747,6 +2749,7 @@ export function applyEvent(state: FoldState, ev: NormalizedEvent): void {
       if (ev.finalText !== undefined || ev.successful) {
         state.apiFault = undefined
         state.providerError = undefined
+        state.limitFault = undefined
       }
       if (ev.finalText !== undefined) {
         applyFinalText(state, ev.finalText)
@@ -2768,6 +2771,7 @@ export function applyEvent(state: FoldState, ev: NormalizedEvent): void {
       state.sawRecords = true
       state.apiFault = undefined
       state.providerError = undefined
+      state.limitFault = undefined
       if (ev.final) {
         if (typeof ev.at === "string") state.lastAssistantAt = ev.at
         applyFinalText(state, ev.text)
@@ -2799,6 +2803,7 @@ export function applyEvent(state: FoldState, ev: NormalizedEvent): void {
       // tool-result echo) is machine motion the human didn't cause, so it never jumps the row. Frizz's
       // own deliveries are not synthetic and do move it, exactly as in applyRecord.
       state.sawRecords = true
+      state.limitFault = undefined
       state.turn = "in-flight"
       state.lastAssistantAllDone = false
       state.lastFence = undefined

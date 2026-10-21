@@ -12,6 +12,9 @@ export interface LimitFault {
   // it. The scheduler matches it against the usage endpoint's `weekly-<model>` scoped window, which is
   // where this cap's live percent and reset instant actually live (the text itself carries neither).
   model?: string
+  // Codex does not identify the exhausted window. Credits require a positive credit reading; other
+  // limits can recover from fresh headroom across ALL reported windows. Neither guesses a reset.
+  codex?: "usage" | "credits"
 }
 
 // ---- The agent-backend abstraction (Codex-support epic, Phase 1) ----

@@ -4,7 +4,7 @@ import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises
 import { createHash } from "node:crypto"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
-import { parseCodexQuotaFromRollout, parseCodexQuotaFromRateLimits, readCodexQuota, resetCodexQuotaMemo } from "./codex-quota.ts"
+import { parseCodexQuotaFromRollout, parseCodexQuotaFromRateLimits, queryCodexRateLimits, readCodexQuota, resetCodexQuotaMemo } from "./codex-quota.ts"
 import { parseClaudeUsage, parseClaudeUsageOutput, tokenFromCredentialsJson, readClaudeQuota, refreshClaudeQuotaInBackground, claudeQuotaRefreshSettled, withObservedClaudeQuota, resolveConfiguredRoute } from "./claude-quota.ts"
 import { recordObservedClaudeQuota, resetObservedClaudeQuotaThrottle } from "./claude-quota-observed.ts"
 import { frizzRoots, resetFrizzRoots } from "../frizz-paths.ts"
@@ -94,6 +94,7 @@ test("codex live: camelCase rateLimits → windows labeled by windowDurationMins
   // Per-model `rateLimitsByLimitId` is ignored — only the account aggregate is shown.
   assert.deepEqual(q?.windows.map((w) => [w.key, w.usedPercent]), [["weekly", 0], ["5h", 12.5]])
   assert.equal(q?.windows[0]!.resetsAt, 1786130265)
+  assert.equal(q?.codexRecovery?.creditsAvailable, false)
 })
 
 test("codex live: 0% used is a real reading, not a missing one", () => {
@@ -104,6 +105,53 @@ test("codex live: 0% used is a real reading, not a missing one", () => {
   assert.equal(q?.status, "ok")
   assert.equal(q?.windows.length, 1)
   assert.equal(q?.windows[0]!.usedPercent, 0)
+})
+
+test("codex live: credit-only accounts preserve positive, empty, unlimited and unknown credit evidence", () => {
+  for (const credits of [
+    { hasCredits: true, unlimited: false },
+    { hasCredits: false, unlimited: false },
+    { hasCredits: false, unlimited: true },
+  ]) {
+    const q = parseCodexQuotaFromRateLimits({ rateLimits: { primary: null, secondary: null, credits } }, 123)
+    assert.equal(q?.status, "ok")
+    assert.deepEqual(q?.windows, [])
+    assert.deepEqual(q?.codexRecovery, { observedAt: 123, creditsAvailable: credits.hasCredits || credits.unlimited })
+  }
+  const q = parseCodexQuotaFromRateLimits({ rateLimits: {
+    primary: { usedPercent: 0, windowDurationMins: 300 }, credits: { hasCredits: "true", unlimited: false },
+  } }, 123)
+  assert.equal(q?.codexRecovery?.creditsAvailable, undefined)
+})
+
+test("codex live: workspace and spend-control blocks survive even with positive credits and low utilization", () => {
+  for (const block of [
+    { rateLimitReachedType: "workspace_owner_credits_depleted" },
+    { rateLimitReachedType: "workspace_member_credits_depleted" },
+    { rateLimitReachedType: "workspace_owner_usage_limit_reached" },
+    { rateLimitReachedType: "workspace_member_usage_limit_reached" },
+    { rateLimitReachedType: "unknown_future_block" },
+    { spendControlReached: true },
+    { individualLimit: { remainingPercent: 0 } },
+  ]) {
+    const q = parseCodexQuotaFromRateLimits({ rateLimits: {
+      primary: { usedPercent: 0, windowDurationMins: 300 },
+      credits: { hasCredits: true, unlimited: false }, ...block,
+    } })
+    assert.equal(q?.codexRecovery?.blocked, true, JSON.stringify(block))
+  }
+})
+
+test("codex live: the included-usage permission preserves false/null rather than inventing availability", () => {
+  for (const ordinaryUsageAllowed of [true, false, null] as const) {
+    const q = parseCodexQuotaFromRateLimits({ ordinaryUsageAllowed, rateLimits: {
+      primary: { usedPercent: 0, windowDurationMins: 300 },
+    } })
+    assert.equal(q?.codexRecovery?.ordinaryUsageAllowed, ordinaryUsageAllowed)
+  }
+  assert.equal(parseCodexQuotaFromRateLimits({ ordinaryUsageAllowed: "true", rateLimits: {
+    primary: { usedPercent: 0, windowDurationMins: 300 },
+  } })?.codexRecovery?.ordinaryUsageAllowed, null)
 })
 
 test("codex live: null/absent windows → undefined so the caller falls back", () => {
@@ -141,6 +189,7 @@ test("codex: a failed live read degrades to the rollout tail, labeled as unconfi
     resetCodexQuotaMemo()
     const q = await readCodexQuota(dir, join(dir, "definitely-not-a-real-codex-binary"))
     assert.equal(q.status, "ok")
+    assert.equal(q.codexRecovery, undefined, "offline fallback must never authorize a recovery wake")
     assert.equal(q.windows[0]!.usedPercent, 99)
     assert.match(q.detail ?? "", /last local session/i)
   } finally {
@@ -159,6 +208,37 @@ test("codex: a failed live read with no rollouts stays a clean unavailable", asy
     assert.deepEqual(q.windows, [])
   } finally {
     resetCodexQuotaMemo()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test("codex: an account switch during the live read or a mismatched backend account cannot authorize recovery", { skip: process.platform === "win32" }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), "frizz-codex-account-quota-"))
+  const names = ["OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"] as const
+  const saved = names.map((name) => process.env[name])
+  try {
+    for (const name of names) delete process.env[name]
+    for (const kind of ["stable", "switched", "mismatched"] as const) {
+      await writeFile(join(dir, "auth.json"), JSON.stringify({ tokens: { account_id: "one" } }))
+      const bin = join(dir, "codex-quota")
+      await writeFile(bin, `#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *'"id":1'*) printf '%s\\n' '{"id":1,"result":{}}' ;;
+    *'"id":2'*)
+      ${kind === "switched" ? `printf '%s' '{"tokens":{"account_id":"two"}}' > "$CODEX_HOME/auth.json"` : ":"}
+      printf '%s\\n' '{"id":2,"result":{"accountId":"${kind === "mismatched" ? "other" : "one"}","rateLimits":{"primary":{"usedPercent":0,"windowDurationMins":300}}}}' ;;
+  esac
+done
+`)
+      await chmod(bin, 0o755)
+      const quota = await queryCodexRateLimits(dir, bin)
+      assert.equal(quota?.status, "ok", "quota can still be displayed")
+      if (kind === "stable") assert.equal(quota?.codexRecovery?.accountKey, createHash("sha256").update("one").digest("hex"))
+      else assert.equal(quota?.codexRecovery, undefined, kind)
+    }
+  } finally {
+    names.forEach((name, i) => { if (saved[i] === undefined) delete process.env[name]; else process.env[name] = saved[i] })
     await rm(dir, { recursive: true, force: true })
   }
 })
