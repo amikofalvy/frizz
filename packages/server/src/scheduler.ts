@@ -1790,8 +1790,11 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       }
       if (!fault || tele?.turn !== "idle") continue
       // The boot guard, and the same age policy the board renders — so a card never promises a wake
-      // the waker has already written off.
-      if (limitPauseIsStale(fault.window, Date.parse(fault.at), nowMs)) continue
+      // the waker has already written off. A Codex fault names no window, but Codex meters a weekly
+      // one (on a Pro account it is the only one reported, 2026-10-21), so its bound is the weekly
+      // span: the unknown window's 5h would write off every weekly cap more than 41h from its reset.
+      // The live capacity reading, not this clock, decides when it wakes.
+      if (limitPauseIsStale(fault.codex ? "weekly" : fault.window, Date.parse(fault.at), nowMs)) continue
       out.push({
         slug: row.slug,
         sessionId: row.session_id,

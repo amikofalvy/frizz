@@ -1601,13 +1601,14 @@ test("Codex limits: credits stay blocked despite headroom, then recover once wit
 })
 
 test("Codex limits: fresh headroom recovers a usage window; stale, unknown, busy and archived states cannot wake", async () => {
-  for (const kind of ["fresh", "stale", "offline", "full-weekly", "unavailable", "busy", "archived", "manual", "aged", "throw"] as const) {
+  for (const kind of ["fresh", "weekly-later", "stale", "offline", "full-weekly", "unavailable", "busy", "archived", "manual", "aged", "throw"] as const) {
     const h = limitHarness()
     const at = iso(h.clock.ms)
     h.storage.upsertSession(row("codex", { backend: "codex", state: kind === "archived" ? "archived" : "open", archived: kind === "archived" ? 1 : 0 }))
     h.storage.setBackend("codex", "codex")
     h.tele.set("codex", limitTele({ window: "unknown", at, codex: "usage" }, kind === "busy" ? "in-flight" : "idle"))
-    h.clock.ms += kind === "aged" ? 48 * 3600_000 : 180_000
+    // A weekly cap can reset days after the fault; only a fault older than the weekly span plus grace is written off.
+    h.clock.ms += kind === "weekly-later" ? 5 * 24 * 3600_000 : kind === "aged" ? 9 * 24 * 3600_000 : 180_000
     const q = codexQuota(h)
     if (kind === "stale") q.codex.codexRecovery!.observedAt = Date.parse(at)
     if (kind === "offline") delete q.codex.codexRecovery
@@ -1616,7 +1617,7 @@ test("Codex limits: fresh headroom recovers a usage window; stale, unknown, busy
     if (kind === "manual") h.tele.set("codex", tele())
     const s = h.make({ readQuota: async () => { if (kind === "throw") throw new Error("offline"); return q } })
     await s.tick()
-    assert.equal(h.resumes.length, kind === "fresh" ? 1 : 0, kind)
+    assert.equal(h.resumes.length, kind === "fresh" || kind === "weekly-later" ? 1 : 0, kind)
     h.storage.close()
   }
 })
