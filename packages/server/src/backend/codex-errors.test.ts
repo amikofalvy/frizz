@@ -68,6 +68,26 @@ test("Codex keeps a failure across a retry request, clears it only on real assis
   assert.equal(state.providerError, undefined)
 })
 
+test("Codex limit faults enter recovery, are superseded by user input, and clear on success or another error", () => {
+  const state = newTailState("limits", "sid", "/fixture")
+  const backend = createCodexBackend()
+  const fail = () => backend.foldLine(state, failure("usage_limit_exceeded", "Your workspace is out of credits."))
+  fail()
+  assert.deepEqual(state.limitFault, { window: "unknown", at, codex: "credits" })
+  backend.foldLine(state, record({ type: "user_message", message: "try again" }))
+  assert.equal(state.limitFault, undefined)
+  assert.equal(state.apiFault, true, "a request is not proof the provider recovered")
+  for (const next of [
+    record({ type: "agent_message", message: "Working again", phase: "commentary" }),
+    record({ type: "task_complete", error: null }),
+    failure("unauthorized"),
+  ]) {
+    fail()
+    backend.foldLine(state, next)
+    assert.equal(state.limitFault, undefined)
+  }
+})
+
 test("Codex standalone errors close a turn, while retry notices leave it running", () => {
   const backend = createCodexBackend()
   const state = newTailState("errors", "sid", "/fixture")

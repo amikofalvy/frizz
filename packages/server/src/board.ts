@@ -1566,6 +1566,9 @@ export function resolveLimitPause(
 ): ThreadView["limitPause"] {
   const fault = tele?.limitFault
   if (!fault) return undefined
+  // Codex has no trustworthy reset clock. Keep its provider-authored error card (not the timed
+  // Claude pause card); recovery is conditional on a fresh live capacity reading in the scheduler.
+  if (fault.codex) return undefined
   const at = Date.parse(fault.at)
   const stale = limitPauseIsStale(fault.window, at, nowMs)
   // Resolve the clock relative to the FAULT, never to `now`. "resets 5:50pm" means the first 5:50pm

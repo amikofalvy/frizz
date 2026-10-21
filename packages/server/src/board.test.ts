@@ -2219,6 +2219,12 @@ test("deriveNeedsYou: the operator's own snooze still parks a limit-killed threa
   assert.equal(deriveNeedsYou(row({ snoozed_until: new Date(NOW + 60 * 60_000).toISOString() }), tele({ turn: "idle" }), "turn-idle", false, NOW, LIMIT_PAUSE), false)
 })
 
+test("resolveLimitPause: Codex recovery preserves the provider error card rather than promising a timed reset", () => {
+  assert.equal(resolveLimitPause({ backend: "codex" }, tele({ limitFault: {
+    window: "unknown", at: "2026-01-15T12:00:00.000Z", codex: "credits",
+  } }), Date.parse("2026-01-15T12:00:10.000Z")), undefined)
+})
+
 test("resolveLimitPause: the auto-resume promise matches the waker's actual reach", () => {
   const at = new Date(NOW - 60_000).toISOString()
   const pause = (window: "session" | "weekly" | "model" | "unknown") =>

@@ -3,7 +3,7 @@ import assert from "node:assert/strict"
 import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { wakeDeliveryToken } from "@frizz/shared"
+import { wakeDeliveryToken, type QuotaSnapshot } from "@frizz/shared"
 import { createStorage, type Storage, type SessionRow } from "./storage.ts"
 import { ANSWER_REOFFER_BACKOFF_MS, createScheduler, enqueueInterruptEndedWake, parsePrRef, ghPrViewArgs, evalRollup, parseGithubReviewActivities, isBotGithubActor, MID_TURN_HOLD_MAX_MS, type GithubReviewActivity, type PrRef, type PrStatus } from "./scheduler.ts"
 import { createGithubReviewFetcher, type GithubReviewFetchResult } from "./github-review.ts"
@@ -1563,6 +1563,166 @@ function limitHarness(): Harness {
   h.clock.ms = Date.parse(SESSION_FAULT_AT) + 1000
   return h
 }
+
+function codexQuota(h: Harness, creditsAvailable = false): QuotaSnapshot {
+  return {
+    claude: { status: "unavailable", windows: [] },
+    codex: {
+      status: "ok", windows: [{ key: "5h", label: "5h", usedPercent: 5, resetsAt: h.clock.ms / 1000 + 3600 }],
+      codexRecovery: { observedAt: h.clock.ms, accountKey: "account-one", creditsAvailable },
+    },
+  }
+}
+
+test("Codex limits: credits stay blocked despite headroom, then recover once without changing the profile", async () => {
+  const h = limitHarness()
+  const at = iso(h.clock.ms)
+  h.storage.upsertSession(row("codex", { backend: "codex", model: "gpt-6.1-sol", effort: "high" }))
+  h.storage.setBackend("codex", "codex")
+  h.storage.setProfile("codex", "gpt-6.1-sol", "high")
+  h.tele.set("codex", { ...limitTele({ window: "unknown", at, codex: "credits" }), apiFault: true })
+  let credits = false
+  const s = h.make({ readQuota: async () => codexQuota(h, credits) })
+  await s.tick()
+  h.clock.ms += 180_000
+  await s.tick()
+  assert.equal(h.resumes.length, 0)
+  credits = true
+  await s.tick()
+  await s.tick()
+  assert.equal(h.resumes.length, 1)
+  assert.match(h.resumes[0].message, /Capacity is available again/)
+  assert.equal(h.storage.getSession("codex")?.model, "gpt-6.1-sol")
+  assert.equal(h.storage.getSession("codex")?.effort, "high")
+  const restarted = h.make({ readQuota: async () => codexQuota(h, true) })
+  await restarted.tick()
+  assert.equal(h.resumes.length, 1, "the durable outbox deduplicates the interruption after restart")
+  h.storage.close()
+})
+
+test("Codex limits: fresh headroom recovers a usage window; stale, unknown, busy and archived states cannot wake", async () => {
+  for (const kind of ["fresh", "stale", "offline", "full-weekly", "unavailable", "busy", "archived", "manual", "aged", "throw"] as const) {
+    const h = limitHarness()
+    const at = iso(h.clock.ms)
+    h.storage.upsertSession(row("codex", { backend: "codex", state: kind === "archived" ? "archived" : "open", archived: kind === "archived" ? 1 : 0 }))
+    h.storage.setBackend("codex", "codex")
+    h.tele.set("codex", limitTele({ window: "unknown", at, codex: "usage" }, kind === "busy" ? "in-flight" : "idle"))
+    h.clock.ms += kind === "aged" ? 48 * 3600_000 : 180_000
+    const q = codexQuota(h)
+    if (kind === "stale") q.codex.codexRecovery!.observedAt = Date.parse(at)
+    if (kind === "offline") delete q.codex.codexRecovery
+    if (kind === "full-weekly") q.codex.windows.push({ key: "weekly", label: "Weekly", usedPercent: 100 })
+    if (kind === "unavailable") q.codex.status = "unavailable"
+    if (kind === "manual") h.tele.set("codex", tele())
+    const s = h.make({ readQuota: async () => { if (kind === "throw") throw new Error("offline"); return q } })
+    await s.tick()
+    assert.equal(h.resumes.length, kind === "fresh" ? 1 : 0, kind)
+    h.storage.close()
+  }
+})
+
+test("Codex limits: an unchanged healthy reading cannot create a retry storm after a bounced wake", async () => {
+  const h = limitHarness()
+  const firstAt = h.clock.ms
+  h.storage.upsertSession(row("codex", { backend: "codex" }))
+  h.storage.setBackend("codex", "codex")
+  h.tele.set("codex", limitTele({ window: "unknown", at: iso(firstAt), codex: "usage" }))
+  h.clock.ms += 180_000
+  const q = codexQuota(h)
+  const s = h.make({ readQuota: async () => { q.codex.codexRecovery!.observedAt = h.clock.ms; return q } })
+  await s.tick()
+  assert.equal(h.resumes.length, 1)
+  for (let i = 0; i < 3; i++) {
+    h.clock.ms += 180_000
+    h.tele.set("codex", limitTele({ window: "unknown", at: iso(h.clock.ms - 120_001), codex: "usage" }))
+    q.codex.windows[0]!.usedPercent += 1
+    q.codex.windows[0]!.resetsAt! += 60
+    await s.tick()
+  }
+  assert.equal(h.resumes.length, 1, "new fault timestamps and quota jitter do not mint recovery attempts")
+  q.codex.windows[0]!.usedPercent = 100
+  await s.tick()
+  q.codex.windows[0]!.usedPercent = 10
+  await s.tick()
+  assert.equal(h.resumes.length, 2, "a verified blocked → available transition is a new recovery")
+  h.clock.ms += 1000
+  h.tele.set("codex", { ...tele({ kind: "done", body: "Completed", hints: [] }), lastAssistantAt: iso(h.clock.ms) })
+  await s.tick()
+  h.tele.set("codex", limitTele({ window: "unknown", at: iso(h.clock.ms + 1), codex: "usage" }))
+  h.clock.ms += 180_000
+  await s.tick()
+  assert.equal(h.resumes.length, 3, "a real successful turn ends the previous recovery episode")
+  h.storage.close()
+})
+
+test("Codex limits: a native-only failure recovers, but never over a live turn or newer transcript activity", async () => {
+  for (const kind of ["native", "busy", "newer"] as const) {
+    const h = limitHarness()
+    const at = iso(h.clock.ms)
+    h.storage.upsertSession(row("codex", { backend: "codex" }))
+    h.storage.setBackend("codex", "codex")
+    if (kind === "newer") h.tele.set("codex", { ...tele(), lastActivityAt: iso(h.clock.ms + 1) })
+    h.clock.ms += 180_000
+    const s = h.make({
+      codexTurnLiveness: () => ({ bridgeTurn: kind === "busy", providerError: { code: "usage_limit_exceeded", message: "Limit reached", at } }),
+      readQuota: async () => codexQuota(h),
+    })
+    await s.tick()
+    assert.equal(h.resumes.length, kind === "native" ? 1 : 0, kind)
+    h.storage.close()
+  }
+})
+
+test("Codex limits: capacity is rechecked before delivering a queued wake", async () => {
+  const h = limitHarness()
+  h.storage.upsertSession(row("codex", { backend: "codex" }))
+  h.storage.setBackend("codex", "codex")
+  h.tele.set("codex", limitTele({ window: "unknown", at: iso(h.clock.ms), codex: "credits" }))
+  h.clock.ms += 180_000
+  let reads = 0
+  let available = false
+  const s = h.make({ readQuota: async () => codexQuota(h, ++reads === 1 || available) })
+  await s.tick()
+  assert.equal(h.resumes.length, 0, "capacity disappeared after enqueue")
+  available = true
+  h.clock.ms += 180_000
+  await s.tick()
+  assert.equal(h.resumes.length, 1, "the held delivery can recover later")
+  h.storage.close()
+})
+
+test("Codex limits: a live quota read acquired after tick start is not mistaken for future data", async () => {
+  const h = limitHarness()
+  h.storage.upsertSession(row("codex"))
+  h.storage.setBackend("codex", "codex")
+  h.tele.set("codex", limitTele({ window: "unknown", at: iso(h.clock.ms), codex: "usage" }))
+  h.clock.ms += 180_000
+  const s = h.make({ readQuota: async () => {
+    h.clock.ms += 1000
+    return codexQuota(h)
+  } })
+  await s.tick()
+  assert.equal(h.resumes.length, 1)
+  h.storage.close()
+})
+
+test("Codex limits: a manual reply during the live quota check supersedes the queued recovery", async () => {
+  const h = limitHarness()
+  h.storage.upsertSession(row("codex"))
+  h.storage.setBackend("codex", "codex")
+  h.tele.set("codex", limitTele({ window: "unknown", at: iso(h.clock.ms), codex: "credits" }))
+  h.clock.ms += 180_000
+  let reads = 0
+  const s = h.make({ readQuota: async () => {
+    if (++reads === 2) h.tele.set("codex", { ...tele(), lastUserAt: iso(h.clock.ms) })
+    return codexQuota(h, true)
+  } })
+  await s.tick()
+  assert.equal(h.resumes.length, 0)
+  await s.tick()
+  assert.equal(createWakeDeliveryStore(h.storage.scope).list()[0]?.state, "superseded")
+  h.storage.close()
+})
 
 test("limit: a paused thread is NOT resumed while the window is still closed", async () => {
   const h = limitHarness()
