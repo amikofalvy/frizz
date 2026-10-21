@@ -218,10 +218,12 @@ export function ChildOpRow({
     </>
   )
 
-  // SHRINK PRIORITY on the two prompt-box densities: the label is the child's IDENTITY (and the
-  // drill-in target), so it keeps its natural width up to 60% of the row and the current step absorbs
-  // whatever is left. Letting both shrink proportionally crushed the label to "Inspe…" the moment a
-  // step arrived, which inverted the reading — you could see what some child was doing but not which.
+  // THE LABEL TAKES EVERY PIXEL THE ROW HAS, on every density: the × and the reading are shrink-0 and
+  // the reading is `ml-auto`, so the label sits at its natural width and truncates only where the row
+  // actually runs out. The prompt-box densities used to cap it at `max-w-[60%]`, which left room for a
+  // "current step" reading after it; the step left the row, the cap stayed, and a 440px panel cut
+  // "Building the validate/is schema…" off with a third of the line empty (maintainer 2026-10-20:
+  // "There's no reason for them to get truncated there").
   const rowClass = rail
     // The rail's 26px INDENT stays on the identity element, not on the row wrapper: it is the gutter
     // that clears the parent thread row's indicator column, and it has always been part of the click
@@ -231,7 +233,7 @@ export function ChildOpRow({
     // `overflow-hidden` is load-bearing at a narrow width: the arrow/dot/kind tag inside are shrink-0,
     // so once the row runs out of room the button's own content used to SPILL and the × landed on top
     // of the "AGENT" tag. Clipping keeps the collapse graceful. The ring goes inset to survive it.
-    : `group flex min-w-0 max-w-[60%] items-center gap-1.5 overflow-hidden text-left text-[11.5px] ${clickable ? "cursor-pointer rounded-sm outline-none transition-colors focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-focus-ink-60" : ""}`
+    : `group flex min-w-0 items-center gap-1.5 overflow-hidden text-left text-[11.5px] ${clickable ? "cursor-pointer rounded-sm outline-none transition-colors focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-focus-ink-60" : ""}`
 
   // The rail indents with PADDING, not margin: a margin would carve the row wrapper's full-width hover
   // highlight back on every nested row. The two prompt-box densities have no such highlight, so they
@@ -266,8 +268,8 @@ export function ChildOpRow({
   // the right edge behind it, and it is always visible, quietly — a control you have to discover by
   // hovering is exactly the complaint.
   //
-  // text-[11.5px] sits on the CONTAINER, not only on the label button: the ×, the step, the counters
-  // and the reading are all SIBLINGS of that button, so a size set only on it leaves them inheriting
+  // text-[11.5px] sits on the CONTAINER, not only on the label button: the ×, the counters and the
+  // reading are all SIBLINGS of that button, so a size set only on it leaves them inheriting
   // the parent's larger one. That is exactly what happened when the reading moved to the right edge
   // (maintainer 2026-07-28: "why did you make the 5 min ago labels bigger… it should be the same font
   // size as the title"). One size here keeps every reading on the row in step.
