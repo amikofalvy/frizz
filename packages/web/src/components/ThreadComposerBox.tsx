@@ -24,7 +24,8 @@ import type { PhoneBarApi } from "./Composer.tsx"
 import { RegisteredAnsweringContext } from "./RegisteredQuestionCards.tsx"
 import { SendScopeContext } from "../lib/sendScope.tsx"
 import { useStepsAnswer, withStepsDone } from "../lib/stepsAnswer.ts"
-import { sendPlaceholder, setSendMode, useSendMode } from "../lib/sendMode.ts"
+import { holdsForRest, sendPlaceholder, setSendMode, useSendMode } from "../lib/sendMode.ts"
+import { QueuedRunContext } from "../lib/threadContexts.ts"
 import { useThreadSurfaceBox } from "./ThreadSurface.tsx"
 
 // THE prompt box for a registered thread — the single block every "steer this thread" surface renders.
@@ -118,9 +119,13 @@ export function ThreadComposerBox({
   // stepsAnswer). It reads the thread rather than a context: the card and this box address one draft.
   const stepsAnswer = useStepsAnswer(thread)
   const staged = (registered?.staged ?? 0) + (scope?.fencedCount ?? 0) + (stepsAnswer.staged ? 1 : 0)
-  // "A turn is in flight" — the only time sending as a steer and sending to the queue differ.
+  // "A turn is in flight" — the only time sending as a steer and sending to the queue differ…
   const running = thread?.runtime === "running"
-  const mode = useSendMode(slug, running)
+  // …or messages already held for the rest, which a message sent to the queue waits behind even with
+  // the agent at rest: between two messages queued one at a time, the agent rests for a moment.
+  const held = useContext(QueuedRunContext)?.held ?? 0
+  const behind = running || held > 0
+  const mode = useSendMode(slug, running, held > 0 || thread?.deliveryInFlight === true)
   // ONE placeholder for both surfaces, decided here from the thread — the queue card said "Reply to the
   // agent…" and the drawer "Follow up…" until 2026-10-09, and only the card said when the box was the
   // way AROUND an open question. An external session keeps its own sentence: it says what sending does,
@@ -131,7 +136,7 @@ export function ThreadComposerBox({
   // and with the menu shut this line is also what says how the button will send (sendPlaceholder).
   const placeholder = thread?.foreign
     ? "Send a message to take over this session…"
-    : sendPlaceholder({ staged, openQuestions: Boolean(thread?.pendingQuestion) || (thread ? hasStandingQuestion(thread) : false), running, mode })
+    : sendPlaceholder({ staged, openQuestions: Boolean(thread?.pendingQuestion) || (thread ? hasStandingQuestion(thread) : false), running: behind, mode })
   const projectDir = useProjectDir()
   const key = draftKey.followUp(projectDir, slug, thread?.sessionId)
   const [message, setMessage, clearMessage] = useDraft(key)
@@ -224,9 +229,13 @@ export function ThreadComposerBox({
       },
       onSuccess: () => answers?.onSuccess(),
       ...(answers ? { answers: answers.answers, displayText: shown } : {}),
-      // "Send to queue" is the ticked row AND there is a turn to queue behind. The forced send never
-      // queues: ⌘/Ctrl-Enter means now.
-      ...(mode === "queue" && running && !interrupt ? { hold: true } : {}),
+      // "Send to queue" is the ticked row AND there is something to queue behind. The forced send never
+      // queues: ⌘/Ctrl-Enter means now. One at a time also waits on a message already handed over
+      // whose turn has not started, which the board calls a delivery in flight; the server is the
+      // judge of that, and sends it at once if nothing is ahead after all.
+      ...(holdsForRest(mode) && !interrupt && (behind || (mode === "one-at-a-time" && thread?.deliveryInFlight === true))
+        ? { hold: true, ...(mode === "one-at-a-time" ? { ownTurn: true } : {}) }
+        : {}),
       // Re-sending words an earlier failure handed back replaces that failure's bubble — see
       // lib/failedDelivery.ts.
       supersedes: takeSupersededFailure(key, outgoing),
@@ -325,7 +334,7 @@ export function ThreadComposerBox({
         fileDrop={fileDrop}
         // An external session keeps the ↑: sending there takes the session over, and there is no turn
         // of Frizz's to steer or queue behind until it has.
-        send={thread?.foreign ? undefined : { mode, onMode: (next) => setSendMode(slug, next), running, staged }}
+        send={thread?.foreign ? undefined : { mode, onMode: (next) => setSendMode(slug, next), running: behind, staged }}
       />
       {controls.status}
       {signInFor && <SignInModal backend={signInFor} onClose={() => setSignInFor(null)} onAuthed={() => setSignInFor(null)} />}

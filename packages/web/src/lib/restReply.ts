@@ -65,15 +65,28 @@ export function inQueuedTail(message: Pick<ChatMessage, "queued" | "restReply">)
 export interface QueuedRun {
   held: number
   steered: number
+  /** How many held messages one release hands over: the oldest, and the ones queued together with it.
+   *  A message queued one at a time (`ownTurn`) goes alone, and ends the run before it — the server's
+   *  heldReleaseBatch, read off the bubbles. */
+  next: number
+  /** That release is one message queued one at a time. */
+  alone: boolean
 }
 
-export function queuedRunOf(messages: readonly Pick<ChatMessage, "queued" | "restReply" | "deliveryState">[]): QueuedRun {
+export function queuedRunOf(messages: readonly Pick<ChatMessage, "queued" | "restReply" | "deliveryState" | "ownTurn">[]): QueuedRun {
   let held = 0
   let steered = 0
+  let next = 0
+  let alone = false
+  let closed = false
   for (const m of messages) {
     if (!inQueuedTail(m) || m.deliveryState === "failed" || m.deliveryState === "unconfirmed") continue
-    if (m.deliveryState === "held") held++
-    else steered++
+    if (m.deliveryState !== "held") { steered++; continue }
+    held++
+    if (closed) continue
+    if (next === 0) { next = 1; alone = m.ownTurn === true; closed = alone; continue }
+    if (m.ownTurn === true) closed = true
+    else next++
   }
-  return { held, steered }
+  return { held, steered, next, alone }
 }

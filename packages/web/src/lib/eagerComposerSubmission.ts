@@ -37,8 +37,10 @@ export type EagerFollowUpCallbacks = {
   displayText?: string
   // "Send to queue": Frizz holds the message until the agent rests (FollowUpInput.hold).
   hold?: boolean
+  // "Queue one at a time": with `hold`, the message gets a turn of its own (FollowUpInput.ownTurn).
+  ownTurn?: boolean
 }
-type FollowUpExtras = { answers?: QuestionAnswer[]; hold?: boolean }
+type FollowUpExtras = { answers?: QuestionAnswer[]; hold?: boolean; ownTurn?: boolean }
 
 export function beginEagerSubmission({
   optimistic,
@@ -210,7 +212,7 @@ export function sendFollowUpAttempt(
   // re-dispatched mid-retry must bind to its CURRENT session, and the guarded followUp is what turns
   // a stale id into a clean refusal instead of a misdelivery.
   return (rpc.followUp(
-    { slug, sessionId: threadBySlug(store.board, slug)?.sessionId ?? "", message, deliveryId, freshProcess, interrupt, ...(supersedes ? { supersedes } : {}), ...(extras.answers?.length ? { answers: extras.answers } : {}), ...(extras.hold ? { hold: true } : {}) },
+    { slug, sessionId: threadBySlug(store.board, slug)?.sessionId ?? "", message, deliveryId, freshProcess, interrupt, ...(supersedes ? { supersedes } : {}), ...(extras.answers?.length ? { answers: extras.answers } : {}), ...(extras.hold ? { hold: true } : {}), ...(extras.hold && extras.ownTurn ? { ownTurn: true } : {}) },
     { signal: controller.signal },
   ) as Promise<void>).finally(() => clearTimeout(timer))
 }
@@ -245,9 +247,10 @@ export function sendEagerFollowUp(
   // Staged answers alone are a message; an empty box with nothing staged is not.
   if (!message && !answers) return false
   const shown = callbacks.displayText?.trim() || message
-  // Held only while a turn is running — at rest the server sends it at once, and the bubble must not
-  // claim a wait that is not going to happen.
-  const held = callbacks.hold === true && !callbacks.interrupt && threadBySlug(store.board, slug)?.runtime === "running"
+  // Held only while there is something to wait behind — at rest the server sends it at once, and the
+  // bubble must not claim a wait that is not going to happen. The caller asks for a hold only then (a
+  // turn running, or messages already held: ThreadComposerBox), so its word is the reading.
+  const held = callbacks.hold === true && !callbacks.interrupt
   const deliveryId = newDeliveryId()
   // The instant of the send, which is also the first stamp: what reanchorsOnLanding measures the board's
   // answer against.
@@ -255,7 +258,7 @@ export function sendEagerFollowUp(
   beginEagerSubmission({
     optimistic: () => {
       callbacks.onOptimistic?.()
-      appendQueuedMessage(queryClient, slug, shown, { deliveryId, held })
+      appendQueuedMessage(queryClient, slug, shown, { deliveryId, held, ownTurn: held && callbacks.ownTurn === true })
       // The row is working again the instant the operator commits, not when the injection
       // returns ~half a second later — see lib/steering.ts.
       markSteered(slug, sentAtMs)
@@ -264,7 +267,7 @@ export function sendEagerFollowUp(
     // Resolve the session id at SEND time from the live board (not render time), so a re-dispatch
     // between mount and send still binds the guarded followUp to the current session. Contention
     // refusals are retried in place — the composer only gets the message back once they are exhausted.
-    request: () => enqueueThreadSend(slug, () => deliverFollowUp(slug, message, deliveryId, sentAtMs, callbacks.freshProcess, callbacks.interrupt, callbacks.supersedes, { answers, hold: callbacks.hold })),
+    request: () => enqueueThreadSend(slug, () => deliverFollowUp(slug, message, deliveryId, sentAtMs, callbacks.freshProcess, callbacks.interrupt, callbacks.supersedes, { answers, hold: callbacks.hold, ownTurn: callbacks.ownTurn })),
     success: () => callbacks.onSuccess?.(),
     failure: (error) => {
       // The optimistic copy goes either way. When the server KEPT the send, its own failed bubble (same

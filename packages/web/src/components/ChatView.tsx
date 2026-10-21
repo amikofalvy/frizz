@@ -3255,7 +3255,11 @@ export function QueuedSendNow() {
   if (!slug || !run) return null
   const step = sendNowStep(run, interruptible)
   if (!step) return null
-  const several = run.held + run.steered > 1
+  // A release hands over what the next rest would have (QueuedRun.next): with messages queued one at
+  // a time that is the next one, however many are waiting behind it.
+  const releaseTitle = run.alone && run.held > 1
+    ? "Send the next one now — the agent reads it at its next step"
+    : run.next > 1 ? "Send them now — the agent reads them at its next step" : "Send it now — the agent reads it at its next step"
   return (
     <>
       <VSpace h={HUMAN_RUN_STEP} />
@@ -3269,7 +3273,7 @@ export function QueuedSendNow() {
           disabled={pending}
           aria-keyshortcuts="Meta+Enter Control+Enter"
           title={`${step === "release"
-            ? several ? "Send them now — the agent reads them at its next step" : "Send it now — the agent reads it at its next step"
+            ? releaseTitle
             : "Send now — the worker reads the queue immediately, and a command it is running carries on in the background"} (⌘⏎)`}
           // THE HAND REACHES PAST THE INK. The button's box is its ink edge to edge — the keycap's left
           // border to the end of "now", on a 16px line of 11.5px words — so a pointer a hair off either

@@ -131,7 +131,8 @@ export const PhoneBarHoldContext = createContext<((held: boolean) => void) | nul
 export interface ComposerSendControl {
   mode: SendMode
   onMode: (mode: SendMode) => void
-  /** A turn is in flight — the only time the menu's two rows differ. */
+  /** There is something to queue behind (a turn in flight, or messages already held) — the only time
+   *  the menu's rows differ. */
   running: boolean
   staged: number
 }
