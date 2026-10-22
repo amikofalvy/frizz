@@ -842,6 +842,11 @@ The API call is the unit of cost, not the tokens you type: each message re-reads
 //     maintainer could not tell which actor either pronoun named — clicking an option is the human
 //     speaking, so first and second person flip between the writer and the reader of the same line. Its
 //     example exists because the rule alone did not show what a compliant card reads like.
+//   - Every option in the examples is SENTENCE CASE, its description included (2026-10-22). Until then each
+//     example `description:` opened lowercase ("transactional, and one store to back up"), and workers
+//     copied it: cards drew a capitalised label over a description in lowercase, a run-on fragment
+//     beneath a heading. The examples carried the habit, so the examples are the fix; "in sentence case"
+//     in the key's row says it once for a worker that reads the table and not the fences.
 const QUESTIONS = `## Questions for the human
 
 You run under a dashboard, not a live chat, so a question is a ROW the human still owes an answer to,
@@ -862,10 +867,10 @@ kind: choice
 question: Should the settings store use SQLite or a JSON file?
 options:
   - label: SQLite
-    description: transactional, and one store to back up
+    description: Transactional, and one store to back up
     recommended: true
   - label: JSON file
-    description: no dependency, hand-editable
+    description: No dependency, hand-editable
 ---
 Settings are read on every request and written by the server and by every worker's \`frizzctl\` calls.
 
@@ -884,7 +889,7 @@ whole quoted string is unquoted:
 | \`id\` | Required. Your own name for the question: lowercase letters, digits, \`-\`, \`_\` and \`.\`, up to 64. Unique in this thread FOR GOOD — an id once answered or withdrawn is never asked again |
 | \`kind\` | Required. \`choice\` (pick one), \`multi\` (pick several), \`text\` (a free-text box) or \`secret\` (one masked box) |
 | \`question\` | Required. ONE line: the card's heading, and what the answer's wake restates |
-| \`options\` | Two or more for \`choice\` and \`multi\`; none for \`text\` and \`secret\`. Each \`- \` item takes \`label\` (required), \`description\` (one line), \`recommended: true\`, and \`detail\`, an indented Markdown block drawn inside the option. A bare \`- Label\` is a label alone; a label with a colon in it takes the key (\`- label: Yes: merge it\`) |
+| \`options\` | Two or more for \`choice\` and \`multi\`; none for \`text\` and \`secret\`. Each \`- \` item takes \`label\` (required), \`description\` (one line, in sentence case), \`recommended: true\`, and \`detail\`, an indented Markdown block drawn inside the option. A bare \`- Label\` is a label alone; a label with a colon in it takes the key (\`- label: Yes: merge it\`) |
 | \`danger\` | \`true\` for the genuinely irreversible: the card turns red and the human's × cannot dismiss it |
 | \`when\` | \`<parent id> = <option label>\`: a follow-up, asked only if that option is picked (below) |
 
@@ -906,7 +911,7 @@ kind: choice
 question: Which backoff should the flaky upload use?
 options:
   - label: Exponential
-    description: doubles from 100ms, capped at five tries
+    description: Doubles from 100ms, capped at five tries
     recommended: true
     detail: |
       \`\`\`ts-diff
@@ -914,7 +919,7 @@ options:
       +  await sleep(2 ** attempt * 100)
       \`\`\`
   - label: Keep the fixed sleep
-    description: and add a sixth try instead
+    description: Adds a sixth try instead
 ---
 The upload fails about one run in twenty, always on the first try:
 
@@ -954,7 +959,7 @@ NO "I" AND NO "you" ANYWHERE IN A QUESTION — the question, its options, or any
 Clicking an option is the HUMAN speaking, so first and second person flip between writer and reader: in
 "Leave it — you run the command yourself" / "I run it now", neither line says which actor is which.
 Write the whole question actor-explicit — each option an instruction the human hands back ("Reinstall
-the hooks now") or one that names its actor outright ("the worker retries nightly", "left for the
+the hooks now") or one that names its actor outright ("The worker retries nightly", "Left for the
 maintainer's own terminal"):
 
 \`\`\`question
@@ -963,10 +968,10 @@ kind: choice
 question: A reply for issue acme/app#482 explaining the workaround is drafted. Post it from the maintainer's GitHub account, or leave it a draft?
 options:
   - label: Post it
-    description: the reporter is blocked and the workaround is verified
+    description: The reporter is blocked and the workaround is verified
     recommended: true
   - label: Leave it in the handoff
-    description: for edits before anything is posted
+    description: For edits before anything is posted
 \`\`\`
 
 Write the question in the human's OWN vocabulary: they have their original prompt and nothing else — not

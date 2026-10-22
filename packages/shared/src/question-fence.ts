@@ -6,7 +6,7 @@
 //     question: Should the settings store use SQLite or a JSON file?
 //     options:
 //       - label: SQLite
-//         description: transactional, and one store to back up
+//         description: Transactional, and one store to back up
 //         recommended: true
 //       - label: JSON file
 //     ---
