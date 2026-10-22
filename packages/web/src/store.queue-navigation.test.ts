@@ -7,7 +7,7 @@ import { takeScrollAfterUnlock } from "./lib/pageScrollLock.ts"
 // The mocks below answer it with a distinct predecessor where the card under test must NOT be first.
 const FIRST_SLOT_SELECTOR = '[data-queue-card]:not([data-queue-leaving="true"])'
 
-test("a door to a queued card lands it immediately at the card reading line", () => {
+test("sidebar queue navigation lands immediately at the card reading line", () => {
   const globals = globalThis as typeof globalThis & {
     window?: Window
     document?: Document
@@ -63,7 +63,7 @@ test("a door to a queued card lands it immediately at the card reading line", ()
   }
 })
 
-test("a door to a queued card uses an absolute reading-line target after a narrow-layout drawer close", () => {
+test("sidebar queue navigation uses an absolute reading-line target after a narrow-layout drawer close", () => {
   const globals = globalThis as typeof globalThis & {
     window?: Window
     document?: Document
@@ -106,14 +106,13 @@ test("a door to a queued card uses an absolute reading-line target after a narro
   }
 })
 
-// A door to a queued card taken while a drawer is open must do BOTH halves (maintainer 2026-08-11, of
-// the sidebar row that was this door until 2026-10-21: "clicking a queued item in the sidebar should
-// both DISMISS the current drawer and autoscroll"). Neither half can
+// Clicking a queued row while a drawer is open must do BOTH halves (maintainer 2026-08-11: "clicking a
+// queued item in the sidebar should both DISMISS the current drawer and autoscroll"). Neither half can
 // be done here in the obvious way: the drawer keeps its stack slot for the ~210ms slide-out, so the page
 // is still scroll-LOCKED — `window.scrollTo` would be clamped to a no-op, and App's unlock would then
 // restore the pre-click offset over the top of it anyway. So the landing is PARKED for the unlock, and
 // it is measured off the lock's own offset rather than a window.scrollY the lock has pinned at 0.
-test("a door to a queued card taken under an open drawer dismisses every layer and parks its landing for the unlock", () => {
+test("a queued row clicked under an open drawer dismisses every layer and parks its landing for the unlock", () => {
   const globals = globalThis as typeof globalThis & { window?: Window; document?: Document; CSS?: typeof CSS }
   const previous = { window: globals.window, document: globals.document, CSS: globals.CSS }
   const drawersBefore = [...store.drawers]
@@ -209,11 +208,10 @@ test("the queue arrival ring lands on the bordered card root, never the fade slo
   }
 })
 
-// Taking the same door to the SAME queued card twice (two palette picks) inside the 1.1s window must
-// replay the ring. Re-setting an already
+// Clicking the SAME queued row twice inside the 1.1s window must replay the ring. Re-setting an already
 // present attribute does not restart a CSS animation, and the card is already at the landing so no
 // scroll happens and (by design) no drawer opens — without a restart the second click is a total no-op.
-test("re-taking a door to a queued card inside the flash window replays the ring and reschedules one teardown", () => {
+test("re-clicking a queued row inside the flash window replays the ring and reschedules one teardown", () => {
   const globals = globalThis as typeof globalThis & {
     window?: Window
     document?: Document

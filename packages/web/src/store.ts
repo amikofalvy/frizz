@@ -7,7 +7,6 @@ import { disarmFullscreenMorph } from "./lib/fullscreenMorph.ts"
 import { closeDrawerAnimated, focusDrawer } from "./lib/overlays.ts"
 import { isPageScrollLocked, pageScrollY, requestScrollAfterUnlock } from "./lib/pageScrollLock.ts"
 import { holdQueueCardLanding } from "./lib/queueLandingHold.ts"
-import { appPushedCurrentEntry } from "./lib/historyEntry.ts"
 import { resolveThreadRoute } from "./lib/threadRouteState.ts"
 import { standaloneThreadHref } from "./lib/standaloneThreadRoute.ts"
 import { ownedByThisPage } from "./lib/projectOwnership.ts"
@@ -33,7 +32,7 @@ export const QUEUE_CARD_VIEWPORT_TOP = 40
  * The landing, measured from the window's top. On the Console's wide layout it is the line its content
  * opens on under the home switcher (lib/homeView.ts CONSOLE_TOP_PX), the same line the top card rests on.
  */
-function queueCardViewportTop(): number {
+export function queueCardViewportTop(): number {
   const wide = typeof window === "undefined" || typeof window.matchMedia !== "function" || !window.matchMedia("(max-width: 800px)").matches
   return isConsolePath() && wide ? CONSOLE_TOP_PX : QUEUE_CARD_VIEWPORT_TOP
 }
@@ -331,13 +330,10 @@ export function pushBackgroundShellDrawer(slug: string, id: string, opts: { labe
 }
 
 // Open a thread from a listing/notification click-through. A QUEUED thread short-circuits to its own
-// card (see scrollToQueueCard below), so a palette pick, a transcript link or a notification never
-// stacks a drawer on top of the identical panel. The sidebar's rows are the exception and pass
-// `evenIfQueued`: a row ALWAYS opens the whole thread in the drawer, card or no card (maintainer
-// 2026-10-21: "clicking an item in the sidebar should always open the full thread in the drawer.
-// Even if it's already visible in the queue" — reversing 2026-07-15's scroll-to-card). Otherwise
-// routing is by runtime: a thread with NO session ever spawned (runtime "none" — no transcript, the
-// chat drawer would be an empty placeholder) opens its frizz DOCUMENT drawer instead — there
+// card (see scrollToQueueCard below) — every affordance that asks to "show me this thread" obeys the
+// one rule, so nothing can stack a drawer on top of the identical panel. Otherwise routing is by
+// runtime: a thread with NO session ever spawned (runtime "none" — no transcript, the chat drawer
+// would be an empty placeholder) opens its frizz DOCUMENT drawer instead — there
 // the doc IS the substance. Anything with a session (live or exited — exited transcripts are worth
 // seeing) opens the chat drawer. The doc drawer carries the adopt ("Start a session") affordance.
 /**
@@ -352,7 +348,7 @@ export function consoleThreadKey(slug: string): string | null {
   return hits.length === 1 ? hits[0]!.id : null
 }
 
-export function openThread(slugOrKey: string, opts?: { evenIfQueued?: boolean }): void {
+export function openThread(slugOrKey: string): void {
   const slug = consoleThreadKey(slugOrKey)
   // A bare slug the Console cannot place: its own project's full page finds it (MissingThread).
   if (slug === null) {
@@ -360,7 +356,7 @@ export function openThread(slugOrKey: string, opts?: { evenIfQueued?: boolean })
     return
   }
   const t = store.board?.threads.find((x) => x.id === slug)
-  if (t?.needsYou && !opts?.evenIfQueued && scrollToQueueCard(slug)) return
+  if (t?.needsYou && scrollToQueueCard(slug)) return
   pushDrawer(t && t.runtime === "none" ? "doc" : "thread", slug)
 }
 
@@ -375,13 +371,9 @@ export function setBoardPendingCheck(check: (project?: string) => boolean): void
 
 // Settle a parked `/thread/<slug>` URL, now that the board can say whether the thread is queued.
 // A deep link deliberately asks for the CHAT surface even for a session-less thread (unlike
-// openThread's doc-routing), so this pushes the thread layer rather than delegating — but a COLD
-// arrival obeys the same queue-card rule: a needsYou thread renders its whole panel inline in the
-// main column, and opening the routed drawer over it painted that panel TWICE, one half-occluding the
-// other. An entry this app PUSHED is different: the store→URL sync writes `/thread/<slug>` only for
-// an open thread layer, so that entry WAS a drawer — opened from the rail, which opens one even over
-// the thread's own card. Back/Forward onto it, a reload of it, and the fullscreen collapse back to it
-// therefore put the drawer back rather than trading it for the card (historyEntry.ts).
+// openThread's doc-routing), so this pushes the thread layer rather than delegating — but it obeys
+// the same queue-card rule: a needsYou thread renders its whole panel inline in the main column, and
+// opening the routed drawer over it painted that panel TWICE, one half-occluding the other.
 // `routed` so a cold page paints the sheet already open instead of animating a phantom backdrop in.
 export function resolveRoutedThread(): void {
   const routed = store.routeThreadSlug
@@ -410,7 +402,7 @@ export function resolveRoutedThread(): void {
   }
   // `settlingRoute`: the address bar already holds this thread's entry, so the board URL that follows
   // REPLACES it — a push would leave `/thread/<slug>` and the board behind each other as two entries.
-  if (route.kind === "found" && route.thread.needsYou && !appPushedCurrentEntry() && scrollToQueueCard(slug, { settlingRoute: true })) return
+  if (route.kind === "found" && route.thread.needsYou && scrollToQueueCard(slug, { settlingRoute: true })) return
   pushDrawer("thread", slug, { routed: true })
 }
 
@@ -446,31 +438,29 @@ export function primeFullscreenReturn(routedSlug: string | undefined): void {
       if (store.vtReturnTarget === slug) store.vtReturnTarget = null
     }, 600)
   }
-  // The drawer itself, only when the return URL names this thread and resolveRoutedThread would open
-  // one: the thread is NOT queued, or it is and this entry is one the app pushed — a drawer the rail
-  // opened over the thread's own card. A queued thread on a cold entry has its card as its surface,
-  // which the queue mounts in this same pass. The same painted-open push resolveRoutedThread would
-  // make — just in the commit the snapshot actually reads; applyPath then finds the layer already
-  // present and leaves it be. (A card yields the morph's name to its own open drawer — QueueCard.)
+  // The drawer itself, only when the return URL names this thread and the board can already say it
+  // is NOT queued (a queued thread's surface is its card, which the queue mounts in this same pass).
+  // The same painted-open push resolveRoutedThread would make — just in the commit the snapshot
+  // actually reads; applyPath then finds the layer already present and leaves it be.
   if (routedSlug !== slug || !store.board) return
   const route = resolveThreadRoute(store.board, slug, threadBySlug)
-  if (route.kind !== "found" || (route.thread.needsYou && !appPushedCurrentEntry())) return
+  if (route.kind !== "found" || route.thread.needsYou) return
   if (store.drawers.some((d) => d.kind === "thread" && d.slug === slug && !d.closing)) return
   pushDrawer("thread", slug, { routed: true })
 }
 
-// A thread that's ALREADY in the queue (needsYou) has its full card in the main column — a door to it
-// SCROLLS to that card and stops there; it does NOT open a redundant drawer over it (maintainer
-// 2026-07-09: "the queue is how you know"; 2026-07-15: "just auto-scroll to the item in the queue").
-// Returns false if no card is mounted (not queued / not rendered), so the caller falls back to opening
-// the drawer instead. The sidebar's rows used this door until 2026-10-21 and now always open the
-// drawer (openThread's `evenIfQueued`); the palette, a cold deep link, a transcript link and a
-// notification click-through still come here.
+// A thread that's ALREADY in the queue (needsYou) has its full card in the main column — clicking its
+// sidebar row SCROLLS to that card and stops there; it does NOT open a redundant drawer over it
+// (maintainer 2026-07-09: "the queue is how you know"; 2026-07-15: "just auto-scroll to the item in the
+// queue"). Returns false if no card is mounted (not queued / not rendered), so the caller falls back to
+// opening the drawer instead.
 //
 // Any drawer already on screen is DISMISSED here (maintainer 2026-08-11: "clicking a queued item in the
 // sidebar should both DISMISS the current drawer and autoscroll"). It has to happen in this one place
-// rather than at a call site: a drawer over the queue is precisely what stops you seeing the card, so
-// every "show me this card" door wants it gone.
+// rather than at the sidebar's call site: a drawer over the queue is precisely what stops you seeing the
+// card, so every "show me this card" door — the rail, the palette, a deep link, a notification
+// click-through — wants it gone. The plain sheets also spread a full-screen scrim, which the click
+// would otherwise land on instead of the row.
 //
 // And that dismissal is a NAVIGATION, so it PUSHES history (takeQueueCardNavigation). Every other
 // drawer close replaces — the router's rule — and this one used to as well: A's drawer, a link to queued

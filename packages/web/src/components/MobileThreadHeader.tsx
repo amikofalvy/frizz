@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react"
 import { ArrowLeft, MoreHorizontal } from "lucide-react"
 import { useThreadSnapshot, useTranscript } from "../hooks.ts"
-import { appPushedCurrentEntry } from "../lib/historyEntry.ts"
+import { appPushedCurrentEntry } from "../lib/router.ts"
 import { leaveFiledThread } from "../lib/mobileTriage.ts"
 import { displayTitle } from "../groups.ts"
 import { useNowMs } from "../lib/liveClock.ts"
@@ -24,7 +24,7 @@ import { ThreadActionsSheet, useModelEffortLabel } from "./MobileThreadActionsSh
 // the desktop ×'s close here instead REPLACED the thread's entry with the board, which left two board
 // entries in a row, so the next Back did nothing visible. Only a thread that arrived by a cold link (the
 // entry the document loaded on — nothing of ours below it) closes the ×'s way and lands on the board.
-// See `appPushedCurrentEntry` in lib/historyEntry.
+// See `appPushedCurrentEntry` in lib/router.
 //
 // It does NOT take the drawer's initial focus the way × did (`data-dialog-initial-focus`): a
 // programmatically focused button matches :focus-visible, so the page opened with a lit circle around ←.
