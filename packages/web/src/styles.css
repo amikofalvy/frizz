@@ -2390,7 +2390,10 @@ html[data-code-wrap="off"] {
 .md-body tr > *:last-child {
   border-right: 0;
 }
-.md-body tr:last-child > * {
+/* The table's last row, not every section's: the header row is the only row in its `<thead>`, so a
+   bare `tr:last-child` matched it too and dropped the rule under the headers. A header-only table
+   (no `<tbody>`) still drops it, since its `<thead>` is then the last section. */
+.md-body table > :last-child > tr:last-child > * {
   border-bottom: 0;
 }
 /* GFM column alignment (`| :---: |`). marked emits it as the `align` presentation attribute, which the

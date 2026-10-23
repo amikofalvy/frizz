@@ -15,7 +15,9 @@ export const SHAPE: [string, string][] = [
   // every new scratchpad's Task list and the one most likely to regress back to literal text.
   ["tasklist-empty", "- [ ]\n- [x]"],
   ["olstart", "17. `install.sandbox` — the baseline policy\n18. `run.sandbox` — the default"],
-  ["align", "| left | mid | right |\n| :--- | :---: | ---: |\n| a | b | c |"],
+  ["align", "| left | mid | right |\n| :--- | :---: | ---: |\n| a | b | c |\n| d | e | f |"],
+  ["table-head-only", "| left | right |\n| --- | --- |"],
+  ["table-headerless", "| a | b |\n| c | d |"],
   ["generic", "The handler returns Promise<void> and then logs the slug."],
   ["placeholder", "Write to <cwdSlug>/<sessionId>.jsonl and restart the tailer."],
   ["details", "<details><summary>Full trace</summary>\n\nThe stack was 40 frames deep.\n\n</details>"],

@@ -44,6 +44,13 @@ test("the markdown sanitizer keeps authored meaning and blocks every scripted es
         looseBoxes: Array.from(document.querySelectorAll("[data-case=tasklist-loose] li > p > .md-task")).map((n) => n.className),
         olStart: document.querySelector("[data-case=olstart] ol")?.getAttribute("start") ?? null,
         headAlign: Array.from(document.querySelectorAll("[data-case=align] th")).map((n) => getComputedStyle(n).textAlign),
+        // Each row's cells' bottom rule, top to bottom: the grid draws one under every row but the
+        // table's last, whose edge is the frame's own.
+        rowRules: Object.fromEntries(["align", "table-head-only", "table-headerless"].map((id) => [
+          id,
+          Array.from(document.querySelectorAll(`[data-case=${id}] tr`)).map((tr) =>
+            Array.from(tr.children).map((cell) => getComputedStyle(cell).borderBottomWidth).join(" ")),
+        ])),
         genericText: document.querySelector("[data-case=generic]")?.textContent?.trim(),
         placeholderText: document.querySelector("[data-case=placeholder]")?.textContent?.trim(),
         detailsText: document.querySelector("[data-case=details]")?.textContent?.replace(/\s+/g, " ").trim(),
@@ -92,6 +99,12 @@ test("the markdown sanitizer keeps authored meaning and blocks every scripted es
     assert.equal(seen.emptyText, "", "and it leaves no marker text behind")
     assert.equal(seen.olStart, "17", "a list that starts at 17 keeps its numbering")
     assert.deepEqual(seen.headAlign, ["left", "center", "right"], "GFM column alignment is honored")
+    assert.deepEqual(seen.rowRules, {
+      // The header row is the last row of its <thead>; it still takes the rule under it.
+      align: ["1px 1px 1px", "1px 1px 1px", "0px 0px 0px"],
+      "table-head-only": ["0px 0px"],
+      "table-headerless": ["1px 1px", "0px 0px"],
+    }, "a rule under every table row but the last")
     assert.equal(seen.genericText, "The handler returns Promise and then logs the slug.",
       "a tag-shaped token must not delete the rest of the sentence")
     // The two `<…>` tokens are consumed by the HTML parser (as on GitHub); what must NOT happen is the
