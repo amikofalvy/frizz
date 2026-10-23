@@ -390,9 +390,13 @@ plugin directory. The published package does this for you.
   (`my-auto`). Row groups keyed on the session-first model (`web/src/groups.ts` `sectionOf`), in the
   vocabulary above: Active then Rested (one uncollapsible `<section>`, split by a bare rule), then a
   labeled collapsible Snoozed band, then Done (archived; collapsed).
-  Rows order by most-recent USER interaction (`orderByInteraction` — agent churn never
-  reorders), except the Rested band, which uses the EXACT queue comparator (`orderQueue`) so the rail
-  and the cards read in one order.
+  The Rested band uses the EXACT queue comparator (`orderQueue`) so the rail and the cards read in one
+  order. Active puts the thread that most recently switched INTO it on top (`orderRunning`, keyed on
+  `runningSince`, which the board stamps on the first build that finds a thread in the band and clears on
+  the first that does not — so staying in the band never reorders a row). Done puts the thread marked
+  done most recently on top (`orderDone`, keyed on `archivedAt`, stamped by the archiving write; a
+  thread archived before that stamp existed sorts by its rest time). Snoozed orders by most-recent
+  activity (`orderByInteraction` — agent churn never reorders). (Maintainer 2026-10-23.)
   Titles WRAP, never truncate. ONE derived indicator per row (spinner running, blue ● a live background
   shell — in Active AND in its snoozed twin, since 2026-08-31; GitHub's octocat for a PR wait and the
   hourglass for a timer wait, each in WHICHEVER band the row sits — a timer park queues, and its queued

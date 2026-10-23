@@ -1,7 +1,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { activeBandThread, sectionOf, type ThreadView } from "@frizz/shared"
-import { externalThreads, isConsolePinned, isPinned, orderActive, orderByInteraction, orderQueue, queued, sectionThreads, type SectionedThreads } from "../groups.ts"
+import { externalThreads, isConsolePinned, isPinned, orderActive, orderByInteraction, orderDone, orderQueue, orderRunning, queued, sectionThreads, type SectionedThreads } from "../groups.ts"
 import { consolePinned, consoleQueue, consoleRunning } from "./consoleBoard.ts"
 import { optimisticallySteered, overlayEach, overlayLive } from "./steering.ts"
 import { partitionBoard, settledThread } from "./boardPartition.ts"
@@ -63,6 +63,8 @@ function randomThread(id: string, r: () => number): ThreadView {
     bgShells: r() < 0.05 ? [{ label: "dev", startedAt: "2026-10-01T00:00:00.000Z", state: "running", id: "s" }] : [],
     lastUserAt: `2026-09-${String(1 + Math.floor(r() * 28)).padStart(2, "0")}T00:00:00.000Z`,
     lastActivityAt: `2026-09-${String(1 + Math.floor(r() * 28)).padStart(2, "0")}T00:00:00.000Z`,
+    runningSince: r() < 0.5 ? `2026-09-${String(1 + Math.floor(r() * 28)).padStart(2, "0")}T00:00:00.000Z` : undefined,
+    archivedAt: r() < 0.5 ? `2026-09-${String(1 + Math.floor(r() * 28)).padStart(2, "0")}T00:00:00.000Z` : undefined,
     title: `${id} v${Math.floor(r() * 1000)}`,
   } as Partial<ThreadView>)
 }
@@ -82,7 +84,7 @@ function sectionThreadsReference(threads: readonly ThreadView[]): SectionedThrea
   out.pinned.sort((a, b) => (a.pinnedAt ?? "").localeCompare(b.pinnedAt ?? "") || a.id.localeCompare(b.id))
   out.active = orderActive(out.active, "fifo")
   out.snoozed = orderByInteraction(out.snoozed)
-  out.inactive = orderByInteraction(out.inactive)
+  out.inactive = orderDone(out.inactive)
   return out
 }
 
@@ -107,7 +109,7 @@ function checkAgainstReference(threads: readonly ThreadView[], label: string): v
   for (const direction of ["fifo", "lifo"] as const) {
     assert.deepEqual(ids(consoleQueue(threads, direction)), ids(orderQueue(threads.filter(queued), direction)), `${label}: Console queue, ${direction}`)
   }
-  assert.deepEqual(ids(consoleRunning(threads)), ids(orderByInteraction(threads.filter(activeBandThread))), `${label}: Console running`)
+  assert.deepEqual(ids(consoleRunning(threads)), ids(orderRunning(threads.filter(activeBandThread))), `${label}: Console running`)
   // Its pinned band reads the settled threads too: a Console pin outranks Done.
   const consoleShelf = threads.filter(isConsolePinned).sort((a, b) => (a.consolePinnedAt ?? "").localeCompare(b.consolePinnedAt ?? "") || a.id.localeCompare(b.id))
   assert.deepEqual(ids(consolePinned(threads)), ids(consoleShelf), `${label}: Console pinned`)

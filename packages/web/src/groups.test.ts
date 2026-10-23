@@ -1,7 +1,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { activeBandThread, type ThreadView } from "@frizz/shared"
-import { needsAction, queued, orderQueue, orderByInteraction, partitionActive, sectionOf, sectionThreads, isSnoozed, sessionIndicatorKind, offersRetry, restIsWorking, workingWithOpenQuestion, titleIsProvisional, displayTitle, lastActiveLabelAt, SPINNING_UP_TITLE, UNTITLED_THREAD_TITLE } from "./groups.ts"
+import { needsAction, queued, orderQueue, orderByInteraction, orderRunning, partitionActive, sectionOf, sectionThreads, isSnoozed, sessionIndicatorKind, offersRetry, restIsWorking, workingWithOpenQuestion, titleIsProvisional, displayTitle, lastActiveLabelAt, SPINNING_UP_TITLE, UNTITLED_THREAD_TITLE } from "./groups.ts"
 
 // Minimal ThreadView fixture — the same shape board-delta.test.ts uses, defaulting to a live/active
 // thread; each case overrides only the fields under test.
@@ -1271,4 +1271,50 @@ test("sectionThreads: the Done band's order is reused while its members are the 
   // A thread joining the band misses too.
   const d = done("d", "2026-07-08T06:00:00.000Z")
   assert.deepEqual(sectionThreads([a, running, b, c, d]).inactive.map((t) => t.id), ["d", "b", "c", "a"])
+})
+
+// THE RUNNING AND DONE BANDS ORDER BY WHEN A THREAD ENTERED THEM (maintainer 2026-10-23): "The most recent
+// agent to switch back into the running status should be at the top of running, and the agent session
+// most recently marked as done should be at the top of done."
+test("the Running band: the thread that most recently switched to running is on top, whatever its user turns say", () => {
+  const running = (id: string, runningSince: string | undefined, lastUserAt: string) =>
+    thread({ id, kind: "session", state: "open", runtime: "running", needsYou: false, runningSince, lastUserAt })
+  const rows = [
+    // Woken by its sub-agent's report a minute ago — no user turn moved, so the old key buried it.
+    running("woken-by-child", "2026-10-23T10:09:00.000Z", "2026-10-23T08:00:00.000Z"),
+    running("replied-to", "2026-10-23T10:05:00.000Z", "2026-10-23T10:05:00.000Z"),
+    // Messaged mid-turn just now, but it has been in the band since 9: it stays below the others.
+    running("messaged-mid-turn", "2026-10-23T09:00:00.000Z", "2026-10-23T10:10:00.000Z"),
+  ]
+  const order = ["woken-by-child", "replied-to", "messaged-mid-turn"]
+  assert.deepEqual(orderRunning(rows).map((t) => t.id), order)
+  // The rail draws exactly this order below the queue.
+  const queuedRow = thread({ id: "queued", kind: "session", state: "open", needsYou: true, lastAssistantAt: "2026-10-23T10:00:00.000Z" })
+  const { active } = sectionThreads([...rows, queuedRow])
+  assert.deepEqual(partitionActive(active).running.map((t) => t.id), order)
+  assert.deepEqual(partitionActive(active).rested.map((t) => t.id), ["queued"])
+})
+
+test("the Running band: a row with no entry stamp (an older server) keeps the band's old key", () => {
+  const rows = [
+    thread({ id: "older", kind: "session", state: "open", runtime: "running", needsYou: false, lastUserAt: "2026-10-23T09:00:00.000Z" }),
+    thread({ id: "stamped", kind: "session", state: "open", runtime: "running", needsYou: false, runningSince: "2026-10-23T09:30:00.000Z", lastUserAt: "2026-10-23T08:00:00.000Z" }),
+    thread({ id: "newer", kind: "session", state: "open", runtime: "running", needsYou: false, lastUserAt: "2026-10-23T10:00:00.000Z" }),
+  ]
+  assert.deepEqual(orderRunning(rows).map((t) => t.id), ["newer", "stamped", "older"])
+})
+
+test("the Done band: the thread marked done most recently is on top; one archived before the stamp existed sorts by its rest", () => {
+  const done = (id: string, archivedAt: string | undefined, lastAssistantAt: string) =>
+    thread({ id, kind: "session", state: "archived", archived: true, runtime: "exited", archivedAt, lastAssistantAt })
+  const rows = [
+    // Rested most recently, but marked done before the other two.
+    done("rested-last", "2026-10-23T10:00:00.000Z", "2026-10-23T09:59:00.000Z"),
+    // Rested days ago, marked done just now.
+    done("marked-just-now", "2026-10-23T11:00:00.000Z", "2026-10-20T09:00:00.000Z"),
+    done("marked-between", "2026-10-23T10:30:00.000Z", "2026-10-21T09:00:00.000Z"),
+    // Archived before archivedAt existed: placed by its rest time, below every stamped one after it.
+    done("legacy", undefined, "2026-10-22T09:00:00.000Z"),
+  ]
+  assert.deepEqual(sectionThreads(rows).inactive.map((t) => t.id), ["marked-just-now", "marked-between", "rested-last", "legacy"])
 })

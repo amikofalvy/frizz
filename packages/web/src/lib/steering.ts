@@ -103,10 +103,11 @@ export function useSteeredAt(): Record<string, number> {
 export function optimisticallySteered(t: ThreadView, at: number | undefined, nowMs = Date.now(), answered?: readonly string[]): ThreadView {
   const local = at !== undefined && isOptimisticallySteering(t, at, nowMs)
   if (!local && t.deliveryInFlight !== true) return t
-  return steeredFields(t, local ? new Date(at!).toISOString() : t.lastUserAt, local ? answered : undefined)
+  const steeredAt = local ? new Date(at!).toISOString() : undefined
+  return steeredFields(t, steeredAt ?? t.lastUserAt, local ? answered : undefined, steeredAt)
 }
 
-function steeredFields(t: ThreadView, lastUserAt: string | undefined, answered?: readonly string[]): ThreadView {
+function steeredFields(t: ThreadView, lastUserAt: string | undefined, answered?: readonly string[], steeredAt?: string): ThreadView {
   return {
     ...t,
     runtime: "running",
@@ -121,10 +122,14 @@ function steeredFields(t: ThreadView, lastUserAt: string | undefined, answered?:
     pendingAsk: undefined,
     pendingQuestion: false,
     actionableInteraction: false,
-    // The steer IS a user interaction, and the running band orders by user recency (groups.ts
-    // orderByInteraction). Without this the row would enter the band at its STALE position and then
-    // jump again when the server reported this same instant a beat later.
+    // The steer IS a user interaction, and the server reports this same instant a beat later. A Running
+    // row with no entry stamp (below) is ordered by it (groups.ts orderRunning's fallback).
     lastUserAt,
+    // …and the Running band orders by when a thread ENTERED it (groups.ts orderRunning), which for a row
+    // the steer just pulled out of the queue is this instant: the top of the band, where the server's own
+    // stamp (board.ts stampRunningSince) puts it a beat later. A thread already in the band keeps the
+    // stamp it has, so a message to a running thread moves nothing.
+    runningSince: t.runningSince ?? steeredAt,
     // lastActivityAt is deliberately untouched: it is the evidence isOptimisticallySteering watches
     // for to hand the row back to server truth, so writing it here would make the hint self-sealing.
   }

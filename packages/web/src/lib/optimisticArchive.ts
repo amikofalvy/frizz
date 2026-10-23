@@ -69,6 +69,9 @@ export function optimisticallyArchived(t: ThreadView, at: number | undefined, no
     ...t,
     state: "archived",
     archived: true,
+    // The Done band orders by when a thread was marked done (groups.ts orderDone): this click, the top of
+    // the band, where the server's own stamp puts it once the archive lands.
+    archivedAt: new Date(at).toISOString(),
     // An archived thread is not waiting on the human. Left set, the row would land under Done still
     // wearing its needs-you mark and still counting toward the queue — the same half-applied state the
     // steer overlay clears in the other direction.

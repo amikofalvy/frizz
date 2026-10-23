@@ -145,6 +145,7 @@ test("every mutating method touches only its own project", () => {
     ["setSeenAt", () => a.setSeenAt("alpha-thread", "2026-08-27T01:00:00.000Z")],
     ["setTranscriptId", () => a.setTranscriptId("alpha-thread", "t1")],
     ["setState", () => a.setState("alpha-thread", "archived")],
+    ["setRunningSince", () => a.setRunningSince("alpha-thread", "2026-08-27T01:00:00.000Z")],
     ["setStateIfCurrent", () => a.setStateIfCurrent("beta-thread", "sess-beta-thread", 0, "archived")],
     ["setSnoozedUntil", () => a.setSnoozedUntil("alpha-thread", "2026-09-01T00:00:00.000Z", "wake")],
     ["setRecurringPromptBySlug", () => a.setRecurringPromptBySlug("alpha-thread", { prompt: "go", stopHook: true, heartbeat: false, postCompaction: false, intervalMs: null, armedAt: "2026-08-27T00:00:00.000Z" })],

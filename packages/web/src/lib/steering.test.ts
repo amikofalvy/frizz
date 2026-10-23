@@ -66,11 +66,19 @@ test("a steered row reads as running to every rail predicate, not just the indic
 })
 
 test("a steered row sorts to the top of the running band, where server truth will also put it", () => {
-  // The running band orders by user recency. Without the lastUserAt bump the row would enter at its
-  // stale position and then hop again when the server reported this same instant.
-  const older = queued({ id: "older", runtime: "running", needsYou: false, pendingQuestion: false, lastUserAt: new Date(SENT - 60_000).toISOString() })
+  // The running band orders by when a thread entered it (runningSince). The steer is that entry, so the
+  // row lands on top now rather than at a stale position it would hop from when the server stamps it —
+  // above a thread that has been running longer, even one messaged more recently than this send.
+  const older = queued({ id: "older", runtime: "running", needsYou: false, pendingQuestion: false, runningSince: new Date(SENT - 60_000).toISOString(), lastUserAt: new Date(SENT + 100).toISOString() })
   const steered = optimisticallySteered(queued(), SENT, SENT + 200)
+  assert.equal(steered.runningSince, new Date(SENT).toISOString())
   assert.deepEqual(orderActive([older, steered]).map((t) => t.id), ["t", "older"])
+})
+
+test("a message to a thread already running keeps its place in the running band", () => {
+  const since = new Date(SENT - 60_000).toISOString()
+  const running = queued({ runtime: "running", needsYou: false, pendingQuestion: false, runningSince: since })
+  assert.equal(optimisticallySteered(running, SENT, SENT + 200).runningSince, since)
 })
 
 test("a steered row leaves the dimmed Snoozed band, exactly as a real turn start would", () => {

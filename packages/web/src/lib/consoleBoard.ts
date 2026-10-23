@@ -1,7 +1,7 @@
 import { proxy, useSnapshot } from "valtio"
 import type { ThreadView } from "@frizz/shared"
 import { activeBandThread } from "@frizz/shared"
-import { isConsolePinned, orderByInteraction, orderQueue, queued } from "../groups.ts"
+import { isConsolePinned, orderQueue, orderRunning, queued } from "../groups.ts"
 import type { QueueDirection } from "../groups.ts"
 import type { PendingDispatchEntry } from "./pendingDispatch.ts"
 import { partitionBoard } from "./boardPartition.ts"
@@ -98,9 +98,10 @@ export function consolePinned(threads: readonly ThreadView[]): ThreadView[] {
   return [...live.filter(isConsolePinned), ...pinnedSettled].sort(byConsolePin)
 }
 
-/** Every project's running threads, most recently touched first — a project board's Running order. */
+/** Every project's running threads, the one that most recently switched to running first — a project
+ *  board's Running order (groups.ts orderRunning). */
 export function consoleRunning(threads: readonly ThreadView[]): ThreadView[] {
-  return orderByInteraction(partitionBoard(threads).live.filter(activeBandThread))
+  return orderRunning(partitionBoard(threads).live.filter(activeBandThread))
 }
 
 export interface ProjectBlock {

@@ -2663,3 +2663,102 @@ test("the thread view carries the question fences its latest sync refused, and n
   storage.close()
   rmSync(dir, { recursive: true, force: true })
 })
+
+test("board: runningSince is the instant a thread entered the Running band — kept while it stays, cleared when it leaves, kept across a restart", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "frizz-board-running-since-"))
+  const project: Project = { dir, id: "project-running-since", name: "fixture", label: "fixture", stateDir: dir, cwdSlug: "fixture" }
+  const storage = createStorage(join(dir, "ui.db"), "p")
+  // Broker rows, so the tailer's turn alone decides the runtime: in-flight spins, idle rests in the queue.
+  for (const slug of ["already-running", "queued", "never-running"]) {
+    storage.upsertSession(row({ slug, session_id: `${slug}-session`, thread_name: `frizz-${slug}` }))
+    storage.setClaudeRuntime(slug, "broker")
+  }
+  const turns: Record<string, "in-flight" | "idle"> = { "already-running": "in-flight", queued: "idle", "never-running": "idle" }
+  const tailer = {
+    get: (slug: string) => tele({
+      turn: turns[slug],
+      // The boot estimate's input for the thread that was already running when the server came up.
+      lastUserAt: slug === "already-running" ? "2026-10-23T08:00:00.000Z" : undefined,
+      lastAssistantAt: "2026-10-23T07:00:00.000Z",
+    }),
+    foreignIds: () => [],
+    subAgent: () => undefined,
+    forget: () => {},
+    start: () => {},
+    stop: () => {},
+    tick: () => {},
+  } satisfies Tailer
+  let clock = Date.parse("2026-10-23T09:00:00.000Z")
+  const read = (snapshot: { threads: { id: string; runningSince?: string }[] }) =>
+    Object.fromEntries(snapshot.threads.map((t) => [t.id, t.runningSince]))
+
+  let board = createBoard(project, storage, new Bus(), tailer, "running-since-boot-1", { now: () => clock })
+  try {
+    await board.start()
+    // Boot: a thread already in the band takes its newest user turn, not the boot instant.
+    assert.deepEqual(read(await board.snapshot()), { "already-running": "2026-10-23T08:00:00.000Z", queued: undefined, "never-running": undefined })
+    assert.equal(storage.getSession("already-running")?.running_since, "2026-10-23T08:00:00.000Z")
+
+    // A queued thread switches to running: it takes the build's instant, and is now the newest.
+    clock = Date.parse("2026-10-23T09:05:00.000Z")
+    turns.queued = "in-flight"
+    assert.deepEqual(read(board.refresh()), { "already-running": "2026-10-23T08:00:00.000Z", queued: "2026-10-23T09:05:00.000Z", "never-running": undefined })
+
+    // Staying in the band moves nothing, however many builds pass.
+    clock = Date.parse("2026-10-23T09:10:00.000Z")
+    assert.deepEqual(read(board.refresh()), { "already-running": "2026-10-23T08:00:00.000Z", queued: "2026-10-23T09:05:00.000Z", "never-running": undefined })
+
+    // Leaving clears it, on the view and the row alike.
+    clock = Date.parse("2026-10-23T09:15:00.000Z")
+    turns["already-running"] = "idle"
+    assert.equal(read(board.refresh())["already-running"], undefined)
+    assert.equal(storage.getSession("already-running")?.running_since, null)
+
+    // Coming back is a new entry: the thread that switched back most recently is the newest again.
+    clock = Date.parse("2026-10-23T09:20:00.000Z")
+    turns["already-running"] = "in-flight"
+    assert.deepEqual(read(board.refresh()), { "already-running": "2026-10-23T09:20:00.000Z", queued: "2026-10-23T09:05:00.000Z", "never-running": undefined })
+    await board.stop()
+
+    // A restart keeps every stamp: they are the row's, not the process's.
+    clock = Date.parse("2026-10-23T10:00:00.000Z")
+    board = createBoard(project, storage, new Bus(), tailer, "running-since-boot-2", { now: () => clock })
+    await board.start()
+    assert.deepEqual(read(await board.snapshot()), { "already-running": "2026-10-23T09:20:00.000Z", queued: "2026-10-23T09:05:00.000Z", "never-running": undefined })
+  } finally {
+    await board.stop()
+    storage.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("board: archivedAt is when the thread was marked done, shown only while it is archived", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "frizz-board-archived-at-"))
+  const project: Project = { dir, id: "project-archived-at", name: "fixture", label: "fixture", stateDir: dir, cwdSlug: "fixture" }
+  const storage = createStorage(join(dir, "ui.db"), "p")
+  storage.upsertSession(row({ slug: "finished", session_id: "finished-session", thread_name: "frizz-finished" }))
+  storage.setClaudeRuntime("finished", "broker")
+  const tailer = {
+    get: () => tele({ turn: "idle", lastAssistantAt: "2026-10-23T07:00:00.000Z" }),
+    foreignIds: () => [],
+    subAgent: () => undefined,
+    forget: () => {},
+    start: () => {},
+    stop: () => {},
+    tick: () => {},
+  } satisfies Tailer
+  const board = createBoard(project, storage, new Bus(), tailer, "archived-at-boot")
+  const finished = () => board.refresh().threads.find((t) => t.id === "finished")!
+  try {
+    await board.start()
+    assert.equal(finished().archivedAt, undefined)
+    storage.setState("finished", "archived", "2026-10-23T09:00:00.000Z")
+    assert.equal(finished().archivedAt, "2026-10-23T09:00:00.000Z")
+    storage.setState("finished", "open")
+    assert.equal(finished().archivedAt, undefined)
+  } finally {
+    await board.stop()
+    storage.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

@@ -9,7 +9,7 @@ import { dirname, join } from "node:path"
 import watcher from "@parcel/watcher"
 import type { BoardDelta, BoardSnapshot, ClaudeModel, ThreadView, RuntimeState, ThreadRecurringPrompt, ProviderError } from "@frizz/shared"
 import { standingQuestions, type QuestionFenceFault } from "./question-fences.ts"
-import { AskedQuestionSchema, BoardDiffer, PermissionMode, SnoozeUntil, ThreadSlug, awaitingNeedsInput, formatElapsed, awaitingStatus, awaitingSteps, isDirectSubAgent, splitDoneFrontmatter, needsInputRequired, nameQuestionAnswer, questionAnswerMessage, questionsCancelledWakeMessage, type AskedQuestion, type NamedQuestionAnswer, type PermissionMode as PermissionModeValue, type QuestionAnswer, type QuestionDismissal } from "@frizz/shared"
+import { AskedQuestionSchema, BoardDiffer, activeBandThreadAt, PermissionMode, SnoozeUntil, ThreadSlug, awaitingNeedsInput, formatElapsed, awaitingStatus, awaitingSteps, isDirectSubAgent, splitDoneFrontmatter, needsInputRequired, nameQuestionAnswer, questionAnswerMessage, questionsCancelledWakeMessage, type AskedQuestion, type NamedQuestionAnswer, type PermissionMode as PermissionModeValue, type QuestionAnswer, type QuestionDismissal } from "@frizz/shared"
 import type { Bus } from "./bus.ts"
 import type { Project } from "./project.ts"
 import { isHeadlessRow, isBrokerClaudeRow, sessionTitleLocked, type ThreadQuestionRow } from "./storage.ts"
@@ -174,6 +174,16 @@ function timeOrNegInf(s: string | null | undefined): number {
   if (!s) return -Infinity
   const t = Date.parse(s)
   return Number.isFinite(t) ? t : -Infinity
+}
+
+// The best guess at when a thread already in the Running band at boot entered it (stampRunningSince):
+// its newest user turn or its dispatch, whichever is later — the key the band sorted by before it had
+// an entry instant of its own. Undefined when the thread carries neither.
+function enteredBeforeBoot(t: Pick<ThreadView, "lastUserAt" | "spawnedAt">): string | undefined {
+  const user = timeOrNegInf(t.lastUserAt)
+  const spawned = timeOrNegInf(t.spawnedAt)
+  if (user === -Infinity && spawned === -Infinity) return undefined
+  return user >= spawned ? t.lastUserAt : t.spawnedAt
 }
 
 // EFFECTIVE lifecycle state for a registered session row (open|archived). An explicit state write wins;
@@ -1978,6 +1988,10 @@ function sessionThreadView(
     lastFence: tele?.lastFence,
     seenAt: row.seen_at ?? undefined,
     state,
+    // The two bands' order keys. `archivedAt` only while archived, so a reopened row never carries one;
+    // `runningSince` is kept by stampRunningSince (createBoard), which this build's view may still lag.
+    archivedAt: state === "archived" ? row.archived_at ?? undefined : undefined,
+    runningSince: row.running_since ?? undefined,
     snoozedUntil,
     // Only meaningful while the snooze is still pending — a prompt without a live deadline is an
     // already-delivered (or superseded) bump the row has not been swept clean of yet.
@@ -2462,6 +2476,39 @@ export function createBoard(
     notifyPrimed = true
   }
 
+  // THE RUNNING BAND'S ORDER: when each thread last switched INTO it (maintainer 2026-10-23: "The most
+  // recent agent to switch back into the running status should be at the top of running").
+  //
+  // No single transcript event is that switch. A thread enters the band on a human reply, on a wake
+  // Frizz delivers, on a sub-agent's report waking a parked thread, on a fresh dispatch — and stays in
+  // it across a `working` rest, a mid-turn message or a child returning. The band itself is the one
+  // thing that knows, so the board watches it: the first build that finds a thread in the band
+  // (shared activeBandThreadAt, the same predicate the rail counts with) stamps the build's instant, and
+  // the first that finds it outside clears it. The column is the memory of which threads were in the
+  // band, so the comparison needs no state of its own and a restart keeps the order.
+  //
+  // The row is written and the view replaced together, so this build already ships the stamp; the next
+  // build reads it off the row. A write happens only on a band edge, which is a handful per turn.
+  //
+  // A thread found in the band with no stamp on the first build after boot entered it while the server
+  // was down, or before the column existed. It takes its newest user turn (or its dispatch) instead of
+  // the boot instant, which is the order the band used before, rather than a tie for every such row.
+  let runningPrimed = false
+  function stampRunningSince(threads: ThreadView[], assembledAtMs: number): void {
+    const at = new Date(assembledAtMs).toISOString()
+    for (let i = 0; i < threads.length; i++) {
+      const t = threads[i]!
+      const stamped = t.runningSince !== undefined
+      // A queued thread is never in the band (inActiveBand), and that is most of a board's live rows.
+      const inBand = t.needsYou === true ? false : activeBandThreadAt(t, assembledAtMs)
+      if (inBand === stamped) continue
+      const since = inBand ? (runningPrimed ? at : enteredBeforeBoot(t) ?? at) : null
+      storage.setRunningSince(t.id, since)
+      threads[i] = { ...t, runningSince: since ?? undefined }
+    }
+    runningPrimed = true
+  }
+
   // The file-backed migration cache is recomputed only on a full rebuild (the `.frizz` watcher catches
   // changes to the top-level `<slug>.md` files this reads, and only those — see
   // isBoardRelevantFrizzPath). Overlay-only refreshes remain filesystem-free.
@@ -2626,6 +2673,7 @@ export function createBoard(
       homeDir: homedir(),
     }
     const sessionThreads = buildSessionThreads(assembledAtMs)
+    stampRunningSince(sessionThreads, assembledAtMs)
     // REGISTERED ROWS ONLY reach these two, and that is the point rather than an oversight. A snooze
     // is a durable column on a row a foreign session does not have, and a needs-decision notification
     // is frizz telling you a WORKER is waiting on you — a terminal session is waiting on you in the

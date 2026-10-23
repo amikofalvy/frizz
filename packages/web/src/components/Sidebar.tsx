@@ -319,8 +319,8 @@ export function Sidebar() {
               ))}
               {runningCount > 0 && rested.length > 0 && <hr className="my-3 border-border/50" />}
               {runningCount > 0 && <SectionHeader label="Running" count={runningCount} />}
-              {/* Newest first, the band's own order (orderByInteraction): a thread that starts lands at
-                  the top, so that is where the row standing in for it is drawn. */}
+              {/* Newest first, the band's own order (orderRunning): a thread that starts lands at the
+                  top, so that is where the row standing in for it is drawn. */}
               {[...starting].reverse().map((entry) => <StartingRow key={entry.key} entry={entry} />)}
               {/* NEVER the scroll marker: no Running row has a queue card. A row arrives here still
                   named by the reading rule on every send — the card it left is fading under the

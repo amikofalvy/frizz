@@ -1511,3 +1511,74 @@ test("pr_watch.kind: an issue watcher stores its kind, an older caller means pul
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test("archived_at: every archiving write stamps when the thread was marked done, a repeat keeps it, reopening clears it", () => {
+  const dir = mkdtempSync(join(tmpdir(), "frizz-storage-archived-at-"))
+  const path = join(dir, "ui.db")
+  // Every live install's file predates both columns, so the ALTER in ensureStorageSchema must add them.
+  const preColumn = new Database(path)
+  const stripped = STORAGE_SCHEMA.replace(/^\s*archived_at\s+TEXT,\n\s*running_since\s+TEXT,\n/m, "")
+  assert.notEqual(stripped, STORAGE_SCHEMA, "the strip found the column lines (keep this regex with the DDL)")
+  preColumn.exec(stripped)
+  preColumn.close()
+  try {
+    let s = createStorage(path, "p")
+    s.upsertSession(row({ slug: "by-button", state: "open" }))
+    s.upsertSession(row({ slug: "guarded", session_id: "guarded-sid", state: "open" }))
+    s.upsertSession(row({ slug: "completed", session_id: "completed-sid", state: "open" }))
+
+    s.setState("by-button", "archived", "2026-10-23T10:00:00.000Z")
+    assert.equal(s.getSession("by-button")?.archived_at, "2026-10-23T10:00:00.000Z")
+    s.setState("by-button", "archived", "2026-10-23T11:00:00.000Z")
+    assert.equal(s.getSession("by-button")?.archived_at, "2026-10-23T10:00:00.000Z", "marking a done thread done again does not move it")
+    s.setState("by-button", "open")
+    assert.equal(s.getSession("by-button")?.archived_at, null, "a reopened thread carries no done instant")
+    s.setState("by-button", "archived", "2026-10-23T12:00:00.000Z")
+    assert.equal(s.getSession("by-button")?.archived_at, "2026-10-23T12:00:00.000Z", "marked done again after a reopen: the new instant")
+
+    assert.equal(s.setStateIfCurrent("guarded", "other-sid", 0, "archived", "2026-10-23T10:30:00.000Z"), false)
+    assert.equal(s.getSession("guarded")?.archived_at, null, "a stale session writes nothing")
+    assert.equal(s.setStateIfCurrent("guarded", "guarded-sid", 0, "archived", "2026-10-23T10:30:00.000Z"), true)
+    assert.equal(s.getSession("guarded")?.archived_at, "2026-10-23T10:30:00.000Z")
+    s.setStateIfCurrent("guarded", "guarded-sid", 0, "open")
+    assert.equal(s.getSession("guarded")?.archived_at, null)
+
+    assert.equal(s.completeIfCurrent("completed", "completed-sid", 0, "2026-10-23T10:45:00.000Z"), true)
+    assert.equal(s.getSession("completed")?.archived_at, "2026-10-23T10:45:00.000Z")
+    assert.equal(s.completeIfCurrent("completed", "completed-sid", 0, "2026-10-23T13:00:00.000Z"), true)
+    assert.equal(s.getSession("completed")?.archived_at, "2026-10-23T10:45:00.000Z", "a second completion keeps the first instant")
+
+    // The default instant is the write's own moment.
+    s.upsertSession(row({ slug: "now", session_id: "now-sid", state: "open" }))
+    const before = Date.now()
+    s.setState("now", "archived")
+    const stamped = Date.parse(s.getSession("now")?.archived_at ?? "")
+    assert.ok(stamped >= before && stamped <= Date.now())
+    s.close()
+
+    s = createStorage(path, "p")
+    assert.equal(s.getSession("completed")?.archived_at, "2026-10-23T10:45:00.000Z", "survives a restart")
+    s.close()
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("running_since: set and cleared by slug, and kept across a restart", () => {
+  const dir = mkdtempSync(join(tmpdir(), "frizz-storage-running-since-"))
+  const path = join(dir, "ui.db")
+  try {
+    let s = createStorage(path, "p")
+    s.upsertSession(row({ slug: "spinning", state: "open" }))
+    assert.equal(s.getSession("spinning")?.running_since, null)
+    s.setRunningSince("spinning", "2026-10-23T10:00:00.000Z")
+    s.close()
+    s = createStorage(path, "p")
+    assert.equal(s.getSession("spinning")?.running_since, "2026-10-23T10:00:00.000Z")
+    s.setRunningSince("spinning", null)
+    assert.equal(s.getSession("spinning")?.running_since, null)
+    s.close()
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

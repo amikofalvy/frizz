@@ -143,8 +143,8 @@ function interactionAt(t: ThreadView): number {
 // it let a CHILD finishing reshuffle the parent (maintainer 2026-07-16: "it should just be based on
 // when the agent rested … user turns don't actually factor in"). User turns don't factor in either:
 // a steer flips the thread to running, and only its next REST re-times it. A RUNNING row is not in the
-// queue/rested band — it belongs to the active rail, ordered by user recency — so it keeps
-// `interactionAt` (max lastUserAt/spawnedAt), which also guards against mid-turn churn. Missing rest
+// queue/rested band — the Running band orders by its own entry instant (orderRunning), and falls back to
+// this — so it keeps `interactionAt` (max lastUserAt/spawnedAt), which also guards against mid-turn churn. Missing rest
 // time (never produced output yet) → `interactionAt` (spawn/last-user). `isActivelyRunning` is hoisted.
 function lastActiveAt(t: ThreadView): number {
   if (isActivelyRunning(t)) return interactionAt(t)
@@ -180,21 +180,46 @@ export function sortThreads(threads: readonly ThreadView[]): ThreadView[] {
 }
 
 // Order a thread set by most-recent LAST-ACTIVE first (lastActiveAt), id-tiebroken. Used for the
-// running band and the Snoozed/Inactive sections — surfaces where newest-on-top is always wanted (the
-// FIFO/LIFO preference governs only the queue/rested band via orderQueue). A running row keys off its
-// stable user-interaction time (lastActiveAt's churn guard), so live agent motion never reshuffles it;
-// an at-rest row keys off when it came to rest, matching its "Last active" label. New array; input
-// untouched.
+// Snoozed and External bands — surfaces where newest-on-top is always wanted (the FIFO/LIFO preference
+// governs only the queue/rested band via orderQueue). A running row keys off its stable user-interaction
+// time (lastActiveAt's churn guard), so live agent motion never reshuffles it; an at-rest row keys off
+// when it came to rest, matching its "Last active" label. Running and Done have keys of their own:
+// orderRunning and orderDone. New array; input untouched.
 export function orderByInteraction(threads: readonly ThreadView[]): ThreadView[] {
-  return byLastActive(threads, -1)
+  return byKey(threads, lastActiveAt, -1)
 }
 
-// Sort by lastActiveAt with each thread's key read ONCE. The comparator used to derive it — a runtime
-// check and a Date.parse per side — on every comparison, which for the Done band of a long-lived board
-// is ten thousand derivations to order a thousand rows (12ms of a 32ms rail render, production bundle,
+// THE RUNNING BAND: the thread that most recently switched INTO it first (maintainer 2026-10-23: "The
+// most recent agent to switch back into the running status should be at the top of running"). The key
+// is `runningSince`, which the server stamps on the first board build that finds the thread in the band
+// and keeps until it leaves (board.ts stampRunningSince) — so a row moves when it ENTERS the band and
+// never while it is in it: not on a working rest, a mid-turn message or a child returning. A row with
+// no stamp (a server that predates it) falls back to the band's old key, lastActiveAt. New array.
+export function orderRunning(threads: readonly ThreadView[]): ThreadView[] {
+  return byKey(threads, runningAt, -1)
+}
+
+function runningAt(t: ThreadView): number {
+  const at = Date.parse(t.runningSince ?? "")
+  return Number.isFinite(at) ? at : lastActiveAt(t)
+}
+
+// THE DONE BAND'S KEY: when the thread was marked done (`archivedAt`, stamped by the server's archiving
+// write), so the thread marked done most recently is at the top (maintainer 2026-10-23). A thread
+// archived before that stamp existed falls back to its rest time, which a later archive always passes:
+// a thread is marked done after it last rested. Reads only the thread itself, never the clock — the
+// Done band's order memo (orderDone) depends on that.
+function doneAt(t: ThreadView): number {
+  const at = Date.parse(t.archivedAt ?? "")
+  return Number.isFinite(at) ? at : lastActiveAt(t)
+}
+
+// Sort by `key` with each thread's key read ONCE. The comparator used to derive it — a runtime check
+// and a Date.parse per side — on every comparison, which for the Done band of a long-lived board is ten
+// thousand derivations to order a thousand rows (12ms of a 32ms rail render, production bundle,
 // 2026-10-13). `dir` 1 = oldest first, -1 = newest first; ties break on the slug, ascending, either way.
-function byLastActive(threads: readonly ThreadView[], dir: 1 | -1): ThreadView[] {
-  const keyed = threads.map((t) => ({ t, at: lastActiveAt(t) }))
+function byKey(threads: readonly ThreadView[], key: (t: ThreadView) => number, dir: 1 | -1): ThreadView[] {
+  const keyed = threads.map((t) => ({ t, at: key(t) }))
   keyed.sort((a, b) => {
     const d = (a.at - b.at) * dir
     return d !== 0 ? d : a.t.id.localeCompare(b.t.id)
@@ -217,7 +242,7 @@ function byLastActive(threads: readonly ThreadView[], dir: 1 | -1): ThreadView[]
 // the stable user-interaction time for a running row, so agent tool churn never reorders a card.
 // id-tiebroken for a stable order among equal-age rows.
 export function orderQueue(threads: readonly ThreadView[], direction: QueueDirection = "fifo"): ThreadView[] {
-  return byLastActive(threads, direction === "lifo" ? -1 : 1)
+  return byKey(threads, lastActiveAt, direction === "lifo" ? -1 : 1)
 }
 
 // ── SESSION-FIRST QUEUE ──────────────────────────────────────────────────────────────────────────
@@ -728,7 +753,8 @@ export function offersRetry(t: ThreadView): boolean {
 // "totally defeats the purpose of the scroll position indicator"; running agents "should not render in
 // the queue at all"). Putting the cue first (maintainer 2026-08-08) aligns the rail's top with the
 // workpane's top: the first card in the queue is now opposite the first row in the rail. Active rows have
-// no queue card, so their interaction-recency order never affects the marker — grouping them below just
+// no queue card, so their own order (orderRunning: newest entry into the band first) never affects the
+// marker — grouping them below just
 // keeps everything that isn't waiting on the human out of the rested run.
 //
 // This ORDER IS THE RENDER ORDER: the Sidebar splits the result with partitionActive and draws the two
@@ -737,7 +763,7 @@ export function offersRetry(t: ThreadView): boolean {
 export function orderActive(threads: readonly ThreadView[], direction: QueueDirection = "fifo"): ThreadView[] {
   const running = threads.filter(inActiveBand)
   const rested = threads.filter((t) => !inActiveBand(t))
-  return [...orderQueue(rested, direction), ...orderByInteraction(running)]
+  return [...orderQueue(rested, direction), ...orderRunning(running)]
 }
 
 // Split an ALREADY-ordered list (see orderActive) into its Active/Rested bands WITHOUT re-sorting —
@@ -753,8 +779,8 @@ export function partitionActive(active: readonly ThreadView[]): { running: Threa
 }
 
 // Partition threads into the thread-derived sidebar sections. `active` is the Active+Rested section and
-// is banded by orderActive (spinning rows first, then the queue's own order); Snoozed and Done are plain
-// interaction recency.
+// is banded by orderActive (the queue's own order, then the Running band newest entry first); Snoozed
+// is plain interaction recency and Done is newest marked done first (orderDone).
 // `pinned` rides beside the three SectionKey buckets rather than inside them (see isPinned): a pinned
 // row must be claimable by NO band, and keeping it out of the Record is what makes that true by
 // construction instead of by every band remembering to exclude it.
@@ -797,11 +823,11 @@ export function sectionThreads(threads: readonly ThreadView[], direction: QueueD
 // bundle). The band arrives in board order, which a delta never reorders, so "the same members" is one
 // identity check per slot; a thread archived, reopened or replaced misses and sorts afresh.
 //
-// The same-objects rule is what makes the reuse exact: a Done row's sort key (lastActiveAt) reads only
+// The same-objects rule is what makes the reuse exact: a Done row's sort key (doneAt) reads only
 // the thread itself, never the clock. Two entries, because the rail and the phone board each section
 // the same board with their own overlays in between.
 const doneOrders: { input: readonly ThreadView[]; out: ThreadView[] }[] = []
-function orderDone(input: ThreadView[]): ThreadView[] {
+export function orderDone(input: ThreadView[]): ThreadView[] {
   for (const hit of doneOrders) {
     if (hit.input === input) return hit.out
     if (hit.input.length !== input.length) continue
@@ -814,7 +840,7 @@ function orderDone(input: ThreadView[]): ThreadView[] {
     }
     if (same) return hit.out
   }
-  const out = orderByInteraction(input)
+  const out = byKey(input, doneAt, -1)
   doneOrders.unshift({ input, out })
   doneOrders.length = Math.min(doneOrders.length, 2)
   return out

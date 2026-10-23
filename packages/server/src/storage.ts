@@ -93,6 +93,14 @@ export interface SessionRow {
   // The same, for the CONSOLE's "By status" view — a second shelf, independent of `pinned_at`, whose
   // instants order the Console's pinned band across every project (ThreadView.consolePinnedAt).
   console_pinned_at?: string | null
+  // When the thread was marked done: stamped by every write that archives it (setState, setStateIfCurrent,
+  // completeIfCurrent), kept if it was already archived, and cleared on reopen. The Done band's order
+  // (ThreadView.archivedAt). NULL on a row archived before the column existed (2026-10-23).
+  archived_at?: string | null
+  // When the board first found this thread in the Running band, cleared once it finds it outside
+  // (board.ts stampRunningSince). The Running band's order (ThreadView.runningSince). Kept in the row
+  // rather than in memory so a server restart does not reshuffle the band.
+  running_since?: string | null
   // The thread's RECURRING PROMPT — one piece of text with up to three independent triggers
   // (scheduler.ts SOURCES 4, 5 and 7). `recurring_armed_at` is the GENERATION: editing the text or the
   // cadence mints a new one, so a delivery already queued under the old settings reads as superseded.
@@ -690,7 +698,8 @@ export interface Storage {
   setExitedIfCurrent(slug: string, sessionId: string, generation: number, exited: boolean): boolean
   // Completion is one CAS write: a verified stopped runtime becomes exited + Done together, while
   // clearing stale attention/wake state. A replaced owner/generation observes zero changes.
-  completeIfCurrent(slug: string, sessionId: string, generation: number): boolean
+  // `at` stamps `archived_at` (now by default), unless the row was already archived.
+  completeIfCurrent(slug: string, sessionId: string, generation: number, at?: string): boolean
   setRestedAt(slug: string, at: string): void
   setRestedAtIfCurrent(slug: string, sessionId: string, generation: number, at: string): boolean
   setSeenAt(slug: string, at: string): void
@@ -710,12 +719,16 @@ export interface Storage {
   // column is no longer what anything reads: `effectiveSessionState` (board.ts) consults it only when
   // `state` is NULL, and every row the dispatch path creates has an explicit `state`. So the legacy
   // setter's one caller (the archiveThread RPC) reported success while the card never moved.
-  setState(slug: string, state: "open" | "archived"): void
+  //
+  // Archiving stamps `archived_at` with `at` (now by default), keeping the instant a row that was
+  // already archived holds; opening clears it.
+  setState(slug: string, state: "open" | "archived", at?: string): void
   setStateIfCurrent(
     slug: string,
     sessionId: string,
     generation: number,
     state: "open" | "archived",
+    at?: string,
   ): boolean
   // `prompt` arms the deadline as a scheduled BUMP: the waker resumes the thread with exactly this
   // text when the instant crosses. Omitted/null keeps the historical reminder behavior (the card
@@ -727,6 +740,10 @@ export interface Storage {
   // Pin/unpin: the instant is the pinned band's order, null clears it. Unguarded like setSnoozedUntil —
   // the RPC resolves the owning session first.
   setPinnedAt(slug: string, at: string | null): void
+  // The Running band's entry instant (SessionRow.running_since): the board writes it when it first finds
+  // the thread in the band and clears it (null) when it first finds it outside. Unguarded: the board
+  // writes what the row it just built from says.
+  setRunningSince(slug: string, at: string | null): void
   // Rearrange the pinned band to `slugs`, top first, by re-dealing the instants it already holds — see
   // reorderPinnedStmts below. Pins and unpins nothing: a slug not on the shelf is ignored, and a pinned
   // thread the caller did not list keeps its place after the ones it did.
@@ -1133,6 +1150,10 @@ export const STORAGE_SCHEMA = `
       worker_surface TEXT,
       -- The Console's own pin (SessionRow.console_pinned_at). Also in the ALTER list below.
       console_pinned_at TEXT,
+      -- The Done and Running bands' order keys (SessionRow.archived_at / running_since). Both in the
+      -- ALTER list below.
+      archived_at TEXT,
+      running_since TEXT,
       -- THE RECURRING PROMPT (scheduler.ts SOURCES 4, 5 and 7): one text, three independent triggers —
       -- every time the thread rests, every N ms on a clock, and/or every time its context is compacted.
       -- All flags 0 = off; there is no separate enable column, because another flag could only ever
@@ -1445,7 +1466,7 @@ export function ensureStorageSchema(db: Database): void {
   // a file that already exists, and every live install predates any column below — so each rides one
   // additive ALTER here, exactly the stack the schema comment above says the unified file was born
   // without. Keep the list append-only; the try/catch is the "already there" case.
-  for (const column of ["pinned_at TEXT", "acp_agent TEXT", "worker_surface TEXT", "console_pinned_at TEXT"]) {
+  for (const column of ["pinned_at TEXT", "acp_agent TEXT", "worker_surface TEXT", "console_pinned_at TEXT", "archived_at TEXT", "running_since TEXT"]) {
     try {
       db.exec(`ALTER TABLE session ADD COLUMN ${column}`)
     } catch {
@@ -1834,7 +1855,8 @@ export function createStorage(source: string | Database, projectId: string): Sto
   `)
   const completeIfCurrentStmt = scope.prepare(`
     UPDATE session
-    SET exited = 1, state = 'archived', archived = 1, unread = 0, snoozed_until = NULL, snooze_prompt = NULL
+    SET exited = 1, state = 'archived', archived = 1, unread = 0, snoozed_until = NULL, snooze_prompt = NULL,
+      archived_at = CASE WHEN state = 'archived' AND archived_at IS NOT NULL THEN archived_at ELSE ? END
     WHERE project_id = @project_id AND slug = ? AND session_id = ? AND runtime_generation = ?
   `)
   const restedStmt = scope.prepare("UPDATE session SET rested_at = ? WHERE project_id = @project_id AND slug = ?")
@@ -1848,16 +1870,23 @@ export function createStorage(source: string | Database, projectId: string): Sto
     UPDATE session SET transcript_id = ?
     WHERE project_id = @project_id AND slug = ? AND session_id = ? AND runtime_generation = ?
   `)
+  // The Done band's order key, written by every archiving statement: archiving stamps the instant it is
+  // handed, unless the row is ALREADY archived with one (a second Mark as done does not move the row to
+  // the top of Done), and opening clears it. SET reads the row as it was before the update, so `state`
+  // and `archived_at` here are the old values. Takes two parameters: the archiving flag, then the instant.
+  const ARCHIVED_AT_SET = "archived_at = CASE WHEN ? = 1 THEN CASE WHEN state = 'archived' AND archived_at IS NOT NULL THEN archived_at ELSE ? END ELSE NULL END"
   const stateStmt = scope.prepare(
-    "UPDATE session SET state = ?, archived = ?, unread = CASE WHEN ? = 1 THEN 0 ELSE unread END, snoozed_until = CASE WHEN ? = 1 THEN NULL ELSE snoozed_until END, snooze_prompt = CASE WHEN ? = 1 THEN NULL ELSE snooze_prompt END WHERE project_id = @project_id AND slug = ?",
+    `UPDATE session SET state = ?, archived = ?, unread = CASE WHEN ? = 1 THEN 0 ELSE unread END, snoozed_until = CASE WHEN ? = 1 THEN NULL ELSE snoozed_until END, snooze_prompt = CASE WHEN ? = 1 THEN NULL ELSE snooze_prompt END, ${ARCHIVED_AT_SET} WHERE project_id = @project_id AND slug = ?`,
   )
   const stateIfCurrentStmt = scope.prepare(`
     UPDATE session SET state = ?, archived = ?,
       unread = CASE WHEN ? = 1 THEN 0 ELSE unread END,
       snoozed_until = CASE WHEN ? = 1 THEN NULL ELSE snoozed_until END,
-      snooze_prompt = CASE WHEN ? = 1 THEN NULL ELSE snooze_prompt END
+      snooze_prompt = CASE WHEN ? = 1 THEN NULL ELSE snooze_prompt END,
+      ${ARCHIVED_AT_SET}
     WHERE project_id = @project_id AND slug = ? AND session_id = ? AND runtime_generation = ?
   `)
+  const runningSinceStmt = scope.prepare("UPDATE session SET running_since = ? WHERE project_id = @project_id AND slug = ?")
   const snoozedUntilStmt = scope.prepare("UPDATE session SET snoozed_until = ?, snooze_prompt = ? WHERE project_id = @project_id AND slug = ?")
   const pinnedAtStmt = scope.prepare("UPDATE session SET pinned_at = ? WHERE project_id = @project_id AND slug = ?")
   // THE PINNED BAND'S ORDER IS ITS INSTANTS (web groups.ts sectionThreads: oldest pin first, slug on a
@@ -2844,10 +2873,8 @@ export function createStorage(source: string | Database, projectId: string): Sto
     setExited: (slug, exited) => void exitedStmt.run(exited ? 1 : 0, slug),
     setExitedIfCurrent: (slug, sessionId, generation, exited) =>
       exitedIfCurrentStmt.run(exited ? 1 : 0, slug, sessionId, generation).changes === 1,
-    completeIfCurrent: (slug, sessionId, generation) =>
-      completeIfCurrentStmt.run(slug, sessionId, generation).changes === 1,
-    // Four flags: archived, then the unread / snoozed_until / snooze_prompt CASE guards, in
-    // statement order.
+    completeIfCurrent: (slug, sessionId, generation, at = new Date().toISOString()) =>
+      completeIfCurrentStmt.run(at, slug, sessionId, generation).changes === 1,
     setRestedAt: (slug, at) => void restedStmt.run(at, slug),
     setRestedAtIfCurrent: (slug, sessionId, generation, at) =>
       restedIfCurrentStmt.run(at, slug, sessionId, generation).changes === 1,
@@ -2855,22 +2882,28 @@ export function createStorage(source: string | Database, projectId: string): Sto
     setTranscriptId: (slug, transcriptId) => void transcriptIdStmt.run(transcriptId, slug),
     setTranscriptIdIfCurrent: (slug, sessionId, generation, transcriptId) =>
       transcriptIdIfCurrentStmt.run(transcriptId, slug, sessionId, generation).changes === 1,
-    setState: (slug, state) =>
+    // Five flags: archived, then the unread / snoozed_until / snooze_prompt / archived_at CASE guards,
+    // in statement order, with archived_at's instant after its flag.
+    setState: (slug, state, at = new Date().toISOString()) =>
       void stateStmt.run(
         state,
         state === "archived" ? 1 : 0,
         state === "archived" ? 1 : 0,
         state === "archived" ? 1 : 0,
         state === "archived" ? 1 : 0,
+        state === "archived" ? 1 : 0,
+        at,
         slug,
       ),
-    setStateIfCurrent: (slug, sessionId, generation, state) =>
+    setStateIfCurrent: (slug, sessionId, generation, state, at = new Date().toISOString()) =>
       stateIfCurrentStmt.run(
         state,
         state === "archived" ? 1 : 0,
         state === "archived" ? 1 : 0,
         state === "archived" ? 1 : 0,
         state === "archived" ? 1 : 0,
+        state === "archived" ? 1 : 0,
+        at,
         slug,
         sessionId,
         generation,
@@ -2883,6 +2916,7 @@ export function createStorage(source: string | Database, projectId: string): Sto
     setSnoozedUntilIfCurrent: (slug, sessionId, generation, until) =>
       snoozedUntilIfCurrentStmt.run(until, slug, sessionId, generation).changes === 1,
     setPinnedAt: (slug, at) => void pinnedAtStmt.run(at, slug),
+    setRunningSince: (slug, at) => void runningSinceStmt.run(at, slug),
     reorderPinned: (slugs) => reorderPinned(slugs),
     setConsolePinnedAt: (slug, at) => void consolePinnedAtStmt.run(at, slug),
     placeConsolePins: (pins) => placeConsolePins(pins),

@@ -3786,6 +3786,16 @@ export const ThreadView = z.object({
   foreign: z.boolean().optional(),
   // ui.db lifecycle for session threads (open|archived) — written ONLY by explicit Archive/Reopen.
   state: z.enum(["open", "archived"]).optional(),
+  // The instant the thread was marked done (session.archived_at), present while it is archived. The
+  // Done band's order: the one marked done most recently is at its top (maintainer 2026-10-23). Absent
+  // on a thread archived before the column existed, which the band places by its rest time instead.
+  archivedAt: z.string().optional(),
+  // The instant this thread last ENTERED the Running band (session.running_since), present while it is
+  // in it: the board stamps it the first build that finds the thread there and clears it the first
+  // build that does not. The Running band's order: the thread that most recently switched back to
+  // running is at its top (maintainer 2026-10-23). A thread that stays in the band keeps its instant, so
+  // a working rest, a sub-agent returning or a mid-turn message never moves it.
+  runningSince: z.string().optional(),
   // Exact durable user snooze. While this instant is in the future, an otherwise-resting thread is
   // suppressed from Queue and shown dimmed in Held. Hard interactive gates (question, permission,
   // native approval, crash) deliberately break through it. Expired values are cleared server-side.
@@ -4138,6 +4148,13 @@ export function isActivelyRunning(t: ThreadView): boolean {
 }
 
 export function sectionOf(t: ThreadView): SectionKey | null {
+  return sectionAt(t, Date.now())
+}
+
+/** `sectionOf` on a clock the caller already sampled — the server's board build reads every thread on
+ *  one. A separate name rather than an optional parameter, because `sectionOf` and `activeBandThread`
+ *  are handed to `.filter` bare, which would pass an array index in as the clock. */
+export function sectionAt(t: ThreadView, nowMs: number): SectionKey | null {
   // MAINTAINER 2026-07-09 (v2 sections): ONE section for open work — anything running, awaiting the
   // human, or machine-awaiting lands here (the split sections made seen-clearance visibly shuffle rows
   // between Needs-you and Working on click, which read as an unread feature). It is the Active AND
@@ -4153,7 +4170,7 @@ export function sectionOf(t: ThreadView): SectionKey | null {
   // Only truthful human/future-timer waiters split into the labeled, dimmed Snoozed band. Everything else
   // open — running, needs-you, bare rest, done-fenced, awaiting-its-own-subs, or an awaiting
   // `session`/hintless wait — belongs to the Active/Rested section, which band decided downstream.
-  if (isSnoozed(t)) return "snoozed"
+  if (isSnoozed(t, nowMs)) return "snoozed"
   return "active"
 }
 
@@ -4192,8 +4209,13 @@ export function inActiveBand(t: ThreadView): boolean {
  * nothing about whether that project has work in flight.
  */
 export function activeBandThread(t: ThreadView): boolean {
+  return activeBandThreadAt(t, Date.now())
+}
+
+/** `activeBandThread` on a clock the caller already sampled (see sectionAt). */
+export function activeBandThreadAt(t: ThreadView, nowMs: number): boolean {
   if (t.kind !== "session" || t.foreign === true) return false
-  return sectionOf(t) === "active" && inActiveBand(t)
+  return sectionAt(t, nowMs) === "active" && inActiveBand(t)
 }
 
 /**

@@ -26,6 +26,7 @@ test("a clicked Mark-as-done lands the row under Done immediately, not after the
   assert.equal(optimistic.state, "archived")
   assert.equal(sectionOf(optimistic), "inactive", "the rail puts it under Done on the click alone")
   assert.equal(needsAction(optimistic), false, "and it stops counting as something the human owes")
+  assert.equal(optimistic.archivedAt, new Date(clicked).toISOString(), "and it is the newest thing marked done, so it tops the band")
 })
 
 test("a still-running thread is left where it is — that completion asks first", () => {
