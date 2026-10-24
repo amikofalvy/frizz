@@ -144,3 +144,42 @@ test("thread/settings/update still exists for live permission changes", { skip }
     assert.ok(accepted.has(field), `thread/settings/update accepts '${field}'`)
   }
 })
+
+/** `codex features list` read from a Codex home with no config.toml, so each flag's state is its DEFAULT. */
+function featureStates(overrides: string[] = []): Map<string, string> {
+  const home = mkdtempSync(join(tmpdir(), "frizz-codex-features-"))
+  try {
+    const out = execFileSync(codexBin, ["features", "list", ...overrides], {
+      encoding: "utf8",
+      timeout: 30_000,
+      env: { ...process.env, CODEX_HOME: home },
+    })
+    const states = new Map<string, string>()
+    // Three columns padded with two or more spaces: name, stage ("under development" has a single space), state.
+    for (const line of out.split("\n")) {
+      const m = line.match(/^(\S+)\s{2,}.+?\s{2,}(true|false)\s*$/)
+      if (m) states.set(m[1], m[2])
+    }
+    return states
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+}
+
+// Frizz reads a Codex thread's history from its plain `rollout-*.jsonl` (codex.ts, transcript.ts,
+// codex-quota.ts) and has no zstd reader. Codex can compress a rollout untouched for 7 days into
+// `.jsonl.zst` behind `local_thread_store_compression`, which is under development and off by default
+// through 0.164.0 (codex-rs/rollout/src/compression.rs at the pinned commit, read 2026-10-23). A release
+// that turns it on would empty the transcript of every Codex thread older than a week, with no error, so
+// the bump has to stop here first. The forced-on read proves the parse can see `true` at all, so a
+// reworded listing cannot pass by matching nothing.
+test("the pinned codex leaves cold-rollout compression off by default", { skip }, () => {
+  const flag = "local_thread_store_compression"
+  assert.equal(
+    featureStates().get(flag),
+    "false",
+    `${flag} is on by default or no longer listed: Codex may now write cold rollouts as .jsonl.zst, ` +
+      "which Frizz cannot read. Teach the rollout readers zstd (or switch the flag off for workers) before this pin lands.",
+  )
+  assert.equal(featureStates(["-c", `features.${flag}=true`]).get(flag), "true", "the listing parse reads a flag that is on")
+})
