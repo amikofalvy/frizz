@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import type { ThreadView } from "@frizz/shared"
-import { consoleCardOrder, consolePinPlacements, projectBlocks } from "./consoleBoard.ts"
+import { consoleCardOrder, consoleDone, consolePinPlacements, consoleSnoozed, projectBlocks } from "./consoleBoard.ts"
 
 const t = (id: string): ThreadView => ({ id }) as ThreadView
 const pinned = (id: string, consolePinnedAt: string, over: Partial<ThreadView> = {}): ThreadView =>
@@ -110,4 +110,48 @@ test("with no room between the neighbours, the shelf's own instants are dealt ag
   // A list that is not one move — stale, or naming a thread not on the shelf — is dealt the same way.
   const stale = consolePinPlacements(shelf, ["q~d", "nope", "p~c"])
   assert.deepEqual(apply(shelf, stale), ["q~d", "p~c", "p~a", "q~b", "p~e"], "listed rows lead; the unlisted keep their order after them")
+})
+
+// SNOOZED AND DONE, "By status"'s folded bands. Sessions shaped as a project board sees them: a wall-clock
+// snooze parks a resting thread in Snoozed, and an archived one at rest is Done.
+const session = (id: string, over: Partial<ThreadView> = {}): ThreadView =>
+  ({ id, kind: "session", state: "open", runtime: "turn-idle", ...over }) as ThreadView
+const later = "2099-01-01T00:00:00.000Z"
+const archived = (id: string, archivedAt: string, over: Partial<ThreadView> = {}) => session(id, { state: "archived", archivedAt, ...over })
+
+test("Snoozed holds every project's snoozed threads, most recently active first; a Console pin lifts one out and a board pin does not", () => {
+  const threads = [
+    session("a~resting"),
+    session("a~old", { snoozedUntil: later, lastAssistantAt: "2026-10-01T00:00:00.000Z" }),
+    session("b~new", { snoozedUntil: later, lastAssistantAt: "2026-10-03T00:00:00.000Z" }),
+    session("b~board-pinned", { snoozedUntil: later, lastAssistantAt: "2026-10-02T00:00:00.000Z", pinnedAt: "2026-10-02T00:00:00.000Z" }),
+    session("c~console-pinned", { snoozedUntil: later, consolePinnedAt: "2026-10-02T00:00:00.000Z" }),
+    session("c~foreign", { snoozedUntil: later, foreign: true }),
+  ]
+  assert.deepEqual(consoleSnoozed(threads).map((x) => x.id), ["b~new", "b~board-pinned", "a~old"])
+})
+
+test("Done holds every project's finished threads, most recently finished first, and none still running", () => {
+  const threads = [
+    archived("a~1", "2026-10-01T00:00:00.000Z"),
+    session("a~open"),
+    archived("b~3", "2026-10-03T00:00:00.000Z"),
+    // Archived but mid-turn: it spins in Running until it rests.
+    archived("b~running", "2026-10-04T00:00:00.000Z", { runtime: "running" }),
+    // Pinned on its board, so the partition keeps it live; this view ignores the board's pin.
+    archived("c~board-pinned", "2026-10-02T00:00:00.000Z", { pinnedAt: "2026-10-02T00:00:00.000Z" }),
+    // Settled, but on the Console's shelf: the Pinned band shows it instead.
+    archived("c~console-pinned", "2026-10-05T00:00:00.000Z", { consolePinnedAt: "2026-10-05T00:00:00.000Z" }),
+  ]
+  assert.deepEqual(consoleDone(threads).map((x) => x.id), ["b~3", "c~board-pinned", "a~1"])
+})
+
+test("Done is the same list across deltas that leave every finished thread alone", () => {
+  const settled = [archived("a~1", "2026-10-01T00:00:00.000Z"), archived("b~2", "2026-10-02T00:00:00.000Z")]
+  const first = [...settled, session("a~open", { lastAssistantAt: "2026-10-01T00:00:00.000Z" })]
+  const done = consoleDone(first)
+  // A delta replaces the open thread's object: the board is a new array, its finished threads the same.
+  const next = [...settled, session("a~open", { lastAssistantAt: "2026-10-02T00:00:00.000Z" })]
+  assert.equal(consoleDone(next), done)
+  assert.deepEqual(done.map((x) => x.id), ["b~2", "a~1"])
 })

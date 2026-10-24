@@ -1,23 +1,27 @@
 import { proxy, useSnapshot } from "valtio"
 import type { ThreadView } from "@frizz/shared"
 import { activeBandThread } from "@frizz/shared"
-import { isConsolePinned, orderQueue, orderRunning, queued } from "../groups.ts"
+import { isConsolePinned, orderByInteraction, orderDone, orderQueue, orderRunning, queued, sectionOf } from "../groups.ts"
 import type { QueueDirection } from "../groups.ts"
 import type { PendingDispatchEntry } from "./pendingDispatch.ts"
 import { partitionBoard } from "./boardPartition.ts"
 import { keyProject } from "./threadKey.ts"
 
-// THE CONSOLE'S TWO BANDS AND ITS TWO GROUPINGS.
+// THE CONSOLE'S BANDS AND ITS TWO GROUPINGS.
 //
-// The Console is a queue, not an archive: it draws the threads waiting on the operator (a project's
-// Queue band, `queued`) and the ones in flight (its Running band, `activeBandThread`) — the same two
-// predicates the rail counts with, so a square's badge and the Console's rows for that project agree.
-// There is no Snoozed and no Done here; those live on each project's own board.
+// The Console is a queue first: it draws the threads waiting on the operator (a project's Queue band,
+// `queued`) and the ones in flight (its Running band, `activeBandThread`) — the same two predicates the
+// rail counts with, so a square's badge and the Console's rows for that project agree.
 //
-// GROUPED BY STATUS, the two bands hold every project's rows mixed, each row wearing its project's
-// square. GROUPED BY PROJECT, each project with anything waiting or running is one block, in the rail's
-// order, its waiting rows first and its running rows after (RUNNING_CAP of them until asked for more).
-// The cards follow whichever the sidebar draws.
+// GROUPED BY STATUS, the bands hold every project's rows mixed, each row wearing its project's square,
+// and Snoozed and Done follow Running, as on a project's board. Both are COLLAPSED until opened and then
+// PAGED, BAND_PAGE rows at a time behind "Show more" (maintainer 2026-10-23: "Add both, both collapsed.
+// They'll need pagination"): Done holds every project's history, so it is the longest list on the page.
+// They were left out until then (2026-10-11: "I don't think those are worth including").
+//
+// GROUPED BY PROJECT, each project with anything waiting or running is one block, in the rail's order,
+// its waiting rows first and its running rows after (RUNNING_CAP of them until asked for more). It has no
+// Snoozed and no Done. The cards follow whichever the sidebar draws.
 //
 // PINS. "By status" has a shelf of its OWN (groups.ts isConsolePinned; maintainer 2026-10-19: "a
 // separate pin system specifically for the By Status page"), apart from every project board's. A thread
@@ -43,10 +47,18 @@ function readGroup(): ConsoleGroup {
   }
 }
 
+/** "By status"'s bands that fold: Snoozed and Done. */
+export type ConsoleFoldedBand = "snoozed" | "done"
+
+/** How many rows an open Snoozed or Done band shows, and how many more each "Show more" adds. */
+export const BAND_PAGE = 10
+
 const state = proxy({
   group: typeof window === "undefined" ? ("project" as ConsoleGroup) : readGroup(),
   /** Projects whose running rows are expanded past RUNNING_CAP. This visit's, not remembered. */
   expanded: {} as Record<string, boolean>,
+  /** How many rows each folded band shows; 0 is collapsed, the default. This visit's, not remembered. */
+  shown: { snoozed: 0, done: 0 } as Record<ConsoleFoldedBand, number>,
 })
 
 export function useConsoleGroup(): ConsoleGroup {
@@ -68,6 +80,21 @@ export function useRunningExpanded(project: string): boolean {
 
 export function setRunningExpanded(project: string, expanded: boolean): void {
   state.expanded[project] = expanded
+}
+
+/** How many of a folded band's rows are drawn: 0 while it is collapsed. */
+export function useBandShown(band: ConsoleFoldedBand): number {
+  return useSnapshot(state).shown[band]
+}
+
+/** Open a folded band on its first page, or collapse it. Collapsing forgets the pages it had shown. */
+export function toggleBand(band: ConsoleFoldedBand): void {
+  state.shown[band] = state.shown[band] > 0 ? 0 : BAND_PAGE
+}
+
+/** "Show more": the band's next page. */
+export function showMoreOfBand(band: ConsoleFoldedBand): void {
+  state.shown[band] += BAND_PAGE
 }
 
 // Both bands are asked of the LIVE threads only (lib/boardPartition.ts): a settled thread is archived and
@@ -102,6 +129,31 @@ export function consolePinned(threads: readonly ThreadView[]): ThreadView[] {
  *  board's Running order (groups.ts orderRunning). */
 export function consoleRunning(threads: readonly ThreadView[]): ThreadView[] {
   return orderRunning(partitionBoard(threads).live.filter(activeBandThread))
+}
+
+// SNOOZED AND DONE, "By status" only, so a Console pin lifts a row out of them as it does out of Queue and
+// Running, and a project board's pin does not (it is no part of this view). Classified as a project board
+// classifies them (groups.ts sectionThreads): sectionOf's "snoozed" and "inactive", foreign sessions never.
+
+/** "By status"'s Snoozed band: every project's snoozed threads, the most recently active first. */
+export function consoleSnoozed(threads: readonly ThreadView[]): ThreadView[] {
+  return orderByInteraction(partitionBoard(threads).live.filter((t) => t.foreign !== true && !isConsolePinned(t) && sectionOf(t) === "snoozed"))
+}
+
+// The settled threads are nearly all of Done, and their list is the SAME array from one delta to the next
+// (lib/boardPartition.ts), so they are filtered and sorted once per settled array rather than on every
+// delta. A settled thread may still be pinned on the Console (the partition reads only the board's pin).
+const settledDone = new WeakMap<readonly ThreadView[], ThreadView[]>()
+
+/** "By status"'s Done band: every project's finished threads, the most recently finished first. */
+export function consoleDone(threads: readonly ThreadView[]): ThreadView[] {
+  const { live, settled } = partitionBoard(threads)
+  let done = settledDone.get(settled)
+  if (!done) settledDone.set(settled, (done = orderDone(settled.filter((t) => !isConsolePinned(t)))))
+  // A live thread in Done is rare — one pinned on its project's board, or archived with a delivery still
+  // in flight — so the merge sorts afresh only when there is one.
+  const liveDone = live.filter((t) => t.foreign !== true && !isConsolePinned(t) && sectionOf(t) === "inactive")
+  return liveDone.length === 0 ? done : orderDone([...liveDone, ...done])
 }
 
 export interface ProjectBlock {

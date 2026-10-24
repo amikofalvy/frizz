@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, type ReactNode } from "react"
+import { useCallback, useMemo, useRef, type ButtonHTMLAttributes, type ReactNode } from "react"
 import { useSnapshot } from "valtio"
 import { ChevronDown, ChevronUp } from "lucide-react"
 import type { ProjectCard, ThreadView } from "@frizz/shared"
@@ -12,15 +12,21 @@ import { useConsoleProjectList } from "../lib/consoleProjects.ts"
 import {
   RUNNING_CAP,
   consoleCardOrder,
+  consoleDone,
   consolePinPlacements,
   consolePinned,
   consoleQueue,
   consoleRunning,
+  consoleSnoozed,
   projectBlocks,
   setConsoleGroup,
   setRunningExpanded,
+  showMoreOfBand,
+  toggleBand,
+  useBandShown,
   useConsoleGroup,
   useRunningExpanded,
+  type ConsoleFoldedBand,
   type ConsoleGroup,
 } from "../lib/consoleBoard.ts"
 import { bareSlug, keyProject, threadKey } from "../lib/threadKey.ts"
@@ -42,9 +48,9 @@ import { StatusRow } from "./StatusRow.tsx"
 // it sits:
 //   · the status row names "All projects", and the prompt box carries a PROJECT chip saying where a new
 //     task goes;
-//   · two bands only — Queue and Running — because the Console is for what needs the operator now.
-//     Snoozed and Done stay on each project's own board (maintainer 2026-10-11: "I don't think those
-//     are worth including");
+//   · "By status" adds Snoozed and Done under Queue and Running, collapsed until opened and paged behind
+//     "Show more" (lib/consoleBoard.ts); "By project" stays Queue and Running alone, what needs the
+//     operator now;
 //   · a switch between the two groupings, "By status" and "By project", with no label: the two words say
 //     what they do (maintainer 2026-10-11);
 //   · "By status" keeps a pin shelf of its own, apart from every project board's (lib/consoleBoard.ts
@@ -99,6 +105,10 @@ export function ConsoleSidebar() {
   const pending = useConsolePendingDispatches()
   const starting = useMemo(() => (pending.length === 0 ? pending : unlandedDispatches(pending, new Set(all.map((t) => t.id)))), [pending, all])
   const runningCount = runningRows.length + starting.length
+  const nothingOpen = pinned.length === 0 && queueRows.length === 0 && runningCount === 0
+  // "By status" only. Done is asked once per settled list, not once per delta (consoleBoard.ts consoleDone).
+  const snoozed = useMemo(() => (group === "status" ? consoleSnoozed(all) : []), [group, all])
+  const done = useMemo(() => (group === "status" ? consoleDone(all) : []), [group, all])
   const { railRef, activeId, navigateToQueueCard } = useQueueScrollspy(snap.view, snap.drawers.length, waiting.map((t) => t.id))
 
   const square = (t: ThreadView) => <RowSquare project={bySlug.get(keyProject(t.id) ?? "")} />
@@ -143,36 +153,45 @@ export function ConsoleSidebar() {
           <GroupSwitch group={group} />
           {/* The rows keep the column's measure; only the switch spans the scrollbar's gutter (above). */}
           <div className="mr-[var(--sbw)] max-[800px]:mr-0">
-            {pinned.length === 0 && queueRows.length === 0 && runningCount === 0 ? (
-              <div className="py-1 pl-5 pr-1.5 text-[11.5px] text-muted-50">Nothing waiting or running</div>
-            ) : group === "status" ? (
+            {group === "status" ? (
               <>
-                {/* PINNED — the Console's own shelf, the project board's band in every respect but whose it
-                    is: out of Queue and Running whatever its rows' state, ordered by the pins, dragged to
-                    rearrange. Its waiting rows' cards lead the cards, so the marker reaches them first. */}
-                {pinned.length > 0 && (
-                  <section aria-label="Pinned" data-console-pinned>
-                    <SectionHeader label="Pinned" count={pinned.length} />
-                    <PinnedBand
-                      threads={pinned}
-                      railRef={railRef}
-                      activeId={activeId}
-                      onQueueNavigate={navigateToQueueCard}
-                      shelf="console"
-                      leading={square}
-                      onReorder={reorderPins}
-                    />
-                    {queueRows.length + runningCount > 0 && <hr className="my-3 border-border/50" />}
-                  </section>
+                {nothingOpen ? <NothingOpen /> : (
+                  <>
+                    {/* PINNED — the Console's own shelf, the project board's band in every respect but whose it
+                        is: out of Queue and Running whatever its rows' state, ordered by the pins, dragged to
+                        rearrange. Its waiting rows' cards lead the cards, so the marker reaches them first. */}
+                    {pinned.length > 0 && (
+                      <section aria-label="Pinned" data-console-pinned>
+                        <SectionHeader label="Pinned" count={pinned.length} />
+                        <PinnedBand
+                          threads={pinned}
+                          railRef={railRef}
+                          activeId={activeId}
+                          onQueueNavigate={navigateToQueueCard}
+                          shelf="console"
+                          leading={square}
+                          onReorder={reorderPins}
+                        />
+                        {queueRows.length + runningCount > 0 && <hr className="my-3 border-border/50" />}
+                      </section>
+                    )}
+                    {queueRows.length > 0 && <SectionHeader label="Queue" count={queueRows.length} />}
+                    {queueRows.map((t) => row(t, { square: true, waiting: true }))}
+                    {runningCount > 0 && queueRows.length > 0 && <hr className="my-3 border-border/50" />}
+                    {runningCount > 0 && <SectionHeader label="Running" count={runningCount} />}
+                    {/* Newest first, the band's own order: a thread that starts lands at the top. */}
+                    {[...starting].reverse().map((entry) => startingRow(entry, { square: true }))}
+                    {runningRows.map((t) => row(t, { square: true, waiting: false }))}
+                  </>
                 )}
-                {queueRows.length > 0 && <SectionHeader label="Queue" count={queueRows.length} />}
-                {queueRows.map((t) => row(t, { square: true, waiting: true }))}
-                {runningCount > 0 && queueRows.length > 0 && <hr className="my-3 border-border/50" />}
-                {runningCount > 0 && <SectionHeader label="Running" count={runningCount} />}
-                {/* Newest first, the band's own order: a thread that starts lands at the top. */}
-                {[...starting].reverse().map((entry) => startingRow(entry, { square: true }))}
-                {runningRows.map((t) => row(t, { square: true, waiting: false }))}
+                {/* SNOOZED and DONE — collapsed until opened, then a page at a time (lib/consoleBoard.ts). Each
+                    draws its own rule, as on a project's board; neither has queue cards, so neither row is
+                    ever the scroll marker. */}
+                <FoldedBand band="snoozed" label="Snoozed" threads={snoozed} render={(t) => row(t, { square: true, waiting: false })} />
+                <FoldedBand band="done" label="Done" threads={done} render={(t) => row(t, { square: true, waiting: false })} />
               </>
+            ) : nothingOpen ? (
+              <NothingOpen />
             ) : (
               projectBlocks(waiting, running, order, starting).map((block, i) => (
                 <section key={block.project} aria-label={bySlug.get(block.project)?.name ?? block.project} data-console-project={block.project}>
@@ -286,21 +305,55 @@ function RunningRows({
       {shownStarting.map(renderStarting)}
       {shown.map(render)}
       {capped ? (
-        <button
-          type="button"
-          data-console-show-more={project}
-          aria-expanded={expanded}
-          onClick={() => setRunningExpanded(project, !expanded)}
-          className="flex w-full items-center gap-2 rounded-md pb-1 pl-5 pr-1.5 pt-1 text-left text-[12px] leading-[19px] text-muted-70 outline-none transition-colors hover:bg-hover hover:text-fg focus-visible:ring-1 focus-visible:ring-focus-ink-60"
-        >
-          {/* In the indicator column, so the words start where the titles above them do. */}
-          <span className="flex h-[19px] w-4 shrink-0 items-center justify-center">
-            {expanded ? <ChevronUp size={12} aria-hidden /> : <ChevronDown size={12} aria-hidden />}
-          </span>
-          {expanded ? "Show less" : "Show more"}
-        </button>
+        <ShowMoreButton less={expanded} aria-expanded={expanded} data-console-show-more={project} onClick={() => setRunningExpanded(project, !expanded)} />
       ) : null}
     </>
+  )
+}
+
+/**
+ * "Show more" under a list cut short, and "Show less" once a project's running rows are all out. Its
+ * chevron sits in the indicator column, so the words start where the titles above them do; under rows
+ * that lead with a project square, `leading` holds that square's place (RowSquare's placeholder).
+ */
+function ShowMoreButton({ less = false, leading, ...rest }: { less?: boolean; leading?: ReactNode } & ButtonHTMLAttributes<HTMLButtonElement>) {
+  return (
+    <button
+      type="button"
+      {...rest}
+      className="flex w-full items-center gap-2 rounded-md pb-1 pl-5 pr-1.5 pt-1 text-left text-[12px] leading-[19px] text-muted-70 outline-none transition-colors hover:bg-hover hover:text-fg focus-visible:ring-1 focus-visible:ring-focus-ink-60"
+    >
+      {leading}
+      <span className="flex h-[19px] w-4 shrink-0 items-center justify-center">
+        {less ? <ChevronUp size={12} aria-hidden /> : <ChevronDown size={12} aria-hidden />}
+      </span>
+      {less ? "Show less" : "Show more"}
+    </button>
+  )
+}
+
+/** Stands in for Pinned, Queue and Running when all three are empty. */
+function NothingOpen() {
+  return <div className="py-1 pl-5 pr-1.5 text-[11.5px] text-muted-50">Nothing waiting or running</div>
+}
+
+/**
+ * "By status"'s Snoozed or Done band: absent when empty, collapsed until its header is clicked, and then
+ * BAND_PAGE rows at a time, each "Show more" adding the next page (lib/consoleBoard.ts). Collapsing it
+ * again starts it over at one page.
+ */
+function FoldedBand({ band, label, threads, render }: { band: ConsoleFoldedBand; label: string; threads: readonly ThreadView[]; render: (t: ThreadView) => ReactNode }) {
+  const shown = useBandShown(band)
+  if (threads.length === 0) return null
+  return (
+    <section aria-label={label} data-console-band={band}>
+      <hr className="my-3 border-border/50" />
+      <SectionHeader label={label} count={threads.length} collapsed={shown === 0} onToggle={() => toggleBand(band)} />
+      {shown > 0 ? threads.slice(0, shown).map(render) : null}
+      {shown > 0 && threads.length > shown ? (
+        <ShowMoreButton leading={<RowSquare project={undefined} />} data-console-band-more={band} onClick={() => showMoreOfBand(band)} />
+      ) : null}
+    </section>
   )
 }
 
