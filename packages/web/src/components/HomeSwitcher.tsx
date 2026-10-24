@@ -1,10 +1,10 @@
-import type { CSSProperties } from "react"
-import { useNavigate } from "react-router"
+import type { CSSProperties, MouseEvent } from "react"
+import { Link, useLocation } from "react-router"
 import { useQuery } from "@tanstack/react-query"
 import { rpc } from "../api/rpc.ts"
 import { useBoardLoaded, useQueuedThreads } from "../hooks.ts"
-import { isConsolePath } from "../lib/base-path.ts"
-import { homeHref, setHomeView, useHomeView, type HomeView } from "../lib/homeView.ts"
+import { CONSOLE_PATH, isConsolePath } from "../lib/base-path.ts"
+import { PROJECTS_HREF, type HomeView } from "../lib/homeView.ts"
 import { RAIL_WIDTH_PX } from "./ProjectRail.tsx"
 
 // THE SWITCH BETWEEN THE TWO HOMES — the project grid (`/`) and the Console (`/console`).
@@ -60,26 +60,33 @@ export function useQueueTotal(): number | undefined {
   return Object.values(polled.data).reduce((sum, counts) => sum + counts.queued, 0)
 }
 
+/** A click the router would take: the main button, no modifier. Anything else is the browser's (a new tab, a window). */
+function isPlainClick(event: MouseEvent): boolean {
+  return event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey
+}
+
 export function HomeSwitcher({ railVisible }: { railVisible: boolean }) {
-  const view = useHomeView()
-  const navigate = useNavigate()
+  // The tab that is lit is the page on screen. It read the KEPT home (lib/homeView.ts) until 2026-10-23,
+  // which every tab shares: choosing Projects in one tab lit "Projects" over the Console in another.
+  const view: HomeView = isConsolePath(useLocation().pathname) ? "console" : "projects"
   const total = useQueueTotal()
   // The page's own centre, not the window's: the rail takes the left 57px.
   const inset = railVisible ? RAIL_WIDTH_PX : 0
-  const choose = (next: HomeView) => {
-    // Recorded BEFORE the navigation: `/` forwards to the Console while that is the kept home.
-    setHomeView(next)
-    navigate(homeHref(next))
-  }
   const tab = (target: HomeView, label: string, count?: number) => {
     const selected = view === target
+    // REAL LINKS, so hovering one shows its address and ⌘-click, middle-click and "Open link in new tab"
+    // work. They were buttons until 2026-10-23. Neither tab needs to record the choice: each page records
+    // it on arrival (routes.tsx ConsoleRoute, GridPage), and the Projects tab names the grid's own address
+    // because `/` forwards to the Console while that is the kept home.
     return (
-      <button
-        type="button"
+      <Link
+        to={target === "console" ? CONSOLE_PATH : PROJECTS_HREF}
         role="tab"
         aria-selected={selected}
         data-home-tab={target}
-        onClick={() => { if (!selected) choose(target) }}
+        // The page you are on: a plain click stays put, as it did when the tabs were buttons, rather than
+        // closing whatever thread the Console has open. A new tab still opens.
+        onClick={(event) => { if (selected && isPlainClick(event)) event.preventDefault() }}
         className={`flex h-7 items-center justify-center whitespace-nowrap rounded-full px-3.5 text-[12.5px] leading-none outline-none transition-colors focus-visible:ring-1 focus-visible:ring-focus-ink-60 ${
           selected ? "bg-hover-strong text-fg shadow-[inset_0_0_0_1px_var(--hover-strong)]" : "text-muted hover:text-fg"
         }`}
@@ -96,7 +103,7 @@ export function HomeSwitcher({ railVisible }: { railVisible: boolean }) {
             <span style={TRIM}>{count}</span>
           </span>
         ) : null}
-      </button>
+      </Link>
     )
   }
   return (

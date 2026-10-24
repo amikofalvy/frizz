@@ -5,11 +5,38 @@ import { CONSOLE_PATH } from "./base-path.ts"
 //
 // Both are "home": the switcher at the top of each flips between them, and every way back home (the
 // rail's house, the status row's house) goes to whichever was used last. So the choice is remembered in
-// this browser, and `/` itself forwards to the Console while that is the one kept (routes.tsx GridRoute).
-// The switcher records the choice BEFORE it navigates, which is what lets "Projects" reach the grid at
-// all while the remembered home is still the Console.
+// this browser, and a bare `/` forwards to the Console while that is the one kept (routes.tsx GridRoute).
+// The page records the choice on ARRIVAL: `/console` records the Console, and the grid records Projects
+// when it is reached through PROJECTS_HREF, the address that says it was chosen.
+//
+// This is where home IS, not which home is ON SCREEN. The switcher's highlighted tab reads the page's
+// path: read from here, it followed the storage event below, so choosing Projects in another tab lit
+// "Projects" over a Console this tab was still showing.
 
 export type HomeView = "projects" | "console"
+
+const CHOSEN_PARAM = "home"
+
+/**
+ * The grid, as an address that says the operator chose it: `/?home=projects`. The switcher's Projects
+ * tab links here rather than to `/`, which forwards to the Console while that is the kept home, so the
+ * tab opened in a new tab (or followed from a copied link) would have landed back on the Console. The
+ * grid records the choice and strips the marker (routes.tsx GridPage).
+ */
+export const PROJECTS_HREF = `/?${CHOSEN_PARAM}=projects`
+
+/** Did this arrival at the grid come through PROJECTS_HREF? */
+export function choseProjects(search: string): boolean {
+  return new URLSearchParams(search).get(CHOSEN_PARAM) === "projects"
+}
+
+/** `search` with the PROJECTS_HREF marker taken out, ready for the address bar. */
+export function withoutProjectsChoice(search: string): string {
+  const params = new URLSearchParams(search)
+  params.delete(CHOSEN_PARAM)
+  const rest = params.toString()
+  return rest ? `?${rest}` : ""
+}
 
 /**
  * How far down the window the home switcher reaches (components/HomeSwitcher.tsx): its 14px inset, its

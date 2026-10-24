@@ -13,7 +13,7 @@ import { bindConsole, feedIsBoundTo, feedIsConsole, leaveConsole, rebindProject 
 import { noteStandaloneThreadRender, primeFullscreenReturn, resetProjectState, store } from "./store.ts"
 import { useProjectRailVisible } from "./lib/projectRail.ts"
 import { ownedByThisPage } from "./lib/projectOwnership.ts"
-import { setHomeView, useHomeView } from "./lib/homeView.ts"
+import { choseProjects, setHomeView, useHomeView, withoutProjectsChoice } from "./lib/homeView.ts"
 import { useConsoleFeedProjects } from "./lib/consoleProjects.ts"
 import { HomeSwitcher } from "./components/HomeSwitcher.tsx"
 import { useIsMobile } from "./lib/mobile.ts"
@@ -165,28 +165,48 @@ function BoardRoute() {
  * was a no-op in every case, so removing it changes nothing that ever ran.)
  */
 function GridRoute() {
-  // `/` is the home the operator KEEPS: while that is the Console, the grid forwards to it. The switcher
-  // records "Projects" before it navigates here, so the grid is always one click away. Not on a phone:
-  // it has no switcher, and its board's back arrow comes HERE for the projects list — forwarding would
-  // send that arrow straight back to the Console it was leaving.
+  // `/` is the home the operator KEEPS: while that is the Console, the grid forwards to it. The switcher's
+  // Projects tab links to the grid's own address (lib/homeView.ts PROJECTS_HREF), which never forwards,
+  // so the grid is always one click away. Not on a phone: it has no switcher, and its board's back arrow
+  // comes HERE for the projects list — forwarding would send that arrow straight back to the Console it
+  // was leaving.
+  //
+  // Only a BARE `/` forwards. Anything after it is for the grid to read — PROJECTS_HREF's marker, the
+  // launcher's `?add=<dir>`, the server's `?unknown=<slug>` (ProjectGrid) — and the forward dropped it: run
+  // `frizz` in a new folder with the Console kept and the offer to add it never appeared.
   //
   // Decided once, on ARRIVAL. The kept home is shared by every tab (lib/homeView.ts follows the storage
   // event), and read live it moved a tab sitting on the grid to the Console the moment ANOTHER tab chose
   // it. Another tab's choice should move this tab's house link, not the page this tab is reading.
   const homeView = useHomeView()
   const isMobile = useIsMobile()
-  const [forward] = useState(() => homeView === "console" && !isMobile)
-  if (forward) return <Navigate to={CONSOLE_PATH} replace />
-  return <GridPage />
+  const { search } = useLocation()
+  const [arrival] = useState(() => ({
+    forward: homeView === "console" && !isMobile && search === "",
+    chose: choseProjects(search),
+  }))
+  if (arrival.forward) return <Navigate to={CONSOLE_PATH} replace />
+  return <GridPage chose={arrival.chose} />
 }
 
 /**
  * The grid itself. It shows no project's board, and it does not disturb a PROJECT's feed (above) — but a
  * feed the Console holds is handed back, because the Console's N connections serve nothing here
  * (api/socket.ts `leaveConsole`).
+ *
+ * Reached through PROJECTS_HREF, it records Projects as the kept home — the grid's counterpart of
+ * ConsoleRoute's — and takes the marker out of the address, so a reload or a copied URL is plain `/`.
  */
-function GridPage() {
+function GridPage({ chose }: { chose: boolean }) {
+  const navigate = useNavigate()
   useEffect(() => leaveConsole(), [])
+  useEffect(() => {
+    if (!chose) return
+    setHomeView("projects")
+    // From the live address, not the router's: ProjectGrid strips its own one-shot params with
+    // history.replaceState before this runs.
+    navigate({ pathname: location.pathname, search: withoutProjectsChoice(location.search) }, { replace: true })
+  }, [chose, navigate])
   return <ProjectGrid />
 }
 
