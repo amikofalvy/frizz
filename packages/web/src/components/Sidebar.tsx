@@ -276,7 +276,7 @@ export function Sidebar() {
         <div ref={railRef} data-sidebar-rail className="-mt-5 min-h-0 min-w-0 overflow-y-auto overflow-x-hidden pt-5 max-[800px]:overflow-y-visible">
           {/* PINNED — the human's shelf, at the very top, above the cue (maintainer 2026-09-02). Each row
               carries the same rest-time column as the cue, and the pin itself appears only on hover, as the
-              unpin verb (2026-10-24: "show the updated times first and only show the pin/unpin on hover?
+              unpin verb (colinhacks/frizz#66: "show the updated times first and only show the pin/unpin on hover?
               pinned ones already live in their own section anyway" — the band's label already says pinned, so
               a solid pin on every row said it twice and cost the row its age). A row that is actively
               SPINNING shows no age, as in the Running band: it has not come to rest, and its spinner is the
@@ -361,7 +361,7 @@ export function Sidebar() {
                 collapsed={collapsed.snoozed}
                 onToggle={() => (store.sidebarCollapsed.snoozed = !store.sidebarCollapsed.snoozed)}
               />
-              {/* The rest-time column is ON here too (maintainer 2026-10-24: "It's hard for me to know
+              {/* The rest-time column is ON here too (colinhacks/frizz#66: "It's hard for me to know
                   how long some of these snoozes have been snoozed for"). A parked row says nothing else
                   on the rail — its wake detail lives in the indicator's tooltip — so without the column a
                   watch that went quiet a week ago reads exactly like one parked this morning. The band is
@@ -1021,8 +1021,9 @@ export const ThreadRow = memo(function ThreadRow({
               order). On a PINNED row the same button is the unpin and goes RIGHTMOST — after Retry too —
               over the spot the rest time yields on hover (maintainer 2026-09-03: "unpin button should be
               far right for pinned threads on hover"). It is the only pin a pinned row shows: the band's
-              label says pinned, so the row spends its right edge on the rest time (2026-10-24). Not on a foreign row: the server refuses to pin what it does not
-              own, so no button rather than a throwing one. */}
+              label says pinned, so the row spends its right edge on the rest time (colinhacks/frizz#66).
+              Not on a foreign row: the server refuses to pin what it does not own, so no button rather
+              than a throwing one. */}
           {/* MEASURED 2026-09-03 (scripts/ink-gaps.mjs on sidebar-pin-fixture, dsf 4): on the strip's
               uniform 2px gap the OUTLINE pin's ink sat 12px from the door where door→Retry read 10px and
               Retry→unpin 10.5px, because the pin is a narrow glyph (8×11 of ink in a 19px box, dead
@@ -1125,8 +1126,8 @@ function RowRetryButton({ slug }: { slug: string }) {
 // The pin/unpin verb — one of the row's hover actions (ThreadRow places it: left of the fullscreen door
 // to pin, rightmost to unpin), on every row the server can pin: sessions frizz owns, in any state,
 // because the pin deliberately outranks Done and Snoozed alike. THE FILL IS THE STATE: an outline pin
-// offers to pin, and the solid body with the slash offers to unpin, so a filled pin anywhere on the rail means "pinned" and nothing else (maintainer
-// 2026-09-02: "use the solid pin icon to make sure that the icons are consistent everywhere";
+// offers to pin, and the solid body with the slash offers to unpin, so a filled pin anywhere on the
+// rail means "pinned" and nothing else (maintainer 2026-09-02: "use the solid pin icon to make sure that the icons are consistent everywhere";
 // 2026-09-03: "the pin icon should be unfilled for unpinned threads").
 //
 // On the Console's "By status" view the same verb writes the CONSOLE's shelf instead, and says so: two

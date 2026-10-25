@@ -60,6 +60,8 @@ test("no icon in a rail row moves between rest and hover, in either app font", {
         indicatorInk: inkOf(row.querySelector("span.w-4")),
         pinBox: boxOf(row.querySelector("[data-sidebar-pin]")),
         pinInk: inkOf(row.querySelector("[data-sidebar-pin]")),
+        pinLabel: row.querySelector("[data-sidebar-pin]")?.getAttribute("aria-label") ?? null,
+        age: boxOf(row.querySelector("[data-rail-rested-age]")),
       }
     }
     return out
@@ -73,6 +75,7 @@ test("no icon in a rail row moves between rest and hover, in either app font", {
       const ids = Object.keys(rest)
       assert.ok(ids.length >= 4, `${font}: the fixture renders its rows, got ${ids.length}`)
 
+      let unpins = 0
       for (const id of ids) {
         await page.hover(`[data-sidebar-item="${id}"]`)
         const hover = (await page.evaluate(probe))[id]
@@ -86,7 +89,18 @@ test("no icon in a rail row moves between rest and hover, in either app font", {
 
         // The pin verb exists only on hover, on every row that can be pinned or unpinned.
         assert.equal(at.pinBox, null, `${font} / ${id}: a pin shows at rest`)
+
+        // A PINNED row's unpin appears in the rest time's place: the two share one right edge, so the
+        // age gives way to the pin rather than the pin arriving somewhere else on the row.
+        const label = hover.pinLabel as string | null
+        if (label?.startsWith("Unpin")) {
+          unpins++
+          const pin = hover.pinBox as { x: number; w: number }
+          const age = at.age as { x: number; w: number } | null
+          if (age) assert.ok(Math.abs(pin.x + pin.w - (age.x + age.w)) <= 0.5, `${font} / ${id}: the unpin's right edge is not the rest time's`)
+        }
       }
+      assert.ok(unpins >= 3, `${font}: the fixture's pinned rows offer their unpin on hover, got ${unpins}`)
       // Hovering a row must not disturb its NEIGHBOURS either: a hover action that reflowed one row's title
       // could push every row below it down the rail.
       await page.mouse.move(0, 0)

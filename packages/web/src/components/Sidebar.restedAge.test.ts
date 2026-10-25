@@ -69,7 +69,7 @@ test("a thread that has never produced output falls back rather than printing no
   assert.match(html, />3h</)
 })
 
-// THE SNOOZED BAND carries the column too (maintainer 2026-10-24: "It's hard for me to know how long
+// THE SNOOZED BAND carries the column too (colinhacks/frizz#66: "It's hard for me to know how long
 // some of these snoozes have been snoozed for"). Pinned over the REAL <Sidebar/>, because the bug was
 // never in the row — the band simply did not ask for the column. The spinning row is the control that
 // proves the wiring is per band rather than global.
@@ -105,7 +105,7 @@ test("the Snoozed band dates each row; a spinning row in Active does not", async
   assert.doesNotMatch(runningRow, /data-rail-rested-age/)
 })
 
-// THE PINNED BAND carries the column as well (maintainer 2026-10-24: "show the updated times first and
+// THE PINNED BAND carries the column as well (colinhacks/frizz#66: "show the updated times first and
 // only show the pin/unpin on hover"). Its rows used to wear a solid pin there instead, which cost a
 // pinned thread its age while the band's own label already said pinned. A pinned row that is SPINNING
 // shows no age, as in the Running band: it has not come to rest.

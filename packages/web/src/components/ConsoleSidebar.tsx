@@ -4,7 +4,7 @@ import { ChevronDown, ChevronUp } from "lucide-react"
 import type { ProjectCard, ThreadView } from "@frizz/shared"
 import { store } from "../store.ts"
 import { useBoardThreads } from "../hooks.ts"
-import { isConsolePinned, pinnedOn, type PinShelf } from "../groups.ts"
+import { isConsolePinned, type PinShelf } from "../groups.ts"
 import { prefs } from "../lib/prefs.ts"
 import { useOptimisticallySteered } from "../lib/steering.ts"
 import { useOptimisticallyArchived } from "../lib/optimisticArchive.ts"
@@ -112,8 +112,8 @@ export function ConsoleSidebar() {
         // with is handed to the row that took its place (markerRow in lib/sidebarScrollspy).
         active={opts.waiting && activeId === t.id}
         onQueueNavigate={navigateToQueueCard}
-        // A pinned row wears its pin in the rest-time column instead (ThreadRow), as on a project's board.
-        restedAge={opts.waiting && !pinnedOn(t, shelf)}
+        // A pinned row keeps its rest time too: its pin shows only on hover, as the unpin (ThreadRow).
+        restedAge={opts.waiting}
         leading={opts.square ? square(t) : undefined}
         shelf={shelf}
       />

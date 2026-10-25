@@ -230,6 +230,7 @@ test("the Console's By status view pins, orders and drags a shelf of its own", {
     assert.equal(await page.$(`${rail} [data-console-pinned]`), null)
     assert.equal(await offersUnpin(kA2), false, "a Console pin offers no unpin By project")
     assert.equal(await offersUnpin(kB3), true, "a board pin does")
+    assert.equal(await hasAge(kB3), true, "and its row keeps its rest time: the pin shows only on hover")
     await page.hover(`[data-sidebar-item="${kA1}"]`)
     assert.ok(await page.$(`[data-sidebar-item="${kA1}"] [data-sidebar-pin][data-pin-shelf="board"]`), "and its pin verb is the board's")
     await page.mouse.move(5, 5)
