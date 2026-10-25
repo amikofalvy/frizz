@@ -6,10 +6,11 @@ import { TooltipProvider } from "./components/Tooltip.tsx"
 import { store } from "./store.ts"
 import "./styles.css"
 
-// The rail row's PIN controls, on the REAL ThreadRow: the solid mark a pinned row wears in its
-// right-edge column, and the hover strip's verb — an OUTLINE pin left of the fullscreen door on a row
-// that can be pinned, the solid slashed unpin RIGHTMOST on a row that already is (after Retry too), and
-// no box behind the strip (maintainer 2026-09-03). The long titles are deliberate: the strip overlays
+// The rail row's PIN controls, on the REAL ThreadRow: the hover strip's verb — an OUTLINE pin left of
+// the fullscreen door on a row that can be pinned, the solid slashed unpin RIGHTMOST on a row that
+// already is (after Retry too), and no box behind the strip (maintainer 2026-09-03). At rest a pinned
+// row carries its rest time like any cue row, and no pin at all (2026-10-24); the spinning one carries
+// neither, exactly as the Pinned band renders them. The long titles are deliberate: the strip overlays
 // the title's first line, so a row whose title fills that line is where a letter bleeding through a
 // glyph — or a visible backing — would show.
 //
@@ -50,7 +51,7 @@ const unpinnedLong = {
   runtime: "turn-idle",
 } as unknown as ThreadView
 
-// PINNED, long title: the solid mark in the column at rest; on hover the door, then the unpin rightmost.
+// PINNED, long title: its rest time in the column at rest; on hover the door, then the unpin rightmost.
 const pinnedLong = {
   ...base,
   id: "pinned-long",
@@ -59,7 +60,7 @@ const pinnedLong = {
   pinnedAt: PINNED_AT,
 } as unknown as ThreadView
 
-// PINNED and running, short title: the mark sits well clear of the title.
+// PINNED and running, short title: no rest time while it spins, so the column is empty at rest.
 const pinnedShort = {
   ...base,
   id: "pinned-short",
@@ -101,7 +102,7 @@ const unpinnedStalled = {
   needsYou: true,
 } as unknown as ThreadView
 
-// An ACTIVE-band row (no rest time, no mark), whose title OPENS with an unbreakable token longer than
+// An ACTIVE-band row (no rest time), whose title OPENS with an unbreakable token longer than
 // the line, so `break-words` has to break it at the box edge and the first line fills the row to the
 // very edge and runs UNDER the strip: the case where a letter would bleed through a glyph, and where
 // the strip's backing and its left-edge fade are actually visible at work. (A long token later in the
@@ -122,10 +123,10 @@ createRoot(document.getElementById("root")!).render(
       <main className="min-h-screen bg-bg px-10 py-10 text-fg">
         <div data-sidebar-rail className="w-[clamp(320px,34vw,680px)]">
           <ThreadRow t={unpinnedLong} restedAge />
-          <ThreadRow t={pinnedLong} />
+          <ThreadRow t={pinnedLong} restedAge />
           <ThreadRow t={pinnedShort} />
-          <ThreadRow t={pinnedStalled} />
-          <ThreadRow t={pinnedDone} />
+          <ThreadRow t={pinnedStalled} restedAge />
+          <ThreadRow t={pinnedDone} restedAge />
           <ThreadRow t={unpinnedStalled} />
           <ThreadRow t={activeLong} />
         </div>

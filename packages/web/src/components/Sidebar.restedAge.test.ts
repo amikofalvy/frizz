@@ -104,3 +104,31 @@ test("the Snoozed band dates each row; a spinning row in Active does not", async
   assert.match(runningRow, /data-rail-glyph="working"/)
   assert.doesNotMatch(runningRow, /data-rail-rested-age/)
 })
+
+// THE PINNED BAND carries the column as well (maintainer 2026-10-24: "show the updated times first and
+// only show the pin/unpin on hover"). Its rows used to wear a solid pin there instead, which cost a
+// pinned thread its age while the band's own label already said pinned. A pinned row that is SPINNING
+// shows no age, as in the Running band: it has not come to rest.
+test("the Pinned band dates its resting rows and leaves a spinning one undated", async () => {
+  const [{ MemoryRouter }, { Sidebar }, { store }] = await Promise.all([
+    import("react-router"),
+    import("./Sidebar.tsx"),
+    import("../store.ts"),
+  ])
+  // The band is ordered by pin instant, oldest first, so the resting row is pinned first.
+  const resting = { ...base, id: "launch-checklist", title: "Launch checklist", pinnedAt: ago(10 * 24 * 60 * 60_000), lastAssistantAt: ago(3 * 60 * 60_000) }
+  const spinning = { ...base, id: "draft-the-changelog", title: "Draft the changelog", pinnedAt: ago(9 * 24 * 60 * 60_000), needsYou: false, runtime: "running", lastActivityAt: ago(60_000) }
+  store.board = { projectDir: "/fixture", threads: [resting, spinning] } as unknown as typeof store.board
+  const html = renderToStaticMarkup(
+    createElement(
+      QueryClientProvider,
+      { client: new QueryClient({ defaultOptions: { queries: { retry: false } } }) },
+      createElement(TooltipProvider, null, createElement(MemoryRouter, null, createElement(Sidebar))),
+    ),
+  )
+  const restingRow = html.slice(html.indexOf('data-sidebar-item="launch-checklist"'), html.indexOf('data-sidebar-item="draft-the-changelog"'))
+  assert.match(restingRow, /data-rail-rested-age[^>]*>3h</)
+  const spinningRow = html.slice(html.indexOf('data-sidebar-item="draft-the-changelog"'))
+  assert.match(spinningRow, /data-rail-glyph="working"/)
+  assert.doesNotMatch(spinningRow, /data-rail-rested-age/)
+})

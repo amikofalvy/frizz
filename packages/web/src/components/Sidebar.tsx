@@ -9,7 +9,7 @@ import { rpc } from "../api/rpc.ts"
 import { useBoardThreads } from "../hooks.ts"
 import { prefs } from "../lib/prefs.ts"
 import type { PinShelf } from "../groups.ts"
-import { sectionThreads, externalThreads, orderByInteraction, partitionActive, needsAction, displayTitle, titleIsProvisional, SPINNING_UP_TITLE, pinnedOn, isSnoozed, parkedAwaitingHint, sessionIndicatorKind, offersRetry, futureSnoozedUntil, lastActiveLabelAt, waitNamesPr, prChecksRunning, restingOnSubAgents, restIsWorking, workingWithOpenQuestion } from "../groups.ts"
+import { sectionThreads, externalThreads, orderByInteraction, partitionActive, needsAction, displayTitle, titleIsProvisional, SPINNING_UP_TITLE, pinnedOn, isSnoozed, parkedAwaitingHint, sessionIndicatorKind, offersRetry, futureSnoozedUntil, lastActiveLabelAt, waitNamesPr, prChecksRunning, restingOnSubAgents, restIsWorking, workingWithOpenQuestion, isActivelyRunning } from "../groups.ts"
 import { ageSpan, relativeAge, limitResumeClock } from "../lib/activityTime.ts"
 import { useNowMs } from "../lib/liveClock.ts"
 import { BoxSpinner, STATUS_BOX } from "./BoxSpinner.tsx"
@@ -274,16 +274,20 @@ export function Sidebar() {
             (maintainer 2026-10-20: "should look like they scroll behind the prompt box. no black padding
             under it"). At rest nothing moves: the first row sits where it did. */}
         <div ref={railRef} data-sidebar-rail className="-mt-5 min-h-0 min-w-0 overflow-y-auto overflow-x-hidden pt-5 max-[800px]:overflow-y-visible">
-          {/* PINNED — the human's shelf, at the very top, above the cue (maintainer 2026-09-02, variant
-              A of the pin mockups: each row wearing the small solid pin where the cue's rest time would
-              sit). These rows are OUT of the band system entirely — sectionThreads diverts them before
-              any band claims them, so a pinned thread stays here spinning, resting, snoozed or Done
-              alike — and the band is ordered by the pin instants, oldest first, never by activity: it
-              is an arrangement the human made, and nothing the threads do may shuffle it. The human
-              rearranges it by dragging a row (PinnedBand).
-              LABELED since 2026-09-19, like every band below it, and NOT collapsible (maintainer: the
-              Pinned, Queue and Running labels "should not be collapsible") — the header is the static
-              form of SectionHeader, so it lines up with the collapsible Snoozed/Done headers. */}
+          {/* PINNED — the human's shelf, at the very top, above the cue (maintainer 2026-09-02). Each row
+              carries the same rest-time column as the cue, and the pin itself appears only on hover, as the
+              unpin verb (2026-10-24: "show the updated times first and only show the pin/unpin on hover?
+              pinned ones already live in their own section anyway" — the band's label already says pinned, so
+              a solid pin on every row said it twice and cost the row its age). A row that is actively
+              SPINNING shows no age, as in the Running band: it has not come to rest, and its spinner is the
+              reading. These rows are OUT of the band system entirely — sectionThreads diverts them before any
+              band claims them, so a pinned thread stays here spinning, resting, snoozed or Done alike — and
+              the band is ordered by the pin instants, oldest first, never by activity: it is an arrangement
+              the human made, and nothing the threads do may shuffle it. The human rearranges it by dragging a
+              row (PinnedBand).
+              LABELED since 2026-09-19, like every band below it, and NOT collapsible (maintainer: the Pinned,
+              Queue and Running labels "should not be collapsible") — the header is the static form of
+              SectionHeader, so it lines up with the collapsible Snoozed/Done headers. */}
           {sections.pinned.length > 0 && (
             <section aria-label="Pinned">
               <SectionHeader label="Pinned" count={sections.pinned.length} />
@@ -627,7 +631,7 @@ export function PinnedBand({ threads, railRef, activeId, onQueueNavigate, shelf 
               transition: drag && !held ? "transform 160ms ease" : undefined,
             }}
           >
-            <ThreadRow t={t} active={activeId === t.id} onQueueNavigate={onQueueNavigate} shelf={shelf} leading={leading?.(t)} />
+            <ThreadRow t={t} active={activeId === t.id} onQueueNavigate={onQueueNavigate} shelf={shelf} leading={leading?.(t)} restedAge={!isActivelyRunning(t)} />
             <SubAgentRows t={t} />
           </div>
         )
@@ -861,7 +865,7 @@ export const ThreadRow = memo(function ThreadRow({
   legacy?: boolean
   active?: boolean
   onQueueNavigate?: (id: string) => void
-  /** Show the right-justified rest-time column: the cue, Snoozed and External rows — see RestedAge. */
+  /** Show the right-justified rest-time column: the cue, Pinned, Snoozed and External rows — see RestedAge. */
   restedAge?: boolean
   /** A mark before the indicator — the Console's project square (ConsoleSidebar.tsx). */
   leading?: ReactNode
@@ -889,8 +893,7 @@ export const ThreadRow = memo(function ThreadRow({
   // door to the in-drawer "Continue now" than waiting for the window). The queue card and drawer header
   // read the SAME helper, so no surface can disagree with the rail about which threads offer Retry.
   const canRestart = !legacy && offersRetry(t)
-  // A pinned row wears the mark in its right-edge column AND places the unpin verb rightmost in the
-  // hover strip; both read this one predicate so the two can never disagree.
+  // A pinned row places the unpin verb rightmost in the hover strip, where its rest time sits at rest.
   const pinned = !legacy && pinnedOn(t, shelf)
   // A ROW IS ITS TITLE, AND NOTHING ELSE (maintainer 2026-08-19: "there should never ever be any fucking
   // thing in the sidebar except for the fucking title"). There is no subtitle line on any row, in any
@@ -984,10 +987,6 @@ export const ThreadRow = memo(function ThreadRow({
                 which reads as a rendering fault rather than an affordance. The label gives way to it
                 on hover instead: the button is why you pointed at the row. */}
             {restedAge && <RestedAge t={t} yieldsToRetry />}
-            {/* A pinned row wears the small solid pin in this same right-edge column (the cue's
-                rest-time spot — the approved mockup's variant A), and yields to the hover actions the
-                same way the rest time does. Never both: the pinned band passes no restedAge. */}
-            {pinned && !restedAge && <PinnedMark />}
           </span>
         </span>
       </button>
@@ -1020,9 +1019,9 @@ export const ThreadRow = memo(function ThreadRow({
         <div className="absolute right-1.5 top-1 hidden items-center gap-0.5 bg-bg group-hover:flex group-focus-within:flex before:pointer-events-none before:absolute before:inset-y-0 before:right-full before:w-3 before:bg-linear-to-r before:from-transparent before:to-bg">
           {/* The pin sits LEFT of the fullscreen door on a row that can be pinned (the approved mockup's
               order). On a PINNED row the same button is the unpin and goes RIGHTMOST — after Retry too —
-              because it is the hover form of the mark in the row's right-edge column: the mark fades and
-              the unpin appears where it was (maintainer 2026-09-03: "unpin button should be far right for
-              pinned threads on hover"). Not on a foreign row: the server refuses to pin what it does not
+              over the spot the rest time yields on hover (maintainer 2026-09-03: "unpin button should be
+              far right for pinned threads on hover"). It is the only pin a pinned row shows: the band's
+              label says pinned, so the row spends its right edge on the rest time (2026-10-24). Not on a foreign row: the server refuses to pin what it does not
               own, so no button rather than a throwing one. */}
           {/* MEASURED 2026-09-03 (scripts/ink-gaps.mjs on sidebar-pin-fixture, dsf 4): on the strip's
               uniform 2px gap the OUTLINE pin's ink sat 12px from the door where door→Retry read 10px and
@@ -1123,56 +1122,10 @@ function RowRetryButton({ slug }: { slug: string }) {
   )
 }
 
-// THE PINNED ROW'S MARK — the small solid pin at the row's right edge, in the column the cue's rest
-// time occupies, muted to that column's weight. An IN-FLOW flex item (like RestedAge, unlike the hover
-// overlay) so a wrapping title breaks before it instead of running underneath, and it yields to the
-// hover actions the same way the rest time yields to Retry. The pin stays FILLED but keeps its stroke:
-// lucide's needle is a stroke-only line (`M12 17v5`) with no fill area, so strokeWidth 0 would erase it
-// and leave a headless blob (measured on the pin mockup sheet, 2026-09-02).
-//
-// IT WEARS THE HOVER STRIP'S OWN BOX, and that is the whole point: `h-[19px] w-[19px]` centring a 12px
-// glyph is exactly ROW_ACTION_CLASS's geometry, so the mark and the unpin button that replaces it on
-// hover occupy the SAME 19px slot and the pin does not move — it only swaps for the slashed glyph
-// (maintainer 2026-09-03: "it should be in the exact same place when you hover versus not hover").
-// The two coincide BY CONSTRUCTION, in both app fonts, at every rail width:
-//   HORIZONTAL — this box ends at the button's `pr-1.5` content edge and the strip is anchored
-//     `right-1.5` on the same row, so both right edges land on the same x.
-//   VERTICAL — `self-start` pins this box to the flex line's cross-start, which is the button's `pt-1`
-//     content top; the strip's `top-1` is that same offset from the row. Neither reading depends on the
-//     font's metrics, so nothing here needs re-fitting when the type scale moves.
-// It replaced a hand-placed `relative top-[calc(5.5px - 0.5cap)]` that sat an 11px mark on the title's
-// CAP band (0.01px residual in both fonts) — a better vertical in isolation, but its ink centre landed
-// 4.00px RIGHT of the unpin's and 0.09px (sans) / 0.66px (mono) above it, so the glyph jumped every
-// time the pointer arrived. This slot centres on the title's first LINE BOX instead, which is where the
-// door and Retry have always sat; an absolutely positioned strip cannot reach the in-flow baseline the
-// `cap` correction needs, so the whole slot agreeing beats one mark in it being sub-pixel more correct
-// at rest. What that costs, measured: the resting pin's ink now ends 4.5px inside the rest time's,
-// where the 11px mark ended 0.8px inside it — the hover square's own dead space, and the same inset the
-// door already had.
-//
-// `-ml-1` is a layout trim, not spacing: this slot is 8px wider than the 11px mark it replaced, and
-// without the trim the title's own box pays all of it. Giving 4px back leaves the ink gap from a filled
-// title line to the pin at 14.0px, against 14.29px before this change.
-function PinnedMark() {
-  return (
-    <span
-      aria-hidden
-      data-rail-pin-mark
-      // `text-muted opacity-55`, not `text-muted-55`: the mark is filled AND stroked, and an alpha colour
-      // compounds where the stroke overlaps the fill — see ROW_ACTION_CLASS. The hover hide is the same
-      // opacity axis, and the variant wins over the bare 55.
-      className="-ml-1 flex h-[19px] w-[19px] shrink-0 items-center justify-center self-start text-muted opacity-55 transition-opacity group-hover:opacity-0 group-focus-within:opacity-0"
-    >
-      <Pin size={12} fill="currentColor" />
-    </span>
-  )
-}
-
 // The pin/unpin verb — one of the row's hover actions (ThreadRow places it: left of the fullscreen door
 // to pin, rightmost to unpin), on every row the server can pin: sessions frizz owns, in any state,
 // because the pin deliberately outranks Done and Snoozed alike. THE FILL IS THE STATE: an outline pin
-// offers to pin, and the solid body with the slash — the same solid pin the pinned row's mark wears —
-// offers to unpin, so a filled pin anywhere on the rail means "pinned" and nothing else (maintainer
+// offers to pin, and the solid body with the slash offers to unpin, so a filled pin anywhere on the rail means "pinned" and nothing else (maintainer
 // 2026-09-02: "use the solid pin icon to make sure that the icons are consistent everywhere";
 // 2026-09-03: "the pin icon should be unfilled for unpinned threads").
 //

@@ -7,11 +7,12 @@ import type { ThreadView } from "@frizz/shared"
 import { ThreadRow } from "./Sidebar.tsx"
 import { TooltipProvider } from "./Tooltip.tsx"
 
-// The rail row's PIN verb and mark. Order and fill ARE the contract (maintainer 2026-09-03): a row that
-// can be pinned offers an OUTLINE pin LEFT of the fullscreen door; a PINNED row wears the solid mark in
-// its right-edge column and offers the solid slashed unpin RIGHTMOST in the hover strip — after Retry
-// too — so it appears where the mark was. And the strip draws no box of its own: its backing is the
-// rail's base colour under the row's hover wash, never the old `bg-panel` pill.
+// The rail row's PIN verb. Order and fill ARE the contract (maintainer 2026-09-03): a row that can be
+// pinned offers an OUTLINE pin LEFT of the fullscreen door; a PINNED row offers the solid slashed unpin
+// RIGHTMOST in the hover strip — after Retry too. At rest a pinned row shows no pin at all: the Pinned
+// band's label says it, and the right edge carries the row's rest time (2026-10-24). And the strip draws
+// no box of its own: its backing is the rail's base colour under the row's hover wash, never the old
+// `bg-panel` pill.
 
 const base = {
   kind: "session",
@@ -53,21 +54,8 @@ function pinIcon(html: string): string {
   return html.slice(at, html.indexOf("</svg>", at))
 }
 
-/** The class list of the element carrying `marker`, and the rendered size of the glyph inside it. */
-function slot(html: string, marker: string): { classes: string[]; glyph: string | undefined } {
-  const at = html.indexOf(marker)
-  assert.notEqual(at, -1, `the row renders ${marker}`)
-  const start = html.indexOf('class="', at) + 'class="'.length
-  const svg = html.indexOf("<svg", at)
-  return {
-    classes: html.slice(start, html.indexOf('"', start)).split(" ").filter(Boolean),
-    glyph: /width="(\d+)" height="(\d+)"/.exec(html.slice(svg))?.slice(1, 3).join("×"),
-  }
-}
-
 test("a row that can be pinned offers an OUTLINE pin, left of the fullscreen door", () => {
   const html = row({})
-  assert.doesNotMatch(html, /data-rail-pin-mark/, "no mark in the column — the row is not pinned")
   const icon = pinIcon(html)
   assert.match(icon, /aria-label="Pin thread"/)
   assert.match(icon, /fill="none"/, "the pin is drawn as an outline: a filled pin means pinned")
@@ -75,35 +63,18 @@ test("a row that can be pinned offers an OUTLINE pin, left of the fullscreen doo
   assert.ok(html.indexOf("data-sidebar-pin=") < html.indexOf("data-expand-thread="), "the pin precedes the door")
 })
 
-test("a pinned row wears the solid mark and offers the solid unpin RIGHTMOST, after the door", () => {
+test("a pinned row wears no pin at rest and offers the solid unpin RIGHTMOST, after the door", () => {
   const html = row(PINNED)
-  assert.match(html, /data-rail-pin-mark/, "the column carries the pin mark")
+  // The only pin on the row is the hover strip's button; the right-edge column belongs to the rest time.
+  assert.equal(html.split("lucide-pin").length - 1, 1, "one pin glyph, and it is the unpin in the strip")
   const icon = pinIcon(html)
   assert.match(icon, /aria-label="Unpin thread"/)
-  assert.match(icon, /fill="currentColor"/, "the unpin keeps the solid body the mark wears")
+  assert.match(icon, /fill="currentColor"/, "the unpin is solid: a filled pin means pinned")
   const pinAt = html.indexOf("data-sidebar-pin=")
   assert.ok(pinAt > html.indexOf("data-expand-thread="), "the unpin follows the door")
   // Nothing renders after the unpin inside the strip: its button is the strip's last child.
   const rest = html.slice(html.indexOf("</button>", pinAt) + "</button>".length)
   assert.ok(rest.startsWith("</div>"), `the unpin is the strip's last action, got: ${rest.slice(0, 40)}`)
-})
-
-// The GEOMETRY of that swap is pinned in the browser by railHoverNoShift.e2e.test.ts, which is where a
-// 4px jump actually shows up. This is the cheap half of the same contract: the mark and the unpin share
-// ONE box, so a future edit that resizes either has to change both deliberately rather than by drift.
-test("the mark wears the unpin's own box, so hovering swaps the glyph instead of moving it", () => {
-  const html = row(PINNED)
-  const mark = slot(html, "data-rail-pin-mark")
-  const unpin = slot(html, "data-sidebar-pin=")
-  for (const token of ["flex", "h-[19px]", "w-[19px]", "items-center", "justify-center"]) {
-    assert.ok(mark.classes.includes(token), `the mark wears the action box's ${token}: ${mark.classes.join(" ")}`)
-    assert.ok(unpin.classes.includes(token), `the unpin wears ${token}: ${unpin.classes.join(" ")}`)
-  }
-  // `self-start` is what puts the in-flow mark's top on the strip's `top-1`; without it the mark
-  // baseline-aligns in the title's row and lands wherever the font's metrics put it.
-  assert.ok(mark.classes.includes("self-start"), "the mark is pinned to the flex line's cross-start")
-  assert.equal(mark.glyph, unpin.glyph, "one glyph size, or the pin grows the moment the pointer arrives")
-  assert.equal(mark.glyph, "12×12")
 })
 
 test("on a pinned row that also offers Retry, the unpin still sits past Retry, at the far right", () => {
@@ -143,19 +114,16 @@ test("a foreign (read-only) row offers no pin verb in either position", () => {
 })
 
 // THE CONSOLE'S "BY STATUS" SHELF is a second pin, and a row shows exactly one of the two: there, its
-// mark and verb read and write the Console's pin, and its project board's pin is not drawn at all.
+// verb reads and writes the Console's pin, and its project board's pin is not offered at all.
 test("on the Console's shelf a row speaks for the Console's pin alone", () => {
   const CONSOLE = { consolePinnedAt: "2026-10-19T10:00:00.000Z" } as Partial<ThreadView>
   const consolePinned = row(CONSOLE, { shelf: "console" })
-  assert.match(consolePinned, /data-rail-pin-mark/, "pinned on the Console: the mark")
   assert.match(pinIcon(consolePinned), /aria-label="Unpin thread from All projects"/)
   assert.match(pinIcon(consolePinned), /data-pin-shelf="console"/)
 
   const boardPinned = row(PINNED, { shelf: "console" })
-  assert.doesNotMatch(boardPinned, /data-rail-pin-mark/, "a board pin draws no mark on the Console's shelf")
   assert.match(pinIcon(boardPinned), /aria-label="Pin thread to All projects"/)
 
   // And the board's rows never read the Console's pin.
-  assert.doesNotMatch(row(CONSOLE), /data-rail-pin-mark/)
   assert.match(pinIcon(row(CONSOLE)), /aria-label="Pin thread"/)
 })

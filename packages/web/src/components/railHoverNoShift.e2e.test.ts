@@ -7,15 +7,13 @@ const baseUrl = process.env.FRIZZ_RAIL_HOVER_NO_SHIFT_E2E_URL
 // layout shift here between these two versions on hover … it should be in the exact same place when
 // you hover versus not hover. This should be true for all icons that show up in the sidebar rows").
 //
-// The bug this pins: a pinned row wore its solid mark in the right-edge column, and the unpin that
-// replaces it on hover sat in the hover strip — two different layout mechanisms landing 4.00px apart
-// horizontally and, in mono, 0.65px apart vertically. Both boxes read as "the row's right edge" in the
-// source; only the pixels disagreed. So this asserts GEOMETRY in a real browser rather than class
-// names, because the classes looked right the whole time it was broken.
+// It was written for a pinned row's resting pin mark, which the unpin replaced on hover from a different
+// layout mechanism, 4.00px away. That mark is gone (2026-10-24: a pinned row carries its rest time and
+// shows the pin only on hover), but the contract stands for every row: the hover strip OVERLAYS, so the
+// row, its title and its status glyph stay put. GEOMETRY in a real browser rather than class names,
+// because the classes looked right the whole time the old swap was broken.
 //
-// BOTH FONTS, because the mark's old placement was a `cap`-derived nudge onto the title's cap band and
-// the strip centres on the title's first LINE BOX — readings that agree to 0.08px in sans and diverge
-// to 0.65px in mono. A one-font check would have called the old code correct.
+// BOTH FONTS, because the two fonts' metrics put the title's first line box in different places.
 test("no icon in a rail row moves between rest and hover, in either app font", {
   skip: !baseUrl,
   timeout: 120_000,
@@ -60,8 +58,6 @@ test("no icon in a rail row moves between rest and hover, in either app font", {
         // The status glyph in the row's own left column: always on, and it must not budge either.
         indicator: boxOf(row.querySelector("span.w-4")),
         indicatorInk: inkOf(row.querySelector("span.w-4")),
-        markBox: boxOf(row.querySelector("[data-rail-pin-mark]")),
-        markInk: inkOf(row.querySelector("[data-rail-pin-mark]")),
         pinBox: boxOf(row.querySelector("[data-sidebar-pin]")),
         pinInk: inkOf(row.querySelector("[data-sidebar-pin]")),
       }
@@ -88,15 +84,10 @@ test("no icon in a rail row moves between rest and hover, in either app font", {
           assert.deepEqual(hover[part], at[part], `${font} / ${id}: the row's ${part} moved on hover`)
         }
 
-        // THE PINNED ROW'S ONE SLOT: the mark at rest and the unpin on hover are the same box, and
-        // their ink centres coincide — so the pin swaps for the slashed pin without moving.
-        if (at.markBox) {
-          assert.ok(hover.pinBox, `${font} / ${id}: a pinned row offers its unpin on hover`)
-          assert.deepEqual(hover.pinBox, at.markBox, `${font} / ${id}: the unpin does not land on the mark's box`)
-          assert.deepEqual(hover.pinInk, at.markInk, `${font} / ${id}: the unpin's ink centre is not the mark's`)
-        }
+        // The pin verb exists only on hover, on every row that can be pinned or unpinned.
+        assert.equal(at.pinBox, null, `${font} / ${id}: a pin shows at rest`)
       }
-      // Hovering a row must not disturb its NEIGHBOURS either: a mark that reflowed one row's title
+      // Hovering a row must not disturb its NEIGHBOURS either: a hover action that reflowed one row's title
       // could push every row below it down the rail.
       await page.mouse.move(0, 0)
       assert.deepEqual(await page.evaluate(probe), rest, `${font}: the rail did not return to its resting layout`)
