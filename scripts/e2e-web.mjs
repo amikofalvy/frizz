@@ -65,6 +65,7 @@ const NEEDS_REAL_STACK = [
   "packages/web/src/components/pinnedBandReorder.e2e.test.ts",
   "packages/web/src/components/consolePinnedBand.e2e.test.ts",
   "packages/web/src/components/queueOneAtATime.e2e.test.ts",
+  "packages/web/src/components/homeSwitcher.e2e.test.ts",
 ];
 
 const args = process.argv.slice(2);
