@@ -118,7 +118,10 @@ test("the Pinned band dates its resting rows and leaves a spinning one undated",
   // The band is ordered by pin instant, oldest first, so the resting row is pinned first.
   const resting = { ...base, id: "launch-checklist", title: "Launch checklist", pinnedAt: ago(10 * 24 * 60 * 60_000), lastAssistantAt: ago(3 * 60 * 60_000) }
   const spinning = { ...base, id: "draft-the-changelog", title: "Draft the changelog", pinnedAt: ago(9 * 24 * 60 * 60_000), needsYou: false, runtime: "running", lastActivityAt: ago(60_000) }
-  store.board = { projectDir: "/fixture", threads: [resting, spinning] } as unknown as typeof store.board
+  // QUEUED with live work out (isActivelyRunning is true of it): it holds a card and wears the queue's
+  // glyph, not a spinner, so it is dated as the cue would date it.
+  const queuedBusy = { ...base, id: "answer-the-schema-question", title: "Answer the schema question", pinnedAt: ago(8 * 24 * 60 * 60_000), awaitingBackground: true, lastActivityAt: ago(40 * 60_000) }
+  store.board = { projectDir: "/fixture", threads: [resting, spinning, queuedBusy] } as unknown as typeof store.board
   const html = renderToStaticMarkup(
     createElement(
       QueryClientProvider,
@@ -128,7 +131,9 @@ test("the Pinned band dates its resting rows and leaves a spinning one undated",
   )
   const restingRow = html.slice(html.indexOf('data-sidebar-item="launch-checklist"'), html.indexOf('data-sidebar-item="draft-the-changelog"'))
   assert.match(restingRow, /data-rail-rested-age[^>]*>3h</)
-  const spinningRow = html.slice(html.indexOf('data-sidebar-item="draft-the-changelog"'))
+  const spinningRow = html.slice(html.indexOf('data-sidebar-item="draft-the-changelog"'), html.indexOf('data-sidebar-item="answer-the-schema-question"'))
   assert.match(spinningRow, /data-rail-glyph="working"/)
   assert.doesNotMatch(spinningRow, /data-rail-rested-age/)
+  const queuedBusyRow = html.slice(html.indexOf('data-sidebar-item="answer-the-schema-question"'))
+  assert.match(queuedBusyRow, /data-rail-rested-age[^>]*>40m</)
 })

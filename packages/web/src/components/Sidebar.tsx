@@ -280,7 +280,8 @@ export function Sidebar() {
               pinned ones already live in their own section anyway" — the band's label already says pinned, so
               a solid pin on every row said it twice and cost the row its age). A row that is actively
               SPINNING shows no age, as in the Running band: it has not come to rest, and its spinner is the
-              reading. These rows are OUT of the band system entirely — sectionThreads diverts them before any
+              reading. A pinned row that holds a queue card is dated whatever it has running, as the cue
+              dates it (PinnedBand). These rows are OUT of the band system entirely — sectionThreads diverts them before any
               band claims them, so a pinned thread stays here spinning, resting, snoozed or Done alike — and
               the band is ordered by the pin instants, oldest first, never by activity: it is an arrangement
               the human made, and nothing the threads do may shuffle it. The human rearranges it by dragging a
@@ -631,7 +632,10 @@ export function PinnedBand({ threads, railRef, activeId, onQueueNavigate, shelf 
               transition: drag && !held ? "transform 160ms ease" : undefined,
             }}
           >
-            <ThreadRow t={t} active={activeId === t.id} onQueueNavigate={onQueueNavigate} shelf={shelf} leading={leading?.(t)} restedAge={!isActivelyRunning(t)} />
+            {/* Undated only while it SPINS: actively running and holding no queue card. A queued row with
+                live work out (an open question beside a running sub-agent) wears the queue's glyph, not a
+                spinner, and the cue would date it — so it is dated here too. */}
+            <ThreadRow t={t} active={activeId === t.id} onQueueNavigate={onQueueNavigate} shelf={shelf} leading={leading?.(t)} restedAge={t.needsYou === true || !isActivelyRunning(t)} />
             <SubAgentRows t={t} />
           </div>
         )
@@ -1127,8 +1131,9 @@ function RowRetryButton({ slug }: { slug: string }) {
 // to pin, rightmost to unpin), on every row the server can pin: sessions frizz owns, in any state,
 // because the pin deliberately outranks Done and Snoozed alike. THE FILL IS THE STATE: an outline pin
 // offers to pin, and the solid body with the slash offers to unpin, so a filled pin anywhere on the
-// rail means "pinned" and nothing else (maintainer 2026-09-02: "use the solid pin icon to make sure that the icons are consistent everywhere";
-// 2026-09-03: "the pin icon should be unfilled for unpinned threads").
+// rail means "pinned" and nothing else (maintainer 2026-09-02: "use the solid pin icon to make sure
+// that the icons are consistent everywhere"; 2026-09-03: "the pin icon should be unfilled for unpinned
+// threads").
 //
 // On the Console's "By status" view the same verb writes the CONSOLE's shelf instead, and says so: two
 // shelves now exist, and a tooltip that read the same on both would not tell the human which one a click
