@@ -68,6 +68,7 @@ import { SHELL_WATCHED_NOTE, shellWatched, threadOps } from "../lib/threadOps.ts
 import { MobileThreadHeader } from "./MobileThreadHeader.tsx"
 import { HeaderActions } from "./HeaderActions.tsx"
 import { ThreadLifecycleActions, StateButton } from "./ThreadLifecycle.tsx"
+import { completionUnpins } from "../lib/completionPins.ts"
 import { ThreadHeaderFacts } from "./ThreadHeaderFacts.tsx"
 import { ThreadTitle } from "./ThreadTitle.tsx"
 import { threadLifecycleAvailability } from "../lib/threadLifecycle.ts"
@@ -4141,6 +4142,10 @@ export function FenceCard({ fenceKind, body, hints, wrap, pastRest }: { fenceKin
     // 2026-10-13 with scripts/layout-timeline.mjs; 2 now. A card the thread moves past under a live button
     // gives it up in the frame that draws the bubble, which is the frame a steps card folds in. The CARD
     // is untouched: it is the same record, without its button.
+    //
+    // ON A PINNED THREAD THE VERB SAYS IT UNPINS, and a quieter sibling keeps the pin: Done unpins by
+    // default (lib/completionPins.ts), so the white button is the suggested action and the outlined one
+    // beside it is the exception — the provider-fault card's primary-and-secondary pair, in that order.
     const markDone = doneThread && !isMobile && !pastRest ? (
       <CardActions>
         <StateButton
@@ -4150,6 +4155,17 @@ export function FenceCard({ fenceKind, body, hints, wrap, pastRest }: { fenceKin
           onArchived={queueDismiss?.dismiss}
           onDismissCancel={queueDismiss?.cancel}
         />
+        {completionUnpins(doneThread) && (
+          <StateButton
+            thread={doneThread}
+            keepPinned
+            // The primary's box less the 1px border on each side, so the outlined pill stands exactly as
+            // tall as the white one beside it and its label sits at the same inset (24.5px both).
+            className={`shrink-0 ${CARD_ACTION_RADIUS} border border-border px-[9px] py-[3px] text-[11px] !font-normal text-fg/90 hover:bg-panel hover:border-border-strong`}
+            onArchived={queueDismiss?.dismiss}
+            onDismissCancel={queueDismiss?.cancel}
+          />
+        )}
       </CardActions>
     ) : null
     return (

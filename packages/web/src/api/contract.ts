@@ -105,6 +105,7 @@ import type {
   CancelInteractionInput,
   CancelInteractionResult,
   CompletionHold,
+  CompletionUnpinned,
   ProjectCard,
   ProjectRailCounts,
   ThreadLocation,
@@ -223,7 +224,9 @@ export interface Api {
   // WHY it declined — the executing turn and/or the named live sub-agents/shells — for the dialog to name.
   // `sessionId` binds the click to the session the tab was looking at: a stale tab fails closed rather
   // than completing whatever now owns the slug.
-  completeThread(input: { slug: string; sessionId: string; terminateLive?: boolean }): Promise<{ needsConfirmation: boolean; hold?: CompletionHold }>
+  // It also UNPINS the thread from both shelves unless `keepPinned`; `unpinned` carries the instants it
+  // lifted, so "Keep pinned" can put the thread back exactly where it was (setThreadPinned `at`).
+  completeThread(input: { slug: string; sessionId: string; terminateLive?: boolean; keepPinned?: boolean }): Promise<{ needsConfirmation: boolean; hold?: CompletionHold; unpinned?: CompletionUnpinned }>
   setThreadSnooze(input: SetThreadSnoozeInput): Promise<void>
   // Pin/unpin the thread out of the rail's band system (the pinned band at the top of the rail).
   setThreadPinned(input: SetThreadPinnedInput): Promise<void>

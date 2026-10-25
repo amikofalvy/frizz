@@ -88,7 +88,8 @@ export interface SessionRow {
   // The instant the human PINNED this thread out of the rail's band system (null/absent = not pinned).
   // Like Archive and the snooze it is lifecycle metadata the human owns — never inferred from a fence —
   // and the instant doubles as the pinned band's order. It survives every state change (a pinned thread
-  // that finishes stays pinned); only the unpin verb clears it.
+  // whose worker finishes stays pinned); the unpin verb clears it, and so does the human's Mark as done
+  // unless they keep it pinned (router completeThread).
   pinned_at?: string | null
   // The same, for the CONSOLE's "By status" view — a second shelf, independent of `pinned_at`, whose
   // instants order the Console's pinned band across every project (ThreadView.consolePinnedAt).

@@ -104,6 +104,7 @@ import {
   CancelInteractionInput,
   CancelInteractionResult,
   CompletionHold,
+  CompletionUnpinned,
   type InteractionRecord,
   type ThreadView,
   ThreadSlug,
@@ -3180,16 +3181,40 @@ export function createRouter(ctx: AppContext) {
 
     // “Mark as done” stops a resting provider shell and archives in one action. The server—not the
     // client—asks for confirmation only when current telemetry shows an executing/ambiguous turn.
+    //
+    // AND IT UNPINS, from both shelves, unless the human says `keepPinned`. The pin used to outrank Done
+    // outright, so every finished thread someone had pinned held its row above every live one until they
+    // came back to unpin it (asked for 2026-10-24: "the default should be mark as done and unpin"). The
+    // default lives HERE rather than in each button so every way of finishing a thread — the header's
+    // check, the done card, the phone's swipe and its Done — agrees. Only this verb unpins: a worker
+    // finishing, or a bare archive (setThreadState), leaves the pin where the human put it.
     completeThread: mutation({
-      input: z.object({ slug: ThreadSlug, sessionId: z.string().min(1), terminateLive: z.boolean().default(false) }).strict(),
+      input: z.object({
+        slug: ThreadSlug,
+        sessionId: z.string().min(1),
+        terminateLive: z.boolean().default(false),
+        keepPinned: z.boolean().optional(), // absent ⇒ unpin, the default
+      }).strict(),
       // `hold` rides along only with needsConfirmation:true — it is the evidence the dialog names.
-      output: z.object({ needsConfirmation: z.boolean(), hold: CompletionHold.optional() }),
+      // `unpinned` only when the completion lifted a pin: the old instants, for "Keep pinned" to restore.
+      output: z.object({ needsConfirmation: z.boolean(), hold: CompletionHold.optional(), unpinned: CompletionUnpinned.optional() }),
       handler: async ({ input }) => {
         const row = currentOwnedSession(input.slug, input.sessionId)
-        const result = await completeRegisteredThread(
+        const result: { needsConfirmation: boolean; hold?: CompletionHold; unpinned?: CompletionUnpinned } = await completeRegisteredThread(
           ctx.storage, row, input.terminateLive, cachedLivenessTerminator, ctx.tailer.get(input.slug), ctx.codexAppServer, ctx.claudeBroker, ctx.acpBridge,
         )
-        if (!result.needsConfirmation) ctx.board.refresh()
+        if (result.needsConfirmation) return result
+        // Read AFTER the completion, not off `row`: a stop can take seconds, and a pin moved meanwhile is
+        // the one to lift and to hand back.
+        const pins = ctx.storage.getSession(input.slug)
+        const pinnedAt = pins?.pinned_at ?? null
+        const consolePinnedAt = pins?.console_pinned_at ?? null
+        if (input.keepPinned !== true && (pinnedAt !== null || consolePinnedAt !== null)) {
+          if (pinnedAt !== null) ctx.storage.setPinnedAt(input.slug, null)
+          if (consolePinnedAt !== null) ctx.storage.setConsolePinnedAt(input.slug, null)
+          result.unpinned = { pinnedAt, consolePinnedAt }
+        }
+        ctx.board.refresh()
         return result
       },
     }),
@@ -3225,14 +3250,16 @@ export function createRouter(ctx: AppContext) {
 
     // Pin/unpin: the human lifts a thread out of the rail's band system into the pinned band at the
     // very top (or drops it back in). Same editability gate as the snooze, but NO archived refusal —
-    // the pin deliberately outranks Done, so a pinned thread that finishes stays pinned until unpinned.
+    // the pin outranks Done: a thread whose worker finishes stays pinned, and a done thread can be
+    // pinned, which is what "Keep pinned" after a Mark as done does (completeThread, above), at the
+    // instant it held (`at`) so it returns to its own place on the shelf.
     setThreadPinned: mutation({
       input: SetThreadPinnedInput,
       handler: async ({ input }) => {
         currentOwnedSession(input.slug, input.sessionId)
         const thread = (await ctx.board.snapshot()).threads.find((candidate) => candidate.id === input.slug)
         if (!thread || thread.kind !== "session" || thread.foreign) throw new Error(`thread ${input.slug} is not editable`)
-        ctx.storage.setPinnedAt(input.slug, input.pinned ? new Date().toISOString() : null)
+        ctx.storage.setPinnedAt(input.slug, input.pinned ? input.at ?? new Date().toISOString() : null)
         ctx.board.refresh()
       },
     }),
@@ -3257,7 +3284,7 @@ export function createRouter(ctx: AppContext) {
         currentOwnedSession(input.slug, input.sessionId)
         const thread = (await ctx.board.snapshot()).threads.find((candidate) => candidate.id === input.slug)
         if (!thread || thread.kind !== "session" || thread.foreign) throw new Error(`thread ${input.slug} is not editable`)
-        ctx.storage.setConsolePinnedAt(input.slug, input.pinned ? new Date().toISOString() : null)
+        ctx.storage.setConsolePinnedAt(input.slug, input.pinned ? input.at ?? new Date().toISOString() : null)
         ctx.board.refresh()
       },
     }),

@@ -6,6 +6,7 @@ import { displayTitle, needsAction, sectionThreads } from "../groups.ts"
 import { prefs } from "./prefs.ts"
 import { archivingAtNow, clearArchived, markArchived, optimisticallyArchived } from "./optimisticArchive.ts"
 import { completionArchivesImmediately } from "./threadLifecycle.ts"
+import { completionUnpins, restoreUnpinned } from "./completionPins.ts"
 
 // THE PHONE'S TRIAGE LOOP: open the top row, read, answer or Done, repeat — without the board in
 // between (the approved phone design, 2026-09-30). Done files the thread and opens the next one that
@@ -69,9 +70,7 @@ export function leaveFiledThread(slug: string): void {
   if (open.length) closeDrawersById(open)
 }
 
-// A completion still on the wire, per thread. Undo waits on it: an un-archive that reached the server
-// ahead of the archive it undoes would be overwritten by it, and the thread would stay done.
-const inFlight = new Map<string, Promise<unknown>>()
+type CompletionResult = Awaited<ReturnType<typeof rpc.completeThread>>
 
 export type MarkDoneOutcome =
   | { kind: "done" }
@@ -97,14 +96,17 @@ export async function markDoneAndAdvance(thread: ThreadView, opts: { terminateLi
   const terminateLive = opts.terminateLive === true
   const optimistic = terminateLive || completionArchivesImmediately(thread)
   const title = displayTitle(thread)
+  // Done unpins by default (lib/completionPins.ts), so a pinned thread's toast says so, and its Undo
+  // puts the pins back along with the thread.
   const filed = () => {
     markArchived(slug)
     leaveFiledThread(slug)
-    showToast(`“${title}” marked done`, { action: { label: "Undo", run: () => void undoMarkDone(slug) } })
+    showToast(`“${title}” marked done${completionUnpins(thread) ? " and unpinned" : ""}`, {
+      action: { label: "Undo", run: () => void undoMarkDone(slug, thread.sessionId ?? "", request) },
+    })
   }
-  if (optimistic) filed()
   const request = rpc.completeThread({ slug, sessionId: thread.sessionId ?? "", terminateLive })
-  inFlight.set(slug, request)
+  if (optimistic) filed()
   try {
     const result = await request
     if (result.needsConfirmation) {
@@ -123,8 +125,6 @@ export async function markDoneAndAdvance(thread: ThreadView, opts: { terminateLi
     const message = `Couldn’t finish: ${(error as Error).message.slice(0, 80)}`
     showToast(message, optimistic ? { link: { label: "Open", slug } } : undefined)
     return { kind: "failed" }
-  } finally {
-    if (inFlight.get(slug) === request) inFlight.delete(slug)
   }
 }
 
@@ -136,14 +136,17 @@ export async function markDoneAndAdvance(thread: ThreadView, opts: { terminateLi
  * that is all this does: `state` goes back to `open`. What completion also did stays done. A worker that
  * was resting live was stopped, and the next message resumes the conversation from disk in a new one,
  * exactly as it does for any thread whose worker exited; a snooze it carried was cleared and is not
- * re-armed. Unread is left cleared — the operator has just read it.
+ * re-armed. Unread is left cleared — the operator has just read it. The pins it lifted are the
+ * exception: they go back, each at its old place on its shelf.
  */
-export async function undoMarkDone(slug: string): Promise<void> {
-  // An Undo can beat the completion it undoes to the server. Let that land first; its failure has
-  // already been reported and left the thread open, which is all an Undo would do.
-  await inFlight.get(slug)?.catch(() => undefined)
+export async function undoMarkDone(slug: string, sessionId: string, completion: Promise<CompletionResult>): Promise<void> {
+  // An Undo can beat the completion it undoes to the server (`completion` is that request). Let it land
+  // first: an un-archive that reached the server ahead of the archive would be overwritten by it. Its
+  // failure has already been reported and left the thread open, which is all an Undo would do.
+  const result = await completion.catch(() => undefined)
   try {
     await rpc.setThreadState({ slug, state: "open" })
+    if (result?.unpinned) await restoreUnpinned(slug, sessionId, result.unpinned)
     clearArchived(slug)
     openThread(slug)
   } catch (error) {

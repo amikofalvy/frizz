@@ -5,6 +5,7 @@ import { rpc } from "../api/rpc.ts"
 import { showToast } from "../store.ts"
 import { threadLifecycleAvailability, completionArchivesImmediately, completionHoldSummary } from "../lib/threadLifecycle.ts"
 import { markArchived, clearArchived } from "../lib/optimisticArchive.ts"
+import { keepPinnedAction, markDoneLabel } from "../lib/completionPins.ts"
 import { CHILD_ARROW, CHILD_ARROW_CLASS } from "../lib/childOps.ts"
 import { HEADER_ICON_CLASS } from "../lib/headerIcon.ts"
 import { SnoozeMenu } from "./SnoozeMenu.tsx"
@@ -111,7 +112,9 @@ export function LifecycleReadout({
 // as a white primary button at the bottom of the in-chat ```done card (see FenceCard) and as a row in
 // the phone's ⋯ sheet. Same completion mutation and live-session confirmation flow; only the chrome
 // differs, via `className` or `iconOnly`. There is deliberately NO Reopen state: reopening a thread is done by
-// sending it another message, so the button is always "Mark as done".
+// sending it another message, so the button is always "Mark as done" — "Mark as done & unpin" on a pinned
+// thread, because Done unpins by default (lib/completionPins.ts), and `keepPinned` is the done card's
+// quieter sibling that finishes the thread and leaves its pins alone.
 export function StateButton({
   thread,
   onArchived,
@@ -120,6 +123,7 @@ export function StateButton({
   iconClassName = "",
   iconSize = 12,
   iconOnly = false,
+  keepPinned = false,
 }: {
   thread: ThreadView
   onArchived?: () => void
@@ -143,6 +147,9 @@ export function StateButton({
   // immediate tooltip like every other header icon. 15px, one size up from the strip's 14: lucide's
   // Check paints only 16 of its 24 units across, so at 14 it read lighter than the clock beside it.
   iconOnly?: boolean
+  // Finish the thread WITHOUT the default unpin (completeThread `keepPinned`). Labelled for what it
+  // does; it renders only beside a pinned thread's primary, so it never says "keep" of nothing.
+  keepPinned?: boolean
 }) {
   // Disables the instant it's clicked. On success we DON'T reset it: the card is dissolving, so the
   // button stays disabled (still reading "Mark as done", no spinner) for the whole fade-out rather
@@ -167,7 +174,7 @@ export function StateButton({
     const expectsArchive = terminateLive || completionArchivesImmediately(thread)
     if (expectsArchive) markArchived(thread.id)
     rpc
-      .completeThread({ slug: thread.id, sessionId: thread.sessionId ?? "", terminateLive })
+      .completeThread({ slug: thread.id, sessionId: thread.sessionId ?? "", terminateLive, ...(keepPinned ? { keepPinned } : {}) })
       .then((result) => {
         if (result.needsConfirmation) {
           clearArchived(thread.id) // mispredicted: the server wants the dialog, so the row stays put
@@ -185,7 +192,8 @@ export function StateButton({
           return
         }
         setConfirmOpen(false)
-        showToast("Done")
+        if (result.unpinned) showToast("Done · unpinned", { action: keepPinnedAction(thread.id, thread.sessionId ?? "", result.unpinned) })
+        else showToast("Done")
         if (!optimistic) onArchived?.() // non-optimistic path dismisses now; optimistic already did
       })
       .catch((error) => {
@@ -196,15 +204,16 @@ export function StateButton({
       })
   }
   const canOptimistic = !!onArchived && !!onDismissCancel && completionArchivesImmediately(thread)
+  const label = keepPinned ? "Mark as done, keep pinned" : markDoneLabel(thread)
   return (
     <>
       {iconOnly ? (
-        <Tooltip label="Mark as done">
+        <Tooltip label={label}>
           <button
             type="button"
             onClick={() => complete(false, canOptimistic)}
             disabled={pending}
-            aria-label="Mark as done"
+            aria-label={label}
             onMouseDown={(event) => event.preventDefault()}
             className={HEADER_ICON_CLASS}
           >
@@ -218,13 +227,13 @@ export function StateButton({
           // which case Done should immediately stop it and archive the thread.
           onClick={() => complete(false, canOptimistic)}
           disabled={pending}
-          aria-label="Mark as done"
-          title="Mark as done"
+          aria-label={label}
+          title={label}
           onMouseDown={(event) => event.preventDefault()}
           className={`flex items-center gap-1 font-medium outline-none transition-colors focus-visible:ring-1 focus-visible:ring-focus-ink-60 disabled:opacity-45 ${className}`}
         >
-          <Check size={iconSize} className={iconClassName} />
-          Mark as done
+          {!keepPinned && <Check size={iconSize} className={iconClassName} />}
+          {label}
         </button>
       )}
       <Dialog
