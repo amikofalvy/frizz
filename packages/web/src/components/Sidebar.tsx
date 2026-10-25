@@ -357,10 +357,15 @@ export function Sidebar() {
                 collapsed={collapsed.snoozed}
                 onToggle={() => (store.sidebarCollapsed.snoozed = !store.sidebarCollapsed.snoozed)}
               />
+              {/* The rest-time column is ON here too (maintainer 2026-10-24: "It's hard for me to know
+                  how long some of these snoozes have been snoozed for"). A parked row says nothing else
+                  on the rail — its wake detail lives in the indicator's tooltip — so without the column a
+                  watch that went quiet a week ago reads exactly like one parked this morning. The band is
+                  ordered by the same instant (orderByInteraction), so the column reads monotonically. */}
               {!collapsed.snoozed &&
                 heldThreads.map((t) => (
                   <div key={t.id}>
-                    <ThreadRow t={t} active={activeId === t.id} onQueueNavigate={navigateToQueueCard} />
+                    <ThreadRow t={t} active={activeId === t.id} onQueueNavigate={navigateToQueueCard} restedAge />
                     <SubAgentRows t={t} />
                   </div>
                 ))}
@@ -400,11 +405,10 @@ export function Sidebar() {
                 collapsed={collapsed.external}
                 onToggle={() => (store.sidebarCollapsed.external = !store.sidebarCollapsed.external)}
               />
-              {/* The rest-time column is ON here, unlike Snoozed and Done. Every row in this band is by
-                  definition at rest, so "how long ago" is the only thing that distinguishes them — it is
-                  what tells you which terminal you wandered away from an hour ago and which one is from
-                  last Tuesday. Snoozed rows carry their own hint gloss and Done rows are over; neither has
-                  that problem. */}
+              {/* The rest-time column is ON here, as in the cue and Snoozed, and unlike Done. Every row in
+                  this band is by definition at rest, so "how long ago" is the only thing that distinguishes
+                  them — it is what tells you which terminal you wandered away from an hour ago and which
+                  one is from last Tuesday. Done rows are over, so their age answers nothing. */}
               {!collapsed.external &&
                 externalSessions.map((t) => (
                   <ThreadRow key={t.id} t={t} active={activeId === t.id} onQueueNavigate={navigateToQueueCard} restedAge />
@@ -857,7 +861,7 @@ export const ThreadRow = memo(function ThreadRow({
   legacy?: boolean
   active?: boolean
   onQueueNavigate?: (id: string) => void
-  /** Show the right-justified rest-time column. The CUE's rows only — see RestedAge. */
+  /** Show the right-justified rest-time column: the cue, Snoozed and External rows — see RestedAge. */
   restedAge?: boolean
   /** A mark before the indicator — the Console's project square (ConsoleSidebar.tsx). */
   leading?: ReactNode

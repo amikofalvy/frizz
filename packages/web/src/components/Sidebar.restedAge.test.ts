@@ -68,3 +68,39 @@ test("a thread that has never produced output falls back rather than printing no
   const html = row({ lastAssistantAt: undefined, lastActivityAt: undefined, spawnedAt: ago(3 * 60 * 60_000) })
   assert.match(html, />3h</)
 })
+
+// THE SNOOZED BAND carries the column too (maintainer 2026-10-24: "It's hard for me to know how long
+// some of these snoozes have been snoozed for"). Pinned over the REAL <Sidebar/>, because the bug was
+// never in the row — the band simply did not ask for the column. The spinning row is the control that
+// proves the wiring is per band rather than global.
+test("the Snoozed band dates each row; a spinning row in Active does not", async () => {
+  const [{ MemoryRouter }, { Sidebar }, { store }] = await Promise.all([
+    import("react-router"),
+    import("./Sidebar.tsx"),
+    import("../store.ts"),
+  ])
+  const snoozed = {
+    ...base,
+    id: "watch-the-resolver-pr",
+    title: "Watch the resolver pull request",
+    needsYou: false,
+    snoozedUntil: new Date(Date.now() + 24 * 60 * 60_000).toISOString(),
+    lastAssistantAt: ago(5 * 24 * 60 * 60_000),
+  }
+  const running = { ...base, id: "port-the-drivers", title: "Port the drivers", needsYou: false, runtime: "running", lastActivityAt: ago(60_000) }
+  store.board = { projectDir: "/fixture", threads: [snoozed, running] } as unknown as typeof store.board
+  store.sidebarCollapsed.snoozed = false
+  const html = renderToStaticMarkup(
+    createElement(
+      QueryClientProvider,
+      { client: new QueryClient({ defaultOptions: { queries: { retry: false } } }) },
+      createElement(TooltipProvider, null, createElement(MemoryRouter, null, createElement(Sidebar))),
+    ),
+  )
+  const snoozedBand = html.slice(html.indexOf('aria-label="Snoozed"'))
+  assert.match(snoozedBand, /data-sidebar-item="watch-the-resolver-pr"/)
+  assert.match(snoozedBand, /data-rail-rested-age[^>]*>5d</)
+  const runningRow = html.slice(html.indexOf('data-sidebar-item="port-the-drivers"'), html.indexOf('aria-label="Snoozed"'))
+  assert.match(runningRow, /data-rail-glyph="working"/)
+  assert.doesNotMatch(runningRow, /data-rail-rested-age/)
+})
