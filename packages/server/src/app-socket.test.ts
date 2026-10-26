@@ -602,7 +602,14 @@ test("security: duplicate subscriptions are read-once, the per-connection cap is
 test("security: a valid-frame flood and a slow outbound consumer are shed without poisoning recovery", async () => {
   let simulateSlow = false
   let transcriptReads = 0
+  // The batch is held until the close has landed. Under load the kernel can deliver the first three
+  // frames in a poll iteration of their own, and a setImmediate batch then reads them before frame
+  // four closes the socket, which is legitimate (they were within the rate) but not this test's claim.
+  const armedBatches: (() => void)[] = []
   const h = await startHarness({
+    scheduleSubscriptionFlush: (flush) => {
+      armedBatches.push(flush)
+    },
     maxMessagesPerWindow: 3,
     messageWindowMs: 60_000,
     maxOutputBufferBytes: 1_024,
@@ -620,6 +627,7 @@ test("security: a valid-frame flood and a slow outbound consumer are shed withou
       flood.ws.send(JSON.stringify({ t: "sub", topic: "transcript", slug: `flood-${i}` }))
     }
     assert.equal((await floodClosed)[0], 1008)
+    for (const flush of armedBatches.splice(0)) flush()
     assert.equal(
       transcriptReads,
       0,
