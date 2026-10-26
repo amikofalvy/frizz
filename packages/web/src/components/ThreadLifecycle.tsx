@@ -5,6 +5,7 @@ import { rpc } from "../api/rpc.ts"
 import { showToast } from "../store.ts"
 import { threadLifecycleAvailability, completionArchivesImmediately, completionHoldSummary } from "../lib/threadLifecycle.ts"
 import { markArchived, clearArchived } from "../lib/optimisticArchive.ts"
+import { showCompletionToast } from "../lib/completionPins.ts"
 import { CHILD_ARROW, CHILD_ARROW_CLASS } from "../lib/childOps.ts"
 import { HEADER_ICON_CLASS } from "../lib/headerIcon.ts"
 import { SnoozeMenu } from "./SnoozeMenu.tsx"
@@ -185,7 +186,8 @@ export function StateButton({
           return
         }
         setConfirmOpen(false)
-        showToast("Done")
+        // A pinned thread stays pinned; its toast offers "Unpin" (lib/completionPins.ts).
+        showCompletionToast("Done", thread)
         if (!optimistic) onArchived?.() // non-optimistic path dismisses now; optimistic already did
       })
       .catch((error) => {
