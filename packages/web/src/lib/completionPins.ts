@@ -1,43 +1,39 @@
-import { SnoozeUntil, type CompletionUnpinned, type ThreadView } from "@frizz/shared"
+import type { ThreadView } from "@frizz/shared"
 import { rpc } from "../api/rpc.ts"
 import { showToast, type ToastAction } from "../store.ts"
 
-// MARK AS DONE UNPINS BY DEFAULT (server router completeThread): a finished thread left on the pinned
-// shelf held its row above every live one until somebody came back to unpin it. Keeping the pin is the
-// exception, offered two ways: the done card's quieter "Mark as done, keep pinned" beside its primary,
-// and — from every surface, the header's bare check and the phone's swipe included — the "Keep pinned"
-// action on the toast a completion that unpinned shows, which puts the pins back where they were.
+// MARK AS DONE KEEPS THE PIN. A pin outranks Done (router setThreadPinned): the maintainer pins threads
+// on purpose and marks them done, and wants them to stay on the shelf, visible and one click away
+// (2026-10-26: "I often have a lot of things pinned intentionally, and I mark them as done. I want them
+// to stay visible and obviously clickable"). Unpinning is the exception, so it is ASKED rather than
+// done: the toast a pinned thread's completion shows carries an "Unpin" action, which the human can
+// ignore. A dialog was passed on because it would cost a click on every pinned Done, the common case.
 
-// Pinned on either shelf — the project board's or the Console's — so a Done here would lift a pin. It
-// is what the buttons' labels key on; the server's own read is what decides.
-export function completionUnpins(thread: Pick<ThreadView, "pinnedAt" | "consolePinnedAt">): boolean {
+// Pinned on either shelf, the project board's or the Console's.
+export function isPinned(thread: Pick<ThreadView, "pinnedAt" | "consolePinnedAt">): boolean {
   return typeof thread.pinnedAt === "string" || typeof thread.consolePinnedAt === "string"
 }
 
-// The label every labelled Mark-as-done button wears, so a pinned thread's says what it will do.
-export function markDoneLabel(thread: Pick<ThreadView, "pinnedAt" | "consolePinnedAt">): string {
-  return completionUnpins(thread) ? "Mark as done & unpin" : "Mark as done"
-}
-
-// Put back the pins a completion lifted, each at the instant it held, so the thread returns to its own
-// place on each shelf rather than the bottom. An instant the pin RPC would refuse (a pre-canonical
-// value) falls back to a fresh pin: the thread is still kept pinned, just last. Throws on a failed write.
-export async function restoreUnpinned(slug: string, sessionId: string, unpinned: CompletionUnpinned): Promise<void> {
-  const at = (instant: string) => (SnoozeUntil.safeParse(instant).success ? instant : undefined)
-  if (unpinned.pinnedAt !== null) await rpc.setThreadPinned({ slug, sessionId, pinned: true, at: at(unpinned.pinnedAt) })
-  if (unpinned.consolePinnedAt !== null) {
-    await rpc.setThreadConsolePinned({ slug, sessionId, pinned: true, at: at(unpinned.consolePinnedAt) })
-  }
-}
-
-// The toast's "Keep pinned" action for a completion that lifted a pin.
-export function keepPinnedAction(slug: string, sessionId: string, unpinned: CompletionUnpinned): ToastAction {
+// The completion toast's "Unpin" action: lifts the pin from every shelf the thread was on when it was
+// marked done, so "Unpin" means off the pinned list everywhere.
+export function unpinAction(thread: Pick<ThreadView, "id" | "sessionId" | "pinnedAt" | "consolePinnedAt">): ToastAction {
+  const slug = thread.id
+  const sessionId = thread.sessionId ?? ""
   return {
-    label: "Keep pinned",
+    label: "Unpin",
     run: () => {
-      restoreUnpinned(slug, sessionId, unpinned)
-        .then(() => showToast("Kept pinned"))
-        .catch((error) => showToast(`Couldn’t keep it pinned: ${(error as Error).message.slice(0, 80)}`))
+      void (async () => {
+        if (typeof thread.pinnedAt === "string") await rpc.setThreadPinned({ slug, sessionId, pinned: false })
+        if (typeof thread.consolePinnedAt === "string") await rpc.setThreadConsolePinned({ slug, sessionId, pinned: false })
+      })()
+        .then(() => showToast("Unpinned"))
+        .catch((error) => showToast(`Couldn’t unpin: ${(error as Error).message.slice(0, 80)}`))
     },
   }
+}
+
+// The toast every completion surface shows: the plain confirmation, plus "Unpin" on a pinned thread.
+export function showCompletionToast(text: string, thread: Pick<ThreadView, "id" | "sessionId" | "pinnedAt" | "consolePinnedAt">): void {
+  if (isPinned(thread)) showToast(text, { action: unpinAction(thread) })
+  else showToast(text)
 }

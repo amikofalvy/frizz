@@ -408,17 +408,6 @@ export const CompletionHold = z.object({
 })
 export type CompletionHold = z.infer<typeof CompletionHold>
 
-// The pins "Mark as done" lifted, as they stood before it. Done UNPINS by default — a finished thread
-// left on the pinned shelf kept its row above every live one until someone remembered to unpin it — so
-// the reply carries the old instants back, and "Keep pinned" puts the thread back in its exact place on
-// each shelf (SetThreadPinnedInput.at). Present only when the completion cleared at least one pin; null
-// on a shelf the thread was not on.
-export const CompletionUnpinned = z.object({
-  pinnedAt: z.string().nullable(),
-  consolePinnedAt: z.string().nullable(),
-})
-export type CompletionUnpinned = z.infer<typeof CompletionUnpinned>
-
 // A PENDING native AskUserQuestion — the worker (or any session) called Claude Code's AskUserQuestion
 // tool and is frozen at its TUI dialog, no tool_result yet. Safety net for pre-contract / adopted
 // sessions that bypass the thread-file ask channel: we surface the REAL question(s) so the human knows
@@ -3807,9 +3796,8 @@ export const ThreadView = z.object({
   snoozePrompt: z.string().optional(),
   // The instant the human PINNED this thread (absent = not pinned). A pinned thread leaves the rail's
   // band system entirely — Rested/Active/Snoozed/Done — and holds the pinned band at the very top, in
-  // this instant's order. Lifecycle metadata like the snooze: written by the pin/unpin verb, and it
-  // outranks every derived state — a worker that finishes leaves the pin alone. The human's own Mark as
-  // done clears it unless they choose to keep it pinned (router completeThread `keepPinned`).
+  // this instant's order. Lifecycle metadata like the snooze: written only by the pin/unpin verb, and
+  // it outranks every derived state (a pinned thread that finishes stays pinned).
   pinnedAt: z.string().optional(),
   // The instant the human pinned this thread on the CONSOLE's "By status" view (absent = not pinned
   // there). A second shelf, independent of `pinnedAt`: pinning on the Console does not pin on the
@@ -4842,9 +4830,6 @@ export const SetThreadPinnedInput = z.object({
   slug: ThreadSlug,
   sessionId: z.string().min(1),
   pinned: z.boolean(),
-  // The instant to pin at, so "Keep pinned" after a Done puts the thread back in the place it held
-  // (CompletionUnpinned). Omitted ⇒ now, which lands a fresh pin at the bottom of the shelf.
-  at: SnoozeUntil.optional(),
 }).strict()
 export type SetThreadPinnedInput = z.infer<typeof SetThreadPinnedInput>
 
@@ -4862,7 +4847,6 @@ export const SetThreadConsolePinnedInput = z.object({
   slug: ThreadSlug,
   sessionId: z.string().min(1),
   pinned: z.boolean(),
-  at: SnoozeUntil.optional(), // as SetThreadPinnedInput's
 }).strict()
 export type SetThreadConsolePinnedInput = z.infer<typeof SetThreadConsolePinnedInput>
 

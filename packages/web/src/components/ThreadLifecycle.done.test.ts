@@ -4,7 +4,7 @@ import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import type { ThreadView } from "@frizz/shared"
-import { StateButton, ThreadLifecycleActions } from "./ThreadLifecycle.tsx"
+import { ThreadLifecycleActions } from "./ThreadLifecycle.tsx"
 import { ThreadHeaderFacts } from "./ThreadHeaderFacts.tsx"
 import { TooltipProvider } from "./Tooltip.tsx"
 
@@ -65,22 +65,6 @@ test("an open thread keeps the verbs — bare icons, named for the screen reader
   assert.doesNotMatch(html, DONE_READOUT)
   // The names live in aria-label and the hover tooltip, not on the surface: the cluster draws no words.
   assert.doesNotMatch(html.replace(/<[^>]*>/g, ""), /Mark as done|Snooze/, "the verbs are icons, not labelled buttons")
-})
-
-// Mark as done UNPINS by default (server completeThread), so on a pinned thread — on either shelf — the
-// verb says so where it is named, and the done card's quieter sibling is the one that keeps the pin.
-test("a pinned thread's Mark as done says it unpins; the keepPinned sibling says it keeps the pin", () => {
-  for (const pin of [{ pinnedAt: "2026-10-01T09:00:00.000Z" }, { consolePinnedAt: "2026-10-01T09:00:00.000Z" }] as Partial<ThreadView>[]) {
-    const html = actions({ state: "open", ...pin })
-    assert.match(html, /aria-label="Mark as done &amp; unpin"/, `pinned ${Object.keys(pin)[0]}: the check names the unpin`)
-    assert.doesNotMatch(html, MARK_AS_DONE)
-  }
-  const button = (extra: Partial<ThreadView>, keepPinned: boolean) =>
-    renderToStaticMarkup(createElement(TooltipProvider, null, createElement(StateButton, { thread: { ...base, id: "t", ...extra } as ThreadView, keepPinned })))
-  const pinned = { pinnedAt: "2026-10-01T09:00:00.000Z" }
-  assert.match(button(pinned, false), />Mark as done &amp; unpin<\/button>/, "the labelled button reads the default it performs")
-  assert.match(button(pinned, true), />Mark as done, keep pinned<\/button>/)
-  assert.match(button({}, false), />Mark as done<\/button>/, "an unpinned thread's verb is unchanged")
 })
 
 // The readout asserts a completion frizz itself recorded. A foreign/legacy thread has no such record,
