@@ -5,35 +5,45 @@ import { rpc } from "../api/rpc.ts"
 import { useBoardLoaded, useQueuedThreads } from "../hooks.ts"
 import { CONSOLE_PATH, isConsolePath } from "../lib/base-path.ts"
 import { PROJECTS_HREF, type HomeView } from "../lib/homeView.ts"
-import { RAIL_WIDTH_PX } from "./ProjectRail.tsx"
+import { BOARD_PAIR_CLASS, SIDEBAR_WIDTH_CLASS, WORKPANE_WIDTH_CLASS } from "../lib/boardColumns.ts"
+import { RAIL_INSET_CLASS } from "./ProjectRail.tsx"
 
 // THE SWITCH BETWEEN THE TWO HOMES — the project grid (`/`) and the Console (`/console`).
 //
-// FIXED to the top of the window, centred over the page beside the rail, so it stays where the operator
-// left it however far the Console's cards scroll. It FLOATS: the pill is the whole of it, translucent
-// and blurred, and the page scrolls on underneath it in plain sight (maintainer 2026-10-20: "supposed to
-// be FLOATING. not be in a black top bar"). It stood on an opaque page-coloured band 62px tall until
-// then, which cut every card off in a black strip across the top of the window. What must not slide
-// under the pill keeps clear of it instead — the Console's card headers stick below it
-// (lib/homeView.ts HOME_SWITCHER_CLEARANCE_PX, TodosView's sticky cap).
+// AT THE TOP-LEFT OF THE CONSOLE'S SIDEBAR, on both homes (maintainer 2026-10-26: "Projects/Console
+// needs to move to the top left at the top of the sidebar"). Its left edge stands on the prompt box's
+// border, CONSOLE_TOP_PX above the status row, and the grid draws it in the same spot although the grid
+// has no sidebar: a switch that moved when it was used would move out from under the pointer that
+// pressed it. It was centred over the page beside the rail until then.
 //
-// The two tabs are one fixed width (HOME_TAB_PX), their words centred in them. Sized to its words the
-// pill was 174px, and centred on the page its left edge landed within 4px of the Console cards' left edge
-// in a 1440px window, which read as a misaligned attempt at lining up (maintainer 2026-10-20: "widen the
-// Console/Projects switcher so it doesn't weirdly line up with the left edge of the queue cards"). The
-// cards' edge sits a different distance left of the page's centre at every width — 121px at a 1280px
-// window, 91px at 1440, 40px at 1728, and right of it past ~1900 — so no width avoids it everywhere; at
-// 282px the pill's edge clears the cards' by 20px or more in every window from 1280px up, and in a
-// narrower one it sits well inside them. A fixed width also stops the pill growing and shifting when the
-// count gains a digit.
+// WHERE THAT CORNER FALLS IS LAID OUT, NOT CALCULATED. The sidebar's left edge is wherever the centred
+// pair of columns puts it, which depends on the window's width at every step (lib/boardColumns.ts). So
+// the switcher stands in an EMPTY copy of that pair, built from the same classes, and lands where the
+// Console's sidebar starts at every width — in the stacked narrow layout too, where that is the page's
+// own left padding. The copy draws nothing and takes no pointer; only the pill does.
+//
+// FIXED to the window, so it stays where the operator left it however far the page scrolls. It FLOATS:
+// the pill is the whole of it, translucent and blurred (maintainer 2026-10-20: "supposed to be FLOATING.
+// not be in a black top bar"). Beside the Console's cards nothing passes under it any more, since the
+// sidebar column holds still; the grid's cards do, once forty projects make the grid scroll, and the
+// narrow Console's cards do, where the workpane is stacked under the sidebar. There the cards' headers
+// stick below it (lib/homeView.ts HOME_SWITCHER_CLEARANCE_PX, App.tsx).
+//
+// The two tabs are one fixed width (HOME_TAB_PX), their words centred in them, so the pill does not grow
+// and shift when the count gains a digit. It fits the sidebar at its narrowest, 272px.
 //
 // The Console tab carries the queue's size across every project, drawn as the rail's badge FACE (the
 // rail's badge is this face plus a 1px cut-out in the rail's colour; nothing sits under it here, so the
 // cut-out goes). Both the word and the digits are trimmed to their cap band, so the tab's `items-center`
 // centres ink on ink rather than line box on line box.
 
-/** Each tab's width: two of them, the 2px between, 3px of padding and a 1px border a side make 282px. */
-const HOME_TAB_PX = 136
+/**
+ * Each tab's width: two of them, the 2px between, 3px of padding and a 1px border a side make 234px. The
+ * widest tab, "Console" with a three-digit count, needs 107px. It was 136px while the pill was centred,
+ * a width chosen to keep the pill's edge off the Console cards' edge; at 282px the pill overran the
+ * sidebar it now sits in at its narrowest.
+ */
+const HOME_TAB_PX = 112
 
 /** The face's width per digit count — the rail's badgeWidth less its 1px cut-out each side. */
 function faceWidth(count: number): number {
@@ -70,8 +80,6 @@ export function HomeSwitcher({ railVisible }: { railVisible: boolean }) {
   // which every tab shares: choosing Projects in one tab lit "Projects" over the Console in another.
   const view: HomeView = isConsolePath(useLocation().pathname) ? "console" : "projects"
   const total = useQueueTotal()
-  // The page's own centre, not the window's: the rail takes the left 57px.
-  const inset = railVisible ? RAIL_WIDTH_PX : 0
   const tab = (target: HomeView, label: string, count?: number) => {
     const selected = view === target
     // REAL LINKS, so hovering one shows its address and ⌘-click, middle-click and "Open link in new tab"
@@ -107,15 +115,26 @@ export function HomeSwitcher({ railVisible }: { railVisible: boolean }) {
     )
   }
   return (
-    <div
-      role="tablist"
-      aria-label="Home"
-      data-home-switcher
-      className="fixed top-[14px] z-40 flex -translate-x-1/2 gap-0.5 rounded-full border border-border-strong bg-elevated/80 p-[3px] shadow-lg shadow-shadow-ink/40 backdrop-blur-md"
-      style={{ left: `calc(${inset}px + (100% - ${inset}px) / 2)` }}
-    >
-      {tab("projects", "Projects")}
-      {tab("console", "Console", total)}
+    // The empty copy of the board's two columns, inset by the rail as the page is (routes.tsx RootLayout),
+    // with the pill in the sidebar's slot. It is the window's width and takes no pointer, so nothing under
+    // it stops being clickable.
+    <div data-home-switcher-frame className={`pointer-events-none fixed inset-x-0 top-[14px] z-40 ${railVisible ? RAIL_INSET_CLASS : ""}`}>
+      <div className={BOARD_PAIR_CLASS}>
+        <div className={SIDEBAR_WIDTH_CLASS}>
+          {/* `ml-0.5`: the sidebar's prompt box is inset 2px in its column (ConsoleSidebar's `px-0.5`), and the
+              pill's border stands on the box's border. */}
+          <div
+            role="tablist"
+            aria-label="Home"
+            data-home-switcher
+            className="pointer-events-auto ml-0.5 flex w-fit gap-0.5 rounded-full border border-border-strong bg-elevated/80 p-[3px] shadow-lg shadow-shadow-ink/40 backdrop-blur-md"
+          >
+            {tab("projects", "Projects")}
+            {tab("console", "Console", total)}
+          </div>
+        </div>
+        <div className={WORKPANE_WIDTH_CLASS} />
+      </div>
     </div>
   )
 }

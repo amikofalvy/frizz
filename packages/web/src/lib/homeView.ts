@@ -41,8 +41,9 @@ export function withoutProjectsChoice(search: string): string {
 /**
  * How far down the window the home switcher reaches (components/HomeSwitcher.tsx): its 14px inset, its
  * 36px pill, and 12px of air below. The switcher FLOATS — nothing is drawn behind it, and the page
- * scrolls under it — so this is not a band but a clearance: what sticks to the top of a home page sticks
- * this far down instead (the Console's cards' headers), so it is never under the pill.
+ * scrolls under it — so this is not a band but a clearance. It sits at the top of the Console's sidebar,
+ * which opens under it (CONSOLE_TOP_PX); in the narrow layout, where the cards are stacked under the
+ * sidebar and pass under the pill, their headers stick this far down instead (App.tsx).
  */
 export const HOME_SWITCHER_CLEARANCE_PX = 62
 

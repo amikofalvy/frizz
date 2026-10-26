@@ -11,6 +11,9 @@ import test from "node:test"
 //     new tab as well as clicked, and the grid records the choice.
 //   · Only a bare `/` forwards to the kept Console: the launcher's `/?add=<dir>` offer reached the grid's
 //     dialog only while Projects was the kept home.
+//   · It sits at the top-left of the Console's sidebar — its left edge on the prompt box's, above the
+//     status row — and in that same spot on the grid, with the rail and without it, wide and stacked.
+//     It was centred over the page until 2026-10-26.
 //
 // Real server, one project (nothing is dispatched):
 //   nub scripts/adhoc-stack.mjs --port=<port> --project=<throwaway repo>
@@ -100,6 +103,56 @@ test("the home switcher's tabs are links, and the lit tab is the page on screen"
 
     assert.deepEqual(errors, [])
   } finally {
+    await browser.close()
+  }
+})
+
+test("the home switcher stands at the top-left of the Console's sidebar, and in the same spot on the grid", { skip: !baseUrl, timeout: 120_000 }, async () => {
+  const { launchHeadless } = await import("../../../../scripts/lib/headless-browser.mjs")
+  const { createRpcClient } = await import("../../../../scripts/lib/rpc-client.mjs")
+  const api = createRpcClient(`${baseUrl}/`)
+  await api.waitForHealth()
+  const settings = (await api.query("settingsGet")) as Record<string, unknown>
+  const browser = await launchHeadless()
+  const errors: string[] = []
+  const box = (page: Page, sel: string) =>
+    page.$eval(sel, (el) => {
+      const r = el.getBoundingClientRect()
+      return { x: r.x, y: r.y, bottom: r.bottom }
+    })
+  try {
+    // The rail moves the whole page 57px right, so the corner is checked with it shown and hidden. The
+    // two narrow widths are the narrowest side-by-side sidebar (272px, the pill must fit inside it) and
+    // the stacked layout above the phone breakpoint.
+    for (const projectRail of [false, true]) {
+      await api.mutate("settingsSet", { ...settings, projectRail })
+      for (const width of [1440, 820, 760]) {
+        const page = await browser.newPage()
+        page.on("pageerror", (e) => errors.push(String(e)))
+        await page.setViewport({ width, height: 900 })
+        await page.goto(`${baseUrl}/console`, { waitUntil: "networkidle2" })
+        await page.waitForSelector("[data-console-sidebar] [data-status-row]")
+        // The rail follows the server's setting, which can land a round trip after the first paint.
+        // (Below 800px the page drops its inset whether or not the rail shows.)
+        await page.waitForFunction((shown) => !!document.querySelector('nav[aria-label="Projects"]') === shown, { timeout: 10_000 }, projectRail)
+        const where = `${width}px, rail ${projectRail ? "shown" : "hidden"}`
+        const pill = await box(page, "[data-home-switcher]")
+        const status = await box(page, "[data-console-sidebar] [data-status-row]")
+        const sidebar = await page.$eval("[data-console-sidebar]", (el) => el.getBoundingClientRect().right)
+        const pillRight = await page.$eval("[data-home-switcher]", (el) => el.getBoundingClientRect().right)
+        assert.ok(Math.abs(pill.x - status.x) < 0.5, `${where}: the pill's left edge ${pill.x} is the status row's ${status.x}`)
+        assert.ok(pill.bottom <= status.y, `${width}px: the pill ends (${pill.bottom}) above the status row (${status.y})`)
+        assert.ok(pillRight <= sidebar, `${where}: the pill (right ${pillRight}) fits in the sidebar (right ${sidebar})`)
+        // The Projects tab lands on the grid with the pill exactly where it was.
+        await page.click('[data-home-tab="projects"]')
+        await onGrid(page)
+        assert.deepEqual(await box(page, "[data-home-switcher]"), pill, `${where}: the pill does not move between the two homes`)
+        await page.close()
+      }
+    }
+    assert.deepEqual(errors, [])
+  } finally {
+    await api.mutate("settingsSet", settings)
     await browser.close()
   }
 })

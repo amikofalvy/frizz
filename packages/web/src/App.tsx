@@ -9,6 +9,7 @@ import { startRouter } from "./lib/router.ts"
 import { nextSidebarPresence, readSidebarMirror, writeSidebarMirror, type SidebarPresence } from "./lib/sidebarPresence.ts"
 import { isConsolePath, projectSlug } from "./lib/base-path.ts"
 import { CONSOLE_TOP_PX, HOME_SWITCHER_CLEARANCE_PX } from "./lib/homeView.ts"
+import { BOARD_PAIR_CLASS, WORKPANE_WIDTH_CLASS } from "./lib/boardColumns.ts"
 import { CONSOLE_SIDEBAR_COLUMN_CLASS, ConsoleSidebar } from "./components/ConsoleSidebar.tsx"
 import { SIDEBAR_COLUMN_CLASS, Sidebar } from "./components/Sidebar.tsx"
 import { MobileBoard } from "./components/MobileBoard.tsx"
@@ -178,12 +179,16 @@ export function App() {
     // stands in the same one. They were this file's alone until 2026-10-13, and that page had neither.
     <PageFrame
       className="relative min-h-screen bg-bg text-fg text-sm"
-      // What sticks to the window's top sticks below the Console's floating home switcher instead (the
-      // cards' headers), and `--frizz-sticky-cap` fills the strip above a stuck header with the card's own
-      // surface (TodosView), so the card reaches the window's top under the pill rather than ending on a
-      // line of page. The narrow layout's own 40px offset gives way to the switcher as well: it shows down
-      // to the phone breakpoint, and a phone renders MobileBoard, which has no sticky card header at all.
-      style={onConsole ? ({ "--frizz-sticky-top": `${HOME_SWITCHER_CLEARANCE_PX}px`, "--frizz-sticky-top-narrow": `${HOME_SWITCHER_CLEARANCE_PX}px`, "--frizz-sticky-cap": `${HOME_SWITCHER_CLEARANCE_PX}px` } as CSSProperties) : undefined}
+      // The Console's home switcher sits at the top of its SIDEBAR (HomeSwitcher.tsx), so beside it the
+      // cards' headers stick to the window's top as a board's do. Only the NARROW layout stacks the
+      // workpane under the sidebar, and there the pill floats over the cards: what sticks to the window's
+      // top sticks below it instead, and `--frizz-sticky-cap` fills the strip above a stuck header with the
+      // card's own surface (TodosView), so the card reaches the window's top under the pill rather than
+      // ending on a line of page. The switcher shows down to the phone breakpoint, and a phone renders
+      // MobileBoard, which has no sticky card header at all. The cap stays set at every width because it
+      // is drawn behind the header and never taller than it: with the header stuck at the top, it is
+      // covered.
+      style={onConsole ? ({ "--frizz-sticky-top-narrow": `${HOME_SWITCHER_CLEARANCE_PX}px`, "--frizz-sticky-cap": `${HOME_SWITCHER_CLEARANCE_PX}px` } as CSSProperties) : undefined}
     >
       {/* NO FIXED CHROME IN EITHER TOP CORNER. Identity, settings, reload and both quota chips used to
           be a bar pinned to the upper-left, a screen's width from the column they describe; they are
@@ -214,8 +219,10 @@ export function App() {
               workpane (min-w-0) shrinks into it, so a side margin can never reach 0. Above ~1170px
               there is leftover space anyway and the padding stops binding.
             · the gutter scales clamp(28px → 3.4vw → 52px): ~28px where space is scarce, back to the
-              tuned 52px by ~1530px, where the pair has margins to spare. Wide layouts are unchanged. */}
-      <div className="flex min-h-screen justify-center gap-[clamp(28px,3.4vw,52px)] px-5 max-[800px]:flex-col max-[800px]:justify-start max-[800px]:gap-0 max-[800px]:px-3">
+              tuned 52px by ~1530px, where the pair has margins to spare. Wide layouts are unchanged.
+          The classes are lib/boardColumns.ts's: the home switcher lays out an empty copy of this pair to
+          find the top-left corner of the Console's sidebar, where it sits. */}
+      <div className={`${BOARD_PAIR_CLASS} min-h-screen`}>
         {/* A genuinely fresh project keeps its centered first-task view. Once this project has had a
             Frizz-owned thread, the sidebar remains mounted through transient empty keyframes;
             navigation must not vanish while the live board stream reconnects or catches up. */}
@@ -235,7 +242,7 @@ export function App() {
           // The Console's first card opens on the sidebar's top line (CONSOLE_TOP_PX), less the queue
           // column's own 32px of top padding. Top-anchored, not centred like a board's: its sidebar is.
           style={onConsole ? { paddingTop: CONSOLE_TOP_PX - 32 } : undefined}
-          className={`w-[720px] max-w-[62vw] min-w-0 flex flex-col py-5 max-[800px]:w-full max-[800px]:max-w-none ${
+          className={`${WORKPANE_WIDTH_CLASS} flex flex-col py-5 ${
             (snap.view === "todos" && !onConsole) || !board ? "min-h-screen" : ""
           } ${
             // Queue recedes: the CARD carries its own chrome (a sticky header), so the bordered panel

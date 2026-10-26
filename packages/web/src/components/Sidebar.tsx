@@ -34,6 +34,7 @@ import { STACKED_RAIL_ANCHOR_CLASS, stackedRailAnchor } from "../lib/stackedRail
 import { useProjectScope } from "../lib/projectScope.tsx"
 import { clampToSlots, edgeScrollVelocity, heldStep, moveItem, nearestSlot, shiftFor, type RowSlot } from "../lib/railReorder.ts"
 import { activeSidebarSection, markerRow, queueCardGeometry, queueNavigationSettled, railRevealDelta, scrolledToDocumentBottom } from "../lib/sidebarScrollspy.ts"
+import { SIDEBAR_WIDTH_CLASS } from "../lib/boardColumns.ts"
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, ReactElement, ReactNode, RefObject } from "react"
 
 // THE LEFT SIDEBAR — the thread list as a FLOATING column (no border, no fill: it floats in the
@@ -86,7 +87,7 @@ const ROW_ACTION_CLASS = "flex h-[19px] w-[19px] items-center justify-center rou
 // any change in its height: a send that put a thread in a fresh Running band moved the whole sidebar up
 // 24px, and its return moved it back (maintainer: "Anchor both to the top").
 export const SIDEBAR_COLUMN_CLASS =
-  "sticky top-0 self-start h-screen w-[clamp(272px,34vw,680px)] shrink-0 flex flex-col pt-[52px] max-[800px]:static max-[800px]:h-auto max-[800px]:w-full max-[800px]:pt-16"
+  `sticky top-0 self-start h-screen ${SIDEBAR_WIDTH_CLASS} flex flex-col pt-[52px] max-[800px]:static max-[800px]:h-auto max-[800px]:pt-16`
 
 /**
  * Which row's card is under the reading line, and the rail scrolled to keep that row in view — the

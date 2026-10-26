@@ -35,6 +35,7 @@ import { unlandedDispatches, useConsolePendingDispatches, type PendingDispatchEn
 import { ProjectScope } from "../lib/projectScope.tsx"
 import { STACKED_RAIL_ANCHOR_CLASS, stackedRailAnchor } from "../lib/stackedRailAnchor.ts"
 import { CONSOLE_TOP_PX } from "../lib/homeView.ts"
+import { SIDEBAR_WIDTH_CLASS } from "../lib/boardColumns.ts"
 import { DispatchForm } from "./NewThreadModal.tsx"
 import { useConsoleDispatchTarget } from "./ConsoleProjectChip.tsx"
 import { ProjectSquare } from "./ProjectRail.tsx"
@@ -55,11 +56,11 @@ import { StatusRow } from "./StatusRow.tsx"
 //     what they do (maintainer 2026-10-11);
 //   · "By status" keeps a pin shelf of its own, apart from every project board's (lib/consoleBoard.ts
 //     PINS): a Pinned band above Queue, drawn and dragged like a board's;
-//   · it is anchored under the home switcher rather than centred in the window, because the switcher is
-//     fixed at the window's top and a centred column would slide under it on a short window.
+//   · the home switcher between the grid and the Console stands at its top-left (HomeSwitcher.tsx), so
+//     the column opens CONSOLE_TOP_PX down, under the pill, rather than centred in the window.
 
 export const CONSOLE_SIDEBAR_COLUMN_CLASS =
-  "sticky top-0 self-start h-screen w-[clamp(272px,34vw,680px)] shrink-0 flex flex-col pb-4 max-[800px]:static max-[800px]:h-auto max-[800px]:w-full max-[800px]:pt-16"
+  `sticky top-0 self-start h-screen ${SIDEBAR_WIDTH_CLASS} flex flex-col pb-4 max-[800px]:static max-[800px]:h-auto max-[800px]:pt-16`
 
 /**
  * A 16px project square beside a 19px title line: the half-step that centres it on the line.
