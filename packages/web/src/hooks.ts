@@ -106,7 +106,7 @@ const allThreadsNow = (): readonly ThreadView[] => boardThreadsNow() ?? NO_THREA
 
 /** Every thread on the board, as plain snapshots. Re-renders when any thread changes, and only then. */
 export function useBoardThreads(): readonly ThreadView[] {
-  return useSyncExternalStore(onStoreChange, allThreadsNow)
+  return useSyncExternalStore(onStoreChange, allThreadsNow, allThreadsNow)
 }
 
 // The queue's threads, unordered. The SAME array until a queued thread changes or the set does, so the

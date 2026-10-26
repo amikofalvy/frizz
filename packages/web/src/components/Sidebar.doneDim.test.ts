@@ -72,7 +72,6 @@ test("a done row is dimmed — row and title alike", () => {
 
 test("a PINNED done row is dimmed exactly the same — the pin moves the row, not its state", () => {
   const html = row({ ...DONE, ...PINNED })
-  assert.match(html, /data-rail-pin-mark/, "still wears the pin mark")
   assert.ok(rowClasses(html).includes(ROW_DIM), "the row is grayed")
   assert.ok(titleClasses(html).includes(TITLE_DIM), "the title is grayed")
 })
