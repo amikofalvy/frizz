@@ -322,8 +322,8 @@ function GoalView({ thread, back }: { thread: ThreadView; back: () => void }) {
 
 // ── files and links ───────────────────────────────────────────────────────────────────────────────
 
-// Everything the worker registered for this thread (the rows ThreadLinks draws under the desktop
-// composer), newest first. A file opens in the reader; a link opens in a new tab — except a link to
+// Everything the worker registered for this thread (the rows ThreadLinks draws in the desktop's
+// Files and Links panels, over the composer), newest first. A file opens in the reader; a link opens in a new tab — except a link to
 // the machine Frizz runs on, which from a phone is the phone itself: it says so and opens nothing.
 function FilesView({ thread, back, dismiss }: { thread: ThreadView; back?: () => void; dismiss: (then?: () => void) => void }) {
   const links = [...(thread.links ?? [])].reverse()

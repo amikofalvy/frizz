@@ -726,7 +726,8 @@ const ACTIVITY = {
 
 const LINK = {
   name: "link",
-  description: "Register a labeled URL or local file underneath this thread's prompt, alongside agents and shells. " +
+  description: "Register a labeled URL or local file on this thread, beside its agents and shells: a count above the prompt box " +
+    "(`1 link`, `2 files`) that lists it on hover, the side rail in full screen, and Files and links under ⋯ on a phone. " +
     "Use for dev servers, working documents, reports, and downloads the human will need again. " +
     "The same label updates its existing row without duplicating or reordering it. " +
     "HTTP(S) destinations render as Link; local files render as File and use Frizz's existing file reader/opener. " +
@@ -879,7 +880,7 @@ async function link(args) {
   const result = (await callRpc("upsertOwnLink", { slug: threadSlug(), label, target }))?.result
   const saved = result?.link
   if (!saved?.id) throw new Error("Frizz did not return a saved link")
-  return `Registered ${saved.kind} ${saved.id}: ${saved.label}\n${saved.target}\n\nThis reference stays underneath the prompt. It does not assert a server is running or block completion. Remove it with \`frizzctl unlink ${saved.id}\`.`
+  return `Registered ${saved.kind} ${saved.id}: ${saved.label}\n${saved.target}\n\nThe human finds it in the count above this thread's prompt box. It does not assert a server is running or block completion. Remove it with \`frizzctl unlink ${saved.id}\`.`
 }
 
 /** @param {Record<string, unknown>} args @returns {Promise<string>} */
@@ -2106,7 +2107,7 @@ const CLI = {
   },
   link: {
     group: "This thread",
-    summary: "Save a link or a file under the prompt box",
+    summary: "Save a link or a file on this thread for the human",
     positional: ["label", "target"],
     examples: ['frizzctl link "Dev server" http://localhost:5173', 'frizzctl link "Audit report" /abs/path/report.md'],
   },

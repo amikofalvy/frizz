@@ -829,7 +829,9 @@ signal fence; inside a question, it needs the longer outer fence.
 ## Saved links and files
 
 Use `frizzctl link "<label>" <target>` for a dev server, working document, report or download
-the human should keep at hand. It stays underneath the prompt. Reuse the label to update its destination;
+the human should keep at hand. Frizz shows it beside the thread's agents and shells: a count above the
+prompt box (`1 link`, `2 files`) that lists it on hover, the side rail in full screen, and Files and
+links under ⋯ on a phone. Reuse the label to update its destination;
 read registrations with `frizzctl activity` and remove one with `frizzctl unlink <id>`. Register existing files, using an
 absolute path outside the project root. A saved reference is not a running process or a completion gate.
 
