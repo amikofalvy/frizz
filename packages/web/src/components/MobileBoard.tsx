@@ -26,6 +26,7 @@ import { StatusListView } from "./StatusListView.tsx"
 import { ThreadActionsSheet } from "./MobileThreadActionsSheet.tsx"
 import { showsUpdateBadge } from "./RestartFrizzButton.tsx"
 import { useSupervisorStatus } from "../api/supervisorStatus.ts"
+import { showCompletionToast } from "../lib/completionPins.ts"
 
 // THE PHONE'S BOARD — a header, three text tabs, ONE list, and a "New thread" button.
 //
@@ -318,7 +319,7 @@ function MobileThreadRow({
                 : "Still running — open the thread to finish it")
               return
             }
-            showToast("Marked as done")
+            showCompletionToast("Marked as done", t) // a pinned row stays pinned, with "Unpin" on offer
           } catch (error) {
             clearArchived(t.id)
             showToast(error instanceof Error ? error.message.slice(0, 100) : "Could not mark as done")

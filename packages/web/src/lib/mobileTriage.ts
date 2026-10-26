@@ -100,6 +100,10 @@ export async function markDoneAndAdvance(thread: ThreadView, opts: { terminateLi
   const filed = () => {
     markArchived(slug)
     leaveFiledThread(slug)
+    // No "Unpin" here, unlike every other completion toast (lib/completionPins.ts): a toast holds one
+    // action, and on the triage loop's Done that slot is Undo, the loop's only way back to a thread it
+    // has already moved past. Nothing is lost: Done keeps the pin, and lifting it stays a desktop act,
+    // as pinning already is (the phone has no pin control; it only folds the pinned rows into its list).
     showToast(`“${title}” marked done`, { action: { label: "Undo", run: () => void undoMarkDone(slug) } })
   }
   if (optimistic) filed()
