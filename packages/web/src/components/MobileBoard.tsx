@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react"
+import { useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useSnapshot } from "valtio"
 import { ArrowLeft, Check, Clock, Plus, Settings as SettingsIcon } from "lucide-react"
 import { activeBandThread, boardAskThread, type ThreadView } from "@frizz/shared"
@@ -27,6 +27,7 @@ import { ThreadActionsSheet } from "./MobileThreadActionsSheet.tsx"
 import { showsUpdateBadge } from "./RestartFrizzButton.tsx"
 import { useSupervisorStatus } from "../api/supervisorStatus.ts"
 import { showCompletionToast } from "../lib/completionPins.ts"
+import { captureReaderPin, restoreReaderPin, type ReaderPin } from "../lib/readerPin.ts"
 
 // THE PHONE'S BOARD — a header, three text tabs, ONE list, and a "New thread" button.
 //
@@ -470,6 +471,23 @@ export function MobileBoard() {
 
   const rows = tab === "queue" ? queue : tab === "snoozed" ? sections.snoozed : sections.inactive
   const statusView = snap.view.startsWith("status:") ? snap.view.slice(7) : null
+
+  // A ROW ARRIVING, MOVING OR CHANGING HEIGHT ABOVE THE READER NEVER MOVES THEM (lib/readerPin). A thread
+  // that rests moves up into the asks, and iOS Safari has no scroll anchoring at all, so the list holds
+  // the row the reader is on itself: read here, off the rows this render replaces, measured from under
+  // the fixed header, and put back by the layout effect below. On every change of the rows rather than
+  // only of their order, because without anchoring a row above that grows a line pushes just the same.
+  // A different band is a different list: switching tabs holds nothing.
+  const committedRowsRef = useRef<{ rows: readonly ThreadView[]; tab: Tab } | null>(null)
+  const rowPinRef = useRef<ReaderPin | null>(null)
+  const committedRows = committedRowsRef.current
+  if (committedRows && committedRows.tab === tab && committedRows.rows !== rows && !statusView) rowPinRef.current = captureReaderPin()
+  useLayoutEffect(() => {
+    const pin = rowPinRef.current
+    rowPinRef.current = null
+    committedRowsRef.current = { rows, tab }
+    if (pin) restoreReaderPin(pin)
+  }, [rows, tab])
   const identity = projectIdentity(board)
   const title = identity.state === "verified" ? identity.label : identity.state === "local" ? identity.name : "Frizz"
 
@@ -478,7 +496,7 @@ export function MobileBoard() {
       {/* The header and the band tabs, fixed together. `env(safe-area-inset-top)`: on a notched phone the
           status bar sits over the top of the viewport, and no headless shot has that inset — so this is a
           defect no screenshot here can show and every real device would. */}
-      <div className="fixed inset-x-0 top-0 z-30 bg-bg pt-[env(safe-area-inset-top)]">
+      <div data-mobile-board-header className="fixed inset-x-0 top-0 z-30 bg-bg pt-[env(safe-area-inset-top)]">
         <div className="flex h-[56px] items-center gap-0.5 pr-0.5">
           {/* A real navigation to the grid, not a router link: `/` is a different project binding (its
               own socket, board store and API base), which is exactly why the desktop grid is reached by

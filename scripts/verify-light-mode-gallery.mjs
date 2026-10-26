@@ -71,17 +71,17 @@ try {
     await shot('github-prompt')
     assert.equal(await page.$eval('[data-github-prompt-menu] textarea', el => getComputedStyle(el).borderTopColor), await page.$eval('button[aria-pressed]', el => getComputedStyle(el.parentElement).borderTopColor), 'Triage prompt and tab group share one border tone')
     await load('first-run')
-    await page.waitForSelector('[data-quota-bar] button')
+    await page.waitForSelector('[data-quota-gauge]')
     await shot('first-run')
-    await page.click('[data-quota-bar] button')
+    await page.click('[data-quota-gauge]')
     await page.waitForSelector('[data-quota-account]')
     await shot('quota')
     await load('icon-rhythm')
-    await page.waitForSelector('[aria-label="Investigate this issue and make recommendations"]')
+    await page.waitForSelector('[aria-label="Start threads from issues and PRs"]')
     await shot('controls')
     if (width === 1100) {
       const scope = '.group:has(textarea[data-surface="iconRhythmFixture"])'
-      const selectors = `${scope} [title^="Attach"],${scope} [aria-label="Investigate this issue and make recommendations"],${scope} button[title^="Send"]`
+      const selectors = `${scope} [title^="Attach"],${scope} [aria-label="Start threads from issues and PRs"],${scope} button[title^="Send"]`
       const ink = await promisify(execFile)('nub', [join(root, 'scripts/ink-gaps.mjs'), page.url(), selectors, `--browser=${browser.wsEndpoint()}`, '--dsf=8', '--w=1100', '--h=1000', '--pad=0', `--before=document.documentElement.dataset.theme='${theme}'`], { cwd: root })
       writeFileSync(join(out, `${theme}-composer-ink.txt`), ink.stdout)
       const gaps = JSON.parse(ink.stdout).gaps.map(row => row.inkGap)

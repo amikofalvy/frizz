@@ -5,44 +5,58 @@ import "./styles.css"
 
 // STATUS-ROW FIXTURE — the row above the prompt box in its FULLY POPULATED state, which no sandboxed
 // stack can produce: an adhoc stack has no restart-capable supervisor (so the reload button renders
-// null) and no provider credentials under its temp HOME (so both quota chips sit on the loading
-// placeholder forever). Stubbing the reads the row depends on is the only way to actually LOOK at the
-// finished thing: identity + settings + reload + two live quota percentages on one line.
+// null) and no provider credentials under its temp HOME (so the fuel gauge has no reading to show).
+// Stubbing the reads the row depends on is the only way to actually LOOK at the finished thing: the
+// breadcrumb, the gauge, reload and settings on one line.
 //
 // It renders over a stand-in prompt box, because the row's two ends are supposed to land on that box's
 // border and a row measured in a void cannot show that.
 //
 // Query params drive the states worth eyeballing:
+//   ?model=opus|sonnet|codex|acp — the model the prompt box has selected, which picks the gauge's
+//                       provider and, for Claude, its model's own weekly cap. acp: no gauge at all.
+//   ?remaining=<0-100> — every window at this much left, to step the needle across the dial
 //   ?state=low        — Claude in the amber warn zone, Codex critical
-//   ?state=weeklywall — a HEALTHY 5h window behind a nearly-spent weekly one. The chip must still read
-//                       the 5h number; this is the state where the old "swap to the tightest window"
-//                       headline used to hijack it and show the weekly figure instead.
-//   ?state=signedout  — Codex signed out, which now renders NO Codex chip at all
+//   ?state=weeklywall — a HEALTHY 5h window behind a nearly-spent weekly one: the gauge reads the weekly
+//   ?state=opuswall   — Opus's own weekly cap nearly spent, the general ones healthy: the gauge reads it
+//                       for Opus and ignores it for Sonnet
+//   ?state=signedout  — Codex signed out, which renders NO gauge while a Codex model is selected
 //   ?state=longemail  — an account address past the popover's width, to check the truncation
-//   ?identity=loading|unavailable|gitlab|local
+//   ?identity=loading|unavailable|gitlab|local|console
 //                                  — gitlab: an owner/repo label with NO githubRepo (a non-GitHub
-//                                    origin), which must render as plain text with no link.
-//                                    local: a remote-less directory, same plain treatment.
+//                                    origin), whose crumb menu offers no GitHub link.
+//                                    local: a remote-less directory. console: the Console's row,
+//                                    which names the page rather than a project.
 //   ?width=272                     — the column's width. 489 is the sidebar at a 1440px viewport; 272 is
-//                                    its floor in the tablet band, where "owner/repo" no longer fits
-//                                    beside two quota chips and has to truncate from the START.
-//   ?font=mono                     — this app renders in TWO type families (html[data-font], applied
-//                                    before first paint); a fixture that leaves it unset silently
-//                                    renders mono and hides half the answer.
+//                                    its floor in the tablet band, where the crumb is what gives way.
+//   ?font=mono                     — the stylesheet still keys its sans rules on html[data-font]; the
+//                                    product pins sans, so mono is only for the day that attribute goes.
 
 const params = new URLSearchParams(window.location.search)
 const state = params.get("state") ?? "healthy"
 const nowSeconds = Math.floor(Date.now() / 1000)
 
-function windows(fiveHourUsed: number, weeklyUsed: number) {
+function windows(fiveHourUsed: number, weeklyUsed: number, opusUsed?: number) {
   return [
     { key: "5h", label: "5h", usedPercent: fiveHourUsed, resetsAt: nowSeconds + 2 * 3600 },
     { key: "weekly", label: "Weekly", usedPercent: weeklyUsed, resetsAt: nowSeconds + 3 * 86400 },
+    ...(opusUsed === undefined ? [] : [{ key: "weekly-opus", label: "Opus wk", usedPercent: opusUsed, resetsAt: nowSeconds + 3 * 86400 }]),
   ]
 }
 
+const flat = params.get("remaining")
 const quota =
-  state === "low"
+  flat !== null
+    ? {
+        claude: { status: "ok", planType: "max", windows: windows(100 - Number(flat), 100 - Number(flat)) },
+        codex: { status: "ok", planType: "pro", windows: windows(100 - Number(flat), 100 - Number(flat)) },
+      }
+    : state === "opuswall"
+    ? {
+        claude: { status: "ok", planType: "max", windows: windows(20, 30, 94) },
+        codex: { status: "ok", planType: "pro", windows: windows(41, 29) },
+      }
+    : state === "low"
     ? {
         claude: { status: "ok", planType: "max", windows: windows(82, 64) },
         codex: { status: "ok", planType: "pro", windows: windows(95, 71) },
@@ -72,6 +86,27 @@ const auth =
     ? { claude: "authed", codex: "signed-out", emails }
     : { claude: "authed", codex: "authed", emails }
 
+// The prompt box's selection — the durable new-thread profile the gauge follows.
+const model = params.get("model") ?? "opus"
+const preferences = {
+  backend: model === "codex" ? "codex" : model === "acp" ? "acp" : "claude",
+  claude: { model: model === "sonnet" ? "sonnet" : "opus", effort: "high" },
+  codex: { model: "gpt-5.5-codex", effort: "high" },
+  acp: { model: "acp:gemini" },
+}
+
+// The crumb's menu: every registered project, the grid's own cards. A stale one must be left out.
+const projectCard = (slug: string, name: string, extra: Record<string, unknown> = {}) => ({
+  id: `id-${slug}`, slug, name, path: `/Users/colin/Documents/${slug}`, lastOpenedAt: "2026-10-26T00:00:00.000Z", stale: false, iconStatus: "none", ...extra,
+})
+const projects = [
+  projectCard("frizz", "frizz"),
+  projectCard("nub", "nub"),
+  projectCard("zod", "zod"),
+  projectCard("pullfrog", "pullfrog"),
+  projectCard("gone", "gone", { stale: true }),
+]
+
 const nativeFetch = window.fetch.bind(window)
 window.fetch = async (input, init) => {
   const requestUrl = typeof input === "string" ? input : input instanceof URL ? input.href : input.url
@@ -82,6 +117,8 @@ window.fetch = async (input, init) => {
   if (url.pathname === "/_frizz/rpc/quota") return json({ result: quota })
   if (url.pathname === "/_frizz/rpc/authStatus") return json({ result: auth })
   if (url.pathname === "/_frizz/rpc/settingsGet") return json({ result: {} })
+  if (url.pathname === "/_frizz/rpc/dispatchPreferencesGet") return json({ result: preferences })
+  if (url.pathname === "/_frizz/rpc/projectsList") return json({ result: projects })
   return nativeFetch(input, init)
 }
 
@@ -98,10 +135,10 @@ store.board = (identityMode === "loading"
   : identityMode === "unavailable"
     ? { projectLabel: "", threads: [] }
     : identityMode === "local"
-      ? { projectLabel: "scratch-pad", threads: [] }
+      ? { projectName: "scratch-pad", projectLabel: "scratch-pad", threads: [] }
       : identityMode === "gitlab"
-        ? { projectLabel: "colinhacks/frizz", threads: [] }
-        : { projectLabel: "colinhacks/frizz", githubRepo: "colinhacks/frizz", threads: [] }) as never
+        ? { projectName: "frizz", projectLabel: "colinhacks/frizz", projectSlug: "frizz", threads: [] }
+        : { projectName: "frizz", projectLabel: "colinhacks/frizz", githubRepo: "colinhacks/frizz", projectSlug: "frizz", threads: [] }) as never
 const width = Number(params.get("width") ?? 489)
 
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -116,7 +153,7 @@ createRoot(document.getElementById("root")!).render(
         {/* The sidebar column's real width at a 1440px viewport by default, so the row's split reads at the
             measure it actually ships at; `?width=272` is the column's floor. */}
         <div style={{ width }}>
-          <StatusRow />
+          <StatusRow {...(identityMode === "console" ? { label: "All projects" } : {})} />
           <div className="rounded-xl border border-border bg-panel px-3 py-6 text-[13px] text-muted">
             A stand-in prompt box. The row's two ends land on THIS border.
           </div>

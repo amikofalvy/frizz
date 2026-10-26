@@ -13,7 +13,7 @@ import { useDispatchProfile } from "../hooks/useDispatchProfile.ts"
 import { dispatchProfileGroups } from "../lib/dispatchPreferences.ts"
 import { OPAQUE_PORTAL_SURFACE_ABOVE_DIALOG_Z } from "../lib/overlaySurface.ts"
 import { buildGithubBatchInput, dispatchProfileError } from "../lib/githubDispatch.ts"
-import { useGithubStatus } from "./GithubTrigger.tsx"
+import { GITHUB_PICKER_TITLE, useGithubStatus } from "./GithubTrigger.tsx"
 import { applyRowSelection } from "../lib/rowRangeSelection.ts"
 import { githubLabelColors } from "../lib/githubLabelColors.ts"
 import { PRIMER } from "../lib/primer.ts"
@@ -172,22 +172,24 @@ export function GithubPickerModal({ onClose }: { onClose: () => void }) {
           }
         }}
       >
-        {/* Header: the title left; the repo slug RIGHT-justified as a link out to github.com, then the
-            gear that opens the triage prompt this picker dispatches with. The slug was an em-dashed
-            suffix of the title until 2026-09-19; as a link in the far corner it is the picker's one
-            way OUT to the repo, and the gear beside it is the picker's own settings, where they apply. */}
-        {/* `items-baseline`, not `items-center`: the three glyphs on this row (the GitHub mark, the
-            link's arrow, the gear) are each put on the title's CAP BAND by a browser-computed
-            translate — half the glyph's box minus half the resolved cap height — which needs a shared
-            baseline to work from. Centred boxes put the gear 0.6px high in sans and 2.0px low in mono
-            (measured 2026-09-19); on the cap band the residual is 0.0px in both. */}
+        {/* Header: the title left, and the repo slug RIGHT-justified as a link out to github.com. The
+            slug was an em-dashed suffix of the title until 2026-09-19; as a link in the far corner it
+            is the picker's one way OUT to the repo.
+            The title says what the picker DOES. It read "Investigate this issue and make
+            recommendations" until 2026-10-26 — the lead line of the prompt each issue thread is sent,
+            heading a list of many issues and PRs (maintainer: "this title doesnt make sense"). */}
+        {/* `items-baseline`, not `items-center`: the two glyphs on this row (the GitHub mark and the
+            link's arrow) are each put on the title's CAP BAND by a browser-computed translate — half
+            the glyph's box minus half the resolved cap height — which needs a shared baseline to work
+            from (measured 2026-09-19: 0.0px residual in both type families). */}
         <h2 className="mb-4 flex items-baseline gap-2 text-[14px] font-medium">
           <Github size={15} aria-hidden="true" className="shrink-0 self-baseline translate-y-[calc(7.5px_-_0.5cap)] text-muted" />
-          <span className="min-w-0 truncate">Investigate this issue and make recommendations</span>
-          <span className="ml-auto flex shrink-0 items-baseline gap-2">
-            {status.data?.nameWithOwner && <RepoLink nameWithOwner={status.data.nameWithOwner} />}
-            <GithubPromptPopover />
-          </span>
+          <span className="min-w-0 truncate">{GITHUB_PICKER_TITLE}</span>
+          {status.data?.nameWithOwner && (
+            <span className="ml-auto flex shrink-0 items-baseline">
+              <RepoLink nameWithOwner={status.data.nameWithOwner} />
+            </span>
+          )}
         </h2>
 
         {/* Controls: tabs (Issues | PRs) left, sort (Recent | Reactions) right */}
@@ -331,7 +333,12 @@ export function GithubPickerModal({ onClose }: { onClose: () => void }) {
             </div>
             {profileError && <p className="mt-1 max-w-[430px] text-[10.5px] text-danger">{profileError}</p>}
           </div>
-          <div className="flex items-center gap-3">
+          {/* The gear opens the prompt every thread this batch starts will run, so it sits beside the
+              button that starts them (maintainer 2026-10-26: "move the settings button for the github
+              menu down to the left of the start investigation button"). It was in the header's far
+              corner from 2026-09-19, a modal's height away from the act it configures. */}
+          <div className="flex items-center gap-2">
+            <GithubPromptPopover />
             <button
               disabled={n === 0 || dispatch.isPending || !!dispatchBlocked}
               onClick={startDispatch}

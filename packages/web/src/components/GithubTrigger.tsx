@@ -4,6 +4,14 @@ import { openGithubPicker } from "../store.ts"
 import { isConsolePath } from "../lib/base-path.ts"
 import { scopedKey, useProjectScope, useRpc } from "../lib/projectScope.tsx"
 
+/**
+ * What the picker does, in one line: the tooltip on this door and the heading of the room it opens
+ * (GithubPickerModal), one string so the two never name it differently. Both read "Investigate this
+ * issue and make recommendations" until 2026-10-26 — the lead line of the prompt an issue thread is
+ * sent, which named neither a list of many issues and PRs nor the button that opens one.
+ */
+export const GITHUB_PICKER_TITLE = "Start threads from issues and PRs"
+
 // THE one query definition every gh-gated surface shares (this trigger, App's sign-in hint, the
 // picker) so their options can't drift apart.
 //
@@ -76,7 +84,7 @@ export function GithubTrigger({ className = "", variant = "icon" }: { className?
         data-phone-github-trigger
         onClick={openGithubPicker}
         onMouseDown={(e) => e.preventDefault()}
-        title="Investigate this issue and make recommendations"
+        title={GITHUB_PICKER_TITLE}
         // 32px of chip, 44px of target — the model chip's own box, so the two read as one row.
         className={`relative inline-flex h-[32px] shrink-0 items-center gap-[6px] rounded-full border border-border-strong bg-bg px-[11px] text-[13.5px] font-medium text-fg after:absolute after:inset-x-0 after:-inset-y-[6px] after:content-[''] active:bg-hover ${className}`}
       >
@@ -90,8 +98,8 @@ export function GithubTrigger({ className = "", variant = "icon" }: { className?
       type="button"
       onClick={openGithubPicker}
       onMouseDown={(e) => e.preventDefault()}
-      title="Investigate this issue and make recommendations"
-      aria-label="Investigate this issue and make recommendations"
+      title={GITHUB_PICKER_TITLE}
+      aria-label={GITHUB_PICKER_TITLE}
       className={`icon-hover-outline flex h-7 w-7 items-center justify-center rounded-lg text-muted outline-none transition-[color,background-color] enabled:hover:bg-panel-2/70 enabled:hover:text-fg enabled:focus-visible:bg-panel-2/70 enabled:focus-visible:text-muted enabled:focus-visible:ring-1 enabled:focus-visible:ring-muted/80 enabled:focus-visible:ring-offset-1 enabled:focus-visible:ring-offset-bg enabled:active:bg-elevated enabled:active:text-muted disabled:bg-transparent disabled:text-muted-35 ${className}`}
     >
       <Github size={15} strokeWidth={2} />

@@ -6,7 +6,9 @@
 //
 //   1. `window.scrollY` reads 0 and the document collapses to viewport height, so `window.scrollTo`
 //      is silently clamped to a no-op. Every measurement has to come off the lock's own offset.
-//   2. The unlock RESTORES the captured offset, so even a scroll that did land would be undone.
+//   2. The unlock RESTORES the offset, so even a scroll that did land would be undone. (Restores it
+//      corrected for the reader's card: whatever moved it while the page was pinned — a card arriving
+//      above it, or growing — is made up on the way back, lib/readerPin.)
 //
 // So a scroll requested under the lock doesn't scroll — it parks its landing here, and the unlock
 // lands there instead of where the page was. That is what lets a queued sidebar row dismiss the open
@@ -39,4 +41,12 @@ export function takeScrollAfterUnlock(): number | null {
   const y = pendingUnlockScrollY
   pendingUnlockScrollY = null
   return y
+}
+
+// Scroll the LOCKED page by `delta`, as an unlocked page would be scrolled: the pinned body moves by it,
+// so what is on screen under the overlay holds still (lib/readerPin: a card arriving above the reader
+// while a thread is open over the queue). The unlock restores the offset the body then holds.
+export function shiftLockedPage(delta: number): void {
+  if (!isPageScrollLocked()) return
+  document.body.style.top = `-${Math.max(0, pageScrollY() + delta)}px`
 }

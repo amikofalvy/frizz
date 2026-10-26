@@ -25,6 +25,13 @@ import test from "node:test"
 //      rail is not an anchor while a queue card is on screen (lib/stackedRailAnchor), so the offset
 //      absorbs the row and the cards hold.
 //
+//   5. A card arriving ABOVE the reader moved them: newest first at the top of the page, where native
+//      scroll anchoring never applies, the card being read was pushed a whole card down and the newcomer
+//      took its place; and on iOS Safari, which has no scroll anchoring at all, any card landing above
+//      did the same. The queue holds the card the reader is in through every arrival itself
+//      (lib/readerPin), so both cases are pinned here: the first at scrollY 0, the second with the
+//      browser's anchoring switched off.
+//
 // Skipped unless a Vite URL serving the fixtures is provided (same pattern as the other *.e2e.test.ts
 // here): `nub run test:e2e -- queueRailSettle.e2e.test.ts`, or start `vite` in packages/web and set
 // FRIZZ_QUEUE_RAIL_SETTLE_E2E_URL to its origin.
@@ -447,6 +454,103 @@ test("stacked layout: the rail stays the scroll anchor while no queue card is on
     await page.setViewport({ width: 1400, height: 900, deviceScaleFactor: 1 })
     await new Promise((r) => setTimeout(r, 300))
     assert.equal((await state()).anchor, "auto")
+  } finally {
+    await browser.close()
+  }
+})
+
+// Where the card being read sits, frame by frame, from before a card arrives until it has settled.
+type ArrivalFrame = { t: number; scrollY: number; reading: number; arrived: boolean }
+
+async function recordArrival(page: import("puppeteer").Page, reading: string, restedAt: string | null): Promise<ArrivalFrame[]> {
+  await page.evaluate((reading: string, restedAt: string | null) => {
+    const w = window as unknown as { __arrivalFrames: unknown[]; __arriveInQueue: (id?: string, restedAt?: string) => void }
+    w.__arrivalFrames = []
+    const t0 = performance.now()
+    const tick = () => {
+      w.__arrivalFrames.push({
+        t: +(performance.now() - t0).toFixed(1),
+        scrollY: Math.round(window.scrollY * 100) / 100,
+        reading: Math.round(document.querySelector(`[data-queue-card="${reading}"]`)!.getBoundingClientRect().top * 100) / 100,
+        arrived: !!document.querySelector('[data-queue-card="arrived-card"]'),
+      })
+      if (performance.now() - t0 < 4_500) requestAnimationFrame(tick)
+    }
+    tick()
+    window.setTimeout(() => w.__arriveInQueue("arrived-card", restedAt ?? undefined), 150)
+  }, reading, restedAt)
+  // The card is held out of the list until its reply has caught up (lib/queueReturn), up to a cap.
+  await page.waitForSelector('[data-queue-card="arrived-card"]', { timeout: 8_000 })
+  await new Promise((r) => setTimeout(r, 4_600))
+  return page.evaluate(() => (window as unknown as { __arrivalFrames: ArrivalFrame[] }).__arrivalFrames)
+}
+
+function assertReaderHeld(frames: ArrivalFrame[]): void {
+  const before = frames.filter((f) => !f.arrived)
+  const after = frames.filter((f) => f.arrived)
+  assert.ok(before.length > 3 && after.length > 10, `expected frames on both sides of the arrival: ${before.length} / ${after.length}`)
+  // The new card went in above the reader, so the offset had to absorb its whole height.
+  const grew = after[after.length - 1].scrollY - before[0].scrollY
+  assert.ok(grew > 200, `the card must have arrived above the reader and the offset absorbed it: scrollY moved ${grew}px`)
+  const moved = frames.filter((f) => Math.abs(f.reading - before[0].reading) > 0.5).map((f) => [f.t, f.reading, f.scrollY])
+  assert.deepEqual(moved, [], `the card being read must not move on screen in any frame (it sat at ${before[0].reading})`)
+}
+
+test("newest first, at the top of the page: a card arriving above the one being read leaves it where it is", {
+  skip: !baseUrl,
+  timeout: 60_000,
+}, async () => {
+  const { launchHeadless } = await import("../../../../scripts/lib/headless-browser.mjs")
+  const browser = await launchHeadless()
+  const errors: string[] = []
+  try {
+    const page = await browser.newPage()
+    await page.setViewport({ width: 1400, height: 900, deviceScaleFactor: 1 })
+    await page.evaluateOnNewDocument(() => localStorage.setItem("frizz.prefs.v1", JSON.stringify({ queueOrder: "lifo" })))
+    page.on("console", (m) => { if (m.type() === "error" && !/404|favicon/i.test(m.text())) errors.push(m.text()) })
+    page.on("pageerror", (e) => errors.push(String(e)))
+    await page.goto(`${baseUrl}/queue-rail-fixture.html`, { waitUntil: "networkidle0" })
+    await page.waitForSelector(`[data-queue-card-root="${ABOVE}"]`)
+    await new Promise((r) => setTimeout(r, 300))
+    // Newest first, so the top card is the last of CARDS, and the reader is reading it at the origin —
+    // the one offset native anchoring never corrects.
+    assert.equal(await page.evaluate(() => document.querySelector<HTMLElement>("[data-queue-card]")!.dataset.queueCard), BELOW)
+    assert.equal(await page.evaluate(() => window.scrollY), 0)
+    assertReaderHeld(await recordArrival(page, BELOW, null))
+    assert.equal(await page.evaluate(() => document.querySelector<HTMLElement>("[data-queue-card]")!.dataset.queueCard), "arrived-card")
+    assert.deepEqual(errors, [])
+  } finally {
+    await browser.close()
+  }
+})
+
+test("with no native scroll anchoring (iOS Safari): a card returning above the reader leaves them where they are", {
+  skip: !baseUrl,
+  timeout: 60_000,
+}, async () => {
+  const { launchHeadless } = await import("../../../../scripts/lib/headless-browser.mjs")
+  const browser = await launchHeadless()
+  const errors: string[] = []
+  try {
+    const page = await browser.newPage()
+    await page.setViewport({ width: 1400, height: 900, deviceScaleFactor: 1 })
+    page.on("console", (m) => { if (m.type() === "error" && !/404|favicon/i.test(m.text())) errors.push(m.text()) })
+    page.on("pageerror", (e) => errors.push(String(e)))
+    await page.goto(`${baseUrl}/queue-rail-fixture.html`, { waitUntil: "networkidle0" })
+    await page.waitForSelector(`[data-queue-card-root="${BELOW}"]`)
+    await page.evaluate((sent: string) => {
+      const style = document.createElement("style")
+      style.textContent = "*, html, body { overflow-anchor: none !important }"
+      document.head.append(style)
+      const card = document.querySelector<HTMLElement>(`[data-queue-card="${sent}"]`)!
+      window.scrollTo(0, window.scrollY + card.getBoundingClientRect().top - 120)
+    }, SENT)
+    await new Promise((r) => setTimeout(r, 300))
+    // Oldest first, and this card's rest is older than every card here: back from a snooze, it lands
+    // at the top of the queue, above the card being read.
+    assertReaderHeld(await recordArrival(page, SENT, new Date(Date.now() - 3_600_000).toISOString()))
+    assert.equal(await page.evaluate(() => document.querySelector<HTMLElement>("[data-queue-card]")!.dataset.queueCard), "arrived-card")
+    assert.deepEqual(errors, [])
   } finally {
     await browser.close()
   }
