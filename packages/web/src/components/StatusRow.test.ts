@@ -8,23 +8,29 @@ import type { BoardSnapshot } from "@frizz/shared"
 import { StatusRow } from "./StatusRow.tsx"
 import { store, type ConnectionState } from "../store.ts"
 
-// The row's SHAPE is a spec, not an accident: home → settings → reload → quota, left to right and all
-// of it left-justified, with the project — owner/repo, a link to the repo — pinned to the right edge.
-// It has been three separate pieces of chrome in three places (identity top-left, settings/reload
-// top-right, quota floating over the sidebar composer), then one fixed corner chip, then the same row
-// running the other way — so a regression here is a silent return to one of those rather than a
-// visible break.
+// The row's SHAPE is a spec, not an accident: a breadcrumb — home, a slash, this project as a dropdown —
+// at the left, and the icons right-justified with settings in the corner (maintainer 2026-10-26). It has
+// been three separate pieces of chrome in three places, then one fixed corner chip, then a run of
+// controls with owner/repo pinned right — so a regression here is a silent return to one of those
+// rather than a visible break.
 //
 // `githubRepo` defaults to the label whenever the label is an owner/repo, which is what a github.com
 // origin produces; pass `null` for the other forge (a GitLab owner/repo, which the board carries WITHOUT
 // githubRepo — see BoardSnapshot).
 function render(
   label: string | null = "colinhacks/frizz",
-  options: { connection?: ConnectionState; quota?: boolean; githubRepo?: string | null } = {},
+  options: {
+    connection?: ConnectionState
+    quota?: boolean
+    githubRepo?: string | null
+    projectName?: string
+    backend?: "claude" | "codex" | "acp"
+    pageLabel?: string
+  } = {},
 ): string {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  // The quota chips and the gate in front of them read these two cache entries; seeding them is how a
-  // static render reaches the shown state at all.
+  // The gauge reads these cache entries — the quota, the credential, and the prompt box's selection —
+  // and seeding them is how a static render reaches the shown state at all.
   if (options.quota !== false) {
     client.setQueryData(["quota"], {
       claude: { status: "ok", planType: "max", windows: [{ key: "5h", label: "5h", usedPercent: 17 }] },
@@ -32,11 +38,21 @@ function render(
     })
     client.setQueryData(["authStatus"], { claude: "authed", codex: "authed", emails: {} })
   }
+  client.setQueryData(["dispatchPreferencesGet"], {
+    backend: options.backend ?? "claude",
+    claude: { model: "opus", effort: "high" },
+    codex: { model: "gpt-5.5-codex", effort: "high" },
+  })
   const githubRepo =
     options.githubRepo === undefined ? (label?.includes("/") ? label : undefined) : (options.githubRepo ?? undefined)
   store.board = (label === null
     ? null
-    : { projectLabel: label, ...(githubRepo ? { githubRepo } : {}), threads: [] }) as unknown as BoardSnapshot
+    : {
+        projectLabel: label,
+        ...(options.projectName ? { projectName: options.projectName } : {}),
+        ...(githubRepo ? { githubRepo } : {}),
+        threads: [],
+      }) as unknown as BoardSnapshot
   store.connection = options.connection ?? "open"
   // The home crumb is a router Link (it hard-loaded the document until 2026-09-04), and a Link outside a
   // router context throws on render — every case here failed at once when it changed. In the app the row
@@ -45,34 +61,45 @@ function render(
     createElement(
       QueryClientProvider,
       { client },
-      createElement(MemoryRouter, null, createElement(StatusRow, null)),
+      createElement(MemoryRouter, null, createElement(StatusRow, options.pageLabel === undefined ? null : { label: options.pageLabel })),
     ),
   )
 }
 
-test("controls run along the left; the project anchors the right", () => {
-  const html = render()
+test("a breadcrumb leads; the icons are right-justified with settings in the corner", () => {
+  const html = render("colinhacks/frizz", { projectName: "frizz" })
 
   const home = html.indexOf('aria-label="All projects"')
+  const crumb = html.indexOf("data-project-crumb")
+  const gauge = html.indexOf("data-quota-gauge")
   const settings = html.indexOf('aria-label="Settings"')
-  const quota = html.indexOf("data-quota-bar")
-  const project = html.indexOf("data-project-identity-state")
 
-  assert.ok(home >= 0 && settings >= 0 && quota >= 0 && project >= 0, "every segment renders")
-  assert.ok(home < settings, "the way out of the project leads")
-  assert.ok(settings < quota, "the buttons precede the readouts")
-  assert.ok(quota < project, "the project is last, at the far edge")
-  // `ml-auto` on the identity IS the split. Without it the name packs left with everything else.
-  assert.match(html, /class="ml-auto flex min-w-0 items-center"/)
+  assert.ok(home >= 0 && crumb >= 0 && gauge >= 0 && settings >= 0, "every segment renders")
+  assert.ok(home < crumb, "the way out is the breadcrumb's root")
+  assert.ok(crumb < gauge, "the crumb is at the left, the readout after it")
+  assert.ok(gauge < settings, "settings is last, in the corner")
+  assert.doesNotMatch(html.slice(settings), /<button|<a /, "no control follows settings")
+  // The breadcrumb is a nav with the slash as its separator, and the icons' group is pushed right by
+  // `ml-auto` — without it they pack left against the crumb.
+  assert.match(html, /<nav aria-label="Breadcrumb" class="flex min-w-0 items-center gap-1\.5">/)
+  assert.match(html, /<span aria-hidden="true" class="shrink-0 select-none text-muted-45">\/<\/span>/)
+  assert.match(html, /class="ml-auto flex shrink-0 items-center gap-3"/)
 })
 
-test("TWO dividers: home is a door OUT, settings and reload act on the app you are in", () => {
-  const html = render()
-  // One divider would group all three as "buttons". The first one is the whole distinction.
-  assert.equal(html.split('class="h-3 w-px shrink-0 bg-border"').length - 1, 2)
+test("the crumb names the project, not owner/repo — and no owner/repo is pinned to the right any more", () => {
+  // Maintainer 2026-10-26: "drop the owner/repo to the top right of the sidebar promptbox. instead make it
+  // <homeicon> / <breadcrumb dropdown>". The way to the repo moved into the crumb's menu.
+  const html = render("colinhacks/frizz", { projectName: "frizz" })
+  assert.match(html, /aria-label="frizz: switch project"/)
+  assert.match(html, /<span class="min-w-0 truncate">frizz<\/span>/)
+  assert.doesNotMatch(html, /colinhacks\/frizz/, "the owner/repo is not on the row itself")
+  assert.doesNotMatch(html, /<a href="https:\/\/github\.com/, "the repo link lives in the crumb's menu")
+
+  // A board from before `projectName` still names the project, by the repo half of its label.
+  assert.match(render("colinhacks/frizz"), /<span class="min-w-0 truncate">frizz<\/span>/)
 })
 
-test("the row is LOOSE on the page — no fill, no border, no shadow, nothing fixed", () => {
+test("the row is LOOSE on the page — no fill, no border, no shadow, nothing fixed, no dividers", () => {
   const html = render()
 
   assert.match(html, /data-status-row/)
@@ -83,59 +110,18 @@ test("the row is LOOSE on the page — no fill, no border, no shadow, nothing fi
   for (const gone of [/\bfixed\b/, /\bz-20\b/, /bg-panel/, /shadow-sm/, /rounded-lg border border-border/]) {
     assert.doesNotMatch(html, gone)
   }
+  // The two hairlines went with the run of icons they divided: the slash separates the breadcrumb, the
+  // space between the row's ends separates the rest.
+  assert.doesNotMatch(html, /class="h-3 w-px shrink-0 bg-border"/)
 })
 
-test("the project is a LINK to its GitHub repo — and the connection dot is gone", () => {
-  // Maintainer 2026-08-28: "There should be a way to open up the GitHub repo for a given project if
-  // one is detected … Perhaps it should actually be showing owner/repo if a repo is detected … then
-  // maybe we should just drop the status indicator." The dot had been the connection's last remnant
-  // since 2026-08-19.
-  const html = render("colinhacks/frizz")
-
-  // The whole owner/repo, not the bare repo the row used to show.
-  assert.match(html, />colinhacks\/frizz</)
-  // A real anchor to the repo — new tab, and a label that says where it goes. No scripted window.open.
-  assert.match(html, /<a href="https:\/\/github\.com\/colinhacks\/frizz" target="_blank" rel="noopener"/)
-  assert.match(html, /aria-label="Open colinhacks\/frizz on GitHub"/)
-  // NO GITHUB MARK. The first cut wore one in the dot's old slot; the maintainer pulled it the same
-  // day because the prompt box's GitHub picker icon sits a few px below and means something else
-  // ("it kind of conflicts with the GitHub icon that shows up in the prompt box"). The link shows
-  // itself the way the app's other text links do — full fg and an underline on hover — and keeps the
-  // name's resting weight and tone, so a linked and an unlinked project read alike at rest.
-  const identity = html.slice(html.indexOf("data-project-identity-state"))
-  assert.doesNotMatch(identity, /<svg/)
-  assert.match(html, /<a [^>]*class="block min-w-0 rounded-sm font-semibold text-fg\/90 underline-offset-2 [^"]*hover:text-fg hover:underline/)
-
-  // The connection dot, in every state, is gone — nothing in the row says "connected" any more.
+test("the connection dot stays gone", () => {
   for (const connection of ["open", "connecting", "closed"] as const) {
     const state = render("colinhacks/frizz", { connection })
     assert.doesNotMatch(state, /role="img" aria-label="connected"/)
     assert.doesNotMatch(state, /aria-label="disconnected"|aria-label="connecting…"/)
     assert.doesNotMatch(state, /bg-live|bg-danger-fill|data-board-sync-fallback/)
   }
-})
-
-test("an owner/repo from ANOTHER forge is plain text: no link", () => {
-  // The board carries `githubRepo` only for a github.com origin. A GitLab origin still yields an
-  // owner/repo display label, and pointing that at github.com would be a wrong destination rather
-  // than a missing one — so the name renders as prose and nothing in it is a control.
-  const html = render("colinhacks/frizz", { githubRepo: null })
-
-  assert.match(html, /data-project-identity-state="verified"/)
-  assert.match(html, />colinhacks\/frizz</)
-  assert.doesNotMatch(html, /<a href="https:\/\/github\.com/)
-  assert.doesNotMatch(html, /on GitHub/)
-})
-
-test("the name clips from the START, so the repo half survives a narrow column", () => {
-  // "colinhacks/frizz" does not fit beside two quota chips at the sidebar's 272px floor. A plain
-  // `truncate` would keep the owner and drop the repo — the one half worth keeping — so the clipping
-  // box runs rtl (overflow and ellipsis at the LEFT edge) with the text re-isolated ltr inside it.
-  const html = render("colinhacks/frizz")
-  assert.match(
-    html,
-    /<span dir="rtl" class="block min-w-0 overflow-hidden text-ellipsis whitespace-nowrap [^"]*"><span dir="ltr" class="\[unicode-bidi:isolate\]">colinhacks\/frizz<\/span><\/span>/,
-  )
 })
 
 test("a repo with no git remote shows its directory name, not the loading skeleton", () => {
@@ -149,10 +135,9 @@ test("a repo with no git remote shows its directory name, not the loading skelet
   assert.match(html, />scratch-pad</)
   assert.doesNotMatch(html, /identity-placeholder/)
   assert.doesNotMatch(html, /aria-busy/)
-  assert.match(html, /aria-label="Project: scratch-pad; local repository with no git remote"/)
 })
 
-test("a cold board still reserves the name's measure, and says it is loading", () => {
+test("a cold board still reserves the crumb's measure, and says it is loading", () => {
   const html = render(null)
 
   assert.match(html, /data-project-identity-state="loading"/)
@@ -163,47 +148,57 @@ test("a cold board still reserves the name's measure, and says it is loading", (
   assert.match(html, /aria-label="All projects"/)
 })
 
+test("the Console's row names the page, and offers no repo", () => {
+  const html = render("colinhacks/frizz", { pageLabel: "All projects" })
+  assert.match(html, /data-project-identity-state="page"/)
+  assert.match(html, /<span class="min-w-0 truncate">All projects<\/span>/)
+  assert.match(html, /data-project-crumb=""/, "the Console is no project, so nothing in the menu is checked")
+})
+
 test("the row's gap is 12px of INK: one flex gap, and every icon square trimmed onto its glyph", () => {
   const html = render()
 
   // The pair is the whole point and neither half works alone. `gap-3` without the trims puts 20px of
-  // ink between two icon squares and 8px beside the quota chips (measured 2026-08-14 with
-  // scripts/ink-gaps.mjs); the trims without a matching gap pull the icons on top of each other. Every
-  // button takes its trim from STATUS_ROW_ACTION, so a new row action inherits the rhythm instead of
-  // re-deriving it — and a glyph that paints something other than 12px needs a fresh measurement.
-  assert.match(html, /class="-mx-1\.5 inline-flex h-6 w-6/)
-  // The home square gets ONE more pixel back: its own `-mx-1.5` leaves the house glyph's ink a pixel
-  // outside the composer's border, and the row's left edge is where that overhang shows.
-  assert.match(html, /class="-mx-1\.5 inline-flex h-6 w-6[^"]*-ml-px"/)
-  // The quota chips are IN this row, so they keep the row's distance rather than one of their own.
-  assert.match(html, /data-quota-bar="true" class="flex shrink-0 items-center gap-3/)
+  // ink between two icon squares (measured 2026-08-14 with scripts/ink-gaps.mjs); the trims without a
+  // matching gap pull the icons on top of each other. Every square takes its trim from
+  // STATUS_ROW_ACTION — the gauge too — so a new row action inherits the rhythm instead of re-deriving
+  // it. Measured 2026-10-26: gauge → reload 11.5px, reload → settings 12px.
+  assert.equal(html.match(/class="-mx-1\.5 inline-flex h-6 w-6/g)?.length, 3, "home, the gauge and settings")
+  // The home square takes STATUS_ROW_ACTION's trim and NOTHING more. An extra `-ml-px` once REPLACED the
+  // trim (`margin-left` outranks `margin-inline`) and left the house 5px inside the composer's border.
+  assert.doesNotMatch(html, /-ml-px/)
 })
 
-test("the quota READING is small, but its provider mark is a full-sized, full-brightness icon", () => {
-  const html = render()
+test("the gauge follows the model the prompt box has selected", () => {
+  const claude = render("colinhacks/frizz", { backend: "claude" })
+  assert.match(claude, /data-quota-gauge="claude"/)
+  assert.match(claude, /data-remaining="83"/)
+  assert.match(claude, /aria-label="Claude quota for Opus: 83% remaining in the 5h window"/)
 
-  // "logos should be the same brightness and size as the other icons. The text should just be small"
-  // (maintainer 2026-08-19). The size is per-mark because the two do not fill their viewBoxes alike.
-  assert.match(html, /data-quota-bar="true" class="[^"]*text-\[9px\]/)
-  assert.match(html, /text-fg\/75! size-\[14px\]!/)
-  assert.match(html, /text-fg\/75! size-\[12\.75px\]!/)
-  // ProviderMark's own `text-muted-65 size-[11px]` is still in the class list and MUST be — the `!`
-  // is what outranks it, because Tailwind resolves a same-property collision by CSS source order and
-  // not by class order. Asserting the default is absent would be asserting the wrong mechanism; the
-  // browser-side check that these resolve to 14px/12.75px is in the handoff's measurements.
-  assert.match(html, /text-muted-65 size-\[11px\][^"]*size-\[14px\]!/)
+  const codex = render("colinhacks/frizz", { backend: "codex" })
+  assert.match(codex, /data-quota-gauge="codex"/)
+  assert.match(codex, /data-remaining="59"/)
+
+  // An ACP agent reports no quota, so there is nothing to gauge.
+  assert.doesNotMatch(render("colinhacks/frizz", { backend: "acp" }), /data-quota-gauge/)
+})
+
+test("the gauge is a dial whose needle and lit arc stand at the reading", () => {
+  const html = render()
+  const gauge = html.slice(html.indexOf("data-fuel-gauge"))
+  assert.match(gauge, /data-gauge-track=""/)
+  assert.match(gauge, /data-gauge-level=""/)
+  assert.match(gauge, /data-gauge-needle=""/)
+  assert.match(gauge, /data-gauge-hub=""/)
 })
 
 test("the home crumb is a ROUTER link, not a raw anchor that reloads the document", () => {
   // It was `<a href="/">` from 2026-08-19 to 2026-09-04: a full document load measured at 116-411ms with
-  // a 0.15 CLS, throwing away the app socket and the whole query cache on the way out. The rail's
-  // identical door had been a `<Link>` since the router refactor a fortnight earlier, so this was an
-  // oversight — and an easy one to make again, because in STATIC MARKUP the two are the same string.
+  // a 0.15 CLS, throwing away the app socket and the whole query cache on the way out. In STATIC MARKUP
   // `<Link to="/">` renders exactly `<a href="/">`, so no assertion on the HTML can tell them apart.
   //
   // What differs is the CONTEXT they need: a Link reads the router off React context and throws without
-  // one, a plain anchor does not care. So rendering the row with no router is the discriminator, and it
-  // is the same property that makes this a client-side navigation at all.
+  // one, a plain anchor does not care. So rendering the row with no router is the discriminator.
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   client.setQueryData(["authStatus"], { claude: "authed", codex: "authed", emails: {} })
   store.board = { projectLabel: "colinhacks/frizz", threads: [] } as unknown as BoardSnapshot
@@ -217,35 +212,13 @@ test("the home crumb is a ROUTER link, not a raw anchor that reloads the documen
   assert.match(render(), /href="\/"[^>]*aria-label="All projects"|aria-label="All projects"[^>]*href="\/"/)
 })
 
-test("a provider with NO DATA renders nothing at all — and takes the divider with it", () => {
+test("a provider with NO DATA renders no gauge at all", () => {
   // "if there's no data available for a given agent, then it should just be entirely hidden instead of
   // showing an em dash" (maintainer 2026-08-19). An em dash spent a readout's worth of space saying a
   // readout was missing.
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  client.setQueryData(["quota"], {
-    claude: { status: "ok", planType: "max", windows: [{ key: "5h", label: "5h", usedPercent: 17 }] },
-    codex: { status: "unavailable", windows: [] },
-  })
-  client.setQueryData(["authStatus"], { claude: "authed", codex: "signed-out", emails: {} })
-  store.board = { projectLabel: "colinhacks/frizz", threads: [] } as unknown as BoardSnapshot
-  store.connection = "open"
-  // Seeds its own client rather than going through `render`, so it needs the router context too.
-  const one = renderToStaticMarkup(
-    createElement(
-      QueryClientProvider,
-      { client },
-      createElement(MemoryRouter, null, createElement(StatusRow, null)),
-    ),
-  )
-  assert.doesNotMatch(one, /—/, "no em dash anywhere")
-  assert.equal(one.split("Claude Code").length - 1, 1, "the Claude chip is still there")
-  assert.equal(one.split("OpenAI Codex").length - 1, 0, "the Codex chip is gone entirely")
-  // One provider still reporting keeps the group, and therefore its divider.
-  assert.equal(one.split('class="h-3 w-px shrink-0 bg-border"').length - 1, 2)
-
-  // NEITHER reporting drops the whole group, and the divider that introduced it goes too — otherwise
-  // the row ends on a hairline with nothing after it.
   const none = render("colinhacks/frizz", { quota: false })
-  assert.doesNotMatch(none, /data-quota-bar/)
-  assert.equal(none.split('class="h-3 w-px shrink-0 bg-border"').length - 1, 1)
+  assert.doesNotMatch(none, /data-quota-gauge/)
+  assert.doesNotMatch(none, /—/, "no em dash anywhere")
+  // The buttons do not depend on it.
+  assert.match(none, /aria-label="Settings"/)
 })

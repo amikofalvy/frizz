@@ -1,0 +1,113 @@
+import * as RadixDropdown from "@radix-ui/react-dropdown-menu"
+import { useQuery } from "@tanstack/react-query"
+import { ArrowUpRight, Check, ChevronDown } from "lucide-react"
+import { Link } from "react-router"
+import { rpc } from "../api/rpc.ts"
+import { projectHref } from "../lib/base-path.ts"
+import { OPAQUE_SURFACE_BASE } from "../lib/overlaySurface.ts"
+import { ProjectSquare } from "./ProjectRail.tsx"
+
+// THE BREADCRUMB'S LAST CRUMB — `<home> / <this>` at the head of the status row above the prompt box: the
+// page you are on, as a dropdown that switches to any other project (maintainer 2026-10-26: "instead make
+// it <homeicon> / <breadcrumb dropdown>"). It replaced the owner/repo link that stood at the row's right
+// end, so the way to the repo moved INTO this menu, as its last item.
+//
+// The project is named as the grid and the rail name it — the registry's name, which the operator can
+// change — rather than by owner/repo: the crumb is the checked row of its own menu, and a crumb reading
+// "colinhacks/frizz" over a menu that lists "frizz" would be two names for one place. Until the list
+// answers it falls back to the name the board carries.
+//
+// EVERY ROW IS A REAL LINK, as the rail's squares are, so hovering one shows its address and ⌘-click,
+// middle-click and "Open link in new tab" all work. A project whose directory is gone is left out: the
+// grid is where one of those is reopened or forgotten, and a switch into it would land on nothing.
+//
+// The menu is the Console project chip's (ConsoleProjectChip.tsx) — the same surface, row and check —
+// so the two project menus on one screen read as one control.
+
+/** One menu row: the chip's own row, so the two project menus match. The tone is each row's own. */
+const ROW =
+  "flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-[12.5px] outline-none no-underline data-[highlighted]:bg-panel-2"
+
+export function ProjectCrumb({
+  name,
+  currentSlug,
+  githubRepo,
+}: {
+  /** What the crumb reads before the project list answers, and on the Console, where it names the page. */
+  name: string
+  /** The project this page shows, checked in the menu. Absent on the Console, which is no project. */
+  currentSlug: string | undefined
+  /** owner/repo when the origin is github.com: the menu's way out to the repo. */
+  githubRepo: string | null
+}) {
+  const list = useQuery({ queryKey: ["projectsList"], queryFn: () => rpc.projectsList() })
+  const projects = (list.data ?? []).filter((project) => !project.stale)
+  const current = currentSlug ? list.data?.find((project) => project.slug === currentSlug) : undefined
+  const label = current?.name ?? name
+  return (
+    <RadixDropdown.Root modal={false}>
+      <RadixDropdown.Trigger asChild>
+        {/* `items-baseline` so the chevron can sit on the name's cap band: `self-baseline` plus the
+            browser-computed `0.5em - 0.5cap` translate centres a symmetric 1em glyph's ink on the cap
+            band in any font at any size, where `items-center` would centre its BOX on the line box and
+            leave it riding low beside lowercase. The hover square carries its own 6px of padding, and
+            `-mx-1.5` hands it back so the name's ink starts where the crumb's slot does. */}
+        <button
+          type="button"
+          data-project-crumb={currentSlug ?? ""}
+          aria-label={`${label}: switch project`}
+          title="Switch project"
+          className="group -mx-1.5 inline-flex min-w-0 items-baseline gap-1 rounded-md px-1.5 py-0.5 font-semibold text-fg/90 outline-none transition-colors hover:bg-elevated hover:text-fg focus-visible:ring-1 focus-visible:ring-border-strong data-[state=open]:bg-elevated data-[state=open]:text-fg"
+        >
+          <span className="min-w-0 truncate">{label}</span>
+          {/* lucide's chevron paints the middle half of its box, so a quarter of an em is dead space a
+              side; `-ml-[0.25em]` takes the near quarter back and leaves the gap's 4px as INK between the
+              name and the chevron, the reading a label and its handle want. */}
+          <ChevronDown
+            aria-hidden="true"
+            className="-ml-[0.25em] size-[1em] shrink-0 self-baseline translate-y-[calc(0.5em_-_0.5cap)] text-muted-70 transition-[color,transform] group-hover:text-fg group-data-[state=open]:rotate-180 group-data-[state=open]:text-fg"
+          />
+        </button>
+      </RadixDropdown.Trigger>
+      <RadixDropdown.Portal>
+        <RadixDropdown.Content
+          align="start"
+          side="bottom"
+          sideOffset={6}
+          collisionPadding={8}
+          data-project-crumb-menu=""
+          className={`z-[110] ${OPAQUE_SURFACE_BASE} max-h-[min(360px,var(--radix-dropdown-menu-content-available-height))] min-w-[200px] max-w-[280px] overflow-auto rounded-lg p-1.5`}
+        >
+          {projects.map((project) => (
+            <RadixDropdown.Item key={project.id} asChild>
+              <Link to={projectHref(project.slug)} data-project-crumb-option={project.slug} className={`${ROW} text-fg`}>
+                <ProjectSquare project={project} size={16} />
+                <span className="min-w-0 flex-1 truncate">{project.name}</span>
+                <Check aria-hidden="true" size={13} className={project.slug === currentSlug ? "shrink-0 text-fg/70" : "invisible shrink-0"} />
+              </Link>
+            </RadixDropdown.Item>
+          ))}
+          {projects.length === 0 && (
+            <div className="px-1.5 py-1 text-[12px] text-muted-60">{list.isLoading ? "Loading projects…" : "No projects"}</div>
+          )}
+          {githubRepo && (
+            <>
+              <RadixDropdown.Separator className="-mx-1.5 my-1.5 h-px bg-border" />
+              <RadixDropdown.Item asChild>
+                <a href={`https://github.com/${githubRepo}`} target="_blank" rel="noopener" data-project-crumb-github="" className={`${ROW} text-muted data-[highlighted]:text-fg`}>
+                  {/* The square's 16px column, so the repo's words start under the project names. */}
+                  <span className="flex w-4 shrink-0 justify-center">
+                    <ArrowUpRight aria-hidden="true" size={14} />
+                  </span>
+                  <span className="min-w-0 flex-1 truncate">
+                    Open <span className="font-mono-keep">{githubRepo}</span> on GitHub
+                  </span>
+                </a>
+              </RadixDropdown.Item>
+            </>
+          )}
+        </RadixDropdown.Content>
+      </RadixDropdown.Portal>
+    </RadixDropdown.Root>
+  )
+}
