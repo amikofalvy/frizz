@@ -125,19 +125,24 @@ test("the agent settings panel is modal, keyboard-reachable, and holds exactly t
 
 // The GitHub picker's header: the slug is a right-justified link out to the repo with the external
 // arrow, and the gear beside it opens the triage prompt — the picker's settings, where they apply.
-test("the GitHub picker carries the repo link and the prompt popover in its header, and waits on settings writes", () => {
+test("the GitHub picker carries the repo link in its header, the prompt gear beside its Start button, and waits on settings writes", () => {
   const header = pickerSource.slice(pickerSource.indexOf("{/* Header"), pickerSource.indexOf("{/* Controls"))
-  // The row is baseline-aligned so its three glyphs can take the browser-computed cap-band
-  // correction (half the glyph's box minus half the resolved cap height); the numbers behind it are
-  // in the component's comments.
+  // The row is baseline-aligned so its two glyphs can take the browser-computed cap-band correction
+  // (half the glyph's box minus half the resolved cap height); the numbers behind it are in the
+  // component's comments.
   assert.match(header, /<h2 className="mb-4 flex items-baseline gap-2/)
-  assert.match(header, /className="ml-auto flex shrink-0 items-baseline gap-2"/)
+  assert.match(header, /className="ml-auto flex shrink-0 items-baseline"/)
   assert.match(header, /<Github size=\{15\} aria-hidden="true" className="shrink-0 self-baseline translate-y-\[calc\(7\.5px_-_0\.5cap\)\]/)
-  assert.match(promptPopoverSource, /self-baseline translate-y-\[calc\(7\.5px_-_0\.5cap\)\]/)
   assert.match(agentSource, /self-baseline|items-baseline/)
   assert.match(agentSource, /-mr-3 inline-flex size-5 shrink-0 translate-y-\[calc\(7px_-_0\.5cap\)\]/)
   assert.match(header, /<RepoLink nameWithOwner=\{status\.data\.nameWithOwner\} \/>/)
-  assert.match(header, /<GithubPromptPopover \/>/)
+  assert.match(header, /\{GITHUB_PICKER_TITLE\}/)
+  // The gear moved down to the footer, the Start button's left-hand neighbour (maintainer 2026-10-26),
+  // and its panel opens upward off the modal's bottom edge.
+  assert.doesNotMatch(header, /<GithubPromptPopover \/>/)
+  const footer = pickerSource.slice(pickerSource.indexOf("{/* Footer"))
+  assert.match(footer, /<GithubPromptPopover \/>\s*<button\s+disabled=\{n === 0/)
+  assert.match(promptPopoverSource, /<PopoverContent side="top" align="end"/)
   // The slug is no longer an em-dashed suffix of the title (the dash must be gone from the MARKUP;
   // the comments above it are prose and may carry one).
   assert.doesNotMatch(header.slice(header.indexOf("<h2")), /—/)
