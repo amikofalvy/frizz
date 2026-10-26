@@ -114,7 +114,9 @@ export function ConsoleSidebar() {
   const square = (t: ThreadView) => <RowSquare project={bySlug.get(keyProject(t.id) ?? "")} />
   // By status the rows speak for the Console's shelf; by project, for each project board's own.
   const shelf: PinShelf = group === "status" ? "console" : "board"
-  const row = (t: ThreadView, opts: { square: boolean; waiting: boolean }) => (
+  // `dated`: the row carries the rest-time column. Waiting rows do, and Snoozed rows too, as on a project's
+  // board (Sidebar.tsx): a parked row says nothing else on the rail. Running and Done rows do not.
+  const row = (t: ThreadView, opts: { square: boolean; waiting: boolean; dated?: boolean }) => (
     <div key={t.id}>
       <ThreadRow
         t={t}
@@ -123,7 +125,7 @@ export function ConsoleSidebar() {
         active={opts.waiting && activeId === t.id}
         onQueueNavigate={navigateToQueueCard}
         // A pinned row keeps its rest time too: its pin shows only on hover, as the unpin (ThreadRow).
-        restedAge={opts.waiting}
+        restedAge={opts.dated ?? opts.waiting}
         leading={opts.square ? square(t) : undefined}
         shelf={shelf}
       />
@@ -187,7 +189,7 @@ export function ConsoleSidebar() {
                 {/* SNOOZED and DONE — collapsed until opened, then a page at a time (lib/consoleBoard.ts). Each
                     draws its own rule, as on a project's board; neither has queue cards, so neither row is
                     ever the scroll marker. */}
-                <FoldedBand band="snoozed" label="Snoozed" threads={snoozed} render={(t) => row(t, { square: true, waiting: false })} />
+                <FoldedBand band="snoozed" label="Snoozed" threads={snoozed} render={(t) => row(t, { square: true, waiting: false, dated: true })} />
                 <FoldedBand band="done" label="Done" threads={done} render={(t) => row(t, { square: true, waiting: false })} />
               </>
             ) : nothingOpen ? (
