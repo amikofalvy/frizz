@@ -4,7 +4,8 @@ import { useSnapshot } from "valtio"
 import { closeGithubPicker, store, pushDrawer, resolveRoutedThread, topDrawer, topThreadSlug, showToast } from "./store.ts"
 import { useBoard, useBoardIsEmpty } from "./hooks.ts"
 import { closeDrawerAnimated } from "./lib/overlays.ts"
-import { takeScrollAfterUnlock } from "./lib/pageScrollLock.ts"
+import { pageScrollY, takeScrollAfterUnlock } from "./lib/pageScrollLock.ts"
+import { captureReaderPin, readerPinDrift } from "./lib/readerPin.ts"
 import { startRouter } from "./lib/router.ts"
 import { nextSidebarPresence, readSidebarMirror, writeSidebarMirror, type SidebarPresence } from "./lib/sidebarPresence.ts"
 import { isConsolePath, projectSlug } from "./lib/base-path.ts"
@@ -62,21 +63,28 @@ export function App() {
     // Drop any landing a previous lock left unconsumed, so a stale one can never fire against a page
     // the reader has since moved on from.
     takeScrollAfterUnlock()
+    // The card (or phone row) the reader was in as the overlay opened. Nothing anchors a pinned page, so
+    // whatever arrives, grows or leaves above it meanwhile would otherwise hand the reader a different
+    // card on the way back (lib/readerPin).
+    const reader = captureReaderPin()
     body.style.position = "fixed"
     body.style.top = `-${y}px`
     body.style.left = "0"
     body.style.right = "0"
     body.style.width = "100%"
     return () => {
+      // Read while still pinned: the body's offset (moved by shiftLockedPage if the queue held the reader
+      // through a change), and how far the reader's card has drifted beyond that.
+      const held = pageScrollY() + (reader ? readerPinDrift(reader) : 0)
       body.style.position = ""
       body.style.top = ""
       body.style.left = ""
       body.style.right = ""
       body.style.width = ""
       // A scroll requested WHILE the page was locked couldn't be applied (the body was pinned) and this
-      // restore would have undone it anyway — so it parked its landing. Honour it over the captured
-      // offset: that is what lets a queued sidebar row dismiss its drawer and auto-scroll in one move.
-      window.scrollTo(0, takeScrollAfterUnlock() ?? y)
+      // restore would have undone it anyway — so it parked its landing. Honour it over the reader's own
+      // place: that is what lets a queued sidebar row dismiss its drawer and auto-scroll in one move.
+      window.scrollTo(0, takeScrollAfterUnlock() ?? Math.max(0, held))
     }
   }, [overlayOpen])
 

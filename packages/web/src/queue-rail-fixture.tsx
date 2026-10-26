@@ -188,6 +188,19 @@ window.fetch = async (input, init) => {
   setThreads((threads) => [...threads, makeThread("started-elsewhere", "started-elsewhere", 0, { titleAuto: true, runtime: "running", needsYou: false, spawnedAt: now, lastUserAt: now, lastAssistantAt: undefined, lastActivityAt: now } as Partial<ThreadViewModel>)])
 }
 
+// A thread whose turn ended somewhere else: its card arrives in the queue with no click on this page
+// (lib/readerPin is what it exercises). `id` names a thread already on the board (a running one rests) or
+// a new one. `restedAt` defaults to now, the newest rest of all; an older one is a card coming back from a
+// snooze, which oldest-first places above the cards that rested after it.
+;(window as unknown as { __arriveInQueue: (id?: string, restedAt?: string) => void }).__arriveInQueue = (id = "arrived-card", restedAt = new Date().toISOString()) => {
+  setThreads((threads) => {
+    const rest = { runtime: "turn-idle", needsYou: true, lastAssistantAt: restedAt, lastActivityAt: restedAt } as Partial<ThreadViewModel>
+    return threads.some((t) => t.id === id)
+      ? threads.map((t) => (t.id === id ? ({ ...t, ...rest } as ThreadViewModel) : t))
+      : [...threads, makeThread(id, "A card that just arrived", 10, rest)]
+  })
+}
+
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } } })
 
 // App's own row: the sticky rail beside the page-scrolled queue.

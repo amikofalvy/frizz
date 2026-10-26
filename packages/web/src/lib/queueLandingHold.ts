@@ -73,6 +73,12 @@ export function releaseQueueLandingHold(): void {
   releaseCurrent?.()
 }
 
+// Is a landing being held? It already re-lands its card on every change of layout, a card arriving
+// above it included, so nothing else should move the page while it does (lib/readerPin).
+export function queueLandingHoldActive(): boolean {
+  return releaseCurrent !== null
+}
+
 // Arm a hold for the card `card()` resolves to, landing it at `targetY()` (queueCardTargetY). Both are
 // getters because the card can re-render into a new element and the target moves with the layout.
 // Replaces any earlier hold: the newest navigation wins.

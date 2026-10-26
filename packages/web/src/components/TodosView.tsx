@@ -5,6 +5,8 @@ import type { ThreadView, RegisteredQuestionView, TranscriptMessage } from "@fri
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { queueCardTargetY, showToast, store } from "../store.ts"
 import { pageScrollY } from "../lib/pageScrollLock.ts"
+import { queueLandingHoldActive } from "../lib/queueLandingHold.ts"
+import { captureReaderPin, listGainedOrReordered, restoreReaderPin, type ReaderPin } from "../lib/readerPin.ts"
 import { rpc } from "../api/rpc.ts"
 import { useBoard, useBoardIsEmpty, useQueuedThreads, useTranscript } from "../hooks.ts"
 import { orderQueue } from "../groups.ts"
@@ -411,6 +413,15 @@ export function TodosView() {
   // Remember this render's exact order (board + held) so the NEXT departure captures a stable slot.
   prevRenderRef.current = renderItems.map((i) => i.id)
 
+  // A CARD ARRIVING, OR THE CARDS REORDERING, NEVER MOVES THE READER (lib/readerPin). The card the reader
+  // is in, and where it sits, are read here, off the DOM this render is about to replace, and the layout
+  // effect below puts it back. Only for a list that gained or reordered cards: one that only lost them is
+  // the exit pins' (pinRef), which land a dismissal's successor on purpose.
+  const renderOrder = prevRenderRef.current.join(",")
+  const committedOrderRef = useRef<readonly string[]>([])
+  const readerPinRef = useRef<ReaderPin | null>(null)
+  if (listGainedOrReordered(committedOrderRef.current, prevRenderRef.current)) readerPinRef.current = captureReaderPin()
+
   // Drive EVERY exiting card through the SAME board-independent exit, so all dismissal paths (Mark done,
   // Snooze, or steering the agent by sending a message) behave identically:
   // (1) ARM a board-departed card's fade on the next frame (one opaque frame must paint first, else there
@@ -548,6 +559,17 @@ export function TodosView() {
   //     observed bug: the viewport "landed mid-card" at its old offset). So suspend overflow-anchor
   //     and re-assert the landing across the two settle frames, exactly like the load-earlier anchor
   //     dance in QueueCard below.
+  // The ARRIVAL hold goes first, while pinRef still says whether an exit owns this commit. It stands down
+  // for an exit, for a navigation's landing hold (which re-lands its own card through any arrival), and
+  // for a viewport dance still in flight (the suspended anchoring), each of which is moving the page on
+  // purpose.
+  useLayoutEffect(() => {
+    const pin = readerPinRef.current
+    readerPinRef.current = null
+    committedOrderRef.current = renderOrder ? renderOrder.split(",") : []
+    if (!pin || pinRef.current || anchorSuspendCount > 0 || queueLandingHoldActive()) return
+    restoreReaderPin(pin)
+  }, [renderOrder])
   useLayoutEffect(() => {
     const pin = pinRef.current
     if (!pin) return
