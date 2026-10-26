@@ -68,3 +68,72 @@ test("a thread that has never produced output falls back rather than printing no
   const html = row({ lastAssistantAt: undefined, lastActivityAt: undefined, spawnedAt: ago(3 * 60 * 60_000) })
   assert.match(html, />3h</)
 })
+
+// THE SNOOZED BAND carries the column too (colinhacks/frizz#66: "It's hard for me to know how long
+// some of these snoozes have been snoozed for"). Pinned over the REAL <Sidebar/>, because the bug was
+// never in the row — the band simply did not ask for the column. The spinning row is the control that
+// proves the wiring is per band rather than global.
+test("the Snoozed band dates each row; a spinning row in Active does not", async () => {
+  const [{ MemoryRouter }, { Sidebar }, { store }] = await Promise.all([
+    import("react-router"),
+    import("./Sidebar.tsx"),
+    import("../store.ts"),
+  ])
+  const snoozed = {
+    ...base,
+    id: "watch-the-resolver-pr",
+    title: "Watch the resolver pull request",
+    needsYou: false,
+    snoozedUntil: new Date(Date.now() + 24 * 60 * 60_000).toISOString(),
+    lastAssistantAt: ago(5 * 24 * 60 * 60_000),
+  }
+  const running = { ...base, id: "port-the-drivers", title: "Port the drivers", needsYou: false, runtime: "running", lastActivityAt: ago(60_000) }
+  store.board = { projectDir: "/fixture", threads: [snoozed, running] } as unknown as typeof store.board
+  store.sidebarCollapsed.snoozed = false
+  const html = renderToStaticMarkup(
+    createElement(
+      QueryClientProvider,
+      { client: new QueryClient({ defaultOptions: { queries: { retry: false } } }) },
+      createElement(TooltipProvider, null, createElement(MemoryRouter, null, createElement(Sidebar))),
+    ),
+  )
+  const snoozedBand = html.slice(html.indexOf('aria-label="Snoozed"'))
+  assert.match(snoozedBand, /data-sidebar-item="watch-the-resolver-pr"/)
+  assert.match(snoozedBand, /data-rail-rested-age[^>]*>5d</)
+  const runningRow = html.slice(html.indexOf('data-sidebar-item="port-the-drivers"'), html.indexOf('aria-label="Snoozed"'))
+  assert.match(runningRow, /data-rail-glyph="working"/)
+  assert.doesNotMatch(runningRow, /data-rail-rested-age/)
+})
+
+// THE PINNED BAND carries the column as well (colinhacks/frizz#66: "show the updated times first and
+// only show the pin/unpin on hover"). Its rows used to wear a solid pin there instead, which cost a
+// pinned thread its age while the band's own label already said pinned. A pinned row that is SPINNING
+// shows no age, as in the Running band: it has not come to rest.
+test("the Pinned band dates its resting rows and leaves a spinning one undated", async () => {
+  const [{ MemoryRouter }, { Sidebar }, { store }] = await Promise.all([
+    import("react-router"),
+    import("./Sidebar.tsx"),
+    import("../store.ts"),
+  ])
+  // The band is ordered by pin instant, oldest first, so the resting row is pinned first.
+  const resting = { ...base, id: "launch-checklist", title: "Launch checklist", pinnedAt: ago(10 * 24 * 60 * 60_000), lastAssistantAt: ago(3 * 60 * 60_000) }
+  const spinning = { ...base, id: "draft-the-changelog", title: "Draft the changelog", pinnedAt: ago(9 * 24 * 60 * 60_000), needsYou: false, runtime: "running", lastActivityAt: ago(60_000) }
+  // QUEUED with live work out (isActivelyRunning is true of it): it holds a card and wears the queue's
+  // glyph, not a spinner, so it is dated as the cue would date it.
+  const queuedBusy = { ...base, id: "answer-the-schema-question", title: "Answer the schema question", pinnedAt: ago(8 * 24 * 60 * 60_000), awaitingBackground: true, lastActivityAt: ago(40 * 60_000) }
+  store.board = { projectDir: "/fixture", threads: [resting, spinning, queuedBusy] } as unknown as typeof store.board
+  const html = renderToStaticMarkup(
+    createElement(
+      QueryClientProvider,
+      { client: new QueryClient({ defaultOptions: { queries: { retry: false } } }) },
+      createElement(TooltipProvider, null, createElement(MemoryRouter, null, createElement(Sidebar))),
+    ),
+  )
+  const restingRow = html.slice(html.indexOf('data-sidebar-item="launch-checklist"'), html.indexOf('data-sidebar-item="draft-the-changelog"'))
+  assert.match(restingRow, /data-rail-rested-age[^>]*>3h</)
+  const spinningRow = html.slice(html.indexOf('data-sidebar-item="draft-the-changelog"'), html.indexOf('data-sidebar-item="answer-the-schema-question"'))
+  assert.match(spinningRow, /data-rail-glyph="working"/)
+  assert.doesNotMatch(spinningRow, /data-rail-rested-age/)
+  const queuedBusyRow = html.slice(html.indexOf('data-sidebar-item="answer-the-schema-question"'))
+  assert.match(queuedBusyRow, /data-rail-rested-age[^>]*>40m</)
+})

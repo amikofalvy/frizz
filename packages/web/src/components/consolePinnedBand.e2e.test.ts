@@ -102,7 +102,14 @@ test("the Console's By status view pins, orders and drags a shelf of its own", {
     const outsidePinned = () =>
       page.$$eval(`${rail} [data-sidebar-item]`, (rows) => rows.filter((r) => !r.closest("[data-console-pinned]")).map((r) => r.getAttribute("data-sidebar-item")))
     const cardIds = () => page.$$eval("[data-queue-card]", (cards) => cards.map((c) => c.getAttribute("data-queue-card")))
-    const hasMark = (id: string) => page.$eval(`[data-sidebar-item="${id}"]`, (el) => el.querySelector("[data-rail-pin-mark]") !== null)
+    // A pinned row shows its pin only on hover, as the unpin verb (2026-10-24), so "pinned on the shelf
+    // this view speaks for" reads off that verb rather than a resting mark.
+    const offersUnpin = async (id: string) => {
+      await page.hover(`[data-sidebar-item="${id}"]`)
+      const label = await page.$eval(`[data-sidebar-item="${id}"] [data-sidebar-pin]`, (el) => el.getAttribute("aria-label") ?? "")
+      await page.mouse.move(5, 5)
+      return label.startsWith("Unpin")
+    }
     const hasAge = (id: string) => page.$eval(`[data-sidebar-item="${id}"]`, (el) => el.querySelector("[data-rail-rested-age]") !== null)
     const pinVerb = async (id: string) => {
       await page.hover(`[data-sidebar-item="${id}"]`)
@@ -151,7 +158,7 @@ test("the Console's By status view pins, orders and drags a shelf of its own", {
 
     // 1. A BOARD PIN plays no part in By status: no band, and B3 keeps its rest time in Queue.
     assert.equal(await page.$(`${rail} [data-console-pinned]`), null)
-    assert.equal(await hasMark(kB3), false, "a board pin draws no mark here")
+    assert.equal(await offersUnpin(kB3), false, "a board pin offers no unpin here")
     assert.equal(await hasAge(kB3), true)
     const cardsBefore = await cardIds()
 
@@ -165,7 +172,7 @@ test("the Console's By status view pins, orders and drags a shelf of its own", {
     const outside = await outsidePinned()
     for (const id of [kA2, kB1, kA3]) {
       assert.ok(!outside.includes(id), `${id} left Queue and Running`)
-      assert.equal(await hasMark(id), true, `${id} wears the mark`)
+      assert.equal(await offersUnpin(id), true, `${id} offers its unpin`)
     }
     for (const id of [kA1, kB2, kB3]) assert.ok(outside.includes(id), `${id} stays in Queue`)
     const cards = await waitCards([kA2, kB1], "the pinned rows' cards lead")
@@ -221,8 +228,9 @@ test("the Console's By status view pins, orders and drags a shelf of its own", {
     await page.click('[data-console-group="project"]')
     await page.waitForSelector("[data-console-project-header]")
     assert.equal(await page.$(`${rail} [data-console-pinned]`), null)
-    assert.equal(await hasMark(kA2), false, "a Console pin draws no mark By project")
-    assert.equal(await hasMark(kB3), true, "a board pin does")
+    assert.equal(await offersUnpin(kA2), false, "a Console pin offers no unpin By project")
+    assert.equal(await offersUnpin(kB3), true, "a board pin does")
+    assert.equal(await hasAge(kB3), true, "and its row keeps its rest time: the pin shows only on hover")
     await page.hover(`[data-sidebar-item="${kA1}"]`)
     assert.ok(await page.$(`[data-sidebar-item="${kA1}"] [data-sidebar-pin][data-pin-shelf="board"]`), "and its pin verb is the board's")
     await page.mouse.move(5, 5)
