@@ -47,26 +47,35 @@ export function ProjectCrumb({
   return (
     <RadixDropdown.Root modal={false}>
       <RadixDropdown.Trigger asChild>
-        {/* `items-baseline` so the chevron can sit on the name's cap band: `self-baseline` plus the
-            browser-computed `0.5em - 0.5cap` translate centres a symmetric 1em glyph's ink on the cap
-            band in any font at any size, where `items-center` would centre its BOX on the line box and
-            leave it riding low beside lowercase. The hover square carries its own 6px of padding, and
-            `-mx-1.5` hands it back so the name's ink starts where the crumb's slot does. */}
+        {/* THE SAME HOVER SURFACE AS THE HOUSE beside it (STATUS_ROW_ACTION): 24px tall, `rounded-md`,
+            `bg-elevated`, so the breadcrumb's two controls light up as one family rather than a square
+            and a shorter, lower pill (it was 22px and sat 1px low until the maintainer read it off a
+            screenshot, 2026-10-26: "i dont love this spacing. UIs are conflicting here").
+            Its padding is 6px of INK a side: `pl-1.5` before the name, and `pr-[3px]` after the chevron,
+            whose own box carries the other 3px. The negative margins hand that padding back to the
+            layout, so the name's ink starts where the crumb's slot does and StatusRow's breadcrumb gap
+            is measured ink to ink.
+            The outer box centres its content on the 24px line; the inner one is `items-baseline` so the
+            chevron can sit on the name's cap band: `self-baseline` plus the browser-computed `0.5em -
+            0.5cap` translate centres a symmetric 1em glyph's ink on the cap band in any font at any
+            size, where `items-center` would centre its BOX and leave it riding low beside lowercase. */}
         <button
           type="button"
           data-project-crumb={currentSlug ?? ""}
           aria-label={`${label}: switch project`}
           title="Switch project"
-          className="group -mx-1.5 inline-flex min-w-0 items-baseline gap-1 rounded-md px-1.5 py-0.5 font-semibold text-fg/90 outline-none transition-colors hover:bg-elevated hover:text-fg focus-visible:ring-1 focus-visible:ring-border-strong data-[state=open]:bg-elevated data-[state=open]:text-fg"
+          className="group -ml-1.5 -mr-[3px] inline-flex h-6 min-w-0 items-center rounded-md pl-1.5 pr-[3px] font-semibold text-fg/90 outline-none transition-colors hover:bg-elevated hover:text-fg focus-visible:ring-1 focus-visible:ring-border-strong data-[state=open]:bg-elevated data-[state=open]:text-fg"
         >
-          <span className="min-w-0 truncate">{label}</span>
-          {/* lucide's chevron paints the middle half of its box, so a quarter of an em is dead space a
-              side; `-ml-[0.25em]` takes the near quarter back and leaves the gap's 4px as INK between the
-              name and the chevron, the reading a label and its handle want. */}
-          <ChevronDown
-            aria-hidden="true"
-            className="-ml-[0.25em] size-[1em] shrink-0 self-baseline translate-y-[calc(0.5em_-_0.5cap)] text-muted-70 transition-[color,transform] group-hover:text-fg group-data-[state=open]:rotate-180 group-data-[state=open]:text-fg"
-          />
+          <span className="flex min-w-0 items-baseline gap-1">
+            <span className="min-w-0 truncate">{label}</span>
+            {/* lucide's chevron paints the middle half of its box, so a quarter of an em is dead space a
+                side; `-ml-[0.25em]` takes the near quarter back and leaves the gap's 4px as INK between
+                the name and the chevron, the reading a label and its handle want. */}
+            <ChevronDown
+              aria-hidden="true"
+              className="-ml-[0.25em] size-[1em] shrink-0 self-baseline translate-y-[calc(0.5em_-_0.5cap)] text-muted-70 transition-[color,transform] group-hover:text-fg group-data-[state=open]:rotate-180 group-data-[state=open]:text-fg"
+            />
+          </span>
         </button>
       </RadixDropdown.Trigger>
       <RadixDropdown.Portal>

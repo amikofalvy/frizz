@@ -81,7 +81,10 @@ test("a breadcrumb leads; the icons are right-justified with settings in the cor
   assert.doesNotMatch(html.slice(settings), /<button|<a /, "no control follows settings")
   // The breadcrumb is a nav with the slash as its separator, and the icons' group is pushed right by
   // `ml-auto` — without it they pack left against the crumb.
-  assert.match(html, /<nav aria-label="Breadcrumb" class="flex min-w-0 items-center gap-1\.5">/)
+  assert.match(html, /<nav aria-label="Breadcrumb" class="flex min-w-0 items-center gap-2\.5">/)
+  // The crumb's hover pill is the house's hover square in shape — 24px tall, rounded-md, bg-elevated —
+  // so the two controls in the breadcrumb light up alike.
+  assert.match(html, /data-project-crumb="[^"]*"[^>]*class="group -ml-1\.5 -mr-\[3px\] inline-flex h-6 [^"]*rounded-md [^"]*hover:bg-elevated/)
   assert.match(html, /<span aria-hidden="true" class="shrink-0 select-none text-muted-45">\/<\/span>/)
   assert.match(html, /class="ml-auto flex shrink-0 items-center gap-3"/)
 })

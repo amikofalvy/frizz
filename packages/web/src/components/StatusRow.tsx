@@ -45,9 +45,14 @@ import { homeHref, useHomeView } from "../lib/homeView.ts"
 // footer. Each mark wears a different amount of dead space inside its own layout box, so a uniform
 // `gap-2` drew six different distances on this row once (measured 2026-08-14, `scripts/ink-gaps.mjs
 // --pad=0`, 8.00px to 20.00px). The fix is per-mark, not per-gap: STATUS_ROW_ACTION collapses each icon
-// square onto its glyph's ink, and then one `gap-3` is the whole rhythm of the right end. The
-// breadcrumb runs tighter, `gap-1.5`, because a crumb and its slash are one phrase. Readings for the
-// current row are in StatusRow.test.ts.
+// square onto its glyph's ink, and then one `gap-3` is the whole rhythm of the right end. Readings for
+// the current row are in StatusRow.test.ts.
+//
+// THE BREADCRUMB'S GAP IS SET BY ITS HOVER SURFACES, not by its ink. The house's square and the crumb's
+// pill each paint 6px past their ink, so at `gap-1.5` both lit surfaces ran edge to edge into the slash
+// (measured 0px) and the open menu's pill looked jammed against it (maintainer 2026-10-26: "i dont love
+// this spacing. UIs are conflicting here"). `gap-2.5` leaves 4px between the slash and either surface
+// when lit, and 10px of ink a side at rest: the slash stands centred between the house and the name.
 
 /**
  * Takes no props beyond the Console's `label`, and reads its live values itself. Its call sites are
@@ -89,7 +94,7 @@ export function StatusRow({ label }: { label?: string } = {}) {
       // block rather than a strip parked above a box.
       className="mb-2.5 flex min-w-0 items-center gap-3 text-[12px]"
     >
-      <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1.5">
+      <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-2.5">
         {/* THE DOOR OUT, and the breadcrumb's root. A 24px target like the icons at the other end, trimmed
             onto its ink by STATUS_ROW_ACTION's own `-mx-1.5` alone: the house's ink then starts on the
             composer's outer border edge, as the gear's ends on it at the row's other end (both measured
