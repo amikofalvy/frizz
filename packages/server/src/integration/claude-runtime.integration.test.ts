@@ -630,6 +630,121 @@ test("integration: a re-steer survives the stream and the transcript racing each
   }
 })
 
+// A child can come back with NO resume ack in the parent's transcript: its own background shell
+// finishing re-invokes it, and a `SendMessage` that arrives as the child ends is "queued for delivery"
+// and then resumes it. The provider still announces the new run with `task_started`, and that is the
+// only thing that does. Record timestamps are real instants for the reason the race test above gives.
+const realAt = (offsetMs: number) => new Date(Date.now() + offsetMs).toISOString()
+
+function finishFirstRun(h: ReturnType<typeof createIntegrationHarness>, slug: string, out: string) {
+  const s = h.dispatch(slug)
+  h.telemetry(slug)
+  s.play(
+    record(userRecord("go", realAt(-6000))),
+    record(agentDispatchRecord("toolu_child", "Probe child", realAt(-5000))),
+    record(agentLaunchRecord("toolu_child", out, realAt(-5000), "task-1")),
+    event(taskEvent(s.sessionId, { phase: "started", taskId: "task-1", toolUseId: "toolu_child" })),
+    record(taskNotificationRecord("toolu_child", "completed", realAt(-3000))),
+    // The stream names the run's `tasks/<id>.output` symlink, not the transcript the launch ack gave.
+    event(taskEvent(s.sessionId, { phase: "notification", taskId: "task-1", toolUseId: "toolu_child", status: "completed", outputFile: "/private/tmp/claude-501/x/tasks/task-1.output" })),
+  )
+  return s
+}
+
+test("integration: a child woken by its own background work comes back live with no resume ack", async () => {
+  // Measured on a real thread (2026-10-27): the child ended its turn with an `until mount …` shell
+  // still running, the volume came back 17 minutes later, and the child worked for half an hour more
+  // while the board showed no sub-agent and the fence check told the parent "nothing by that name".
+  const h = createIntegrationHarness()
+  try {
+    const OUT = childTranscript(h)
+    const s = finishFirstRun(h, "selfwake", OUT)
+    await h.settle()
+    assert.equal(h.telemetry("selfwake")?.subAgents.length, 0, "the first run retired")
+
+    s.play(event(taskEvent(s.sessionId, { phase: "started", taskId: "task-1" })))
+    await h.settle()
+    const live = h.telemetry("selfwake")?.subAgents ?? []
+    assert.equal(live.length, 1, "the restarted child is on the board again")
+    assert.equal(live[0]?.label, "Probe child", "under its original label")
+    assert.equal(live[0]?.id, "toolu_child", "as the same row, so an open drawer keeps resolving")
+    assert.equal(h.tailer.subAgent("selfwake", "toolu_child")?.outputFile, OUT, "reading the transcript the launch ack named")
+    assert.equal(h.boardThread("selfwake")?.subAgents?.length, 1, "and the board row agrees")
+
+    // The restarted run's own notification names only the task id, as the real one did.
+    s.play(
+      record({ type: "queue-operation", operation: "enqueue", timestamp: realAt(2000), content: "<task-notification>\n<task-id>task-1</task-id>\n<status>completed</status>\n<summary>finished after the shell</summary>\n</task-notification>" }),
+      event(taskEvent(s.sessionId, { phase: "notification", taskId: "task-1", status: "completed" })),
+    )
+    await h.settle()
+    assert.equal(h.telemetry("selfwake")?.subAgents.length, 0, "and it retires again when that run ends")
+  } finally {
+    h.close()
+  }
+})
+
+test("integration: a restart that has already ended again revives nothing", async () => {
+  const h = createIntegrationHarness()
+  try {
+    const OUT = childTranscript(h)
+    const s = finishFirstRun(h, "brief", OUT)
+    s.play(
+      event(taskEvent(s.sessionId, { phase: "started", taskId: "task-1" })),
+      event(taskEvent(s.sessionId, { phase: "notification", taskId: "task-1", status: "completed" })),
+    )
+    await h.settle()
+    assert.equal(h.telemetry("brief")?.subAgents.length, 0)
+  } finally {
+    h.close()
+  }
+})
+
+test("integration: a task_started the ingest never saw end is not read as a restart", async () => {
+  // A fresh ingest after a Frizz restart is handed the daemon's backlog: a `task_started` for a run the
+  // fold may already have watched finish on disk. Only a start that follows an end the ingest itself
+  // folded is a new run; anything else could resurrect a finished child.
+  const h = createIntegrationHarness()
+  try {
+    const OUT = childTranscript(h)
+    const s = h.dispatch("fresh")
+    h.telemetry("fresh")
+    s.play(
+      record(userRecord("go", realAt(-6000))),
+      record(agentDispatchRecord("toolu_child", "Probe child", realAt(-5000))),
+      record(agentLaunchRecord("toolu_child", OUT, realAt(-5000), "task-1")),
+      record(taskNotificationRecord("toolu_child", "completed", realAt(-3000))),
+    )
+    await h.settle()
+    assert.equal(h.telemetry("fresh")?.subAgents.length, 0, "retired by the prose fold alone")
+
+    s.play(event(taskEvent(s.sessionId, { phase: "started", taskId: "task-1", toolUseId: "toolu_child" })))
+    await h.settle()
+    assert.equal(h.telemetry("fresh")?.subAgents.length, 0, "a backlogged start is not a restart")
+  } finally {
+    h.close()
+  }
+})
+
+test("integration: a restarted run the fold has seen finish on disk stays retired", async () => {
+  // The disk can run ahead of the stream: the restarted run's own notification is folded before its
+  // terminal event reaches the ingest. The row then finished AFTER the restart began, so the restart
+  // that revived it once must not revive it again.
+  const h = createIntegrationHarness()
+  try {
+    const OUT = childTranscript(h)
+    const s = finishFirstRun(h, "diskahead", OUT)
+    s.play(event(taskEvent(s.sessionId, { phase: "started", taskId: "task-1" })))
+    await h.settle()
+    assert.equal(h.telemetry("diskahead")?.subAgents.length, 1, "revived by the restart")
+
+    s.play(record({ type: "queue-operation", operation: "enqueue", timestamp: realAt(2000), content: "<task-notification>\n<task-id>task-1</task-id>\n<status>completed</status>\n<summary>the second run</summary>\n</task-notification>" }))
+    await h.settle()
+    assert.equal(h.telemetry("diskahead")?.subAgents.length, 0, "the second run's end on disk retires it for good")
+  } finally {
+    h.close()
+  }
+})
+
 test("integration: the structured stream never INVENTS a sub-agent the fold does not track", async () => {
   // `trackDispatches` deliberately skips a FOREGROUND Agent (run_in_background:false) because the
   // thread spinner already covers it — and the provider reports those tasks too. Minting board rows

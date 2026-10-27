@@ -90,6 +90,16 @@ export interface ClaudeRuntimeTask {
   seenInLevel: boolean
   /** ms epoch of the event that last touched this record. */
   updatedAt: number
+  /**
+   * ms epoch, on THIS ingest's clock, of the last `task_started` that followed a terminal reading this
+   * ingest folded for the same id: proof of a new run, whatever started it. A start with no earlier end
+   * in this ingest is never a restart, so a fresh ingest after a frizz restart that meets a task first in
+   * the daemon's backlog leaves it unset — that start may open a run the fold has long since seen finish.
+   * A backlog carrying both an end and a later start does stamp it, at the replay instant rather than
+   * when the run began; if that run's own end follows in the same backlog, a tick landing between the
+   * two frames can show the row for that one tick.
+   */
+  restartedAt?: number
 }
 
 export interface ClaudeRuntimeLiveness {
@@ -330,6 +340,7 @@ export function createClaudeRuntimeIngest(deps: ClaudeRuntimeIngestDeps): Claude
     // very next tick, which is exactly what happened on the promoted artifact — the fold revived the
     // child correctly and the board still showed nothing for the 37 s it ran.
     if (event.phase === "started") {
+      if (task.terminal) task.restartedAt = now
       task.terminal = false
       task.outcome = undefined
     }
