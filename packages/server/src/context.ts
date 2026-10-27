@@ -7,6 +7,8 @@ import {
   type DispatchPreferences,
   type SetDispatchPreferenceInput,
   type Settings,
+  type SteerThreadResult,
+  type ThreadMessageSender,
   type TranscriptMessage,
   acpModelIdFromModel,
 } from "@frizz/shared"
@@ -139,6 +141,10 @@ export class ContextStartupError extends Error {
 }
 
 // The wired singletons every request handler shares. Built once at boot in createContext.
+/** Deliver one `<thread-message>` into a thread of THIS project: the sender is already verified by the
+ *  sending project's router, and `from.project` is set because it is never this one. */
+export type ThreadInbox = (sent: { from: ThreadMessageSender; to: string; message: string }) => Promise<SteerThreadResult>
+
 export interface AppContext {
   // Random per-process id minted at boot. It rides every board/board-delta SSE frame and the
   // `x-frizz-boot` header on /rpc responses; a client that sees it CHANGE knows the server restarted
@@ -212,7 +218,14 @@ export interface AppContext {
    * project nobody has opened has no honest count, and this deliberately does not activate one to get
    * it. Absent under a test context or a one-project server, which read as "only this project".
    */
-  activeTenants?: () => ReadonlyArray<{ project: Project; board: BoardManager; storage?: Storage }>
+  activeTenants?: () => ReadonlyArray<{ project: Project; board: BoardManager; storage?: Storage; threadInbox?: ThreadInbox }>
+  /**
+   * The RECEIVING half of `frizzctl steer` for this project's threads — how a worker in ANOTHER project
+   * delivers into one of them (router `steerThread`, which reaches it through activeTenants). Bound by
+   * createRouter, because it rides the router's follow-up delivery and a second copy of that path would
+   * be a second set of runtime branches to keep in step; absent until this project's router is built.
+   */
+  threadInbox?: ThreadInbox
   /**
    * The Frizz thread that sent a cross-session message into one of THIS project's threads, for the
    * chat line that names the sender (see session-peer.ts). Absent under a test context, and then the

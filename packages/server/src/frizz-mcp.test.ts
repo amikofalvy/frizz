@@ -152,10 +152,10 @@ test("the frizz MCP server identifies as `frizz` and exposes its worker tools", 
     // `secret` — RETIRED with `ask`: a value only the human holds is a `kind: secret` question fence.
     assert.deepEqual(Object.keys(list.result.tools[14].inputSchema.properties), [])
     assert.match(list.result.tools[14].description, /^RETIRED \(2026-10-13\).*`kind: secret`/)
-    // `steer` — a target and a message. NO sender parameter: the receiver is told which thread sent it,
+    // `steer` — a target, its project when that is not the caller's, and a message. NO sender parameter: the receiver is told which thread sent it,
     // so the sender comes from the env alone.
     assert.deepEqual(list.result.tools[15].inputSchema.required, ["to", "message"])
-    assert.deepEqual(Object.keys(list.result.tools[15].inputSchema.properties), ["to", "message"])
+    assert.deepEqual(Object.keys(list.result.tools[15].inputSchema.properties), ["to", "project", "message"])
     // `watch_command` — the server-run check (2026-10-11). `action` alone is required, and NO thread
     // parameter: the command runs for the calling thread only, under that thread's own permission gate.
     assert.deepEqual(list.result.tools[16].inputSchema.required, ["action"])
@@ -279,9 +279,12 @@ test("`steer` POSTs steerThread from the CALLING thread, to a slug read out of a
       rpc.send({ jsonrpc: "2.0", id: 10 + i, method: "tools/call", params: { name: "steer", arguments: { to, message: "  The audit found 3 issues.  " } } })
       const sent = await rpc.next(10 + i)
       assert.equal(sent.result.isError, undefined, to)
+      // A board URL names the thread's project as well, and that rides along; the server finds the
+      // thread there even when it is not the caller's project.
+      const project = to.includes("/project/") ? { project: "frizz" } : {}
       assert.deepEqual(seen.at(-1), {
         url: "/_frizz/rpc/steerThread",
-        body: { from: "fresh-archive-audit", to: "back-up-the-mac", message: "The audit found 3 issues." },
+        body: { from: "fresh-archive-audit", to: "back-up-the-mac", ...project, message: "The audit found 3 issues." },
       }, to)
       assert.match(sent.result.content[0].text, /Delivered to «Back up the Mac» \(`back-up-the-mac`\)/)
       assert.match(sent.result.content[0].text, /woke it/)
@@ -290,6 +293,19 @@ test("`steer` POSTs steerThread from the CALLING thread, to a slug read out of a
     reply = { slug: "back-up-the-mac", title: "Back up the Mac", delivery: "running" }
     rpc.send({ jsonrpc: "2.0", id: 20, method: "tools/call", params: { name: "steer", arguments: { to: "back-up-the-mac", message: "x" } } })
     assert.match((await rpc.next(20)).result.content[0].text, /next tool boundary/)
+
+    // ANOTHER PROJECT: `project` is passed through, and a receipt naming one links the thread there.
+    reply = { slug: "bump-the-sdk", title: "Bump the SDK", delivery: "resting", project: "nub" }
+    rpc.send({ jsonrpc: "2.0", id: 21, method: "tools/call", params: { name: "steer", arguments: { to: "bump-the-sdk", project: "nub", message: "x" } } })
+    const across = (await rpc.next(21)).result.content[0].text
+    assert.deepEqual(seen.at(-1)?.body, { from: "fresh-archive-audit", to: "bump-the-sdk", project: "nub", message: "x" })
+    assert.match(across, /Delivered to «Bump the SDK» \(`bump-the-sdk`\) on the `nub` project\./)
+    assert.match(across, /\[Bump the SDK\]\(\/project\/nub\/thread\/bump-the-sdk\)/)
+    // A `project` that contradicts the link's is a mistake to surface, not one to pick a side of.
+    const sentBefore = seen.length
+    rpc.send({ jsonrpc: "2.0", id: 22, method: "tools/call", params: { name: "steer", arguments: { to: "http://localhost:9393/project/frizz/thread/x/full", project: "nub", message: "x" } } })
+    assert.match((await rpc.next(22)).result.content[0].text, /disagrees with the link, which names project `frizz`/)
+    assert.equal(seen.length, sentBefore)
 
     // Both arguments are refused in the HANDLER, before anything reaches the server.
     const before = seen.length

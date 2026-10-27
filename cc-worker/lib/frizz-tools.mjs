@@ -565,7 +565,9 @@ const SECRET = {
   inputSchema: { type: "object", properties: {} },
 }
 
-// STEER (2026-10-09): one thread messaging ANOTHER thread of the same project. Claude Code's own
+// STEER (2026-10-09): one thread messaging ANOTHER thread — of the same project until 2026-10-26, of any
+// project this Frizz serves since (maintainer: "frizz threads need the ability to steer other frizz
+// threads regardless of project"). Claude Code's own
 // cross-session `SendMessage` reaches a session only while its process is live, so a worker told to hand
 // its results to a resting thread had no tool for it, and went looking for the board's `followUp` route
 // to curl by hand — sixteen tool calls to find the route, the slug and the session id. This is that
@@ -575,10 +577,10 @@ const SECRET = {
 const STEER = {
   name: "steer",
   description:
-    "SEND A MESSAGE TO ANOTHER THREAD on this board, running or resting, and it reads it as its next " +
-    "input. A running thread reads it at its next tool boundary; a resting thread is WOKEN by it and " +
-    "starts a turn on it; a thread marked done is reopened. The receiver sees which thread sent it and " +
-    "can answer with this same command.\n\n" +
+    "SEND A MESSAGE TO ANOTHER THREAD, on this board or another project's, running or resting, and it " +
+    "reads it as its next input. A running thread reads it at its next tool boundary; a resting thread " +
+    "is WOKEN by it and starts a turn on it; a thread marked done is reopened. The receiver sees which " +
+    "thread sent it and can answer with this same command.\n\n" +
     "USE IT INSTEAD OF RELAYING THROUGH THE HUMAN. Whenever another thread needs what you have, send it " +
     "there yourself: results a thread is waiting on (\"when the audit is done, send the results to " +
     "<thread>\"), a finding that changes another thread's work (it is chasing the bug you just fixed, it " +
@@ -594,9 +596,13 @@ const STEER = {
     "thread, and it is not a way to hand off work the human did not ask for. Nothing waits on a reply " +
     "unless your message asks for one, and you do not need to rest waiting for it: a reply wakes you " +
     "whenever it comes, even after `done`.\n\n" +
+    "ANY PROJECT ON THIS MACHINE'S FRIZZ, not only yours. A thread's full link names its project " +
+    "(`/project/<project>/thread/<slug>`), so passing the link is enough; with a bare slug, this " +
+    "project is looked in first and then every other one, and `--project <slug>` says which when " +
+    "several have a thread of that name. A message from another project names it, and so does the " +
+    "reply command it suggests.\n\n" +
     "NOT FOR YOUR OWN SUB-AGENTS — those are inside your session; reach them with `SendMessage` to " +
-    "their agent id. Not for your own thread, and not across projects: `to` names a thread on THIS " +
-    "project's board.",
+    "their agent id. Not for your own thread.",
   inputSchema: {
     type: "object",
     properties: {
@@ -605,7 +611,15 @@ const STEER = {
         description:
           "The thread to message: its slug (`fix-queue-focus`), or any link naming it — the " +
           "`[title](/thread/<slug>)` link `frizzctl spawn-thread` prints, or a full board URL such as " +
-          "`http://localhost:9393/project/frizz/thread/<slug>/full`.",
+          "`http://localhost:9393/project/frizz/thread/<slug>/full`, whose `/project/<slug>/` also " +
+          "names the thread's project.",
+      },
+      project: {
+        type: "string",
+        description:
+          "The project the thread is on, when it is not yours: its slug, as its board URL shows it " +
+          "(`/project/<slug>/…`). Needed only when a bare slug is ambiguous; a link that names a " +
+          "project already says it.",
       },
       message: {
         type: "string",
@@ -845,10 +859,12 @@ const HANDLERS = {
 }
 
 // The slug out of whatever a worker has in hand for a thread: the slug itself, the `[title](/thread/<slug>)`
-// link spawn_thread returns, or a board URL (`…/project/<p>/thread/<slug>/full`).
+// link spawn_thread returns, or a board URL (`…/project/<p>/thread/<slug>/full`) — which also names the
+// thread's project.
 const THREAD_LINK = /\/thread\/([^/?#)\s]+)/
+const PROJECT_LINK = /\/project\/([^/?#)\s]+)\/thread\//
 
-/** The `steer` handler: deliver a message into ANOTHER thread of this project.
+/** The `steer` handler: deliver a message into ANOTHER thread, of this project or any other.
  * @param {Record<string, unknown>} args @returns {Promise<string>} */
 async function steer(args) {
   const raw = typeof args.to === "string" ? args.to.trim() : ""
@@ -856,19 +872,28 @@ async function steer(args) {
   if (!raw) throw new Error("`to` is required — the slug of the thread to message, or a link naming it")
   if (!message) throw new Error("`message` is required and must be a non-empty string")
   const to = decodeURIComponent(THREAD_LINK.exec(raw)?.[1] ?? raw)
+  const linked = PROJECT_LINK.exec(raw)?.[1]
+  const named = typeof args.project === "string" ? args.project.trim() : ""
+  const project = named || (linked ? decodeURIComponent(linked) : "")
+  if (named && linked && decodeURIComponent(linked) !== named) {
+    throw new Error(`\`--project ${named}\` disagrees with the link, which names project \`${decodeURIComponent(linked)}\`; pass one of them`)
+  }
   // THE SENDER IS THE ENV'S, never the model's: the receiver is told which thread sent this, and that
-  // has to be true.
-  const result = (await callRpc("steerThread", { from: threadSlug(), to, message }))?.result
+  // has to be true. The call goes to OUR project, which verifies the sender and finds the target
+  // wherever it lives.
+  const result = (await callRpc("steerThread", { from: threadSlug(), to, ...(project ? { project } : {}), message }))?.result
   if (!result?.slug) throw new Error(`steerThread returned no receipt: ${JSON.stringify(result)?.slice(0, 300)}`)
   const how = result.delivery === "running"
     ? "It is mid-turn, so it reads this at its next tool boundary."
     : result.delivery === "reopened"
       ? "It had been marked done; this message reopened it and started a turn."
       : "It was resting; this message woke it and started a turn."
+  const where = result.project ? ` on the \`${result.project}\` project` : ""
+  const href = result.project ? `/project/${result.project}/thread/${result.slug}` : `/thread/${result.slug}`
   return (
-    `Delivered to «${result.title}» (\`${result.slug}\`). ${how}\n\n` +
+    `Delivered to «${result.title}» (\`${result.slug}\`)${where}. ${how}\n\n` +
     "Its reply, if it sends one, arrives as your next input and wakes you — do not rest waiting for it. " +
-    `Link for your handoff: [${result.title}](/thread/${result.slug})`
+    `Link for your handoff: [${result.title}](${href})`
   )
 }
 
@@ -2119,12 +2144,13 @@ const CLI = {
   },
   steer: {
     group: "Other threads",
-    summary: "Send a message into another thread of this project",
+    summary: "Send a message into another thread, in any project",
     positional: ["to"],
     examples: [
       "frizzctl steer fix-the-resolver-cache --message-file - <<'EOF'\n" +
       "The audit found the same root cause: `normalizeId` drops the scope. Details in `audits/resolver.md`.\n" +
       "EOF",
+      "frizzctl steer bump-the-sdk --project nub --message-file handoff.md",
     ],
   },
   spawn_thread: {

@@ -583,7 +583,8 @@ test("steerThread delivers a wrapped, attributed message through the follow-up p
     body: "Three folders are missing from the archive.",
   })
   assert.doesNotMatch(sent[0].text, /⏱ Frizz/, "the human's gap note is not stamped on a peer's message")
-  assert.match(sent[0].text, /`steer` tool with `to: "fresh-archive-audit"`/, "the receiver is told how to answer")
+  assert.match(sent[0].text, /run `frizzctl steer fresh-archive-audit`\./, "the receiver is told how to answer")
+  assert.doesNotMatch(sent[0].text, /from-project=/, "a same-project message names no project")
 
   // A thread marked done is reopened by the message, as a human's follow-up would reopen it.
   const reopened = await h.router.steerThread.handler({ input: { from: "fresh-archive-audit", to: "finished-thread", message: "One more thing." } })

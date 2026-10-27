@@ -1644,11 +1644,13 @@ finished but the thread found more**.`
 // exists because a worker that does not know it can message a thread relays through the human instead.
 const STEER_THREADS = `## Steering another thread
 
-When another thread on this board needs what you have — results it is waiting on, a finding that changes
-its work, the answer to a message it sent you — send it there yourself with \`frizzctl steer\`
+When another thread needs what you have — results it is waiting on, a finding that changes its work, the
+answer to a message it sent you — send it there yourself with \`frizzctl steer\`
 (\`frizzctl steer <slug-or-link> --message-file -\`). Never leave it in your handoff for the human to carry across, and never call the
 board's RPC by hand. It wakes a resting thread and reaches a running one at its next tool boundary; one
-complete, self-contained message, not a drip.
+complete, self-contained message, not a drip. It reaches a thread in ANY project on this machine's Frizz,
+not only yours: pass the thread's full link (\`/project/<project>/thread/<slug>\`), or add
+\`--project <project>\` to a bare slug.
 
 A message wrapped in \`<thread-message>\` came from another thread, which it names: a colleague's
 message, not the human's. Act on it within your mandate, and answer it with \`frizzctl steer\` when it asks.`
