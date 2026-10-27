@@ -2158,6 +2158,46 @@ function trackResumes(state: TailState, rec: Record): void {
   }
 }
 
+// Revive a retired child the PROVIDER reports running again when nothing in the transcript said so.
+// `trackResumes` covers a restart the parent asked for, whose `SendMessage` ack names the child. Two
+// restarts leave no ack at all: the child's own background work finishing re-invokes it (its first
+// run's notification even says so — "It may resume on its own when that work completes"), and a
+// `SendMessage` that lands as the child ends is "queued for delivery" and then resumes it. Seen on a
+// real thread 2026-10-27: a child left an `until mount …` shell behind, the volume returned 17 minutes
+// later, and the child worked for another half hour while the board showed nothing and the fence
+// check told its parent "nothing by that name". Both restarts reach the stream as a `task_started`
+// under the same task id ("A resumed subagent is always registered in the background" — the SDK's own
+// contract), which the ingest stamps as `restartedAt` only when it follows an end it folded itself.
+//
+// Not a CREATE: the row must already sit in the retired ring under that task id, so a task the fold
+// never tracked (a foreground child) still gets nothing. A row that ended AFTER the restart began
+// ended in the restarted run itself, read off disk before its terminal reached the stream, so it
+// stays retired. An operator's dismissal stands: unlike a resume the parent asked for, nothing here
+// proves the row is worth bringing back over it.
+function reviveRestarted(state: TailState, runtime: readonly ClaudeRuntimeTask[]): void {
+  for (const task of runtime) {
+    if (task.terminal || task.restartedAt === undefined) continue
+    if (findLiveByTaskId(state, task.taskId)) continue
+    // Newest wins, as in trackResumes: a child restarted before can hold one retired row per run.
+    let retired: RetiredSubAgent | undefined
+    for (const r of state.retiredSubAgents.values()) if (r.taskId === task.taskId) retired = r
+    if (!retired || state.dismissedOps.has(retired.toolUseId)) continue
+    const finishedMs = retired.finishedAt ? Date.parse(retired.finishedAt) : Number.NaN
+    if (Number.isFinite(finishedMs) && task.restartedAt <= finishedMs) continue
+    state.retiredSubAgents.delete(retired.toolUseId)
+    state.subAgents.set(retired.toolUseId, {
+      kind: "agent",
+      toolUseId: retired.toolUseId,
+      label: retired.label,
+      startedAt: new Date(task.restartedAt).toISOString(),
+      subagentType: retired.subagentType,
+      outputFile: task.outputFile ?? retired.outputFile,
+      outputFormat: retired.outputFormat,
+      taskId: task.taskId,
+    })
+  }
+}
+
 // RETIRE a tracked sub-agent when its <task-notification> reports a TERMINAL status: move it OUT of the
 // live map (so banner/counts/spinner stop showing it) and INTO the bounded retained ring (so the
 // drill-in drawer can still resolve its transcript for review). Notifications ride THREE record shapes
@@ -3482,6 +3522,8 @@ export function createTailer(deps: TailerDeps): Tailer {
   //    false) because the spinner already covers it, and the provider reports those tasks too. Minting
   //    entries here would put foreground children on the board's LIVE count and into the completion
   //    hold — inventing exactly the phantoms this change exists to remove.
+  //  * REVIVE — a row the fold already RETIRED, when the provider reports a new run of it that nothing
+  //    in the transcript announced. See reviveRestarted.
   // Claude's context WINDOW, latched onto the fold from the broker event stream. One-way and
   // latching by design: the SDK only names the window when a turn ends, so it must survive the
   // in-between ticks, and it lands in TailState (not a side map) so the durable tail cache carries it
@@ -3499,9 +3541,10 @@ export function createTailer(deps: TailerDeps): Tailer {
   }
 
   function applyRuntimeTasks(row: SessionRow, state: TailState, nowMs: number): void {
-    if (!deps.runtimeTasks || !isBrokerClaudeRow(row) || state.subAgents.size === 0) return
+    if (!deps.runtimeTasks || !isBrokerClaudeRow(row) || (state.subAgents.size === 0 && state.retiredSubAgents.size === 0)) return
     const runtime = deps.runtimeTasks(row.session_id)
     if (runtime.length === 0) return
+    reviveRestarted(state, runtime)
     // Index both ways up front: a handful of live entries against up to a few hundred remembered tasks.
     const byToolUse = new Map<string, ClaudeRuntimeTask>()
     const byTaskId = new Map<string, ClaudeRuntimeTask>()
