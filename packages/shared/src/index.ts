@@ -2379,6 +2379,14 @@ export const GithubWatchStatus = z.object({
    *  same job, or a slower job going red after the first — both of which are a second failure the worker
    *  must hear about. Empty when nothing is failing. */
   failureSig: z.string().optional(),
+  /** WHO THE PR IS WAITING ON, the three facts behind "will anything move here unless we act?"
+   *  (board.prWaitsOnNoOne). Whether GitHub will merge it by itself (`queued` in a merge queue, `auto`
+   *  with auto-merge on, `none`), whether the signed-in `gh` account opened it, and whether that account
+   *  may merge it. Absent means unknown: the `gh` fallback and a reading taken before 2026-10-27 carry
+   *  none, and an unknown never counts as "nobody". */
+  mergePath: z.enum(["none", "queued", "auto"]).optional(),
+  viewerAuthored: z.boolean().optional(),
+  viewerCanMerge: z.boolean().optional(),
 }).strict()
 export type GithubWatchStatus = z.infer<typeof GithubWatchStatus>
 
@@ -3643,6 +3651,15 @@ export const LiveTool = z.object({
 })
 export type LiveTool = z.infer<typeof LiveTool>
 
+/** A park that will not wake on its own (board.parkStall). `pr-idle`: every PR it names is open, settled
+ *  and not on its way to a merge, and the next act is this side's (a merge, or a push to fix red CI or a
+ *  conflict). `repeated`: `parks` quiet parks in a row since `since`, with no human message in between. */
+export const StalledPark = z.discriminatedUnion("why", [
+  z.object({ why: z.literal("pr-idle"), refs: z.array(z.string()).min(1) }),
+  z.object({ why: z.literal("repeated"), parks: z.number().int().positive(), since: z.string() }),
+])
+export type StalledPark = z.infer<typeof StalledPark>
+
 export const ThreadView = z.object({
   id: ThreadSlug, // slug; filename is <slug>.md
   title: z.string(),
@@ -3832,6 +3849,10 @@ export const ThreadView = z.object({
    *  menu greys out "Until activity" without it, and the server stops honouring that snooze once it
    *  goes false. Absent on a dead worker and on an archived thread. */
   wakesOnItsOwn: z.boolean().optional(),
+  /** WHY A `status: watching` PARK WAS SENT TO THE QUEUE instead of Snoozed (board.parkStall): every PR it
+   *  names is waiting on this side and nobody else will move it, or the worker has re-parked over and over
+   *  since the human last wrote. Set only while it is what queued the thread. */
+  stalledPark: StalledPark.optional(),
   // Which Claude transport serves this thread. "broker" — a session-broker-owned Agent SDK session with
   // a typed control channel — is the only one there is; ABSENT means a row dispatched before the broker
   // became the sole transport, which frizz can no longer reach that way. Only the broker can be asked to

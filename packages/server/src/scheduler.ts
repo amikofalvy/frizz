@@ -97,6 +97,10 @@ export interface PrStatus {
   /** Exits from the merge path that were not a merge — the queue dropping the PR, auto-merge going off.
    *  Absent on the `gh` fallback, which does not read the timeline. */
   mergeExits?: GithubPrMergeExit[]
+  /** Who the PR waits on — see GithubPrSnapshot. Absent on the `gh` fallback, which does not ask. */
+  autoMerge?: boolean
+  viewerDidAuthor?: boolean
+  viewerPermission?: string
 }
 
 export interface WorkflowRun {
@@ -409,8 +413,25 @@ export function githubWatchStatus(pr: PrStatus, polledAt: string): GithubWatchSt
     polledAt,
     head: pr.head,
     failureSig: failureSignature(entries),
+    ...githubWaitingOn(pr),
   }
 }
+
+// WHO A PR IS WAITING ON, in the three facts board.prWaitsOnNoOne reads. Each is left out unless the
+// poll actually said: a guess of "nobody" would pull a thread out of Snoozed that something will wake.
+function githubWaitingOn(pr: PrStatus): Pick<GithubWatchStatus, "mergePath" | "viewerAuthored" | "viewerCanMerge"> {
+  const mergePath = pr.queued ? "queued" as const
+    : pr.autoMerge ? "auto" as const
+    : pr.queued === null && pr.autoMerge === false ? "none" as const
+    : undefined
+  return {
+    ...(mergePath ? { mergePath } : {}),
+    ...(pr.viewerDidAuthor !== undefined ? { viewerAuthored: pr.viewerDidAuthor } : {}),
+    ...(pr.viewerPermission !== undefined ? { viewerCanMerge: MERGING_PERMISSIONS.has(pr.viewerPermission) } : {}),
+  }
+}
+
+const MERGING_PERMISSIONS = new Set(["ADMIN", "MAINTAIN", "WRITE"])
 
 function wakeDeliveryId(slug: string, sessionId: string, fenceId: string): string {
   return createHash("sha256").update(slug).update("\0").update(sessionId).update("\0").update(fenceId).digest("hex")

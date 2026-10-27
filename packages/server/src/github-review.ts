@@ -108,6 +108,12 @@ export interface GithubPrSnapshot {
   queued?: { position?: number } | null
   /** The PR's latest exits from the merge path that were NOT a merge — see `GithubPrMergeExit`. */
   mergeExits: GithubPrMergeExit[]
+  /** Auto-merge is on (`autoMergeRequest` present). Absent when the response did not say. */
+  autoMerge?: boolean
+  /** The signed-in account opened this PR, and its permission on the base repository (`ADMIN`,
+   *  `MAINTAIN`, `WRITE`, `TRIAGE`, `READ`). Absent when the response did not say. */
+  viewerDidAuthor?: boolean
+  viewerPermission?: string
 }
 
 /** A PR leaving the road to its merge without merging: GitHub's merge queue dropping it, or auto-merge
@@ -327,6 +333,9 @@ export function parseGithubPrSnapshot(pr: unknown): GithubPrSnapshot | undefined
         : null }
       : {}),
     mergeExits: parseMergeExits(p.timelineItems?.nodes),
+    ...("autoMergeRequest" in p ? { autoMerge: Boolean(p.autoMergeRequest) } : {}),
+    ...(typeof p.viewerDidAuthor === "boolean" ? { viewerDidAuthor: p.viewerDidAuthor } : {}),
+    ...(typeof p.baseRepository?.viewerPermission === "string" ? { viewerPermission: p.baseRepository.viewerPermission } : {}),
   }
 }
 
@@ -425,6 +434,9 @@ function buildQuery(refs: GithubReviewRef[]): { query: string; variables: Record
         pullRequest(number: $number${index}) {
           state mergedAt mergeable reviewDecision isDraft
           mergeQueueEntry { position }
+          autoMergeRequest { enabledAt }
+          viewerDidAuthor
+          baseRepository { viewerPermission }
           timelineItems(last: ${MERGE_EXIT_CAP}, itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT, AUTO_MERGE_DISABLED_EVENT]) { nodes {
             __typename
             ... on RemovedFromMergeQueueEvent { id createdAt reason actor { login }
