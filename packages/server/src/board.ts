@@ -1261,6 +1261,13 @@ export function deriveNeedsYou(
 //     CI is still running used to excuse the thread on frizz's guess; the worker says so now, or it queues.
 //  3. A `done` handoff and a rest with nothing out queue as they always did.
 //
+// RULE 1 CANNOT SPEND A HANDOFF THE HUMAN HAS NOT REACHED. A `needs_input` rest put the thread in front
+// of the human, and only the human typing to it (`restFromAt`, the boundary an open question stands
+// across) takes it out again. A later quiet park does not: a PR watcher's wake for news the worker had
+// already read made it re-park `status: watching`, and its "ready, unmerged" handoff sat in Snoozed with
+// green CI (inkeep/agents-private#7477, maintainer 2026-10-27: "it looks green to me"). The thread falls
+// through to rule 2 instead, so the card keeps its event-snooze.
+//
 // `excuseLiveOwnWork` false is deriveAwaitingBackground asking for the FACT, as it does of the legacy
 // tail: rule 1 is the queue's alone, so the card can still say what the thread waits on.
 function needsInputQueues(
@@ -1277,6 +1284,7 @@ function needsInputQueues(
     excuseLiveOwnWork &&
     runtime !== "exited" &&
     fence?.kind === "awaiting" &&
+    !handoffStands(tele) &&
     // `registeredPrWatches` carries both kinds' refs (see hasParkedPrWatch), so it answers for `issues:` too.
     // `armedTimerIds` carries the command watches too, split back by kind here (isCommandWatchId).
     needsInputParkHolds(
@@ -1294,6 +1302,13 @@ function needsInputQueues(
   ) return false
   if (runtime !== "exited" && fence?.kind !== "done" && (hasLiveOwnWork(tele, registeredPrWatches) || hasParkedTimerWatch(tele, armedTimerIds))) return !bgSnoozeArmed(row)
   return true
+}
+
+function handoffStands(tele: SessionTelemetry | undefined): boolean {
+  const handoffMs = Date.parse(tele?.handoffAt ?? "")
+  if (!Number.isFinite(handoffMs)) return false
+  const typedMs = Date.parse(tele?.restFromAt ?? tele?.lastUserAt ?? "")
+  return !(typedMs >= handoffMs)
 }
 
 // Whether a thread is resting while its own background work is still live — the signal the client keys
