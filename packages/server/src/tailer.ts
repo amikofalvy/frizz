@@ -1421,6 +1421,10 @@ function isLocalCommandReceipt(content: unknown): boolean {
   return LOCAL_COMMAND_RECEIPT.test(userMessageText(content).trim())
 }
 
+function isToolResultOnly(content: unknown): boolean {
+  return Array.isArray(content) && content.length > 0 && content.every((part) => (part as { type?: unknown })?.type === "tool_result")
+}
+
 // ---- WHEN THE HUMAN LAST TYPED, for the question registry (FoldState.restFromAt) ------------------
 // `isHumanSpeaking` below answers "did a person OR Frizz put a message in front of the model" — Frizz's
 // own deliveries pass it, by design, because they move the row and close a rest. An open question asks
@@ -1455,7 +1459,6 @@ function wasQueued(queued: readonly string[], message: string): boolean {
 }
 
 function noteUserRecordForQuestions(state: FoldState, text: string, at: string): void {
-  state.lastWake = { at, quiet: wakeIsQuiet(text) }
   const queued = state.queuedHumanTexts ?? []
   // A message the queue already announced moved the boundary when it was typed; delivering it is not the
   // human typing again. Anything else human-typed in this record is new, and the boundary is now.
@@ -1464,6 +1467,15 @@ function noteUserRecordForQuestions(state: FoldState, text: string, at: string):
   // stale entry would swallow the human typing the same words again later.
   if (queued.length > 0) state.queuedHumanTexts = undefined
   if (carriesQuestionFenceCorrection(text)) state.questionCorrectedAt = at
+  noteWake(state, at, wakeIsQuiet(text))
+}
+
+// Record the wake the worker is answering (FoldState.lastWake). A human message the runtime merged AHEAD
+// of a timer fire rides inside the timer's own delivery, where wakeIsQuiet cannot see it; the queue moved
+// `restFromAt` when it was typed, so a boundary that moved since the last wake makes this one news.
+function noteWake(state: FoldState, at: string, quiet: boolean): void {
+  const restFrom = state.restFromAt ?? ""
+  state.lastWake = { at, quiet: quiet && state.lastWake?.restFrom === restFrom, restFrom }
 }
 
 // The LEGACY question flag (a ```question fence on the final message — what queues a thread spawned
@@ -2682,6 +2694,9 @@ export function applyRecord(state: TailState, rec: Record): void {
     state.lastAssistantAllDone = false
     state.lastFence = undefined
     const humanSpoke = isHumanSpeaking(rec, userText, systemUserRec, compactSummaryRec)
+    // A record that wakes the worker without being drawn — a background shell's or sub-agent's report —
+    // is news to the park streak all the same. A bare tool_result is mid-turn and wakes nothing.
+    if (!humanSpoke && typeof rec.timestamp === "string" && !isToolResultOnly(rec.message?.content)) noteWake(state, rec.timestamp, false)
     // Any user record supersedes a usage-limit pause: the conversation has moved past the point where
     // it was cut off, whether by the human or by the "continue" the wake scheduler delivered. This is
     // precisely what makes the auto-resume one-shot — the delivered message erases the very fault that

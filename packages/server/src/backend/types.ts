@@ -245,7 +245,8 @@ export interface FoldState {
   // does any other fenced rest; prose with no fence does not, since a polling turn narrates before it parks.
   parkStreak?: ParkStreak
   // The newest user record, and whether every wake it delivered was news-free (tailer wakeIsQuiet).
-  lastWake?: { at: string; quiet: boolean }
+  // `restFrom` is the `restFromAt` it was recorded under (tailer noteWake).
+  lastWake?: { at: string; quiet: boolean; restFrom: string }
   // The human messages QUEUED and not yet seen delivered, oldest first — so the record that delivers one
   // does not move `restFromAt` a second time, to an instant later than the human wrote it. Bounded.
   queuedHumanTexts?: string[]

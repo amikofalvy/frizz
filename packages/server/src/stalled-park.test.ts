@@ -79,8 +79,14 @@ function world(backend: "claude" | "codex", github: GithubWatchStatus) {
     say(minute + 1, "No new grant from root. Re-arming the fallback timer.")
     say(minute + 2, park)
   }
+  // A background shell's completion report, as each runtime delivers it: Claude as an undrawn system record.
+  const notify = backend === "claude"
+    ? (minute: number, text: string) => applyRecord(s, { type: "user", timestamp: at(minute), promptSource: "system", origin: { kind: "task-notification", producer: "session-task" }, turnOrigin: "task_notification", message: { role: "user", content: text } } as never)
+    : user
+  // The runtime's record of a message the human typed while the worker was mid-turn (Claude only).
+  const enqueue = (minute: number, text: string) => applyRecord(s, { type: "queue-operation", operation: "enqueue", content: text, timestamp: at(minute) } as never)
   return {
-    say, user, poll,
+    say, user, poll, notify, enqueue,
     setNow: (minute: number) => { nowMs = Date.parse(at(minute)) },
     view: () => board.refresh().threads.find((x) => x.id === slug)!,
     close: () => { board.stop(); storage.close(); rmSync(dir, { recursive: true, force: true }) },
@@ -208,4 +214,35 @@ for (const backend of ["claude", "codex"] as const) {
       }
     } finally { typed.close(); handed.close() }
   })
+
+  test(`${backend}: a background shell's report between polls ends the run`, () => {
+    const w = world(backend, READY)
+    try {
+      w.user(0, "wait for root's grant")
+      w.say(1, TIMER_PARK)
+      w.poll(12 * HOUR)
+      w.notify(18 * HOUR, "<task-notification>\n<task-id>b8j2dr7ky</task-id>\n<status>completed</status>\n<summary>Background command \"Collecting the diagnostics\" completed (exit code 0)</summary>\n</task-notification>")
+      w.say(18 * HOUR + 1, TIMER_PARK)
+      w.poll(30 * HOUR)
+      w.poll(42 * HOUR)
+      w.setNow(42 * HOUR + 5)
+      assertSnoozedWatch(w.view(), "two polls since the report")
+    } finally { w.close() }
+  })
 }
+
+test("claude: a human message the runtime merged ahead of a timer fire is not a quiet poll", () => {
+  const w = world("claude", READY)
+  try {
+    w.user(0, "wait for root's grant")
+    w.say(1, TIMER_PARK)
+    w.poll(12 * HOUR)
+    const typed = "root is out until Monday, keep checking"
+    w.enqueue(24 * HOUR - 1, typed)
+    w.user(24 * HOUR, `${typed}\n${timerPromptMessage("check whether root granted the next step", at(24 * HOUR))}\n\n${wakeDeliveryToken("wake-merged")}`)
+    w.say(24 * HOUR + 2, TIMER_PARK)
+    w.poll(36 * HOUR)
+    w.setNow(36 * HOUR + 5)
+    assertSnoozedWatch(w.view(), "the human wrote inside the merged wake")
+  } finally { w.close() }
+})

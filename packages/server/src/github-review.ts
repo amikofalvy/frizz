@@ -321,7 +321,7 @@ export function parseGithubPrSnapshot(pr: unknown): GithubPrSnapshot | undefined
         }]
       }),
     labels: strings(p.labels?.nodes, (n) => n.name),
-    // A User answers to `login` and a Team to `name`; the row is the reviewer either way.
+    // A User or a Bot answers to `login` and a Team to `name`; the row is the reviewer either way.
     reviewRequests: strings(p.reviewRequests?.nodes, (n) => {
       const r = n.requestedReviewer as Record<string, unknown> | undefined
       return r?.login ?? r?.name
@@ -447,7 +447,7 @@ function buildQuery(refs: GithubReviewRef[]): { query: string; variables: Record
           reviews(last: 50) { nodes { id url state submittedAt body author { login __typename } } }
           comments(last: 50) { nodes { id url createdAt body author { login __typename } } }
           labels(first: ${LABEL_CAP}) { nodes { name } }
-          reviewRequests(first: ${REVIEW_REQUEST_CAP}) { nodes { requestedReviewer { __typename ... on User { login } ... on Team { name } } } }
+          reviewRequests(first: ${REVIEW_REQUEST_CAP}) { nodes { requestedReviewer { __typename ... on User { login } ... on Bot { login } ... on Team { name } } } }
           commits(last: 1) { nodes { commit {
             oid
             statusCheckRollup { contexts(first: ${ROLLUP_PAGE_SIZE}) { pageInfo { hasNextPage endCursor } nodes {${ROLLUP_NODE_FIELDS}
