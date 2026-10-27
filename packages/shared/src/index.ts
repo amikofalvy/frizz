@@ -2379,14 +2379,15 @@ export const GithubWatchStatus = z.object({
    *  same job, or a slower job going red after the first — both of which are a second failure the worker
    *  must hear about. Empty when nothing is failing. */
   failureSig: z.string().optional(),
-  /** WHO THE PR IS WAITING ON, the three facts behind "will anything move here unless we act?"
+  /** WHO THE PR IS WAITING ON, the facts behind "will anything move here unless we act?"
    *  (board.prWaitsOnNoOne). Whether GitHub will merge it by itself (`queued` in a merge queue, `auto`
-   *  with auto-merge on, `none`), whether the signed-in `gh` account opened it, and whether that account
-   *  may merge it. Absent means unknown: the `gh` fallback and a reading taken before 2026-10-27 carry
-   *  none, and an unknown never counts as "nobody". */
+   *  with auto-merge on, `none`), whether the signed-in `gh` account opened it and may merge it, and
+   *  whether a review is still requested of someone. Absent means unknown: the `gh` fallback and a
+   *  reading taken before 2026-10-27 carry none, and an unknown never counts as "nobody". */
   mergePath: z.enum(["none", "queued", "auto"]).optional(),
   viewerAuthored: z.boolean().optional(),
   viewerCanMerge: z.boolean().optional(),
+  reviewRequested: z.boolean().optional(),
 }).strict()
 export type GithubWatchStatus = z.infer<typeof GithubWatchStatus>
 
@@ -3653,7 +3654,8 @@ export type LiveTool = z.infer<typeof LiveTool>
 
 /** A park that will not wake on its own (board.parkStall). `pr-idle`: every PR it names is open, settled
  *  and not on its way to a merge, and the next act is this side's (a merge, or a push to fix red CI or a
- *  conflict). `repeated`: `parks` quiet parks in a row since `since`, with no human message in between. */
+ *  conflict). `repeated`: `parks` quiet parks in a row since `since`, each in answer to the worker's own
+ *  timer or its park running out. */
 export const StalledPark = z.discriminatedUnion("why", [
   z.object({ why: z.literal("pr-idle"), refs: z.array(z.string()).min(1) }),
   z.object({ why: z.literal("repeated"), parks: z.number().int().positive(), since: z.string() }),

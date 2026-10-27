@@ -2,15 +2,15 @@
 // are often frozen waiting for something that will never happen"). Of fourteen Snoozed threads in one project,
 // five were PR parks with green CI and only the maintainer's merge left, two were PR parks on red CI their
 // workers had chosen not to fix, and three were timer loops polling another thread for a grant that never came.
-// The rule (board parkStall): a PR park whose every PR waits on this side, or four quiet parks over a day with
-// no human message between them, is not honoured as a park. Driven through the real fold (both backends' paths)
-// and the real board.
+// The rule (board parkStall): a PR park whose every PR waits on this side, or three parks across a day each
+// answering the worker's own timer or an expired park, is not honoured as a park. Driven through the real fold
+// (both backends' paths) and the real board.
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { isSnoozed, wakeDeliveryToken, type GithubWatchStatus } from "@frizz/shared"
+import { isSnoozed, timerPromptMessage, wakeDeliveryToken, type GithubWatchStatus } from "@frizz/shared"
 import { GITHUB_STATUS_SETTING } from "./awaiting.ts"
 import { Bus } from "./bus.ts"
 import { createBoard } from "./board.ts"
@@ -20,14 +20,14 @@ import { applyEvent, applyRecord, newTailState, type SessionTelemetry, type Tail
 
 const T0 = Date.now() + 7 * 86_400_000
 const HOUR = 60
-const at = (minute: number) => new Date(T0 + minute * 60_000).toISOString()
+const at = (minute: number, ms = 0) => new Date(T0 + minute * 60_000 + ms).toISOString()
 const PR = "inkeep/agents-private#7438"
 const PR_PARK = "```awaiting\nprs: [inkeep/agents-private#7438]\nstatus: watching\nfor: 180d\n```"
 const TIMER_PARK = "```awaiting\ntimers: [tmr_poll]\nstatus: watching\nfor: 1d\n```"
 const WORKING = "```awaiting\ntimers: [tmr_poll]\nstatus: working\nfor: 1d\n```"
 const READY: GithubWatchStatus = {
   checks: "passing", running: 0, passed: 85, failed: 0, skipped: 30, gated: 0, gating: [], failing: [],
-  merge: "mergeable", state: "open", polledAt: at(0), mergePath: "none", viewerAuthored: true, viewerCanMerge: true,
+  merge: "mergeable", state: "open", polledAt: at(0), mergePath: "none", viewerAuthored: true, viewerCanMerge: true, reviewRequested: false,
 }
 const RED: GithubWatchStatus = { ...READY, checks: "failing", passed: 80, failed: 2, failing: ["lint"], merge: "blocked" }
 
@@ -59,11 +59,13 @@ function world(backend: "claude" | "codex", github: GithubWatchStatus) {
   const project: Project = { dir, id: "p", name: "fixture", label: "fixture", stateDir: dir, cwdSlug: "fixture" }
   let nowMs = Date.parse(at(1))
   const board = createBoard(project, storage, new Bus(), tailer, "stalled-park", { claudeBrokerDaemonAlive: () => true, now: () => nowMs })
+  // Codex folds a final message twice — as the final text and again on `task_complete` a moment later —
+  // so its `turn-end` lands at its own instant here, as it does in a real rollout.
   const say = backend === "claude"
     ? (minute: number, text: string) => applyRecord(s, { type: "assistant", timestamp: at(minute), message: { role: "assistant", content: [{ type: "text", text }], stop_reason: "end_turn" } } as never)
     : (minute: number, text: string) => {
         applyEvent(s, { kind: "assistant-text", at: at(minute), text, final: true })
-        applyEvent(s, { kind: "turn-end", at: at(minute), finalText: text })
+        applyEvent(s, { kind: "turn-end", at: at(minute, 109), finalText: text })
       }
   const user = backend === "claude"
     ? (minute: number, text: string) => applyRecord(s, { type: "user", timestamp: at(minute), message: { role: "user", content: text } } as never)
@@ -71,14 +73,14 @@ function world(backend: "claude" | "codex", github: GithubWatchStatus) {
         applyEvent(s, { kind: "user-message", at: at(minute), text, synthetic: false })
         applyEvent(s, { kind: "turn-start", at: at(minute) })
       }
-  // One polling cycle as the worker lives it: the timer's wake, a line of narration, the re-park.
-  const poll = (minute: number) => {
-    user(minute, `⏰ check whether root granted the next step\n\n${wakeDeliveryToken(`wake-${minute}`)}`)
+  // One polling cycle as the worker lives it: its own timer's wake, a line of narration, the re-park.
+  const poll = (minute: number, park = TIMER_PARK) => {
+    user(minute, `${timerPromptMessage("check whether root granted the next step", at(minute))}\n\n${wakeDeliveryToken(`wake-${minute}`)}`)
     say(minute + 1, "No new grant from root. Re-arming the fallback timer.")
-    say(minute + 2, TIMER_PARK)
+    say(minute + 2, park)
   }
   return {
-    say, user, poll, storage,
+    say, user, poll,
     setNow: (minute: number) => { nowMs = Date.parse(at(minute)) },
     view: () => board.refresh().threads.find((x) => x.id === slug)!,
     close: () => { board.stop(); storage.close(); rmSync(dir, { recursive: true, force: true }) },
@@ -105,26 +107,26 @@ for (const backend of ["claude", "codex"] as const) {
     } finally { w.close() }
   })
 
-  test(`${backend}: a PR park on red CI of our own PR queues; someone else's red PR stays a wait`, () => {
-    const ours = world(backend, RED)
-    const theirs = world(backend, { ...RED, viewerAuthored: false })
+  test(`${backend}: a PR park on settled red CI of our own PR queues`, () => {
+    const w = world(backend, RED)
     try {
-      for (const w of [ours, theirs]) {
-        w.user(0, "watch inkeep/agents-private#7438")
-        w.say(1, PR_PARK)
-      }
-      assert.deepEqual(ours.view().stalledPark, { why: "pr-idle", refs: [PR] })
-      assert.equal(ours.view().needsYou, true)
-      assertSnoozedWatch(theirs.view(), "the author will push the fix")
-    } finally { ours.close(); theirs.close() }
+      w.user(0, "watch inkeep/agents-private#7438")
+      w.say(1, PR_PARK)
+      assert.equal(w.view().needsYou, true)
+      assert.deepEqual(w.view().stalledPark, { why: "pr-idle", refs: [PR] })
+    } finally { w.close() }
   })
 
   test(`${backend}: a PR park that someone or something else will move stays snoozed`, () => {
     const cases: [GithubWatchStatus, string][] = [
       [{ ...READY, viewerCanMerge: false }, "a maintainer of someone else's repo merges it"],
+      [{ ...READY, viewerAuthored: false }, "its author merges their own PR"],
+      [{ ...RED, viewerAuthored: false }, "its author pushes the fix"],
+      [{ ...READY, reviewRequested: true }, "a requested reviewer has not answered"],
       [{ ...READY, mergePath: "auto" }, "auto-merge lands it"],
       [{ ...READY, mergePath: "queued" }, "the merge queue lands it"],
       [{ ...READY, checks: "running", running: 3, passed: 82 }, "CI is still running"],
+      [{ ...RED, running: 3 }, "a job has failed but others are still running"],
       [{ ...READY, merge: "blocked" }, "a required review is outstanding"],
       [{ checks: "passing", running: 0, passed: 85, failed: 0, skipped: 30, gated: 0, gating: [], failing: [], merge: "mergeable", state: "open", polledAt: at(0) }, "a reading that does not say who it waits on"],
     ]
@@ -140,7 +142,7 @@ for (const backend of ["claude", "codex"] as const) {
     }
   })
 
-  test(`${backend}: four quiet parks over a day with no human message queue as repeated`, () => {
+  test(`${backend}: three parks answering its own timer across a day queue as repeated`, () => {
     const w = world(backend, READY)
     try {
       w.user(0, "wait for root's grant before running anything")
@@ -148,24 +150,39 @@ for (const backend of ["claude", "codex"] as const) {
       w.poll(12 * HOUR)
       w.poll(24 * HOUR)
       w.setNow(24 * HOUR + 5)
-      assertSnoozedWatch(w.view(), "three parks is still a wait")
+      assertSnoozedWatch(w.view(), "two polls is still a wait")
       w.poll(36 * HOUR)
       w.setNow(36 * HOUR + 5)
       const v = w.view()
       assert.equal(v.needsYou, true)
       assert.equal(isSnoozed(v), false)
-      assert.deepEqual(v.stalledPark, { why: "repeated", parks: 4, since: at(1) })
+      assert.deepEqual(v.stalledPark, { why: "repeated", parks: 3, since: at(12 * HOUR + 2) })
     } finally { w.close() }
   })
 
-  test(`${backend}: four quick parks inside a day stay a wait`, () => {
+  test(`${backend}: quick polls and then a quiet day stay a wait`, () => {
+    // A PR park, because its `for:` outlasts the day this needs; the PR itself waits on a reviewer.
+    const w = world(backend, { ...READY, reviewRequested: true })
+    try {
+      w.user(0, "wait for root's grant")
+      w.say(1, PR_PARK)
+      for (const minute of [10, 20, 30, 40]) w.poll(minute, PR_PARK)
+      w.setNow(30 * HOUR)
+      assertSnoozedWatch(w.view(), "the polls span half an hour, however long ago the first was")
+    } finally { w.close() }
+  })
+
+  test(`${backend}: parks after news never count, however many`, () => {
     const w = world(backend, READY)
     try {
       w.user(0, "wait for root's grant")
       w.say(1, TIMER_PARK)
-      for (const hour of [2, 4, 6]) w.poll(hour * HOUR)
-      w.setNow(6 * HOUR + 5)
-      assertSnoozedWatch(w.view(), "the run has not lasted a day")
+      for (const hour of [12, 24, 36, 48]) {
+        w.user(hour * HOUR, `✅ CI PASSED on ${PR} — 85 checks green, 30 skipped.\n\n${wakeDeliveryToken(`wake-ci-${hour}`)}`)
+        w.say(hour * HOUR + 1, TIMER_PARK)
+      }
+      w.setNow(48 * HOUR + 5)
+      assertSnoozedWatch(w.view(), "each park answered a report, not the clock")
     } finally { w.close() }
   })
 
@@ -179,13 +196,14 @@ for (const backend of ["claude", "codex"] as const) {
         w.poll(12 * HOUR)
         w.poll(24 * HOUR)
       }
-      typed.user(30 * HOUR, "keep waiting, root is busy today")
-      typed.say(30 * HOUR + 1, TIMER_PARK)
-      handed.user(30 * HOUR, `⏰ check whether root granted the next step\n\n${wakeDeliveryToken("wake-granted")}`)
-      handed.say(30 * HOUR + 1, WORKING)
+      typed.user(40 * HOUR, "keep waiting, root is busy today")
+      typed.say(40 * HOUR + 1, TIMER_PARK)
+      handed.poll(36 * HOUR)
+      handed.say(40 * HOUR + 1, WORKING)
       for (const w of [typed, handed]) {
-        w.poll(42 * HOUR)
-        w.setNow(42 * HOUR + 5)
+        w.poll(52 * HOUR)
+        w.poll(64 * HOUR)
+        w.setNow(64 * HOUR + 5)
         assertSnoozedWatch(w.view(), "the run restarted")
       }
     } finally { typed.close(); handed.close() }

@@ -1222,7 +1222,7 @@ export function stalledParkLine(stall: StalledPark, nowMs: number): string {
     const subject = stall.refs.length === 1 ? "this pull request" : "these pull requests"
     return `Back in the queue because nothing else will move ${subject}. The checks have finished, nothing is set to merge it, and the next step is a merge or a fix from this side.`
   }
-  return `Back in the queue because it has parked ${stall.parks} times in ${compactElapsedSince(stall.since, nowMs)} with no message from you. What it is waiting for may have stopped coming.`
+  return `Back in the queue because it has checked back and parked again ${stall.parks} times in ${compactElapsedSince(stall.since, nowMs)}, with nothing new each time. What it is waiting for may have stopped coming.`
 }
 
 export function AwaitingBackgroundCard({ thread, fence, onSnooze, onSnoozeFailed, onReplied, onReplyFailed, stepsDone }: {

@@ -750,33 +750,34 @@ function ciInMotion(status: GithubStatusBook[string] | undefined): boolean {
   return !(status.running === 0 && (status.gated ?? 0) > 0)
 }
 
-/** A WATCHED PR THAT NOTHING WILL MOVE UNLESS THIS SIDE ACTS: open, CI settled (not running, not held
- *  for a maintainer's approval), not in a merge queue or on auto-merge, and its next act ours. Red CI or a
- *  conflict on a PR the signed-in account opened needs our push; a green, mergeable PR that account may
- *  merge needs our merge. Every field the call rests on must be KNOWN: an absent one (the `gh` fallback, a
- *  reading from before 2026-10-27) is never read as "nobody".
+/** A WATCHED PR THAT NOTHING WILL MOVE UNLESS THIS SIDE ACTS: open, CI settled (no job running, none held
+ *  for a maintainer's approval), not in a merge queue or on auto-merge, opened by the signed-in account, and
+ *  its next act ours. Red CI or a conflict needs our push; a green, mergeable PR with no review still
+ *  requested, which that account may merge, needs our merge. Every field the call rests on must be KNOWN:
+ *  an absent one (the `gh` fallback, a reading from before 2026-10-27) is never read as "nobody".
  *
  *  A PR waiting on someone else's review or merge stays a real wait, however long it takes. What this
  *  catches is the five "ready, unmerged" PRs that sat 180-day parks in Snoozed with green CI and only the
  *  maintainer's merge left (open-knowledge, 2026-10-25), and the two whose red CI their workers had
  *  decided not to fix. */
 export function prWaitsOnNoOne(status: GithubStatusBook[string] | undefined): boolean {
-  if (!status || status.state !== "open" || status.mergePath !== "none") return false
-  if (status.checks === "running" || status.gated > 0) return false
-  if (status.checks === "failing" || status.merge === "conflicting") return status.viewerAuthored === true
-  return status.merge === "mergeable" && status.viewerCanMerge === true
+  if (!status || status.state !== "open" || status.mergePath !== "none" || status.viewerAuthored !== true) return false
+  if (status.checks === "running" || status.running > 0 || status.gated > 0) return false
+  if (status.checks === "failing" || status.merge === "conflicting") return true
+  return status.merge === "mergeable" && status.viewerCanMerge === true && status.reviewRequested === false
 }
 
-// How many quiet parks in a row, over how long, before a run of them is a stall rather than a wait. A
-// healthy watch re-parks only when something it watches reports, so four over a day without the human
-// writing is a thread polling for something that has stopped coming.
-const STALL_PARKS = 4
+// How many quiet parks in a row, spread over how long, before a run of them is a stall rather than a wait.
+// Only parks answering the worker's own timer or an expired park count (FoldState.parkStreak), so three of
+// those across a day is a thread polling for something that has stopped coming. Three, not more: a thread
+// polling once a day for a grant (open-knowledge, 2026-10-24) would otherwise hide for most of a week.
+const STALL_PARKS = 3
 const STALL_SPAN_MS = 24 * 3_600_000
 
 /** WHY A `status: watching` PARK SHOULD BE IN FRONT OF THE HUMAN, or undefined while it is a real wait.
  *  The queue rule (needsInputQueues) and the card's explanation (ThreadView.stalledPark) both read this,
  *  so the card can never name a reason the queue did not act on. */
-export function parkStall(tele: SessionTelemetry | undefined, github: GithubStatusBook, nowMs: number): StalledPark | undefined {
+export function parkStall(tele: SessionTelemetry | undefined, github: GithubStatusBook): StalledPark | undefined {
   const fence = tele?.lastFence
   if (fence?.kind !== "awaiting" || awaitingStatus(fence.hints) !== "watching") return undefined
   const items = readAwaitingPark(fence.hints).items
@@ -788,7 +789,7 @@ export function parkStall(tele: SessionTelemetry | undefined, github: GithubStat
     if (refs.length === items.length && refs.every((key) => prWaitsOnNoOne(github[key]))) return { why: "pr-idle", refs }
   }
   const run = tele?.parkStreak
-  if (run && run.count >= STALL_PARKS && nowMs - Date.parse(run.since) >= STALL_SPAN_MS) return { why: "repeated", parks: run.count, since: run.since }
+  if (run && run.count >= STALL_PARKS && Date.parse(run.lastAt) - Date.parse(run.since) >= STALL_SPAN_MS) return { why: "repeated", parks: run.count, since: run.since }
   return undefined
 }
 
@@ -1326,13 +1327,24 @@ function needsInputQueues(
   armedTimerIds: ReadonlySet<string>,
   github: GithubStatusBook,
 ): boolean {
+  if (excuseLiveOwnWork && quietParkHolds(tele, runtime, nowMs, registeredPrWatches, armedTimerIds) && !parkStall(tele, github)) return false
+  if (runtime !== "exited" && tele?.lastFence?.kind !== "done" && (hasLiveOwnWork(tele, registeredPrWatches) || hasParkedTimerWatch(tele, armedTimerIds))) return !bgSnoozeArmed(row)
+  return true
+}
+
+/** Rule 1 short of parkStall: a working/watching park frizz could honour, on a handoff the human has
+ *  reached. The view reads it too, so a stall reason shows only where the stall is what queued. */
+function quietParkHolds(
+  tele: SessionTelemetry | undefined,
+  runtime: RuntimeState,
+  nowMs: number,
+  registeredPrWatches: ReadonlySet<string>,
+  armedTimerIds: ReadonlySet<string>,
+): boolean {
   const fence = tele?.lastFence
-  if (
-    excuseLiveOwnWork &&
-    runtime !== "exited" &&
+  return runtime !== "exited" &&
     fence?.kind === "awaiting" &&
     !handoffStands(tele) &&
-    !parkStall(tele, github, nowMs) &&
     // `registeredPrWatches` carries both kinds' refs (see hasParkedPrWatch), so it answers for `issues:` too.
     // `armedTimerIds` carries the command watches too, split back by kind here (isCommandWatchId).
     needsInputParkHolds(
@@ -1347,9 +1359,6 @@ function needsInputQueues(
       Date.parse(tele?.lastAssistantAt ?? ""),
       nowMs,
     )
-  ) return false
-  if (runtime !== "exited" && fence?.kind !== "done" && (hasLiveOwnWork(tele, registeredPrWatches) || hasParkedTimerWatch(tele, armedTimerIds))) return !bgSnoozeArmed(row)
-  return true
 }
 
 function handoffStands(tele: SessionTelemetry | undefined): boolean {
@@ -2068,9 +2077,8 @@ function sessionThreadView(
     // Whether "Until activity" can be offered: see wakesOnItsOwn. False on a dead worker and on an archived
     // thread, which nothing wakes.
     wakesOnItsOwn: (!archived && runtime !== "exited" && wakesOnItsOwn(row, tele, registeredPrWatches, armedTimerIds)) || undefined,
-    // Only on a queued thread with a live worker: a dead one, or one the human snoozed, would wear a
-    // reason that decided nothing.
-    stalledPark: needsYou && runtime !== "exited" ? parkStall(tele, github, nowMs) : undefined,
+    // Only where the stall is what queued it: the park would otherwise have held.
+    stalledPark: needsYou && quietParkHolds(tele, runtime, nowMs, registeredPrWatches, armedTimerIds) ? parkStall(tele, github) : undefined,
     claudeRuntime: row.claude_runtime === "broker" ? "broker" as const : undefined,
     // The recurring prompt — the same projection the worker's own `action: "get"` reads back.
     recurringPrompt: resolveRecurringPrompt(row),

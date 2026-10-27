@@ -419,7 +419,7 @@ export function githubWatchStatus(pr: PrStatus, polledAt: string): GithubWatchSt
 
 // WHO A PR IS WAITING ON, in the three facts board.prWaitsOnNoOne reads. Each is left out unless the
 // poll actually said: a guess of "nobody" would pull a thread out of Snoozed that something will wake.
-function githubWaitingOn(pr: PrStatus): Pick<GithubWatchStatus, "mergePath" | "viewerAuthored" | "viewerCanMerge"> {
+function githubWaitingOn(pr: PrStatus): Pick<GithubWatchStatus, "mergePath" | "viewerAuthored" | "viewerCanMerge" | "reviewRequested"> {
   const mergePath = pr.queued ? "queued" as const
     : pr.autoMerge ? "auto" as const
     : pr.queued === null && pr.autoMerge === false ? "none" as const
@@ -428,6 +428,7 @@ function githubWaitingOn(pr: PrStatus): Pick<GithubWatchStatus, "mergePath" | "v
     ...(mergePath ? { mergePath } : {}),
     ...(pr.viewerDidAuthor !== undefined ? { viewerAuthored: pr.viewerDidAuthor } : {}),
     ...(pr.viewerPermission !== undefined ? { viewerCanMerge: MERGING_PERMISSIONS.has(pr.viewerPermission) } : {}),
+    ...(pr.reviewRequests !== undefined ? { reviewRequested: pr.reviewRequests.length > 0 } : {}),
   }
 }
 

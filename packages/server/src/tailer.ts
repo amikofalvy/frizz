@@ -5,7 +5,7 @@ import { promisify } from "node:util"
 import { basename, join, win32 } from "node:path"
 import { homedir, tmpdir } from "node:os"
 import type { AskQuestion, AwaitingHint, CodexModel, LiveTool } from "@frizz/shared"
-import { awaitingNeedsInput, awaitingStatus, humanTypedMessagesIn, insideFence, isAllInjectedNoise, isHumanTypedMessage, isInterruptMarker, mayHoldQuestionFence, parseAskUserQuestionInput, parseCrossSessionMessage, parseMergedWake, PermissionMode, QUESTION_FENCE_CORRECTION_LEAD, questionFenceBlocks, questionFencesLive, saysAllDone, splitAwaitingFrontmatter, splitDoneFrontmatter, splitWakeDeliveries } from "@frizz/shared"
+import { awaitingNeedsInput, awaitingStatus, parseParkWake, parseTimerWake, stripWakeDeliveryToken, stripWakeTimeHeader, humanTypedMessagesIn, insideFence, isAllInjectedNoise, isHumanTypedMessage, isInterruptMarker, mayHoldQuestionFence, parseAskUserQuestionInput, parseCrossSessionMessage, parseMergedWake, PermissionMode, QUESTION_FENCE_CORRECTION_LEAD, questionFenceBlocks, questionFencesLive, saysAllDone, splitAwaitingFrontmatter, splitDoneFrontmatter, splitWakeDeliveries } from "@frizz/shared"
 import type { Bus } from "./bus.ts"
 import { permMarkerPath, type Project } from "./project.ts"
 import { isBrokerClaudeRow, isHeadlessRow } from "./storage.ts"
@@ -1455,6 +1455,7 @@ function wasQueued(queued: readonly string[], message: string): boolean {
 }
 
 function noteUserRecordForQuestions(state: FoldState, text: string, at: string): void {
+  state.lastWake = { at, quiet: wakeIsQuiet(text) }
   const queued = state.queuedHumanTexts ?? []
   // A message the queue already announced moved the boundary when it was typed; delivering it is not the
   // human typing again. Anything else human-typed in this record is new, and the boundary is now.
@@ -2760,20 +2761,29 @@ function noteHandoff(state: FoldState): void {
   if (fence?.kind === "awaiting" && awaitingNeedsInput(fence.hints) === true && state.lastAssistantAt) state.handoffAt = state.lastAssistantAt
 }
 
-// Extend or end FoldState.parkStreak on the fence just folded. Keyed on the message's own instant, so a
-// message folded twice counts once.
+// Extend or end FoldState.parkStreak on the fence just folded. A park counts once per wake (`wakeAt`) and
+// never for a message older than the run's last, so a refold or a replayed record adds nothing.
 function noteParkStreak(state: FoldState): void {
   const fence = state.lastFence
   const at = state.lastAssistantAt
   if (!fence || !at) return
-  if (fence.kind !== "awaiting" || awaitingStatus(fence.hints) !== "watching") {
+  const wake = state.lastWake
+  if (fence.kind !== "awaiting" || awaitingStatus(fence.hints) !== "watching" || !wake?.quiet) {
     state.parkStreak = undefined
     return
   }
-  const from = state.restFromAt ?? ""
   const run = state.parkStreak
-  if (run?.from !== from) state.parkStreak = { from, count: 1, since: at, lastAt: at }
-  else if (run.lastAt !== at) state.parkStreak = { ...run, count: run.count + 1, lastAt: at }
+  if (!run) state.parkStreak = { count: 1, since: at, lastAt: at, wakeAt: wake.at }
+  else if (run.wakeAt !== wake.at && at > run.lastAt) state.parkStreak = { ...run, count: run.count + 1, lastAt: at, wakeAt: wake.at }
+}
+
+// A wake with nothing in it but the passage of time: the worker's own timer firing, or its park running out.
+// Every delivery the record carries must be one, merged envelopes included; anything else is news.
+function wakeIsQuiet(text: string): boolean {
+  return splitWakeDeliveries(text).every((delivery) => {
+    const parts = parseMergedWake(delivery)?.map((part) => part.body) ?? [stripWakeTimeHeader(stripWakeDeliveryToken(delivery).trimEnd()).trim()]
+    return parts.every((part) => parseTimerWake(part) !== null || parseParkWake(part)?.kind === "expired")
+  })
 }
 
 // Fold one NORMALIZED event into the backend-neutral accumulator — the codex-facing counterpart to
