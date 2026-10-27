@@ -2168,6 +2168,9 @@ function trackResumes(state: TailState, rec: Record): void {
 // check told its parent "nothing by that name". Both restarts reach the stream as a `task_started`
 // under the same task id ("A resumed subagent is always registered in the background" — the SDK's own
 // contract), which the ingest stamps as `restartedAt` only when it follows an end it folded itself.
+// Measured on Claude Code 2.1.296 (`_live_broker_selfwake.mts`, 2026-10-27): the child's shell
+// finishing put a fresh `task_started` on the stream under the same task id and the ORIGINAL dispatch
+// tool_use id, and nothing in the parent's transcript named the restart.
 //
 // Not a CREATE: the row must already sit in the retired ring under that task id, so a task the fold
 // never tracked (a foreground child) still gets nothing. A row that ended AFTER the restart began
@@ -2191,7 +2194,10 @@ function reviveRestarted(state: TailState, runtime: readonly ClaudeRuntimeTask[]
       label: retired.label,
       startedAt: new Date(task.restartedAt).toISOString(),
       subagentType: retired.subagentType,
-      outputFile: task.outputFile ?? retired.outputFile,
+      // The row's own path first. The stream's is the run's `tasks/<id>.output`, a symlink under the
+      // CLI's temp dir to the same `subagents/agent-<id>.jsonl` the launch ack already gave this row,
+      // so preferring it would swap a durable path for a temp one halfway through the child's life.
+      outputFile: retired.outputFile ?? task.outputFile,
       outputFormat: retired.outputFormat,
       taskId: task.taskId,
     })

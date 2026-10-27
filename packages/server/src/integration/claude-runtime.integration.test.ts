@@ -645,7 +645,8 @@ function finishFirstRun(h: ReturnType<typeof createIntegrationHarness>, slug: st
     record(agentLaunchRecord("toolu_child", out, realAt(-5000), "task-1")),
     event(taskEvent(s.sessionId, { phase: "started", taskId: "task-1", toolUseId: "toolu_child" })),
     record(taskNotificationRecord("toolu_child", "completed", realAt(-3000))),
-    event(taskEvent(s.sessionId, { phase: "notification", taskId: "task-1", toolUseId: "toolu_child", status: "completed" })),
+    // The stream names the run's `tasks/<id>.output` symlink, not the transcript the launch ack gave.
+    event(taskEvent(s.sessionId, { phase: "notification", taskId: "task-1", toolUseId: "toolu_child", status: "completed", outputFile: "/private/tmp/claude-501/x/tasks/task-1.output" })),
   )
   return s
 }
@@ -667,6 +668,7 @@ test("integration: a child woken by its own background work comes back live with
     assert.equal(live.length, 1, "the restarted child is on the board again")
     assert.equal(live[0]?.label, "Probe child", "under its original label")
     assert.equal(live[0]?.id, "toolu_child", "as the same row, so an open drawer keeps resolving")
+    assert.equal(h.tailer.subAgent("selfwake", "toolu_child")?.outputFile, OUT, "reading the transcript the launch ack named")
     assert.equal(h.boardThread("selfwake")?.subAgents?.length, 1, "and the board row agrees")
 
     // The restarted run's own notification names only the task id, as the real one did.

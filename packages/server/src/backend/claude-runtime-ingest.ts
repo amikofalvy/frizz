@@ -91,10 +91,13 @@ export interface ClaudeRuntimeTask {
   /** ms epoch of the event that last touched this record. */
   updatedAt: number
   /**
-   * ms epoch of the last `task_started` that followed a terminal reading THIS ingest folded for the same
-   * id: proof of a new run, whatever started it. Unset for a task the ingest never watched end, which is
-   * every task in a backlog handed to a fresh ingest after a frizz restart — a start there may be the
-   * opening of a run the fold has long since seen finish, so it must not read as a restart.
+   * ms epoch, on THIS ingest's clock, of the last `task_started` that followed a terminal reading this
+   * ingest folded for the same id: proof of a new run, whatever started it. A start with no earlier end
+   * in this ingest is never a restart, so a fresh ingest after a frizz restart that meets a task first in
+   * the daemon's backlog leaves it unset — that start may open a run the fold has long since seen finish.
+   * A backlog carrying both an end and a later start does stamp it, at the replay instant rather than
+   * when the run began; if that run's own end follows in the same backlog, a tick landing between the
+   * two frames can show the row for that one tick.
    */
   restartedAt?: number
 }
