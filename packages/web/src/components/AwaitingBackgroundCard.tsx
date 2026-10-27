@@ -27,7 +27,7 @@
 // short as 0.13s. This card is what makes that alternation legible.)
 import { Fragment, useEffect, useState, type ReactNode } from "react"
 import { Bot, ChevronRight, CircleAlert, CircleCheck, CircleDashed, CircleDot, CircleSlash, CircleX, Clock, GitMerge, GitPullRequestClosed, Hourglass, ListTodo, RefreshCw, TerminalSquare, X } from "lucide-react"
-import type { AwaitingHint, GithubIssueStatus, GithubWatchStatus, ThreadView, ThreadWatchView } from "@frizz/shared"
+import type { AwaitingHint, GithubIssueStatus, GithubWatchStatus, StalledPark, ThreadView, ThreadWatchView } from "@frizz/shared"
 import { awaitingFenceTitle, awaitingSteps, commandRunClause, isDirectSubAgent } from "@frizz/shared"
 import { githubRefUrl } from "../lib/githubRef.ts"
 import { noteGithubRefs } from "../lib/githubHovercards.ts"
@@ -1214,6 +1214,17 @@ function AwaitingSnooze({ thread, onSnooze, onSnoozeFailed }: {
   )
 }
 
+/** WHY A `watching` REST IS IN THE QUEUE rather than Snoozed (board.parkStall). The worker called it a wait,
+ *  so the card has to say what made frizz disagree, or the human reads a parked thread in their queue as
+ *  a mistake. */
+export function stalledParkLine(stall: StalledPark, nowMs: number): string {
+  if (stall.why === "pr-idle") {
+    const subject = stall.refs.length === 1 ? "this pull request" : "these pull requests"
+    return `Back in the queue because nothing else will move ${subject}. The checks have finished, nothing is set to merge it, and the next step is a merge or a fix from this side.`
+  }
+  return `Back in the queue because it has parked ${stall.parks} times in ${compactElapsedSince(stall.since, nowMs)} with no message from you. What it is waiting for may have stopped coming.`
+}
+
 export function AwaitingBackgroundCard({ thread, fence, onSnooze, onSnoozeFailed, onReplied, onReplyFailed, stepsDone }: {
   // `id` joins the Pick because the rows OPEN things now: a shell's output drawer and a sub-agent's
   // transcript are both addressed by the parent thread's slug. `lastFence` joined on 2026-08-24: the
@@ -1226,7 +1237,7 @@ export function AwaitingBackgroundCard({ thread, fence, onSnooze, onSnoozeFailed
   //
   // OPTIONAL since 2026-09-04: a fence card in a SUB-AGENT's own transcript has no owning thread, so it
   // has no rows and no verb — but it is still this card, at this heading, with this prose.
-  thread?: Pick<ThreadView, "id" | "sessionId" | "kind" | "foreign" | "state" | "archived" | "awaitingBackground" | "waitStatus" | "runtime" | "bgSnoozed" | "subAgents" | "bgShells" | "watches" | "lastFence">
+  thread?: Pick<ThreadView, "id" | "sessionId" | "kind" | "foreign" | "state" | "archived" | "awaitingBackground" | "waitStatus" | "runtime" | "bgSnoozed" | "subAgents" | "bgShells" | "watches" | "lastFence" | "stalledPark">
   /** The fence this card STATES, when it is not the one the board is holding. Defaults to the thread's
    *  own `lastFence` — which is the at-rest case, and the only one until 2026-09-04.
    *
@@ -1404,6 +1415,7 @@ export function AwaitingBackgroundCard({ thread, fence, onSnooze, onSnoozeFailed
           )}
         </p>
       )}
+      {thread?.stalledPark && <p className={CARD_BODY} data-stalled-park>{stalledParkLine(thread.stalledPark, now)}</p>}
       <WaitGrid groups={groups} divider={!!prose} />
       {/* THE FOOTER BAND — the card's snooze, in the family's shared action footer (CardActions), so
           the control reads as chrome under the content rather than as one more row of it. This card
