@@ -8,7 +8,7 @@ import { projectIdentity } from "./Sidebar.tsx"
 import { QuotaGauge } from "./QuotaBar.tsx"
 import { RestartFrizzButton } from "./RestartFrizzButton.tsx"
 import { ProjectCrumb } from "./ProjectCrumb.tsx"
-import { homeHref, useHomeView } from "../lib/homeView.ts"
+import { PROJECTS_HREF } from "../lib/homeView.ts"
 
 // THE STATUS ROW — one loose line along the TOP OF THE PROMPT BOX: where you are at the left, the
 // readout and the controls at the right.
@@ -62,9 +62,6 @@ import { homeHref, useHomeView } from "../lib/homeView.ts"
  */
 export function StatusRow({ label }: { label?: string } = {}) {
   const board = useBoard()
-  // Home is the one the operator keeps — the grid or the Console (lib/homeView.ts).
-  const homeView = useHomeView()
-  const homeLabel = homeView === "console" ? "Console" : "All projects"
   // A missing board is not evidence that this project is named "frizz". Keep the crumb neutral until a
   // board keyframe supplies an actual name; reconnects retain their adopted board.
   const identity = projectIdentity(board)
@@ -103,8 +100,10 @@ export function StatusRow({ label }: { label?: string } = {}) {
             5px inside the border while the owner/repo at the other end ran flush. */}
         {/* A ROUTER Link, like the rail's identical door at ProjectRail.tsx. It was a raw `<a href="/">`
             from 2026-08-19 until 2026-09-04, which hard-loaded the document: measured at 116-411ms with a
-            0.15 CLS, and it threw away the app socket and the whole query cache on the way out. */}
-        <Link to={homeHref(homeView)} title={homeLabel} aria-label={homeLabel} className={STATUS_ROW_ACTION}>
+            0.15 CLS, and it threw away the app socket and the whole query cache on the way out.
+            It goes to the grid even while the Console is the kept home (lib/homeView.ts): PROJECTS_HREF,
+            not `/`, which would forward straight back to the Console. */}
+        <Link to={PROJECTS_HREF} title="All projects" aria-label="All projects" className={STATUS_ROW_ACTION}>
           <House size={STATUS_ROW_ICON} aria-hidden="true" />
         </Link>
         <span aria-hidden="true" className="shrink-0 select-none text-muted-45">/</span>

@@ -177,7 +177,7 @@ function GridRoute() {
   //
   // Decided once, on ARRIVAL. The kept home is shared by every tab (lib/homeView.ts follows the storage
   // event), and read live it moved a tab sitting on the grid to the Console the moment ANOTHER tab chose
-  // it. Another tab's choice should move this tab's house link, not the page this tab is reading.
+  // it. Another tab's choice should decide where this tab's next bare `/` goes, not the page it is reading.
   const homeView = useHomeView()
   const isMobile = useIsMobile()
   const { search } = useLocation()
@@ -236,7 +236,8 @@ function ConsoleRoute() {
   useConsoleFeedProjects()
   useRouteToStore()
   // Arriving here by any door makes the Console the home that is kept — the switcher's own click, a
-  // bookmark, a link — so the house in the rail and the status row comes back to it.
+  // bookmark, a link — so a bare `/` comes back to it. The houses do not: they always go to the grid
+  // (lib/homeView.ts).
   useEffect(() => setHomeView("console"), [])
   if (!ready) return null
   return <App key="@console" />

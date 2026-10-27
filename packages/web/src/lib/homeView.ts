@@ -1,13 +1,16 @@
 import { proxy, useSnapshot } from "valtio"
-import { CONSOLE_PATH } from "./base-path.ts"
 
 // WHICH HOME THE OPERATOR KEEPS — the project grid at `/`, or the Console at `/console`.
 //
-// Both are "home": the switcher at the top of each flips between them, and every way back home (the
-// rail's house, the status row's house) goes to whichever was used last. So the choice is remembered in
-// this browser, and a bare `/` forwards to the Console while that is the one kept (routes.tsx GridRoute).
-// The page records the choice on ARRIVAL: `/console` records the Console, and the grid records Projects
-// when it is reached through PROJECTS_HREF, the address that says it was chosen.
+// Both are "home": the switcher at the top of each flips between them, the choice is remembered in this
+// browser, and a bare `/` forwards to the Console while that is the one kept (routes.tsx GridRoute). The
+// page records the choice on ARRIVAL: `/console` records the Console, and the grid records Projects when
+// it is reached through PROJECTS_HREF, the address that says it was chosen.
+//
+// THE HOUSE IS NOT A WAY TO THE KEPT HOME. The rail's house and the status row's house always go to the
+// grid, through PROJECTS_HREF (maintainer 2026-10-27: "Clicking the home button … should always bring
+// you to the root / not /console"). They followed the kept home until then, so with the Console kept the
+// house sent the operator to the page they were already on, or back to it from a project.
 //
 // This is where home IS, not which home is ON SCREEN. The switcher's highlighted tab reads the page's
 // path: read from here, it followed the storage event below, so choosing Projects in another tab lit
@@ -19,9 +22,9 @@ const CHOSEN_PARAM = "home"
 
 /**
  * The grid, as an address that says the operator chose it: `/?home=projects`. The switcher's Projects
- * tab links here rather than to `/`, which forwards to the Console while that is the kept home, so the
- * tab opened in a new tab (or followed from a copied link) would have landed back on the Console. The
- * grid records the choice and strips the marker (routes.tsx GridPage).
+ * tab and both houses link here rather than to `/`, which forwards to the Console while that is the kept
+ * home, so a link opened in a new tab (or followed from a copied link) would have landed back on the
+ * Console. The grid records the choice and strips the marker (routes.tsx GridPage).
  */
 export const PROJECTS_HREF = `/?${CHOSEN_PARAM}=projects`
 
@@ -68,7 +71,7 @@ const home = proxy({ view: typeof window === "undefined" ? ("projects" as HomeVi
 
 // Guarded for the unit tests, which import the store (and so this) under a stubbed `window`.
 if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
-  // Another tab chose: follow it, so a house clicked here goes where the operator last went anywhere.
+  // Another tab chose: follow it, so a bare `/` opened here goes where the operator last went anywhere.
   window.addEventListener("storage", (event) => {
     if (event.key === KEY) home.view = read()
   })
@@ -85,11 +88,6 @@ export function setHomeView(view: HomeView): void {
   } catch {
     // Storage refused (a private window): the choice holds for this page and is not remembered.
   }
-}
-
-/** Where "home" is for the operator right now. */
-export function homeHref(view: HomeView = home.view): string {
-  return view === "console" ? CONSOLE_PATH : "/"
 }
 
 export function useHomeView(): HomeView {

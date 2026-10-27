@@ -2,7 +2,7 @@ import * as RadixDropdown from "@radix-ui/react-dropdown-menu"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type DragEvent as DragEvent_, type KeyboardEvent as KeyboardEvent_, type MouseEvent as MouseEvent_, type PointerEvent as PointerEvent_, type ReactNode } from "react"
 import { House, Plus } from "lucide-react"
-import { Link, useNavigate } from "react-router"
+import { Link, useLocation, useNavigate } from "react-router"
 import type { ProjectCard, ProjectRailCounts } from "@frizz/shared"
 import { activeBandThread, boardAskThread, PROJECT_ICON_EXTENSIONS } from "@frizz/shared"
 import { rpc } from "../api/rpc.ts"
@@ -10,14 +10,13 @@ import { queued } from "../groups.ts"
 import { useBoardLoaded, useBoardThreads } from "../hooks.ts"
 import { showToast } from "../store.ts"
 import { projectHref, projectSlug } from "../lib/base-path.ts"
-import { homeHref, useHomeView } from "../lib/homeView.ts"
+import { PROJECTS_HREF } from "../lib/homeView.ts"
 import { useDevicePixelRatio } from "../lib/devicePixelRatio.ts"
 import { projectIconKey, rememberProjectIcon, seenProjectIcon } from "../lib/projectIconSeen.ts"
 import { useOptimisticallyArchived } from "../lib/optimisticArchive.ts"
 import { useOptimisticallySteered } from "../lib/steering.ts"
 import { dropIndex, edgeScrollVelocity, moveItem, shiftFor } from "../lib/railReorder.ts"
 import { Tooltip } from "./Tooltip.tsx"
-import { useQueueTotal } from "./HomeSwitcher.tsx"
 
 // THE PROJECT RAIL — every project on this machine as one icon square, always on screen.
 //
@@ -218,8 +217,7 @@ function badgeWidth(count: number): string {
 }
 
 /**
- * A queue count on the rail's bottom-right corner of a square — a project's, and the house's while the
- * Console is the home kept (ProjectRail).
+ * A queue count on the rail's bottom-right corner of a project's square.
  *
  * Proportional figures, not tabular: a badge centres ONE number, it aligns no column, and a tabular "1"
  * carries a fixed cell's worth of side-bearing that put the ink of "12" 1.02px left of the pill's centre.
@@ -231,7 +229,7 @@ function badgeWidth(count: number): string {
  * where the numbers said 13. 1px is what Chrome was already drawing, so nothing moved there; it makes
  * every browser draw the same.
  */
-function QueueBadge({ count, className, ...data }: { count: number; className: string; "data-rail-queue-count"?: number; "data-rail-home-count"?: number }) {
+function QueueBadge({ count, className, ...data }: { count: number; className: string; "data-rail-queue-count"?: number }) {
   return (
     <span
       aria-label={`${count} in the queue`}
@@ -587,11 +585,9 @@ export function ProjectRail() {
   // A held square outranks both: its indices are positions in the list it was picked up from.
   const projects = drag?.list ?? optimistic ?? data ?? []
   const countsFor = useRailCounts(current, projects)
-  // The house goes to the home the operator keeps (lib/homeView.ts), and while that is the Console it
-  // wears the Console's number — every project's queue — the way a square wears its own. On the grid it
-  // wears nothing: the grid is not a queue, and the squares under the house already say where work is.
-  const homeView = useHomeView()
-  const queueTotal = useQueueTotal()
+  // The house always goes to the grid (lib/homeView.ts), so it is the current page only there — not on
+  // the Console, and not on the launching project's unprefixed board, which names no slug either.
+  const onGrid = useLocation().pathname === "/"
 
   /**
    * Fade the band's bottom edge ONLY while something is actually below it.
@@ -722,21 +718,19 @@ export function ProjectRail() {
           DOWN onto the first project square. A stroke glyph paints only its own strokes.
           The hover fill is the project squares' own shape — 40px at `rounded-[30%]`, like the add slot
           at the bottom. It was 36px with an 8px corner (22%) until 2026-10-11, a visibly different
-          rounded rect at the head of a column of identical ones. */}
-      <Tooltip side="right" label={homeView === "console" ? "Console" : "All projects"}>
+          rounded rect at the head of a column of identical ones.
+          ALWAYS THE GRID, through PROJECTS_HREF rather than `/`, which forwards to a kept Console. It
+          followed the kept home until 2026-10-27, and wore the Console's queue count while that was the
+          Console; the switcher's Console tab carries that count (HomeSwitcher.tsx). */}
+      <Tooltip side="right" label="All projects">
         <Link
-          to={homeHref(homeView)}
-          aria-label={homeView === "console" ? "Console" : "All projects"}
-          aria-current={current ? undefined : "page"}
+          to={PROJECTS_HREF}
+          aria-label="All projects"
+          aria-current={onGrid ? "page" : undefined}
           data-rail-home
           className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-[30%] text-muted-70 outline-none transition-colors hover:bg-elevated hover:text-fg focus-visible:ring-1 focus-visible:ring-focus-ink-60"
         >
           <House size={17} />
-          {/* The squares' badge, on the house's corner: the link is the 40px square itself here rather
-              than a 56px row around one, so the 5px overhang is measured from its own edges. */}
-          {homeView === "console" && queueTotal ? (
-            <QueueBadge count={queueTotal} className="-bottom-[5px] -right-[5px]" data-rail-home-count={queueTotal} />
-          ) : null}
         </Link>
       </Tooltip>
       <hr className="my-2.5 w-6 shrink-0 border-0 border-t border-border" />

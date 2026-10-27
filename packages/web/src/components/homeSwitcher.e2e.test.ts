@@ -11,6 +11,8 @@ import test from "node:test"
 //     new tab as well as clicked, and the grid records the choice.
 //   · Only a bare `/` forwards to the kept Console: the launcher's `/?add=<dir>` offer reached the grid's
 //     dialog only while Projects was the kept home.
+//   · The houses — the status row's and the rail's — go to the grid even while the Console is the kept
+//     home. They followed the kept home until 2026-10-27, so on the Console the house went nowhere.
 //   · It sits at the top-left of the Console's sidebar — its left edge on the prompt box's, above the
 //     status row — and in that same spot on the grid, with the rail and without it, wide and stacked.
 //     It was centred over the page until 2026-10-26.
@@ -57,7 +59,7 @@ test("the home switcher's tabs are links, and the lit tab is the page on screen"
       { tag: "A", tab: "console", href: "/console", selected: "true" },
     ])
     const house = '[data-status-row] a[aria-label]'
-    assert.equal(await here.$eval(house, (a) => a.getAttribute("href")), "/console", "the house goes to the kept Console")
+    assert.equal(await here.$eval(house, (a) => a.getAttribute("href")), "/?home=projects", "the house goes to the grid, not the kept Console")
 
     // A bare `/` still forwards to the kept Console.
     const other = await open()
@@ -71,9 +73,9 @@ test("the home switcher's tabs are links, and the lit tab is the page on screen"
     await other.waitForFunction((key) => localStorage.getItem(key) === "projects" && location.search === "", { timeout: 5_000 }, KEY)
     assert.deepEqual(await lit(other), ["projects"])
 
-    // This tab, still on the Console, hears the choice — its house now goes to the grid — and keeps
-    // Console lit, because Console is what it shows.
-    await here.waitForFunction((sel) => document.querySelector(sel)?.getAttribute("href") === "/", { timeout: 5_000 }, house)
+    // This tab, still on the Console, hears the choice and keeps Console lit, because Console is what
+    // it shows.
+    await here.waitForFunction((key) => localStorage.getItem(key) === "projects", { timeout: 5_000 }, KEY)
     assert.equal(await at(here), "/console")
     assert.deepEqual(await lit(here), ["console"], "another tab's choice does not light Projects over this Console")
 
@@ -100,6 +102,12 @@ test("the home switcher's tabs are links, and the lit tab is the page on screen"
     await offer.waitForFunction(() => document.querySelector('[role="dialog"]')?.textContent?.includes("Add this folder as a project?"), { timeout: 15_000 })
     assert.equal(await offer.evaluate(() => location.pathname), "/", "the offer is not forwarded to the Console")
     assert.equal(await kept(offer), "console", "an offer is not a choice of home")
+
+    // The house, clicked on the Console while the Console is the kept home, lands on the grid at a plain
+    // `/` (maintainer 2026-10-27). It went to `/console` — the page it was clicked on — until then.
+    await here.click(house)
+    await onGrid(here)
+    assert.equal(await at(here), "/")
 
     assert.deepEqual(errors, [])
   } finally {
@@ -147,6 +155,18 @@ test("the home switcher stands at the top-left of the Console's sidebar, and in 
         await page.click('[data-home-tab="projects"]')
         await onGrid(page)
         assert.deepEqual(await box(page, "[data-home-switcher]"), pill, `${where}: the pill does not move between the two homes`)
+        // The rail's house, clicked on the Console with the Console kept, lands on the grid too, and wears
+        // no Console count (the switcher's tab does).
+        if (projectRail && width > 800) {
+          await page.goto(`${baseUrl}/console`, { waitUntil: "networkidle2" })
+          await page.waitForSelector("[data-rail-home]")
+          assert.equal(await page.$eval("[data-rail-home]", (a) => a.getAttribute("aria-current")), null, `${where}: the house is not the Console`)
+          assert.equal(await page.$("[data-rail-home] [aria-label$='in the queue']"), null, `${where}: the house wears no queue count`)
+          await page.click("[data-rail-home]")
+          await onGrid(page)
+          assert.equal(await at(page), "/", `${where}: the rail's house lands on a plain /`)
+          assert.equal(await page.$eval("[data-rail-home]", (a) => a.getAttribute("aria-current")), "page", `${where}: on the grid the house is the current page`)
+        }
         await page.close()
       }
     }

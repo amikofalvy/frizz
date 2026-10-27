@@ -7,6 +7,7 @@ import { MemoryRouter } from "react-router"
 import type { BoardSnapshot } from "@frizz/shared"
 import { StatusRow } from "./StatusRow.tsx"
 import { store, type ConnectionState } from "../store.ts"
+import { PROJECTS_HREF, setHomeView } from "../lib/homeView.ts"
 
 // The row's SHAPE is a spec, not an accident: a breadcrumb — home, a slash, this project as a dropdown —
 // at the left, and the icons right-justified with settings in the corner (maintainer 2026-10-26). It has
@@ -212,7 +213,30 @@ test("the home crumb is a ROUTER link, not a raw anchor that reloads the documen
     "a raw <a href=\"/\"> would render happily here; a router Link cannot",
   )
   // …and inside a router it renders, still pointing at the project grid.
-  assert.match(render(), /href="\/"[^>]*aria-label="All projects"|aria-label="All projects"[^>]*href="\/"/)
+  assert.match(houseOf(render()), /href="\/\?home=projects"/)
+})
+
+/** The house's own `<a …>` tag: the first link in the row, before the slash. */
+function houseOf(html: string): string {
+  const tag = html.match(/<a [^>]*aria-label="All projects"[^>]*>/)?.[0]
+  assert.ok(tag, "the row leads with an \"All projects\" house")
+  return tag
+}
+
+test("the house goes to the grid even while the Console is the kept home", () => {
+  // "Clicking the home button … should always bring you to the root / not /console" (maintainer
+  // 2026-10-27). It followed the kept home until then. A bare `/` would forward to the kept Console
+  // (routes.tsx GridRoute), so the house names the grid's own address, which never forwards.
+  setHomeView("console")
+  try {
+    const html = render(null, { pageLabel: "Console" })
+    const house = houseOf(html)
+    assert.ok(house.includes(`href="${PROJECTS_HREF}"`), house)
+    assert.match(house, /title="All projects"/)
+    assert.doesNotMatch(html, /href="\/console"/)
+  } finally {
+    setHomeView("projects")
+  }
 })
 
 test("a provider with NO DATA renders no gauge at all", () => {
