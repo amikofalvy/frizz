@@ -1,18 +1,18 @@
-import { useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { Loader2 } from "lucide-react"
 import type { AccountBackend, AuthSnapshot, ProviderAuth, ProviderQuota, QuotaWindow } from "@frizz/shared"
 import { rpc } from "../api/rpc.ts"
 import { ProviderMark } from "./ProviderMark.tsx"
-import { Popover, PopoverContent, PopoverTrigger } from "./ui/Popover.tsx"
+import { Popover, PopoverAnchor, PopoverContent } from "./ui/Popover.tsx"
 import { PROVIDER_LABEL } from "../lib/signIn.ts"
 import { CLAUDE_MODELS } from "../lib/options.ts"
 import { STATUS_ROW_ACTION, STATUS_ROW_ICON } from "../lib/statusRow.ts"
 import { GAUGE, gaugeAngle, gaugeArc, gaugeNeedle, gaugeWindow, modelFamily, remainingPercent } from "../lib/quotaGauge.ts"
 
 // THE FUEL GAUGE — the quota readout in the StatusRow above the prompt box: ONE gauge for the model the
-// prompt box has selected, its needle and lit arc standing at the quota that model has left. Click it
-// for the full per-window breakdown.
+// prompt box has selected, its needle and lit arc standing at the quota that model has left. Pointing
+// at it opens the full per-window breakdown at once; clicking it rechecks.
 //
 // It was two chips until 2026-10-26, a provider mark and a 9px percentage for each of Claude and Codex
 // side by side, whichever model you were about to use (maintainer: "the usage should look like a fuel
@@ -38,8 +38,8 @@ import { GAUGE, gaugeAngle, gaugeArc, gaugeNeedle, gaugeWindow, modelFamily, rem
 // gauge tracking them within half a minute instead of drifting minutes stale during a fast burn. An
 // UNAVAILABLE read re-polls at 15s (a blip should self-heal in seconds) — but only for a provider that
 // is signed in: a signed-out one has no reading to recover, and counting it as a blip put every
-// one-provider account on the fast cadence for good. Opening the gauge's popover forces a fresh read of
-// that provider's quota, and of auth — the popover is the recheck.
+// one-provider account on the fast cadence for good. CLICKING the gauge forces a fresh read of that
+// provider's quota, and of auth — the click is the recheck. Hovering it does not: see QuotaGauge.
 
 // Every quota/auth request carries an abort deadline. Without one, a single response the server never
 // finishes (a dev-server restart severing an in-flight request) leaves the fetch pending FOREVER:
@@ -50,6 +50,10 @@ const POLL_TIMEOUT_MS = 30_000
 // A forced recheck legitimately runs Claude Code's `/usage` CLI behind a cross-process lock (~27s
 // worst case), so it gets a longer leash.
 const RECHECK_TIMEOUT_MS = 45_000
+// How long the breakdown survives the pointer leaving the gauge: long enough to cross the panel's 6px
+// offset into it (the account address in it is selectable) and back, the same grace ContextMeter's
+// hover panel gives.
+const HOVER_CLOSE_DELAY_MS = 150
 
 function deadline(ms: number, signal?: AbortSignal): AbortSignal {
   return signal ? AbortSignal.any([signal, AbortSignal.timeout(ms)]) : AbortSignal.timeout(ms)
@@ -119,6 +123,13 @@ export function QuotaGauge() {
     refetchOnWindowFocus: true,
   })
   const selected = useSelectedModel()
+  // The breakdown is a HOVER PANEL (maintainer 2026-10-26: "we need an immediate popover to show on the
+  // usage gauge when hovered"). Until then it opened on a click alone, and the hover had only a native
+  // `title`, which the browser shows after about a second and draws as a one-line system label.
+  const [open, setOpen] = useState(false)
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const button = useRef<HTMLButtonElement>(null)
+  useEffect(() => () => clearTimeout(closeTimer.current), [])
 
   const recheck = (backend: AccountBackend) => {
     if (recheckInFlight.current) return
@@ -144,34 +155,78 @@ export function QuotaGauge() {
   const words = modelWords(backend, model)
   const providerLabel = PROVIDER_LABEL[backend]
 
+  const openNow = () => {
+    clearTimeout(closeTimer.current)
+    setOpen(true)
+  }
+  const closeSoon = () => {
+    clearTimeout(closeTimer.current)
+    closeTimer.current = setTimeout(() => setOpen(false), HOVER_CLOSE_DELAY_MS)
+  }
+  // A press on the gauge is the gauge's own gesture. Without this, Radix reads its pointerdown (and the
+  // focus it moves) as an interaction OUTSIDE the panel and shuts the panel the hover just opened.
+  const keepGaugeInteractions = (event: { detail: { originalEvent: Event }; preventDefault: () => void }) => {
+    if (button.current?.contains(event.detail.originalEvent.target as Node)) event.preventDefault()
+  }
+
   return (
-    <Popover
-      onOpenChange={(open) => {
-        // Opening the gauge IS the recheck. This is a true server-side cache bypass, not a replay of
-        // the last cached failure with a decorative spinner.
-        if (open) recheck(backend)
-      }}
-    >
-      <PopoverTrigger asChild>
+    // ANCHOR + a plain button, NOT PopoverTrigger: a Trigger toggles, so the click that follows a hover
+    // would shut the panel the hover opened. Owning the state keeps one meaning per gesture — pointing
+    // opens, clicking opens and rechecks, leaving (or Escape, or a click elsewhere) shuts.
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverAnchor asChild>
         {/* The row's icon square (STATUS_ROW_ACTION), so it hovers, trims and spaces like the settings
-            and reload buttons it stands beside. Its tooltip is where the number lives now: the
-            gauge alone is a glance, and the window it reads is named so it never has to be guessed. */}
+            and reload buttons it stands beside — and stays lit while its panel is open, as the crumb's
+            pill does with its menu. No `title`: the panel is the hover's answer, and a native tooltip
+            would arrive a second later on top of it. */}
         <button
+          ref={button}
           type="button"
           data-quota-gauge={backend}
           data-quota-window={window.key}
           data-remaining={remaining}
           aria-label={`${providerLabel} quota for ${words}: ${remaining}% remaining in the ${window.label} window`}
-          title={`${words}: ${remaining}% left · ${window.label} window`}
-          className={STATUS_ROW_ACTION}
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          // POINTER-typed, as RecurringPromptControl's preview is: a touch tap goes straight to the
+          // click, which opens the panel and rechecks, instead of painting a hover under the finger.
+          onPointerEnter={(event) => { if (event.pointerType !== "touch") openNow() }}
+          onPointerLeave={(event) => { if (event.pointerType !== "touch") closeSoon() }}
+          // Keyboard reaches the same panel the pointer does: tab to the gauge and the breakdown shows.
+          onFocus={openNow}
+          onClick={() => {
+            openNow()
+            // The CLICK is the recheck — a true server-side cache bypass, not a replay of the last cached
+            // failure with a decorative spinner. The hover is not: it shows the reading the 30s poll
+            // already holds, because a forced Claude read spends the usage endpoint's per-token budget
+            // (about one request in five minutes, shared with every Claude Code session on the machine)
+            // and a forced Codex read starts a `codex app-server`. Passing the pointer over the gauge
+            // must not cost either.
+            recheck(backend)
+          }}
+          // A VARIANT, not a class added while open: a bare `text-fg` would tie STATUS_ROW_ACTION's
+          // `text-fg/75` and win or lose on stylesheet order.
+          className={`${STATUS_ROW_ACTION} aria-expanded:bg-elevated aria-expanded:text-fg`}
         >
           <FuelGauge remaining={remaining} />
         </button>
-      </PopoverTrigger>
+      </PopoverAnchor>
       {/* Drops DOWN from the row, which sits at the top of the sidebar column, and hangs off the
           gauge's right edge — the gauge is near the column's right end, so a left-aligned panel would
           run out past it. */}
-      <PopoverContent side="bottom" align="end" className="w-[min(15rem,calc(100vw-1.5rem))] p-3 text-[11px] leading-relaxed text-fg">
+      <PopoverContent
+        side="bottom"
+        align="end"
+        data-quota-panel={backend}
+        aria-label={`${providerLabel} quota`}
+        onMouseEnter={openNow}
+        onMouseLeave={closeSoon}
+        onInteractOutside={keepGaugeInteractions}
+        // Hover opened it, so focus stays where the operator left it: pulling focus into the panel would
+        // steal the caret from the prompt box the pointer merely passed over on its way up.
+        onOpenAutoFocus={(event) => event.preventDefault()}
+        className="w-[min(15rem,calc(100vw-1.5rem))] p-3 text-[11px] leading-relaxed text-fg"
+      >
         <QuotaBreakdown backend={backend} quota={reading!} email={auth.data?.emails?.[backend]} reading={window} fetching={quota.isFetching || rechecking} />
       </PopoverContent>
     </Popover>
