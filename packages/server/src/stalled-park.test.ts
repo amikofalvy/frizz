@@ -217,11 +217,22 @@ test("a park on our own red PR says the fix is left", async () => {
   } finally { h.close() }
 })
 
-test("no correction where someone else will move the PR, where steps hand it over, or on the legacy contract", async () => {
+// The correction follows the board exactly: it reads the PRs only on a quiet park, and on any thread that
+// wrote one, whatever contract it was dispatched under.
+test("an older thread that answers `status: watching` is told too, as the board refuses it", async () => {
+  const h = schedulerWorld(READY, QUIET, "2026-08-15T11:00:00.000Z")
+  try {
+    await h.s.tick()
+    assert.equal(h.queued().filter((r) => r.fence_id.startsWith("park:pr-idle:")).length, 1)
+  } finally { h.close() }
+})
+
+test("no correction where someone else will move the PR, where the rest hands it over, or with no answer", async () => {
   const cases: [GithubWatchStatus, FenceView["hints"], string, string][] = [
     ...MOVED_ELSEWHERE.map(([status, why]) => [status, QUIET, NEW_CONTRACT, why] as [GithubWatchStatus, FenceView["hints"], string, string]),
     [READY, [{ kind: "pr", value: PR }, { kind: "step", value: "Merge [acme/app#412](https://github.com/acme/app/pull/412)" }], NEW_CONTRACT, "the steps are the handoff"],
-    [READY, [{ kind: "pr", value: PR }, { kind: "for", value: "180d" }], "2026-08-15T11:00:00.000Z", "a legacy park is read by rules that never see the PR readings"],
+    [READY, [{ kind: "pr", value: PR }, { kind: "status", value: "needs_input" }, { kind: "for", value: "180d" }], NEW_CONTRACT, "a needs_input handoff on its own green PR is the rest this asks for"],
+    [READY, [{ kind: "pr", value: PR }, { kind: "for", value: "180d" }], "2026-08-15T11:00:00.000Z", "a legacy park with no answer is read by rules that never see the PR readings"],
   ]
   for (const [status, hints, spawnedAt, why] of cases) {
     const h = schedulerWorld(status, hints, spawnedAt)

@@ -2675,9 +2675,10 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         armedTimerIdsOf(deps.storage, row.slug),
         registeredIssueWatchesOf(deps.storage, row.slug),
         armedCommandWatchIdsOf(deps.storage, row.slug),
-        // Only under the answer-required contract, the one the board applies it to (needsInputQueues): a
-        // legacy park is read by rules that never see the PR readings.
-        needsInputRequired(row.spawned_at) ? idlePrs : undefined,
+        // Only on a QUIET park (`working` or `watching`), which is the one place the board reads it
+        // (needsInputParkHolds). A `needs_input` handoff naming its own green PR is exactly the rest this
+        // asks for, and a fence with no answer is judged by rules that never see the PR readings.
+        awaitingNeedsInput(tele.lastFence.hints) === false ? idlePrs : undefined,
       )
       // A command watch's settled rows, by id: one that PASSED has already woken the thread, the way a
       // fired timer has, and one that expired or was cancelled is a wait that is over for another reason.
