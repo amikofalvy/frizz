@@ -91,6 +91,7 @@ for (const backend of ["claude", "codex"] as const) {
       const v = w.view()
       assert.equal(v.needsYou, true, "the watcher's wake is not the human reaching the handoff")
       assert.equal(isSnoozed(v), false)
+      assert.equal(v.heldHandoff, true, "the surfaces are told to keep the handoff's fence drawn")
     } finally { w.close() }
   })
 
@@ -104,6 +105,7 @@ for (const backend of ["claude", "codex"] as const) {
       const v = w.view()
       assert.equal(v.needsYou, false)
       assert.equal(v.waitStatus, "watching")
+      assert.equal(v.heldHandoff, undefined)
     } finally { w.close() }
   })
 
@@ -144,9 +146,11 @@ for (const backend of ["claude", "codex"] as const) {
       w.user(3, WAKE)
       w.say(4, READY)
       assert.equal(w.view().needsYou, true, "the handoff queues")
+      assert.equal(w.view().heldHandoff, undefined, "the handoff is the rest itself, drawn as the resting card")
       w.user(5, WAKE)
       w.say(6, QUIET)
       assert.equal(w.view().needsYou, true, "the older snooze was not an answer to this handoff")
+      assert.equal(w.view().heldHandoff, true)
     } finally { w.close() }
   })
 }

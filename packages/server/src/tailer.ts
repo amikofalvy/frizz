@@ -5,7 +5,7 @@ import { promisify } from "node:util"
 import { basename, join, win32 } from "node:path"
 import { homedir, tmpdir } from "node:os"
 import type { AskQuestion, AwaitingHint, CodexModel, LiveTool } from "@frizz/shared"
-import { awaitingNeedsInput, awaitingStatus, parseParkWake, parseTimerWake, stripWakeDeliveryToken, stripWakeTimeHeader, humanTypedMessagesIn, insideFence, isAllInjectedNoise, isHumanTypedMessage, isInterruptMarker, mayHoldQuestionFence, parseAskUserQuestionInput, parseCrossSessionMessage, parseMergedWake, PermissionMode, QUESTION_FENCE_CORRECTION_LEAD, questionFenceBlocks, questionFencesLive, saysAllDone, splitAwaitingFrontmatter, splitDoneFrontmatter, splitWakeDeliveries } from "@frizz/shared"
+import { awaitingNeedsInput, humanTypedMessagesIn, insideFence, isAllInjectedNoise, isHumanTypedMessage, isInterruptMarker, mayHoldQuestionFence, parseAskUserQuestionInput, parseCrossSessionMessage, parseMergedWake, PermissionMode, QUESTION_FENCE_CORRECTION_LEAD, questionFenceBlocks, questionFencesLive, saysAllDone, splitAwaitingFrontmatter, splitDoneFrontmatter, splitWakeDeliveries } from "@frizz/shared"
 import type { Bus } from "./bus.ts"
 import { permMarkerPath, type Project } from "./project.ts"
 import { isBrokerClaudeRow, isHeadlessRow } from "./storage.ts"
@@ -1421,10 +1421,6 @@ function isLocalCommandReceipt(content: unknown): boolean {
   return LOCAL_COMMAND_RECEIPT.test(userMessageText(content).trim())
 }
 
-function isToolResultOnly(content: unknown): boolean {
-  return Array.isArray(content) && content.length > 0 && content.every((part) => (part as { type?: unknown })?.type === "tool_result")
-}
-
 // ---- WHEN THE HUMAN LAST TYPED, for the question registry (FoldState.restFromAt) ------------------
 // `isHumanSpeaking` below answers "did a person OR Frizz put a message in front of the model" — Frizz's
 // own deliveries pass it, by design, because they move the row and close a rest. An open question asks
@@ -1467,15 +1463,6 @@ function noteUserRecordForQuestions(state: FoldState, text: string, at: string):
   // stale entry would swallow the human typing the same words again later.
   if (queued.length > 0) state.queuedHumanTexts = undefined
   if (carriesQuestionFenceCorrection(text)) state.questionCorrectedAt = at
-  noteWake(state, at, wakeIsQuiet(text))
-}
-
-// Record the wake the worker is answering (FoldState.lastWake). A human message the runtime merged AHEAD
-// of a timer fire rides inside the timer's own delivery, where wakeIsQuiet cannot see it; the queue moved
-// `restFromAt` when it was typed, so a boundary that moved since the last wake makes this one news.
-function noteWake(state: FoldState, at: string, quiet: boolean): void {
-  const restFrom = state.restFromAt ?? ""
-  state.lastWake = { at, quiet: quiet && state.lastWake?.restFrom === restFrom, restFrom }
 }
 
 // The LEGACY question flag (a ```question fence on the final message — what queues a thread spawned
@@ -2655,7 +2642,6 @@ export function applyRecord(state: TailState, rec: Record): void {
       // question flag: set per assistant text, cleared by any user record below.
       state.lastFence = parseSignalFence(raw)
       noteHandoff(state)
-      noteParkStreak(state)
     }
     trackDispatches(state, rec) // register any background Agent dispatches + background shells
     trackLiveTools(state, rec) // the tool calls now awaiting a result — the board row's live line
@@ -2694,9 +2680,6 @@ export function applyRecord(state: TailState, rec: Record): void {
     state.lastAssistantAllDone = false
     state.lastFence = undefined
     const humanSpoke = isHumanSpeaking(rec, userText, systemUserRec, compactSummaryRec)
-    // A record that wakes the worker without being drawn — a background shell's or sub-agent's report —
-    // is news to the park streak all the same. A bare tool_result is mid-turn and wakes nothing.
-    if (!humanSpoke && typeof rec.timestamp === "string" && !isToolResultOnly(rec.message?.content)) noteWake(state, rec.timestamp, false)
     // Any user record supersedes a usage-limit pause: the conversation has moved past the point where
     // it was cut off, whether by the human or by the "continue" the wake scheduler delivered. This is
     // precisely what makes the auto-resume one-shot — the delivered message erases the very fault that
@@ -2766,7 +2749,6 @@ function applyFinalText(state: FoldState, text: string): void {
   state.lastAssistantAllDone = saysAllDone(text)
   state.lastFence = parseSignalFence(text)
   noteHandoff(state)
-  noteParkStreak(state)
 }
 
 // Stamp FoldState.handoffAt when the fence just folded hands the rest to the human. Read after
@@ -2774,31 +2756,6 @@ function applyFinalText(state: FoldState, text: string): void {
 function noteHandoff(state: FoldState): void {
   const fence = state.lastFence
   if (fence?.kind === "awaiting" && awaitingNeedsInput(fence.hints) === true && state.lastAssistantAt) state.handoffAt = state.lastAssistantAt
-}
-
-// Extend or end FoldState.parkStreak on the fence just folded. A park counts once per wake (`wakeAt`) and
-// never for a message older than the run's last, so a refold or a replayed record adds nothing.
-function noteParkStreak(state: FoldState): void {
-  const fence = state.lastFence
-  const at = state.lastAssistantAt
-  if (!fence || !at) return
-  const wake = state.lastWake
-  if (fence.kind !== "awaiting" || awaitingStatus(fence.hints) !== "watching" || !wake?.quiet) {
-    state.parkStreak = undefined
-    return
-  }
-  const run = state.parkStreak
-  if (!run) state.parkStreak = { count: 1, since: at, lastAt: at, wakeAt: wake.at }
-  else if (run.wakeAt !== wake.at && at > run.lastAt) state.parkStreak = { ...run, count: run.count + 1, lastAt: at, wakeAt: wake.at }
-}
-
-// A wake with nothing in it but the passage of time: the worker's own timer firing, or its park running out.
-// Every delivery the record carries must be one, merged envelopes included; anything else is news.
-function wakeIsQuiet(text: string): boolean {
-  return splitWakeDeliveries(text).every((delivery) => {
-    const parts = parseMergedWake(delivery)?.map((part) => part.body) ?? [stripWakeTimeHeader(stripWakeDeliveryToken(delivery).trimEnd()).trim()]
-    return parts.every((part) => parseTimerWake(part) !== null || parseParkWake(part)?.kind === "expired")
-  })
 }
 
 // Fold one NORMALIZED event into the backend-neutral accumulator — the codex-facing counterpart to
@@ -6264,7 +6221,7 @@ export function createTailer(deps: TailerDeps): Tailer {
     // thread has no row and reads as legacy, which is what `questionFencesLive` does with unknown.
     const pendingQuestion = s.lastAssistantHasQuestion && questionFencesLive(row?.spawned_at)
     const nowMs = now()
-    return { turn: s.turn, permPrompt: s.permPrompt, permPolicy: s.permPolicy, permDenies: s.permDenies, model: s.model, effort: s.effort, profileAt: s.profileAt, profileRevision: s.profileRevision, permissionMode: s.permissionMode, permissionModeAt: s.permissionModeAt, permissionModeRevision: s.permissionModeRevision, lastActivityAt: s.lastActivityAt, lastAssistantAt: s.lastAssistantAt, lastAssistant: s.lastAssistant, lastAssistantLine: s.lastAssistantLine, liveTool: newestLiveTool(s), aiTitle: s.aiTitle, customTitle: s.customTitle, customTitleRevision: s.customTitleRevision, subAgents: subAgentViews(s, nowMs), droppedReports: [...s.queuedReports.values()], bgShells: [...bgShellViews(s), ...codexBgShellViews(s)], retiredShells: retiredShellViews(s), retiredSubAgents: retiredSubAgentViews(s), questionSightings: s.questionSightings, pendingAsk: s.pendingAsk, pendingQuestion, lastAssistantAllDone: s.lastAssistantAllDone, lastUserAt: s.lastUserAt, lastMidTurnDeliveryAt: s.lastMidTurnDeliveryAt, restFromAt: s.restFromAt, handoffAt: s.handoffAt, parkStreak: s.parkStreak, questionCorrectedAt: s.questionCorrectedAt, lastUserText: s.lastUserText, firstUserText: s.firstUserText, lastFence: s.lastFence, noTranscript: s.noTranscript, authFault: s.authFault, apiFault: s.apiFault, providerError: s.providerError, limitFault: s.limitFault, contextTokens: s.contextTokens, contextWindow: s.contextWindow, lastCompactionAt: s.lastCompactionAt }
+    return { turn: s.turn, permPrompt: s.permPrompt, permPolicy: s.permPolicy, permDenies: s.permDenies, model: s.model, effort: s.effort, profileAt: s.profileAt, profileRevision: s.profileRevision, permissionMode: s.permissionMode, permissionModeAt: s.permissionModeAt, permissionModeRevision: s.permissionModeRevision, lastActivityAt: s.lastActivityAt, lastAssistantAt: s.lastAssistantAt, lastAssistant: s.lastAssistant, lastAssistantLine: s.lastAssistantLine, liveTool: newestLiveTool(s), aiTitle: s.aiTitle, customTitle: s.customTitle, customTitleRevision: s.customTitleRevision, subAgents: subAgentViews(s, nowMs), droppedReports: [...s.queuedReports.values()], bgShells: [...bgShellViews(s), ...codexBgShellViews(s)], retiredShells: retiredShellViews(s), retiredSubAgents: retiredSubAgentViews(s), questionSightings: s.questionSightings, pendingAsk: s.pendingAsk, pendingQuestion, lastAssistantAllDone: s.lastAssistantAllDone, lastUserAt: s.lastUserAt, lastMidTurnDeliveryAt: s.lastMidTurnDeliveryAt, restFromAt: s.restFromAt, handoffAt: s.handoffAt, questionCorrectedAt: s.questionCorrectedAt, lastUserText: s.lastUserText, firstUserText: s.firstUserText, lastFence: s.lastFence, noTranscript: s.noTranscript, authFault: s.authFault, apiFault: s.apiFault, providerError: s.providerError, limitFault: s.limitFault, contextTokens: s.contextTokens, contextWindow: s.contextWindow, lastCompactionAt: s.lastCompactionAt }
   }
 
   // ---- telemetryMemo: the SAME object while nothing about the thread changed ---------------------------

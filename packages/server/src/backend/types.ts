@@ -90,15 +90,6 @@ export type NormalizedEvent =
 // the transcript).
 // A documented contract for what every backend's fold must surface; Phase-1 Claude realizes it as
 // SessionTelemetry directly (see tailer.get()).
-export interface ParkStreak {
-  count: number
-  since: string
-  lastAt: string
-  // The wake this run last counted a park for (FoldState.lastWake.at), so one wake counts once however
-  // many times its park is folded: Codex folds a final message twice, at two instants.
-  wakeAt: string
-}
-
 export interface NormalizedTail {
   turn: TurnState
   // Backend-observed session profile when its transcript records it. Claude assistant records expose
@@ -129,8 +120,6 @@ export interface NormalizedTail {
   restFromAt?: string
   // When the worker last rested on a fence that needed the human — see FoldState.handoffAt.
   handoffAt?: string
-  // The run of `status: watching` parks since the human last typed — see FoldState.parkStreak.
-  parkStreak?: ParkStreak
   // When Frizz last delivered a ```question fence correction — see FoldState.questionCorrectedAt.
   questionCorrectedAt?: string
   lastUserText?: string // the newest drawn user turn's text, Frizz's deliveries included (confirms wake-token delivery)
@@ -236,17 +225,6 @@ export interface FoldState {
   // (2026-10-27). The board holds such a thread in the queue until the human types past it or snoozes it
   // (board handoffStands).
   handoffAt?: string
-  // THE QUIET-PARK STREAK: how many `status: watching` rests in a row the worker has made in answer to a
-  // wake that carried NO NEWS — its own timer firing, or its park running out — and when the run began.
-  // A worker polling for a grant that never comes, or retrying a cleanup that keeps failing, re-parks
-  // every few hours with nothing for the human to see: 38 timers over five days on one thread, 15 over
-  // three on another (one project, 2026-10-25). The board queues a run that is long enough (board
-  // parkStall). A park after anything else (the human, a PR or shell report, a sub-agent) ends the run, as
-  // does any other fenced rest; prose with no fence does not, since a polling turn narrates before it parks.
-  parkStreak?: ParkStreak
-  // The newest user record, and whether every wake it delivered was news-free (tailer wakeIsQuiet).
-  // `restFrom` is the `restFromAt` it was recorded under (tailer noteWake).
-  lastWake?: { at: string; quiet: boolean; restFrom: string }
   // The human messages QUEUED and not yet seen delivered, oldest first — so the record that delivers one
   // does not move `restFromAt` a second time, to an instant later than the human wrote it. Bounded.
   queuedHumanTexts?: string[]
