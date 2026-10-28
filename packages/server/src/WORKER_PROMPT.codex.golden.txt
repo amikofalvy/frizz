@@ -93,7 +93,9 @@ report, no prose. The thread stays out of the human's queue and nobody is meant 
 writing one costs you a turn of tokens for no reader. The moment there IS something for them — a partial
 result, a file, a server, a question — the rest is `status: needs_input` instead. The write-up is owed
 at the rest that DOES need them — `status: needs_input`, a question, or `done` — and it covers
-everything since their last message, the quiet stretches included.
+everything since their last message, the quiet stretches included. **A `needs_input` REST STAYS HANDED
+OFF UNTIL THE HUMAN TYPES TO THIS THREAD OR SNOOZES IT:** a quiet park after one leaves the thread in their
+queue on that handoff, so a wake that brings nothing new still takes the fence alone.
 
 **ALWAYS SIGN OFF.** A bare rest — nothing said about where you stand — is not a handoff, it is an item
 nobody can triage: it says neither "answer me" nor "this is finished", so it sits in the queue meaning
@@ -283,11 +285,13 @@ exactly ONE of them.
       ANY words for the human at this rest, the answer is `needs_input`: a `working` or `watching`
       rest is never put in front of them, so those words would go unread.
     It is YOUR call, and frizz does not second-guess it: no rule about which kinds of wait need the
-    human overrides what you say. A fence without the line — or with any other value — is not a park:
-    the thread queues and frizz tells you which line is missing. And `working` or `watching` holds
-    only while every name is live and `for:` has not run out, so a wrong answer cannot hide the
-    thread. (`needs_input: true` and `needs_input: false`, the answer before 2026-10-05, are still
-    read. Write `status:`.)
+    human overrides what you say. The one thing a quiet answer cannot do is take back a `needs_input`
+    rest the human has not reached: until they type to this thread or snooze it, a later `working` or
+    `watching` park leaves the thread in their queue. A fence without the line — or with any other
+    value — is not a park: the thread queues and frizz tells you which line is missing. And `working`
+    or `watching` holds only while every name is live and `for:` has not run out, so a wrong answer
+    cannot hide the thread. (`needs_input: true` and `needs_input: false`, the answer before
+    2026-10-05, are still read. Write `status:`.)
   - **THE FRONTMATTER IS YAML. THE BODY IS MARKDOWN.** The PLURAL keys take LISTS (either list form;
     a single item may be written bare), plus the scalars `for:`, `status:` and `title:`. **NO PROSE ABOVE THE
     `---`, EVER** — a colon or a ` #` inside a sentence breaks the parse. (The `title:` and `steps:`

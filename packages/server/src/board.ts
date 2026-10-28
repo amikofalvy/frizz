@@ -1305,10 +1305,10 @@ export function deriveNeedsYou(
 //  3. A `done` handoff and a rest with nothing out queue as they always did.
 //
 // RULE 1 CANNOT SPEND A HANDOFF THE HUMAN HAS NOT REACHED. A `needs_input` rest put the thread in front
-// of the human, and only the human typing to it (`restFromAt`, the boundary an open question stands
-// across) takes it out again. A later quiet park does not: a PR watcher's wake for news the worker had
-// already read made it re-park `status: watching`, and its "ready, unmerged" handoff sat in Snoozed with
-// green CI (reported 2026-10-27: "it looks green to me"). The thread falls
+// of the human, and only the human takes it out again: by typing to it (`restFromAt`, the boundary an open
+// question stands across) or by snoozing it (handoffStands). A later quiet park does not: a PR watcher's
+// wake for news the worker had already read made it re-park `status: watching`, and its "ready, unmerged"
+// handoff sat in Snoozed with green CI (reported 2026-10-27: "it looks green to me"). The thread falls
 // through to rule 2 instead, so the card keeps its event-snooze.
 //
 // RULE 1 CANNOT HONOUR A PARK THAT WILL NOT WAKE ON ITS OWN (parkStall): a PR park whose every PR waits on
@@ -1327,7 +1327,7 @@ function needsInputQueues(
   armedTimerIds: ReadonlySet<string>,
   github: GithubStatusBook,
 ): boolean {
-  if (excuseLiveOwnWork && quietParkHolds(tele, runtime, nowMs, registeredPrWatches, armedTimerIds) && !parkStall(tele, github)) return false
+  if (excuseLiveOwnWork && quietParkHolds(row, tele, runtime, nowMs, registeredPrWatches, armedTimerIds) && !parkStall(tele, github)) return false
   if (runtime !== "exited" && tele?.lastFence?.kind !== "done" && (hasLiveOwnWork(tele, registeredPrWatches) || hasParkedTimerWatch(tele, armedTimerIds))) return !bgSnoozeArmed(row)
   return true
 }
@@ -1335,6 +1335,7 @@ function needsInputQueues(
 /** Rule 1 short of parkStall: a working/watching park frizz could honour, on a handoff the human has
  *  reached. The view reads it too, so a stall reason shows only where the stall is what queued. */
 function quietParkHolds(
+  row: Pick<SessionRow, "bg_snooze_rested_at">,
   tele: SessionTelemetry | undefined,
   runtime: RuntimeState,
   nowMs: number,
@@ -1344,7 +1345,7 @@ function quietParkHolds(
   const fence = tele?.lastFence
   return runtime !== "exited" &&
     fence?.kind === "awaiting" &&
-    !handoffStands(tele) &&
+    !handoffStands(row, tele) &&
     // `registeredPrWatches` carries both kinds' refs (see hasParkedPrWatch), so it answers for `issues:` too.
     // `armedTimerIds` carries the command watches too, split back by kind here (isCommandWatchId).
     needsInputParkHolds(
@@ -1361,11 +1362,18 @@ function quietParkHolds(
     )
 }
 
-function handoffStands(tele: SessionTelemetry | undefined): boolean {
+// Whether the newest handoff is still unreached: the human has neither typed to the thread since it
+// (`restFromAt`) nor snoozed a rest at or after it (`bg_snooze_rested_at`, stamped by the resting card's
+// Snooze and the header's "Until activity"). The snooze counts because it is the human's own answer to the
+// card. Without it, a snooze pressed on the handoff lasted one rest (bgSnoozeArmed), and the next no-news
+// park put the card straight back, on every wake after it, until the human typed something. Opening the
+// thread does not count (router threadSeen: viewing a resting handoff never acknowledges it), and nor does
+// a wall-clock snooze, whose point is to bring the card back when it ends.
+function handoffStands(row: Pick<SessionRow, "bg_snooze_rested_at">, tele: SessionTelemetry | undefined): boolean {
   const handoffMs = Date.parse(tele?.handoffAt ?? "")
   if (!Number.isFinite(handoffMs)) return false
-  const typedMs = Date.parse(tele?.restFromAt ?? tele?.lastUserAt ?? "")
-  return !(typedMs >= handoffMs)
+  const reached = [tele?.restFromAt ?? tele?.lastUserAt, row.bg_snooze_rested_at].map((at) => Date.parse(at ?? ""))
+  return !reached.some((ms) => ms >= handoffMs)
 }
 
 // Whether a thread is resting while its own background work is still live — the signal the client keys
@@ -2078,7 +2086,7 @@ function sessionThreadView(
     // thread, which nothing wakes.
     wakesOnItsOwn: (!archived && runtime !== "exited" && wakesOnItsOwn(row, tele, registeredPrWatches, armedTimerIds)) || undefined,
     // Only where the stall is what queued it: the park would otherwise have held.
-    stalledPark: needsYou && quietParkHolds(tele, runtime, nowMs, registeredPrWatches, armedTimerIds) ? parkStall(tele, github) : undefined,
+    stalledPark: needsYou && quietParkHolds(row, tele, runtime, nowMs, registeredPrWatches, armedTimerIds) ? parkStall(tele, github) : undefined,
     claudeRuntime: row.claude_runtime === "broker" ? "broker" as const : undefined,
     // The recurring prompt — the same projection the worker's own `action: "get"` reads back.
     recurringPrompt: resolveRecurringPrompt(row),

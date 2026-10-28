@@ -56,12 +56,16 @@ function world(backend: "claude" | "codex") {
   const project: Project = { dir, id: "p", name: "fixture", label: "fixture", stateDir: dir, cwdSlug: "fixture" }
   const board = createBoard(project, storage, new Bus(), tailer, "handoff-rest", { claudeBrokerDaemonAlive: () => true, now: () => Date.parse(at(30)) })
   // Each backend's own shape of "the worker said this and rested" and "a message landed".
-  const say = backend === "claude"
+  const fold = backend === "claude"
     ? (minute: number, text: string) => applyRecord(s, { type: "assistant", timestamp: at(minute), message: { role: "assistant", content: [{ type: "text", text }], stop_reason: "end_turn" } } as never)
     : (minute: number, text: string) => {
         applyEvent(s, { kind: "assistant-text", at: at(minute), text, final: true })
         applyEvent(s, { kind: "turn-end", at: at(minute), finalText: text })
       }
+  // …and the rest instant the tailer stamps on the row as the turn ends, which a snooze is pinned to.
+  const say = (minute: number, text: string) => { fold(minute, text); storage.setRestedAt(slug, at(minute)) }
+  // The resting card's Snooze ("Until activity"): parks the CURRENT rest, as router snoozeAwaitingBackground does.
+  const snooze = () => assert.ok(storage.setBgSnoozeRestedAtIfCurrent(slug, `sid-${slug}`, 0, storage.getSession(slug)!.rested_at))
   const user = backend === "claude"
     ? (minute: number, text: string) => applyRecord(s, { type: "user", timestamp: at(minute), message: { role: "user", content: text } } as never)
     : (minute: number, text: string) => {
@@ -69,7 +73,7 @@ function world(backend: "claude" | "codex") {
         applyEvent(s, { kind: "turn-start", at: at(minute) })
       }
   return {
-    say, user,
+    say, user, snooze,
     view: () => board.refresh().threads.find((x) => x.id === slug)!,
     close: () => { board.stop(); storage.close(); rmSync(dir, { recursive: true, force: true }) },
   }
@@ -112,6 +116,37 @@ for (const backend of ["claude", "codex"] as const) {
       w.say(6, QUIET)
       assert.equal(w.view().needsYou, false)
       assert.equal(w.view().waitStatus, "watching")
+    } finally { w.close() }
+  })
+
+  test(`${backend}: the human's snooze on the handoff reaches it, so the next quiet park snoozes as before`, () => {
+    const w = world(backend)
+    try {
+      w.user(0, `own ${PR} and park it for my evaluation when it is ready`)
+      w.say(1, READY)
+      w.snooze()
+      assert.equal(w.view().needsYou, false, "the snooze parks the handoff")
+      // The snooze held for that one rest; the wake's quiet park is a new rest, which is the worker's to place.
+      w.user(5, WAKE)
+      w.say(6, QUIET)
+      const v = w.view()
+      assert.equal(v.needsYou, false, "a handoff the human snoozed is not put back by a no-news park")
+      assert.equal(v.waitStatus, "watching")
+    } finally { w.close() }
+  })
+
+  test(`${backend}: a snooze on a rest before the handoff does not reach it`, () => {
+    const w = world(backend)
+    try {
+      w.user(0, `own ${PR}`)
+      w.say(1, QUIET)
+      w.snooze()
+      w.user(3, WAKE)
+      w.say(4, READY)
+      assert.equal(w.view().needsYou, true, "the handoff queues")
+      w.user(5, WAKE)
+      w.say(6, QUIET)
+      assert.equal(w.view().needsYou, true, "the older snooze was not an answer to this handoff")
     } finally { w.close() }
   })
 }
