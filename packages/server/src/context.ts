@@ -1111,6 +1111,7 @@ function createContextUnchecked(opts: ContextOptions, resources: PartialContextR
   // Durable timer waker + legacy pr/ci compatibility. Reuses the SAME resume path as followUp;
   // boot-safe because it only fires on a condition it witnesses cross.
   const scheduler = createScheduler({
+    project,
     storage,
     tailer,
     questionFaults,

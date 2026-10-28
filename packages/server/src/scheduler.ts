@@ -29,6 +29,8 @@ import {
   type GithubPrMergeExit,
 } from "./github-review.ts"
 import { isNoisePrActivity } from "./pr-watch-noise.ts"
+import type { Project } from "./project.ts"
+import { externalChildren, externalChild, childGenerationMark, markChildGeneration } from "./external-agents.ts"
 
 const execFileAsync = promisify(execFile)
 
@@ -1290,6 +1292,7 @@ const REVIEW_SEEN_CAP = 300
 const REVIEW_STEER_CAP = 10
 
 export interface SchedulerDeps {
+  project?: Project
   storage: Storage
   tailer: Tailer
   /** Where every question-fence sync records what it refused, for the board (question-fences.ts
@@ -1509,7 +1512,14 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     // receive it. (Without this branch it fell through to the awaiting-fence logic below, which compares
     // the delivery against the thread's CURRENT fence and superseded every wake for a bare rest: queued
     // on every tick, delivered never.)
-    if (isShellFenceId(item.fenceId) || item.fenceId.startsWith("external-child:")) {
+    if (item.fenceId.startsWith("external-child:")) {
+      if (!deps.project) return "superseded"
+      const [, id, generation] = item.fenceId.split(":")
+      const child = externalChild(deps.project, item.slug, id)
+      if (!child || child.generation !== Number(generation) || childGenerationMark(child, "observed") >= Number(generation) || Date.parse(child.finished_at ?? "") <= Date.parse(tele.lastAssistantAt ?? "")) return "superseded"
+      return tele.turn === "idle" ? "current-idle" : "current-busy"
+    }
+    if (isShellFenceId(item.fenceId)) {
       return tele.turn === "idle" ? "current-idle" : "current-busy"
     }
     // The interrupt note is the same shape: sub-agents that ended have ended, whatever the thread says next.
@@ -3691,21 +3701,26 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   // how an agent comes to REST and states what it is waiting on (see hasDeclaredBackgroundPark). A
   // thread with no fence at all is woken here exactly the same way, which is the point.
   function evalExternalChildCompletions(nowMs: number): void {
+    if (!deps.project) return
     for (const row of deps.storage.allSessions()) {
       if (row.state === "archived" || row.archived === 1) continue
       const tele = deps.tailer.get(row.slug)
-      if (!tele || tele.authFault || tele.apiFault || threadSaidDone(deps.storage, row.slug, tele)) continue
-      for (const child of tele.retiredSubAgents ?? []) {
-        if (!child.id.startsWith("external_") || !child.finishedAt) continue
-        const fenceId = `external-child:${child.id}:${child.generation ?? child.finishedAt}`
+      if (!tele || tele.turn !== "idle" || tele.authFault || tele.apiFault || threadSaidDone(deps.storage, row.slug, tele)) continue
+      const restedAt = Date.parse(tele.lastAssistantAt ?? "")
+      if (!Number.isFinite(restedAt)) continue
+      for (const child of externalChildren(deps.project, row.slug)) {
+        if (child.status === "running" || child.status === "starting" || !child.finished_at || Date.parse(child.finished_at) <= restedAt) continue
+        if (childGenerationMark(child, "observed") >= child.generation || childGenerationMark(child, "notified") >= child.generation) continue
+        const fenceId = `external-child:${child.id}:${child.generation}`
         const deliveryId = wakeDeliveryId(row.slug, row.session_id, fenceId)
-        if (outbox.get(deliveryId)) continue
+        if (outbox.get(deliveryId)) { markChildGeneration(child, "notified"); continue }
         const item = outbox.enqueue({
           id: deliveryId, slug: row.slug, sessionId: row.session_id, fenceId,
           hintKey: fenceId,
-          message: withClock(`Child agent ${child.taskId ?? child.id} (${child.label}) ${child.status}. Read its result with frizzctl child using a version-1 status request, and reconcile it into the parent task.`, tele.lastAssistantAt),
+          message: withClock(`Child agent ${child.id} (${child.label}) ${child.status}. Read its result with frizzctl child using a version-1 status request, and reconcile it into the parent task.`, tele.lastAssistantAt),
           reason: `cross-harness child ${child.status}`,
         }, nowMs).delivery
+        markChildGeneration(child, "notified")
         checkpoint("after-enqueue", item)
         return
       }

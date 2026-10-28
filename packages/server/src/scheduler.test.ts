@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { mkdtempSync } from "node:fs"
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { wakeDeliveryToken, type QuotaSnapshot } from "@frizz/shared"
@@ -9,6 +9,8 @@ import { ANSWER_REOFFER_BACKOFF_MS, createScheduler, enqueueInterruptEndedWake, 
 import { createGithubReviewFetcher, type GithubReviewFetchResult } from "./github-review.ts"
 import { createWakeDeliveryStore, WAKE_QUIET_WINDOW_MS } from "./wake-store.ts"
 import type { Tailer, SessionTelemetry, FenceView, TurnState, BgShellView } from "./tailer.ts"
+import type { Project } from "./project.ts"
+import { operateChild } from "./external-agents.ts"
 
 // ---- pure helpers ----
 
@@ -191,10 +193,11 @@ const iso = (ms: number) => new Date(ms).toISOString()
 
 test("external child completion wakes its parent once across scheduler reconstruction", async () => {
   const h = harness()
+  const child = completionChild(h.clock.ms)
   try {
     h.storage.upsertSession(row("parent"))
     h.tele.set("parent", { ...tele(undefined, "in-flight"), pendingQuestion: true, lastAssistantAt: iso(h.clock.ms - 1000), retiredSubAgents: [{ id: "external_child", taskId: "child", label: "Codex review", status: "completed", finishedAt: iso(h.clock.ms) }] })
-    const scheduler = h.make()
+    const scheduler = h.make({ project: child.project })
     await scheduler.tick()
     assert.equal(h.resumes.length, 0)
     const parent = h.tele.get("parent")
@@ -205,9 +208,34 @@ test("external child completion wakes its parent once across scheduler reconstru
     assert.equal(h.resumes.length, 1)
     assert.match(h.resumes[0].message, /Child agent child.*completed/)
     await scheduler.tick()
-    await h.make().tick()
+    h.storage.scope.prepare("DELETE FROM wake_delivery WHERE project_id = @project_id").run()
+    await h.make({ project: child.project }).tick()
     assert.equal(h.resumes.length, 1)
-  } finally { h.storage.close() }
+  } finally { h.storage.close(); rmSync(child.dir, { recursive: true, force: true }) }
+})
+
+function completionChild(finished: number) {
+  const dir = mkdtempSync(join(tmpdir(), "frizz-completion-"))
+  const run = join(dir, "child-agents", "parent", "child")
+  mkdirSync(run, { recursive: true })
+  const state = { version: 1, id: "child", parent_id: "parent", runtime: "codex", model: "test", effort: "low", label: "Codex review", run_dir: run, socket: join(dir, "missing.sock"), started_at: iso(finished - 2000), finished_at: iso(finished), status: "completed", generation: 1, completed_generation: 1, alive: false, capabilities: { message: false, stop: false, wait: true }, result: "done" }
+  writeFileSync(join(run, "state.json"), JSON.stringify(state))
+  return { dir, project: { dir, stateDir: dir, id: "p", name: "p", label: "p", cwdSlug: "p" } as Project }
+}
+
+test("a collected result and a result settled before the parent's rest do not wake it", async () => {
+  for (const observed of ["status", "wait", "rest"] as const) {
+    const h = harness()
+    const child = completionChild(h.clock.ms)
+    try {
+      h.storage.upsertSession(row("parent"))
+      h.tele.set("parent", { ...tele(), pendingQuestion: true, lastAssistantAt: iso(h.clock.ms + (observed === "rest" ? 1000 : -1000)) })
+      if (observed !== "rest") await operateChild(child.project, "parent", { version: 1, action: observed, id: "child", after: 0 })
+      await h.make({ project: child.project }).tick()
+      await h.make({ project: child.project }).tick()
+      assert.equal(h.resumes.length, 0, observed)
+    } finally { h.storage.close(); rmSync(child.dir, { recursive: true, force: true }) }
+  }
 })
 
 // ARM A REAL TIMER ROW. The `timer: <ISO instant>` fence these tests used to arm from is deleted

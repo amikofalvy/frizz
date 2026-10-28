@@ -1,12 +1,13 @@
 import { execFile } from "node:child_process"
 import { connect } from "node:net"
 import { createInterface } from "node:readline"
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, openSync, closeSync, fstatSync, readSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, renameSync, openSync, closeSync, fstatSync, readSync } from "node:fs"
 import { join, isAbsolute, delimiter } from "node:path"
 import { z } from "zod"
 import type { Project } from "./project.ts"
 import { workerPluginDir } from "./dispatch.ts"
 import { ChildRequest, ThreadSlug, type TranscriptMessage, type TranscriptToolCall } from "@frizz/shared"
+import { log } from "./logging.ts"
 export { ChildRequest } from "@frizz/shared"
 
 export const ChildState = z.object({
@@ -29,6 +30,7 @@ export const ChildState = z.object({
   generation: z.number().int().positive(),
   completed_generation: z.number().int().nonnegative(),
   alive: z.boolean(),
+  lost: z.boolean().optional(),
   capabilities: z.object({ message: z.boolean(), stop: z.boolean(), wait: z.boolean(), resume: z.boolean().optional() }),
   result: z.string(),
   error: z.string().optional(),
@@ -42,27 +44,75 @@ function directory(project: Project, slug: string) {
   return join(project.stateDir, "child-agents", slug)
 }
 
-export function externalChildren(project: Project, slug: string): ExternalChildState[] {
+const invalidRecords = new Set<string>()
+
+export function externalChildren(project: Project, slug: string, strict = false): ExternalChildState[] {
   if (!project?.stateDir) return []
   const root = directory(project, slug)
   if (!existsSync(root)) return []
-  return readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory()).flatMap((entry) => {
+  const children = readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory()).flatMap((entry) => {
     const path = join(root, entry.name, "state.json")
     if (!existsSync(path)) return []
-    const state = ChildState.parse(JSON.parse(readFileSync(path, "utf8")))
-    if (state.parent_id !== slug || state.id !== entry.name || state.run_dir !== join(root, entry.name)) throw new Error("Child ownership record does not match its parent")
-    return [state]
+    try {
+      const state = ChildState.parse(JSON.parse(readFileSync(path, "utf8")))
+      if (state.parent_id !== slug || state.id !== entry.name || state.run_dir !== join(root, entry.name)) throw new Error("Child ownership record does not match its parent")
+      invalidRecords.delete(path)
+      return [state]
+    } catch (error) {
+      if (strict) throw error
+      if (!invalidRecords.has(path)) {
+        log.warn("child-agents", `Ignoring unreadable child record ${slug}/${entry.name}; controls remain refused`)
+        if (invalidRecords.size < 1000) invalidRecords.add(path)
+      }
+      return []
+    }
+  })
+  return children.filter((child) => {
+    try { externalLineage(child, children); return true }
+    catch (error) {
+      if (strict) throw error
+      return false
+    }
   })
 }
 
 export function externalParentSlugs(project: Project): string[] {
   if (!project?.stateDir) return []
   const root = join(project.stateDir, "child-agents")
-  return existsSync(root) ? readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name) : []
+  return existsSync(root) ? readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory() && ThreadSlug.safeParse(entry.name).success).map((entry) => entry.name) : []
 }
 
 export function externalChild(project: Project, slug: string, id: string) {
   return externalChildren(project, slug).find((child) => child.id === id)
+}
+
+export function childGenerationMark(child: ExternalChildState, kind: "observed" | "notified"): number {
+  const path = join(child.run_dir, `${kind}-generation`)
+  if (!existsSync(path)) return 0
+  return z.number().int().nonnegative().parse(JSON.parse(readFileSync(path, "utf8")))
+}
+
+export function markChildGeneration(child: ExternalChildState, kind: "observed" | "notified") {
+  if (child.status === "starting" || child.status === "running") return
+  const generation = Math.max(child.generation, childGenerationMark(child, kind))
+  const path = join(child.run_dir, `${kind}-generation`)
+  writeFileSync(`${path}.tmp`, JSON.stringify(generation), { mode: 0o600 })
+  renameSync(`${path}.tmp`, path)
+}
+
+async function closeExternal(child: ExternalChildState) {
+  if (!child.alive) return
+  try { await externalControl(child, { action: "stop" }) }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    const latest = ChildState.parse(JSON.parse(readFileSync(join(child.run_dir, "state.json"), "utf8")))
+    const heartbeat = Date.parse(latest.updated_at ?? "")
+    if (!["ENOENT", "ECONNREFUSED"].includes(code ?? "") || !Number.isFinite(heartbeat) || Date.now() - heartbeat <= 30_000) throw error
+    const lost = { ...latest, lost: true, alive: false, status: "failed", outcome: "failed", finished_at: new Date().toISOString(), error: "Controller lost; native runtime closure is unverified. Resume is refused.", capabilities: { message: false, stop: false, wait: false, resume: false } }
+    const path = join(child.run_dir, "state.json")
+    writeFileSync(`${path}.lost`, JSON.stringify(lost), { mode: 0o600 })
+    renameSync(`${path}.lost`, path)
+  }
 }
 
 export function externalControl(state: ExternalChildState, request: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -78,7 +128,7 @@ export function externalControl(state: ExternalChildState, request: Record<strin
       reject(error)
     })
     let answered = false
-    createInterface({ input: socket }).once("line", (line) => {
+    createInterface({ input: socket }).once("error", reject).once("line", (line) => {
       answered = true
       socket.end()
       try {
@@ -124,7 +174,7 @@ export function externalLineage(child: ExternalChildState, children: readonly Ex
 }
 
 export async function stopExternalSubtree(project: Project, slug: string, id: string) {
-  const children = externalChildren(project, slug)
+  const children = externalChildren(project, slug, true)
   const parent = children.find((child) => child.id === id)
   if (!parent) throw new Error("Child does not belong to this thread")
   if (children.some((child) => child.alive && (child.id === id || externalLineage(child, children).includes(id)) && !child.capabilities.stop)) throw new Error("A runtime in this branch does not support stopping")
@@ -134,15 +184,15 @@ export async function stopExternalSubtree(project: Project, slug: string, id: st
   try {
     const root = directory(project, slug) + "/"
     await Promise.allSettled([...launches.entries()].filter(([path]) => path.startsWith(root)).map(([, launch]) => launch.result))
-    const current = externalChildren(project, slug)
+    const current = externalChildren(project, slug, true)
     const descendants = current.filter((child) => externalLineage(child, current).includes(id))
     const owner = current.find((child) => child.id === id)
     if (!owner) throw new Error("The stopping child's ownership record disappeared")
     if (current.some((child) => child.alive && (child.id === id || descendants.includes(child)) && !child.capabilities.stop)) throw new Error("A runtime in this branch does not support stopping")
-    if (owner.alive) await externalControl(owner, { action: "stop" })
+    await closeExternal(owner)
     let stopped = 0
     for (const child of descendants.sort((a, b) => externalLineage(b, current).length - externalLineage(a, current).length)) {
-      if (child.alive) { await externalControl(child, { action: "stop" }); stopped++ }
+      if (child.alive) { await closeExternal(child); stopped++ }
     }
     writeFileSync(join(parent.run_dir, "closing"), "closed", { mode: 0o600 })
     return { state: externalChild(project, slug, id), descendantsStopped: stopped }
@@ -170,6 +220,7 @@ function hostRuntime(runtime: "claude" | "codex", options: ChildHostRuntime) {
 
 export async function operateChild(project: Project, slug: string, input: z.infer<typeof ChildRequest>, options: ChildHostRuntime = {}): Promise<unknown> {
   const request = ChildRequest.parse(input)
+  externalChildren(project, slug, !["list", "status"].includes(request.action))
   delete request.helper
   delete request.host_argv
   if (request.action === "list") return { children: externalChildren(project, slug) }
@@ -215,7 +266,7 @@ export async function operateChild(project: Project, slug: string, input: z.infe
   }
   const state = externalChild(project, slug, request.id)
   if (!state) throw new Error("Child does not belong to this thread")
-  if (request.action === "status") return state
+  if (request.action === "status") { markChildGeneration(state, "observed"); return state }
   if (request.action === "stop") return stopExternalSubtree(project, slug, request.id)
   if (request.action === "resume") {
     if (!state.capabilities.resume || !state.permissions) throw new Error("Recorded child lacks safe resume metadata")
@@ -238,9 +289,11 @@ export async function operateChild(project: Project, slug: string, input: z.infe
     try { return await resumed } finally { launches.delete(runDir) }
   }
   if ((request.action === "message" && !state.capabilities.message) || (request.action === "wait" && !state.capabilities.wait)) throw new Error("This child does not support the requested control")
-  if (!state.alive && request.action === "wait") return { state }
+  if (!state.alive && request.action === "wait") { markChildGeneration(state, "observed"); return { state } }
   if (!state.alive) throw new Error("Child runtime has closed; its terminal record remains available")
-  return externalControl(state, request)
+  const result = await externalControl(state, request)
+  if (request.action === "wait") markChildGeneration(ChildState.parse(result.state), "observed")
+  return result
 }
 
 const ChildEvent = z.object({

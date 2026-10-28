@@ -31,7 +31,82 @@ test("child records are parent-scoped and foreign ownership is refused", (t) => 
   assert.equal(externalChildren(h.project, "parent")[0].runtime, "codex")
   assert.deepEqual(externalChildren(h.project, "another-parent"), [])
   h.state.parent_id = "another-parent"; h.save()
-  assert.throws(() => externalChildren(h.project, "parent"), /ownership/)
+  assert.deepEqual(externalChildren(h.project, "parent"), [])
+  assert.throws(() => externalChildren(h.project, "parent", true), /ownership/)
+});
+
+test("an unreadable child is isolated from healthy children and the parent's tailer", (t) => {
+  const h = fixture()
+  const storage = createStorage(join(h.dir, "ui.db"), "test")
+  t.after(() => { storage.close(); rmSync(h.dir, { recursive: true, force: true }) })
+  const bad = join(h.dir, "child-agents", "parent", "bad")
+  mkdirSync(bad); writeFileSync(join(bad, "state.json"), '{"version":2}')
+  mkdirSync(join(h.dir, "child-agents", "not a thread"))
+  storage.upsertSession({ slug: "parent", session_id: "sid", thread_name: "frizz-parent", spawned_at: h.state.started_at, last_read_at: null, unread: 0, exited: 0, archived: 0, rested_at: null, title_auto: 0, title: "parent", state: "open", meta: null, seen_at: null, transcript_id: null })
+  writeFileSync(join(h.dir, "sid.jsonl"), JSON.stringify({ type: "assistant", timestamp: h.state.started_at, message: { role: "assistant", content: [{ type: "text", text: "Waiting" }], stop_reason: "end_turn" } }) + "\n")
+  const tailer = createTailer({ project: h.project, storage, bus: new Bus(), sessionLogDir: h.dir, paneDead: () => false, onChange: () => {} })
+  tailer.tick()
+  assert.equal(tailer.get("parent")?.subAgents[0]?.taskId, "child")
+  assert.equal(externalDispatches(h.project, "parent").length, 1)
+  assert.throws(() => externalChildren(h.project, "parent", true))
+});
+
+test("heartbeats update liveness without republishing the parent transcript", (t) => {
+  const h = fixture()
+  const storage = createStorage(join(h.dir, "ui.db"), "test")
+  t.after(() => { storage.close(); rmSync(h.dir, { recursive: true, force: true }) })
+  storage.upsertSession({ slug: "parent", session_id: "sid", thread_name: "frizz-parent", spawned_at: h.state.started_at, last_read_at: null, unread: 0, exited: 0, archived: 0, rested_at: null, title_auto: 0, title: "parent", state: "open", meta: null, seen_at: null, transcript_id: null })
+  writeFileSync(join(h.dir, "sid.jsonl"), JSON.stringify({ type: "assistant", timestamp: h.state.started_at, message: { role: "assistant", content: [{ type: "text", text: "Waiting" }], stop_reason: "end_turn" } }) + "\n")
+  let pushes = 0
+  const tailer = createTailer({ project: h.project, storage, bus: new Bus(), sessionLogDir: h.dir, paneDead: () => false, onChange: () => {}, onTranscriptChange: () => { pushes++ } })
+  tailer.tick()
+  const initial = pushes
+  h.state.updated_at = new Date(0).toISOString(); h.save(); tailer.tick()
+  assert.equal(tailer.get("parent")?.subAgents[0]?.state, "stale")
+  assert.equal(pushes, initial)
+  h.state.updated_at = new Date().toISOString(); h.save(); tailer.tick()
+  assert.equal(tailer.get("parent")?.subAgents[0]?.state, "running")
+  assert.equal(pushes, initial)
+});
+
+test("settled portable children do not evict native retired drawers", (t) => {
+  const h = fixture()
+  const storage = createStorage(join(h.dir, "ui.db"), "test")
+  t.after(() => { storage.close(); rmSync(h.dir, { recursive: true, force: true }) })
+  storage.upsertSession({ slug: "parent", session_id: "sid", thread_name: "frizz-parent", spawned_at: h.state.started_at, last_read_at: null, unread: 0, exited: 0, archived: 0, rested_at: null, title_auto: 0, title: "parent", state: "open", meta: null, seen_at: null, transcript_id: null })
+  const records = [
+    { type: "assistant", timestamp: h.state.started_at, message: { stop_reason: "tool_use", content: [{ type: "tool_use", name: "Agent", id: "native-task", input: { description: "Native review", run_in_background: true } }] } },
+    { type: "queue-operation", operation: "enqueue", timestamp: h.state.started_at, content: "<task-notification>\n<task-id>abc123</task-id>\n<tool-use-id>native-task</tool-use-id>\n<status>completed</status>\n</task-notification>" },
+  ]
+  writeFileSync(join(h.dir, "sid.jsonl"), records.map((record) => JSON.stringify(record)).join("\n") + "\n")
+  const tailer = createTailer({ project: h.project, storage, bus: new Bus(), sessionLogDir: h.dir, paneDead: () => false, onChange: () => {} })
+  tailer.tick()
+  assert(tailer.subAgent("parent", "native-task"))
+  for (let index = 0; index < 25; index++) {
+    const id = `old-${index}`
+    const run_dir = join(h.dir, "child-agents", "parent", id)
+    mkdirSync(run_dir)
+    writeFileSync(join(run_dir, "state.json"), JSON.stringify({ ...h.state, id, run_dir, status: "completed", finished_at: h.state.started_at }))
+  }
+  tailer.tick()
+  assert(tailer.subAgent("parent", "native-task"))
+  h.state.result = "stream update"; h.save(); tailer.tick()
+  assert(tailer.subAgent("parent", "native-task"))
+});
+
+test("a stale missing controller can be marked lost without claiming closure or permitting resume", { skip: process.platform === "win32" }, async (t) => {
+  const h = fixture()
+  t.after(() => rmSync(h.dir, { recursive: true, force: true }))
+  await assert.rejects(stopExternalSubtree(h.project, "parent", "child"), /ENOENT/)
+  assert.equal(externalChildren(h.project, "parent")[0].lost, undefined)
+  h.state.updated_at = new Date(0).toISOString(); h.save()
+  const result = await stopExternalSubtree(h.project, "parent", "child")
+  assert.equal(result.state?.lost, true)
+  assert.equal(result.state?.status, "failed")
+  assert.equal(result.state?.capabilities.resume, false)
+  assert.match(result.state?.error ?? "", /closure.*unverified/)
+  assert.equal(readFileSync(join(h.run, "closing"), "utf8"), "closed")
+  await assert.rejects(operateChild(h.project, "parent", { version: 1, action: "resume", id: "child", request_id: "unsafe", text: "continue" }), /safe resume/)
 });
 
 test("runtime deltas become one readable child message, separated by actual tools", (t) => {

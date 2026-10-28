@@ -71,6 +71,13 @@ test('unknown host protocol is rejected before any process starts', async () => 
   await assert.rejects(launch({ version: 42 }), /version/);
 });
 
+unixTest('a missing control socket rejects normally without an unhandled stream error', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'child-missing-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await writeFile(join(dir, 'state.json'), JSON.stringify({ alive: true, socket: join(dir, 'absent.sock') }));
+  await assert.rejects(control(dir, { action: 'message', text: 'direction', request_id: 'once' }), /ENOENT/);
+});
+
 unixTest('Codex JSON-RPC uses its native session for later turns and reports native failure', async (t) => {
   const state = await runtimeFixture(t, 'codex', `
 import {createInterface} from 'node:readline';

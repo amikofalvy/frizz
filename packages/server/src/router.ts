@@ -2443,7 +2443,7 @@ export function createRouter(ctx: AppContext) {
         finishedAt: z.string().optional(),
       }),
       handler: async ({ input }) => {
-        const child = externalChild(ctx.project, input.slug, input.id.replace(/^external_/, ""))
+        const child = input.id.startsWith("external_") ? externalChild(ctx.project, input.slug, input.id.slice(9)) : undefined
         if (child) return {
           messages: externalTranscript(child), state: child.status === "running" || child.status === "starting" ? "running" as const : "done" as const,
           steerable: (child.alive && child.capabilities.message && child.status !== "starting") || (!child.alive && Boolean(child.capabilities.resume && child.session_id)), steerNote: null,
@@ -2502,7 +2502,7 @@ export function createRouter(ctx: AppContext) {
         "subAgentSteer",
         { project: thisProject, thread: input.slug, detail: { subAgent: input.id, message: textDigest(input.message) } },
         async () => {
-          const child = externalChild(ctx.project, input.slug, input.id.replace(/^external_/, ""))
+          const child = input.id.startsWith("external_") ? externalChild(ctx.project, input.slug, input.id.slice(9)) : undefined
           if (child) {
             if (child.alive) await externalControl(child, { action: "message", text: input.message, request_id: input.deliveryId ?? randomUUID() })
             else {
@@ -2551,7 +2551,7 @@ export function createRouter(ctx: AppContext) {
       input: z.object({ slug: ThreadSlug, id: z.string() }).strict(),
       output: z.object({ stopped: z.boolean(), descendantsStopped: z.number(), note: z.string().nullable() }),
       handler: async ({ input }) => {
-        const child = externalChild(ctx.project, input.slug, input.id.replace(/^external_/, ""))
+        const child = input.id.startsWith("external_") ? externalChild(ctx.project, input.slug, input.id.slice(9)) : undefined
         if (child) {
           const stopped = await stopExternalSubtree(ctx.project, input.slug, child.id)
           ctx.tailer.tick()

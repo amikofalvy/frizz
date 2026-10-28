@@ -116,7 +116,15 @@ their branch runs. Stop closes admission to new descendants durably, joins
 in-flight launches and closes the branch through each owned control channel.
 
 Completion notifications use Frizz's durable wake outbox, keyed by parent
-session, child and generation, and survive a server restart. Controls select the
+session, child and generation. Separate durable observed/notified generation
+marks prevent notifications after result collection, later rest, outbox pruning
+or a server restart. Heartbeats do not republish the transcript, and portable
+history has a separate retention quota from native retired drawers. Controls select the
 child's adapter rather than the parent backend. Adapter failure never triggers
 an untracked standalone replacement. A dead control channel with no terminal
 record is unknown work, not permission to start a second writer.
+
+An explicit stop against a missing/refused socket with a stale heartbeat records
+`lost: true` and a failed outcome with native closure unverified. It closes branch
+admission bookkeeping without signalling a recovered PID or claiming success;
+all controls, including native resume, stay disabled for that lost identity.

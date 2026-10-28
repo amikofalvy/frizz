@@ -129,3 +129,22 @@ test("latestTranscriptWindow given the head it would compute returns the identic
   assert.ok(start > 0)
   assert.deepEqual(latestTranscriptWindow(all, start), latestTranscriptWindow(all))
 })
+
+test("child dispatches preserve native file order and stay inside the latest page window", () => {
+  const h = harness()
+  const stateDir = mkdtempSync(join(tmpdir(), "frizz-page-children-"))
+  h.project.stateDir = stateDir
+  try {
+    writeFileSync(h.path, USER("first") + "\n" + JSON.stringify({ type: "assistant", message: { id: "untimed", content: [{ type: "text", text: "untimed" }] } }) + "\n" + ASSISTANT("later", "later") + "\n")
+    const before = readLatestThreadTranscriptPage(h.project, h.store, "t")
+    for (const [id, started_at] of [["old", "2026-01-01T00:00:00.000Z"], ["current", "2026-07-10T18:00:00.500Z"]]) {
+      const run_dir = join(stateDir, "child-agents", "t", id)
+      mkdirSync(run_dir, { recursive: true })
+      writeFileSync(join(run_dir, "state.json"), JSON.stringify({ version: 1, id, parent_id: "t", runtime: "codex", model: "test", effort: "low", label: id, run_dir, socket: "unused", started_at, status: "completed", generation: 1, completed_generation: 1, alive: false, capabilities: { message: false, stop: false, wait: true }, result: "done" }))
+    }
+    const after = readLatestThreadTranscriptPage(h.project, h.store, "t")
+    assert.deepEqual(after.messages.filter((message) => !message.sourceId?.startsWith("external-agent:")), before.messages)
+    assert.deepEqual(after.messages.filter((message) => message.sourceId?.startsWith("external-agent:")).map((message) => message.sourceId), ["external-agent:current"])
+    assert.equal(after.beforeCursor, before.beforeCursor)
+  } finally { h.store.close(); h.cleanup(); rmSync(stateDir, { recursive: true, force: true }) }
+})

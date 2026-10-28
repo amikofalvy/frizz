@@ -1051,6 +1051,7 @@ export interface TailState extends FoldState {
   // Claude fills them from `trackDispatches` instead, so this stays undefined there.
   codexSubAgents?: CodexSubAgentTracker
   externalAgentsFingerprint?: string
+  externalSettledGenerations?: Map<string, number>
   // completed shells retained so an already-open output drawer can render the terminal tail.
   retiredShells: Map<string, RetiredShell>
   // Dispatch tool_use ids the operator has RETIRED with the × — read from the registry at prime and
@@ -1761,8 +1762,10 @@ function retireToRing(state: TailState, entry: SubAgentEntry, finishedAt: string
     finishedAt,
     status,
   })
-  while (state.retiredSubAgents.size > RETAINED_SUBAGENTS_MAX) {
-    const oldest = state.retiredSubAgents.keys().next().value
+  const external = entry.externalGeneration !== undefined
+  const sameKind = () => [...state.retiredSubAgents.values()].filter((child) => (child.externalGeneration !== undefined) === external)
+  while (sameKind().length > RETAINED_SUBAGENTS_MAX) {
+    const oldest = sameKind()[0]?.toolUseId
     if (oldest === undefined) break
     state.retiredSubAgents.delete(oldest)
   }
@@ -5936,7 +5939,11 @@ export function createTailer(deps: TailerDeps): Tailer {
       const state = states.get(slug)
       if (!state || !registeredStateIsCurrent(state)) continue
       const children = externalChildren(deps.project, slug)
-      const fingerprint = JSON.stringify(children)
+      for (const child of children) {
+        const entry = state.subAgents.get(`external_${child.id}`)
+        if (entry) entry.externalLastSeen = child.updated_at
+      }
+      const fingerprint = JSON.stringify(children.map(({ updated_at, ...child }) => child))
       if (fingerprint === state.externalAgentsFingerprint) continue
       state.externalAgentsFingerprint = fingerprint
       for (const child of children) {
@@ -5947,7 +5954,12 @@ export function createTailer(deps: TailerDeps): Tailer {
           state.subAgents.set(id, { kind: "agent", toolUseId: id, taskId: child.id, label: child.label, startedAt: child.started_at, subagentType: `${child.runtime} ${child.model}/${child.effort}`, outputFile: join(child.run_dir, "events.jsonl"), externalGeneration: child.generation, externalLastSeen: child.updated_at, ...relation })
         } else {
           const entry = { ...(state.subAgents.get(id) ?? { kind: "agent" as const, toolUseId: id, taskId: child.id, label: child.label, startedAt: child.started_at, subagentType: `${child.runtime} ${child.model}/${child.effort}`, outputFile: join(child.run_dir, "events.jsonl") }), externalGeneration: child.generation }
-          retireLive(state, entry, child.finished_at, child.outcome ?? (child.status === "completed" ? "completed" : child.status === "failed" ? "failed" : "killed"))
+          state.subAgents.delete(id)
+          const settled = state.externalSettledGenerations ??= new Map()
+          if (settled.get(id) !== child.generation) {
+            retireLive(state, entry, child.finished_at, child.outcome ?? (child.status === "completed" ? "completed" : child.status === "failed" ? "failed" : "killed"))
+            settled.set(id, child.generation)
+          }
           if (children.some((descendant) => (descendant.status === "starting" || descendant.status === "running") && externalLineage(descendant, children).includes(child.id))) state.subAgents.set(id, { ...entry, ...relation, externalRested: true })
         }
       }

@@ -4538,9 +4538,15 @@ export function readLatestThreadTranscriptPage(
   opts: { editedFiles?: boolean } = {},
 ): TranscriptPage {
   const page = readNativeLatestThreadTranscriptPage(project, storage, slug, backendFor, opts)
-  const children = externalDispatches(project, slug)
+  const start = page.messages.find((message) => message.at)?.at
+  const children = externalDispatches(project, slug).filter((child) => !start || (child.at ?? "") >= start)
   if (!children.length) return page
-  return { ...page, messages: [...page.messages, ...children].sort((a, b) => (a.at ?? "").localeCompare(b.at ?? "")) }
+  const messages = [...page.messages]
+  for (const child of children) {
+    const index = messages.findIndex((message) => message.at && message.at > (child.at ?? ""))
+    messages.splice(index < 0 ? messages.length : index, 0, child)
+  }
+  return { ...page, messages }
 }
 
 function readNativeLatestThreadTranscriptPage(

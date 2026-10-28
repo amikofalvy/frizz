@@ -109,6 +109,7 @@ export function control(dir, request) {
       reject(error);
     });
     const lines = createInterface({ input: socket });
+    lines.once('error', reject);
     let answered = false;
     lines.once('line', (line) => {
       answered = true;
