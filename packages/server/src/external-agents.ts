@@ -46,9 +46,10 @@ function directory(project: Project, slug: string) {
 
 const invalidRecords = new Set<string>()
 
-export function externalChildren(project: Project, slug: string, strict = false): ExternalChildState[] {
+export function externalChildren(project: Project, slug: string, strict: boolean | ReadonlySet<string> = false): ExternalChildState[] {
   if (!project?.stateDir) return []
   const root = directory(project, slug)
+  const refuses = (id: string) => strict === true || (typeof strict !== "boolean" && strict.has(id))
   if (!existsSync(root)) return []
   const children = readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory()).flatMap((entry) => {
     const path = join(root, entry.name, "state.json")
@@ -59,7 +60,7 @@ export function externalChildren(project: Project, slug: string, strict = false)
       invalidRecords.delete(path)
       return [state]
     } catch (error) {
-      if (strict) throw error
+      if (refuses(entry.name)) throw error
       if (!invalidRecords.has(path)) {
         log.warn("child-agents", `Ignoring unreadable child record ${slug}/${entry.name}; controls remain refused`)
         if (invalidRecords.size < 1000) invalidRecords.add(path)
@@ -70,10 +71,40 @@ export function externalChildren(project: Project, slug: string, strict = false)
   return children.filter((child) => {
     try { externalLineage(child, children); return true }
     catch (error) {
-      if (strict) throw error
+      if (refuses(child.id)) throw error
       return false
     }
   })
+}
+
+function branchChildren(project: Project, slug: string, id: string) {
+  const root = directory(project, slug)
+  const children = externalChildren(project, slug)
+  if (!children.some((child) => child.id === id)) throw new Error("Child does not belong to this thread or has an unreadable ownership record")
+  const links = new Map(children.map((child) => [child.id, child.parent_agent_id]))
+  const binding = z.object({ id: z.string(), parent_id: z.string(), run_dir: z.string(), parent_agent_id: z.string().optional() })
+  for (const entry of readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory() && !links.has(entry.name))) {
+    let owner: z.infer<typeof binding> | undefined
+    for (const name of ["request.json", "state.json"]) {
+      const path = join(root, entry.name, name)
+      if (!existsSync(path)) continue
+      try { owner = binding.parse(JSON.parse(readFileSync(path, "utf8"))); break } catch {}
+    }
+    if (!owner || owner.id !== entry.name || owner.parent_id !== slug || owner.run_dir !== join(root, entry.name)) throw new Error("Cannot establish the unreadable child's branch ownership")
+    links.set(owner.id, owner.parent_agent_id)
+  }
+  const selected = new Set([id])
+  for (const candidate of links.keys()) {
+    const seen = new Set<string>()
+    let ancestor: string | undefined = candidate
+    while (ancestor) {
+      if (seen.has(ancestor)) throw new Error("Cyclic child-agent ownership record")
+      seen.add(ancestor)
+      if (ancestor === id) { selected.add(candidate); break }
+      ancestor = links.get(ancestor)
+    }
+  }
+  return externalChildren(project, slug, selected)
 }
 
 export function externalParentSlugs(project: Project): string[] {
@@ -174,7 +205,7 @@ export function externalLineage(child: ExternalChildState, children: readonly Ex
 }
 
 export async function stopExternalSubtree(project: Project, slug: string, id: string) {
-  const children = externalChildren(project, slug, true)
+  const children = branchChildren(project, slug, id)
   const parent = children.find((child) => child.id === id)
   if (!parent) throw new Error("Child does not belong to this thread")
   if (children.some((child) => child.alive && (child.id === id || externalLineage(child, children).includes(id)) && !child.capabilities.stop)) throw new Error("A runtime in this branch does not support stopping")
@@ -184,7 +215,7 @@ export async function stopExternalSubtree(project: Project, slug: string, id: st
   try {
     const root = directory(project, slug) + "/"
     await Promise.allSettled([...launches.entries()].filter(([path]) => path.startsWith(root)).map(([, launch]) => launch.result))
-    const current = externalChildren(project, slug, true)
+    const current = branchChildren(project, slug, id)
     const descendants = current.filter((child) => externalLineage(child, current).includes(id))
     const owner = current.find((child) => child.id === id)
     if (!owner) throw new Error("The stopping child's ownership record disappeared")
@@ -220,10 +251,14 @@ function hostRuntime(runtime: "claude" | "codex", options: ChildHostRuntime) {
 
 export async function operateChild(project: Project, slug: string, input: z.infer<typeof ChildRequest>, options: ChildHostRuntime = {}): Promise<unknown> {
   const request = ChildRequest.parse(input)
-  externalChildren(project, slug, !["list", "status"].includes(request.action))
+  externalChildren(project, slug, ["start", "resume"].includes(request.action))
   delete request.helper
   delete request.host_argv
-  if (request.action === "list") return { children: externalChildren(project, slug) }
+  if (request.action === "list") {
+    const children = externalChildren(project, slug)
+    for (const child of children) markChildGeneration(child, "observed")
+    return { children }
+  }
   if (!request.id) throw new Error("A child id is required")
   const childId = request.id
   const root = directory(project, slug)

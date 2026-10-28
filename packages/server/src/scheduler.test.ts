@@ -203,6 +203,7 @@ test("external child completion wakes its parent once across scheduler reconstru
     const parent = h.tele.get("parent")
     assert.ok(parent)
     parent.turn = "idle"
+    parent.lastAssistantAt = iso(h.clock.ms + 1000)
     h.clock.ms += 5 * 60_000
     await scheduler.tick()
     assert.equal(h.resumes.length, 1)
@@ -223,19 +224,39 @@ function completionChild(finished: number) {
   return { dir, project: { dir, stateDir: dir, id: "p", name: "p", label: "p", cwdSlug: "p" } as Project }
 }
 
-test("a collected result and a result settled before the parent's rest do not wake it", async () => {
-  for (const observed of ["status", "wait", "rest"] as const) {
+test("a result collected through status, wait or list does not wake its parent", async () => {
+  for (const observed of ["status", "wait", "list"] as const) {
     const h = harness()
     const child = completionChild(h.clock.ms)
     try {
       h.storage.upsertSession(row("parent"))
-      h.tele.set("parent", { ...tele(), pendingQuestion: true, lastAssistantAt: iso(h.clock.ms + (observed === "rest" ? 1000 : -1000)) })
-      if (observed !== "rest") await operateChild(child.project, "parent", { version: 1, action: observed, id: "child", after: 0 })
+      h.tele.set("parent", { ...tele(), pendingQuestion: true, lastAssistantAt: iso(h.clock.ms - 1000) })
+      await operateChild(child.project, "parent", { version: 1, action: observed, id: "child", after: 0 })
       await h.make({ project: child.project }).tick()
       await h.make({ project: child.project }).tick()
       assert.equal(h.resumes.length, 0, observed)
     } finally { h.storage.close(); rmSync(child.dir, { recursive: true, force: true }) }
   }
+})
+
+test("collecting a result supersedes its already-queued completion wake", async () => {
+  const h = harness()
+  const child = completionChild(h.clock.ms)
+  try {
+    h.storage.upsertSession(row("parent"))
+    const parent = { ...tele(undefined, "in-flight"), pendingQuestion: true, lastAssistantAt: iso(h.clock.ms - 1000) }
+    h.tele.set("parent", parent)
+    const scheduler = h.make({ project: child.project })
+    await scheduler.tick()
+    assert.equal(createWakeDeliveryStore(h.storage.scope).listOpen().length, 1)
+    await operateChild(child.project, "parent", { version: 1, action: "status", id: "child" })
+    parent.turn = "idle"
+    parent.lastAssistantAt = iso(h.clock.ms + 1000)
+    h.clock.ms += 5 * 60_000
+    await scheduler.tick()
+    assert.equal(h.resumes.length, 0)
+    assert.equal(createWakeDeliveryStore(h.storage.scope).list()[0]?.state, "superseded")
+  } finally { h.storage.close(); rmSync(child.dir, { recursive: true, force: true }) }
 })
 
 // ARM A REAL TIMER ROW. The `timer: <ISO instant>` fence these tests used to arm from is deleted

@@ -138,6 +138,33 @@ test("controls use the exact child's channel and distinguish an acceptance recei
   await assert.rejects(operateChild(h.project, "another-parent", { version: 1, action: "stop", id: "child" }), /does not belong/)
 });
 
+test("an unreadable sibling does not block healthy controls, but an unreadable descendant blocks branch closure", { skip: process.platform === "win32" }, async (t) => {
+  const h = fixture()
+  const bad = join(h.dir, "child-agents", "parent", "bad")
+  mkdirSync(bad)
+  writeFileSync(join(bad, "state.json"), '{"version":2}')
+  const request = { id: "bad", parent_id: "parent", run_dir: bad, parent_agent_id: undefined as string | undefined }
+  writeFileSync(join(bad, "request.json"), JSON.stringify(request))
+  const server = createServer((socket) => createInterface({ input: socket }).once("line", (line) => {
+    const action = JSON.parse(line).action
+    if (action === "stop") { h.state.alive = false; h.state.status = "closed"; h.save() }
+    socket.end(JSON.stringify(action === "message" ? { delivery: "accepted" } : { state: h.state }) + "\n")
+  }))
+  await new Promise<void>((accept) => server.listen(h.state.socket, accept))
+  t.after(async () => { await new Promise<void>((accept) => server.close(() => accept())); rmSync(h.dir, { recursive: true, force: true }) })
+  const message = await operateChild(h.project, "parent", { version: 1, action: "message", id: "child", text: "direction", request_id: "once" })
+  assert.deepEqual(message, { delivery: "accepted" })
+  h.state.status = "completed"; h.state.completed_generation = 1; h.save()
+  assert.equal((await operateChild(h.project, "parent", { version: 1, action: "wait", id: "child", after: 0 }) as { state: ExternalChildState }).state.id, "child")
+  request.parent_agent_id = "child"
+  writeFileSync(join(bad, "request.json"), JSON.stringify(request))
+  await assert.rejects(stopExternalSubtree(h.project, "parent", "child"))
+  request.parent_agent_id = undefined
+  writeFileSync(join(bad, "request.json"), JSON.stringify(request))
+  const stopped = await stopExternalSubtree(h.project, "parent", "child")
+  assert.equal(stopped.state?.alive, false)
+});
+
 test("the real tailer tracks a foreign-harness child through completion and server reconstruction", (t) => {
   const h = fixture()
   const storage = createStorage(join(h.dir, "ui.db"), "test")

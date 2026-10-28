@@ -1516,7 +1516,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       if (!deps.project) return "superseded"
       const [, id, generation] = item.fenceId.split(":")
       const child = externalChild(deps.project, item.slug, id)
-      if (!child || child.generation !== Number(generation) || childGenerationMark(child, "observed") >= Number(generation) || Date.parse(child.finished_at ?? "") <= Date.parse(tele.lastAssistantAt ?? "")) return "superseded"
+      if (!child || child.generation !== Number(generation) || childGenerationMark(child, "observed") >= Number(generation)) return "superseded"
       return tele.turn === "idle" ? "current-idle" : "current-busy"
     }
     if (isShellFenceId(item.fenceId)) {
@@ -3705,11 +3705,9 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     for (const row of deps.storage.allSessions()) {
       if (row.state === "archived" || row.archived === 1) continue
       const tele = deps.tailer.get(row.slug)
-      if (!tele || tele.turn !== "idle" || tele.authFault || tele.apiFault || threadSaidDone(deps.storage, row.slug, tele)) continue
-      const restedAt = Date.parse(tele.lastAssistantAt ?? "")
-      if (!Number.isFinite(restedAt)) continue
+      if (!tele || tele.authFault || tele.apiFault || threadSaidDone(deps.storage, row.slug, tele)) continue
       for (const child of externalChildren(deps.project, row.slug)) {
-        if (child.status === "running" || child.status === "starting" || !child.finished_at || Date.parse(child.finished_at) <= restedAt) continue
+        if (child.status === "running" || child.status === "starting" || !child.finished_at) continue
         if (childGenerationMark(child, "observed") >= child.generation || childGenerationMark(child, "notified") >= child.generation) continue
         const fenceId = `external-child:${child.id}:${child.generation}`
         const deliveryId = wakeDeliveryId(row.slug, row.session_id, fenceId)
