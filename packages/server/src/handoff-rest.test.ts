@@ -1,4 +1,4 @@
-// A HANDOFF STAYS IN THE QUEUE UNTIL THE HUMAN REACHES IT (maintainer 2026-10-27, of a Snoozed thread whose
+// A HANDOFF STAYS IN THE QUEUE UNTIL THE HUMAN REACHES IT (reported 2026-10-27, of a Snoozed thread whose
 // PR was green and waiting on their merge: "it looks green to me"). The worker rested `status: needs_input`
 // on its registered PR; the watcher then woke it for CI and an approval it had already read, and it re-parked
 // `status: watching` with nothing to add. That quiet park took the thread out of the queue, so the handoff it
@@ -20,9 +20,9 @@ import { applyEvent, applyRecord, newTailState, type SessionTelemetry, type Tail
 
 const T0 = Date.now() + 7 * 86_400_000
 const at = (minute: number) => new Date(T0 + minute * 60_000).toISOString()
-const PR = "inkeep/agents-private#7477"
-const READY = "```awaiting\nprs: [inkeep/agents-private#7477]\nstatus: needs_input\nfor: 180d\ntitle: Ready, unmerged\n---\nReady at 0251203e; the merge is the maintainer's.\n```"
-const QUIET = "```awaiting\nprs: [inkeep/agents-private#7477]\nstatus: watching\nfor: 180d\n```"
+const PR = "acme/app#391"
+const READY = "```awaiting\nprs: [acme/app#391]\nstatus: needs_input\nfor: 180d\ntitle: Ready, unmerged\n---\nReady at 0251203e; the merge is the maintainer's.\n```"
+const QUIET = "```awaiting\nprs: [acme/app#391]\nstatus: watching\nfor: 180d\n```"
 const WAKE = `✅ CI PASSED on ${PR} — 93 checks green, 31 skipped.\n\n${wakeDeliveryToken("wake-ci")}`
 const GREEN: GithubWatchStatus = {
   checks: "passing", running: 0, passed: 93, failed: 0, skipped: 31, gated: 0, gating: [], failing: [],
@@ -41,7 +41,7 @@ function world(backend: "claude" | "codex") {
   storage.setBackend(slug, backend)
   if (backend === "claude") storage.setClaudeRuntime(slug, "broker")
   else storage.setCodexRuntime(slug, "app-server")
-  storage.armPrWatch({ id: "prw_1", slug, owner: "inkeep", repo: "agents-private", number: 7477, createdAtMs: Date.parse(at(0)), expiresAtMs: Date.parse(at(0)) + 180 * 86_400_000 })
+  storage.armPrWatch({ id: "prw_1", slug, owner: "acme", repo: "app", number: 391, createdAtMs: Date.parse(at(0)), expiresAtMs: Date.parse(at(0)) + 180 * 86_400_000 })
   storage.setSetting(GITHUB_STATUS_SETTING, { [PR]: GREEN })
   const s = newTailState(slug, `sid-${slug}`, "/dev/null")
   const tele = (): SessionTelemetry => ({
@@ -79,7 +79,7 @@ for (const backend of ["claude", "codex"] as const) {
   test(`${backend}: a no-news quiet park after a needs_input handoff keeps the thread in the queue`, () => {
     const w = world(backend)
     try {
-      w.user(0, "own inkeep/agents-private#7477 and park it for my evaluation when it is ready")
+      w.user(0, "own acme/app#391 and park it for my evaluation when it is ready")
       w.say(1, READY)
       assert.equal(w.view().needsYou, true, "the handoff queues")
       w.user(5, WAKE)
@@ -93,7 +93,7 @@ for (const backend of ["claude", "codex"] as const) {
   test(`${backend}: once the human has typed past the handoff, a quiet park snoozes as before`, () => {
     const w = world(backend)
     try {
-      w.user(0, "own inkeep/agents-private#7477")
+      w.user(0, "own acme/app#391")
       w.say(1, READY)
       w.user(5, "keep watching it, I'll merge later")
       w.say(6, QUIET)
@@ -106,7 +106,7 @@ for (const backend of ["claude", "codex"] as const) {
   test(`${backend}: a quiet park with no handoff before it snoozes as before`, () => {
     const w = world(backend)
     try {
-      w.user(0, "own inkeep/agents-private#7477")
+      w.user(0, "own acme/app#391")
       w.say(1, QUIET)
       w.user(5, WAKE)
       w.say(6, QUIET)

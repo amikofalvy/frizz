@@ -1,4 +1,4 @@
-// A `status: watching` PARK THAT NOTHING WILL WAKE GOES TO THE QUEUE (maintainer 2026-10-25: "The snoozed items
+// A `status: watching` PARK THAT NOTHING WILL WAKE GOES TO THE QUEUE (reported 2026-10-25: "The snoozed items
 // are often frozen waiting for something that will never happen"). Of fourteen Snoozed threads in one project,
 // five were PR parks with green CI and only the maintainer's merge left, two were PR parks on red CI their
 // workers had chosen not to fix, and three were timer loops polling another thread for a grant that never came.
@@ -21,8 +21,8 @@ import { applyEvent, applyRecord, newTailState, type SessionTelemetry, type Tail
 const T0 = Date.now() + 7 * 86_400_000
 const HOUR = 60
 const at = (minute: number, ms = 0) => new Date(T0 + minute * 60_000 + ms).toISOString()
-const PR = "inkeep/agents-private#7438"
-const PR_PARK = "```awaiting\nprs: [inkeep/agents-private#7438]\nstatus: watching\nfor: 180d\n```"
+const PR = "acme/app#412"
+const PR_PARK = "```awaiting\nprs: [acme/app#412]\nstatus: watching\nfor: 180d\n```"
 const TIMER_PARK = "```awaiting\ntimers: [tmr_poll]\nstatus: watching\nfor: 1d\n```"
 const WORKING = "```awaiting\ntimers: [tmr_poll]\nstatus: working\nfor: 1d\n```"
 const READY: GithubWatchStatus = {
@@ -43,7 +43,7 @@ function world(backend: "claude" | "codex", github: GithubWatchStatus) {
   storage.setBackend(slug, backend)
   if (backend === "claude") storage.setClaudeRuntime(slug, "broker")
   else storage.setCodexRuntime(slug, "app-server")
-  storage.armPrWatch({ id: "prw_1", slug, owner: "inkeep", repo: "agents-private", number: 7438, createdAtMs: Date.parse(at(0)), expiresAtMs: Date.parse(at(0)) + 180 * 86_400_000 })
+  storage.armPrWatch({ id: "prw_1", slug, owner: "acme", repo: "app", number: 412, createdAtMs: Date.parse(at(0)), expiresAtMs: Date.parse(at(0)) + 180 * 86_400_000 })
   storage.armThreadTimer({ id: "tmr_poll", slug, prompt: "check whether root granted the next step", fireAtMs: Date.parse(at(100 * HOUR)), createdAtMs: Date.parse(at(0)) })
   storage.setSetting(GITHUB_STATUS_SETTING, { [PR]: github })
   const s = newTailState(slug, `sid-${slug}`, "/dev/null")
@@ -104,7 +104,7 @@ for (const backend of ["claude", "codex"] as const) {
   test(`${backend}: a PR park waiting only on our own merge queues, naming the PR`, () => {
     const w = world(backend, READY)
     try {
-      w.user(0, "own inkeep/agents-private#7438")
+      w.user(0, "own acme/app#412")
       w.say(1, PR_PARK)
       const v = w.view()
       assert.equal(v.needsYou, true)
@@ -116,7 +116,7 @@ for (const backend of ["claude", "codex"] as const) {
   test(`${backend}: a PR park on settled red CI of our own PR queues`, () => {
     const w = world(backend, RED)
     try {
-      w.user(0, "watch inkeep/agents-private#7438")
+      w.user(0, "watch acme/app#412")
       w.say(1, PR_PARK)
       assert.equal(w.view().needsYou, true)
       assert.deepEqual(w.view().stalledPark, { why: "pr-idle", refs: [PR] })
@@ -139,7 +139,7 @@ for (const backend of ["claude", "codex"] as const) {
     for (const [status, why] of cases) {
       const w = world(backend, status)
       try {
-        w.user(0, "own inkeep/agents-private#7438")
+        w.user(0, "own acme/app#412")
         w.say(1, PR_PARK)
         const v = w.view()
         assert.equal(v.needsYou, false, why)

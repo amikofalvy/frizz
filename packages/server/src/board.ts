@@ -758,7 +758,7 @@ function ciInMotion(status: GithubStatusBook[string] | undefined): boolean {
  *
  *  A PR waiting on someone else's review or merge stays a real wait, however long it takes. What this
  *  catches is the five "ready, unmerged" PRs that sat 180-day parks in Snoozed with green CI and only the
- *  maintainer's merge left (open-knowledge, 2026-10-25), and the two whose red CI their workers had
+ *  maintainer's merge left (one project, 2026-10-25), and the two whose red CI their workers had
  *  decided not to fix. */
 export function prWaitsOnNoOne(status: GithubStatusBook[string] | undefined): boolean {
   if (!status || status.state !== "open" || status.mergePath !== "none" || status.viewerAuthored !== true) return false
@@ -770,7 +770,7 @@ export function prWaitsOnNoOne(status: GithubStatusBook[string] | undefined): bo
 // How many quiet parks in a row, spread over how long, before a run of them is a stall rather than a wait.
 // Only parks answering the worker's own timer or an expired park count (FoldState.parkStreak), so three of
 // those across a day is a thread polling for something that has stopped coming. Three, not more: a thread
-// polling once a day for a grant (open-knowledge, 2026-10-24) would otherwise hide for most of a week.
+// polling once a day for a grant (2026-10-24) would otherwise hide for most of a week.
 const STALL_PARKS = 3
 const STALL_SPAN_MS = 24 * 3_600_000
 
@@ -1308,7 +1308,7 @@ export function deriveNeedsYou(
 // of the human, and only the human typing to it (`restFromAt`, the boundary an open question stands
 // across) takes it out again. A later quiet park does not: a PR watcher's wake for news the worker had
 // already read made it re-park `status: watching`, and its "ready, unmerged" handoff sat in Snoozed with
-// green CI (inkeep/agents-private#7477, maintainer 2026-10-27: "it looks green to me"). The thread falls
+// green CI (reported 2026-10-27: "it looks green to me"). The thread falls
 // through to rule 2 instead, so the card keeps its event-snooze.
 //
 // RULE 1 CANNOT HONOUR A PARK THAT WILL NOT WAKE ON ITS OWN (parkStall): a PR park whose every PR waits on

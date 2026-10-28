@@ -26,32 +26,32 @@ const base = {
 
 const prIdle = {
   ...base,
-  id: "linked-file-warnings",
-  title: "Track linked-file warning PR",
+  id: "fix-the-cache-collision",
+  title: "Fix the cache collision",
   sessionId: "aaaaaaaa-bbbb-cccc-dddd-000000000001",
   lastFence: {
     kind: "awaiting",
     body: "",
-    hints: [{ kind: "pr", value: "inkeep/agents-private#7438" }, { kind: "status", value: "watching" }, { kind: "for", value: "180d" }],
+    hints: [{ kind: "pr", value: "acme/app#412" }, { kind: "status", value: "watching" }, { kind: "for", value: "180d" }],
   },
   watches: [{
-    id: "github:linked-file-warnings:inkeep/agents-private#7438", kind: "github", target: "inkeep/agents-private#7438",
+    id: "github:fix-the-cache-collision:acme/app#412", kind: "github", target: "acme/app#412",
     state: "armed", createdAt: iso(42 * HOUR),
     github: {
       checks: "passing", running: 0, passed: 85, failed: 0, skipped: 30, gated: 0, gating: [], failing: [],
       merge: "mergeable", state: "open", polledAt: iso(0), mergePath: "none", viewerAuthored: true, viewerCanMerge: true,
     },
   }],
-  stalledPark: { why: "pr-idle", refs: ["inkeep/agents-private#7438"] },
+  stalledPark: { why: "pr-idle", refs: ["acme/app#412"] },
   lastActivityAt: iso(42 * HOUR),
   lastUserAt: iso(42 * HOUR),
 } as unknown as ThreadView
 
 const repeated = {
   ...base,
-  id: "t9-grant-poll",
+  id: "await-the-go-ahead",
   backend: "claude",
-  title: "Ubuntu git recovery metadata observation",
+  title: "Run the migration once it is approved",
   sessionId: "aaaaaaaa-bbbb-cccc-dddd-000000000002",
   lastFence: {
     kind: "awaiting",
@@ -59,16 +59,16 @@ const repeated = {
     hints: [{ kind: "timer", value: "tmr_79c8b08e5f09" }, { kind: "status", value: "watching" }, { kind: "for", value: "1d" }],
   },
   watches: [{
-    id: "timer:t9-grant-poll:tmr_79c8b08e5f09", kind: "timer", target: "tmr_79c8b08e5f09", state: "armed",
+    id: "timer:await-the-go-ahead:tmr_79c8b08e5f09", kind: "timer", target: "tmr_79c8b08e5f09", state: "armed",
     createdAt: iso(2 * HOUR),
-    timer: { fireAt: new Date(now + 22 * HOUR).toISOString(), prompt: "Fallback: check for a reply or new grant from root, else re-park." },
+    timer: { fireAt: new Date(now + 22 * HOUR).toISOString(), prompt: "Check whether the migration was approved, else re-park." },
   }],
   stalledPark: { why: "repeated", parks: 6, since: iso(50 * HOUR) },
   lastActivityAt: iso(2 * HOUR),
   lastUserAt: iso(2 * HOUR),
 } as unknown as ThreadView
 
-store.board = { projectDir: "/fixture/open-knowledge", threads: [prIdle, repeated] } as unknown as BoardSnapshot
+store.board = { projectDir: "/fixture/app", threads: [prIdle, repeated] } as unknown as BoardSnapshot
 store.drawers = []
 
 const empty = { messages: [], transcriptKey: "fixture-key", hasEarlier: false, historyLoaded: false }

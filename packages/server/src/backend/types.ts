@@ -233,14 +233,14 @@ export interface FoldState {
   // listing `steps:`). Unlike `lastFence` it is NOT cleared by a user record, because what it records is
   // an obligation on the reader, like a question: a later wake carrying no news let the worker re-park
   // `status: watching` and bury the handoff in Snoozed while the human still owed it a merge
-  // (inkeep/agents-private#7477, 2026-10-27). The board holds such a thread in the queue until
+  // (2026-10-27). The board holds such a thread in the queue until
   // `restFromAt` passes it (board needsInputQueues).
   handoffAt?: string
   // THE QUIET-PARK STREAK: how many `status: watching` rests in a row the worker has made in answer to a
   // wake that carried NO NEWS — its own timer firing, or its park running out — and when the run began.
   // A worker polling for a grant that never comes, or retrying a cleanup that keeps failing, re-parks
   // every few hours with nothing for the human to see: 38 timers over five days on one thread, 15 over
-  // three on another (open-knowledge, 2026-10-25). The board queues a run that is long enough (board
+  // three on another (one project, 2026-10-25). The board queues a run that is long enough (board
   // parkStall). A park after anything else (the human, a PR or shell report, a sub-agent) ends the run, as
   // does any other fenced rest; prose with no fence does not, since a polling turn narrates before it parks.
   parkStreak?: ParkStreak
