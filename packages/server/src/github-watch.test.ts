@@ -328,9 +328,13 @@ test("the poll's answer to who a PR waits on reaches the reading, and an unasked
     const snap = node(over)
     return githubWatchStatus({ ...snap, rollup: snap.rollup as PrStatus["rollup"] }, AT)
   }
-  const idle = read({ mergeQueueEntry: null, autoMergeRequest: null, viewerDidAuthor: true, baseRepository: { viewerPermission: "WRITE" } })
+  const idle = read({ mergeQueueEntry: null, autoMergeRequest: null, viewerDidAuthor: true, baseRepository: { viewerPermission: "WRITE" }, reviewRequests: { nodes: [] } })
   assert.deepEqual([idle.mergePath, idle.viewerAuthored, idle.viewerCanMerge, idle.reviewRequested], ["none", true, true, false])
   assert.equal(read({ reviewRequests: { nodes: [{ requestedReviewer: { __typename: "User", login: "teammate" } }] } }).reviewRequested, true)
+  // A reviewer with no name to keep is still a reviewer: a team the token cannot see, and a Mannequin.
+  assert.equal(read({ reviewRequests: { nodes: [{ requestedReviewer: null }] } }).reviewRequested, true)
+  assert.equal(read({ reviewRequests: { nodes: [{ requestedReviewer: { __typename: "Mannequin" } }] } }).reviewRequested, true)
+  assert.equal(read({}).reviewRequested, undefined, "a response that did not list review requests says nothing")
   assert.equal(read({ mergeQueueEntry: { position: 2 }, autoMergeRequest: null }).mergePath, "queued")
   assert.equal(read({ mergeQueueEntry: null, autoMergeRequest: { enabledAt: AT } }).mergePath, "auto")
   const outsider = read({ viewerDidAuthor: false, baseRepository: { viewerPermission: "READ" } })

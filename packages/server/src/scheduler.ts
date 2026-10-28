@@ -101,6 +101,7 @@ export interface PrStatus {
   autoMerge?: boolean
   viewerDidAuthor?: boolean
   viewerPermission?: string
+  reviewRequestCount?: number
 }
 
 export interface WorkflowRun {
@@ -428,7 +429,9 @@ function githubWaitingOn(pr: PrStatus): Pick<GithubWatchStatus, "mergePath" | "v
     ...(mergePath ? { mergePath } : {}),
     ...(pr.viewerDidAuthor !== undefined ? { viewerAuthored: pr.viewerDidAuthor } : {}),
     ...(pr.viewerPermission !== undefined ? { viewerCanMerge: MERGING_PERMISSIONS.has(pr.viewerPermission) } : {}),
-    ...(pr.reviewRequests !== undefined ? { reviewRequested: pr.reviewRequests.length > 0 } : {}),
+    // The raw count, not `reviewRequests`: that list keeps only the reviewers with a name, and a request to
+    // an unnamed one (a team the token cannot see) is still a wait on someone.
+    ...(pr.reviewRequestCount !== undefined ? { reviewRequested: pr.reviewRequestCount > 0 } : {}),
   }
 }
 

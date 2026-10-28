@@ -114,6 +114,10 @@ export interface GithubPrSnapshot {
    *  `MAINTAIN`, `WRITE`, `TRIAGE`, `READ`). Absent when the response did not say. */
   viewerDidAuthor?: boolean
   viewerPermission?: string
+  /** How many review requests GitHub returned, counted BEFORE `reviewRequests` keeps only the named ones:
+   *  a request to a team the token cannot see (`requestedReviewer: null`), a Mannequin or an EnterpriseTeam
+   *  has no name to keep, and is still someone the PR waits on. Absent when the response did not say. */
+  reviewRequestCount?: number
 }
 
 /** A PR leaving the road to its merge without merging: GitHub's merge queue dropping it, or auto-merge
@@ -336,6 +340,7 @@ export function parseGithubPrSnapshot(pr: unknown): GithubPrSnapshot | undefined
     ...("autoMergeRequest" in p ? { autoMerge: Boolean(p.autoMergeRequest) } : {}),
     ...(typeof p.viewerDidAuthor === "boolean" ? { viewerDidAuthor: p.viewerDidAuthor } : {}),
     ...(typeof p.baseRepository?.viewerPermission === "string" ? { viewerPermission: p.baseRepository.viewerPermission } : {}),
+    ...(Array.isArray(p.reviewRequests?.nodes) ? { reviewRequestCount: p.reviewRequests.nodes.length } : {}),
   }
 }
 
