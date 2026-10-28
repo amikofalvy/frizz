@@ -2,6 +2,7 @@ import { readFileSync, statSync, type Stats } from "node:fs"
 
 import { join, resolve } from "node:path"
 import { randomUUID } from "node:crypto"
+import { ChildRequest, externalChild, externalControl, externalTranscript, operateChild, stopExternalSubtree } from "./external-agents.ts"
 import { z } from "zod"
 import { query, mutation } from "@frizz/rpc/server"
 import {
@@ -1940,6 +1941,14 @@ export function createRouter(ctx: AppContext) {
   // next to the code that knows the actual reason — rather than re-derived from a boolean by a client
   // that would have to guess. Null note = nothing worth saying (a settled child's transcript already
   // reads as finished; a banner there would be noise).
+  function assertChildGrant(slug: string, grant?: "read-only" | "workspace-write" | "full") {
+    const parent = ctx.storage.getSession(slug)
+    if (!parent || parent.archived || parent.state === "archived") throw new Error("A live parent thread is required")
+    const permission = ctx.tailer.get(slug)?.permissionMode ?? parent.permission_mode ?? ctx.getSettings().permissionMode
+    if (permission === "plan" && grant && grant !== "read-only") throw new Error("A read-only parent cannot launch a writing child")
+    if (grant && grant !== "read-only" && permission !== "bypassPermissions") throw new Error("Writing subprocess children require an explicit bypass grant on the parent thread")
+  }
+
   function subAgentSteerable(slug: string, id: string): { sessionId: string } | { sessionId: null; note: string | null } {
     const blocked = (note: string | null) => ({ sessionId: null, note })
     const info = ctx.tailer.subAgent(slug, id)
@@ -2434,6 +2443,14 @@ export function createRouter(ctx: AppContext) {
         finishedAt: z.string().optional(),
       }),
       handler: async ({ input }) => {
+        const child = externalChild(ctx.project, input.slug, input.id.replace(/^external_/, ""))
+        if (child) return {
+          messages: externalTranscript(child), state: child.status === "running" || child.status === "starting" ? "running" as const : "done" as const,
+          steerable: (child.alive && child.capabilities.message && child.status !== "starting") || (!child.alive && Boolean(child.capabilities.resume && child.session_id)), steerNote: null,
+          stoppable: child.alive && child.capabilities.stop, stopNote: null, startedAt: child.started_at,
+          ...(child.finished_at ? { finishedAt: child.finished_at } : {}),
+          ...(child.outcome ? { outcome: child.outcome } : child.status === "completed" ? { outcome: "completed" as const } : child.status === "failed" ? { outcome: "failed" as const } : child.status === "closed" ? { outcome: "killed" as const } : {}),
+        }
         const info = ctx.tailer.subAgent(input.slug, input.id)
         if (!info) return { messages: [], state: "gone" as const, steerable: false, steerNote: null, stoppable: false, stopNote: null }
         const usage = info.outputFile ? readSubAgentContextUsage(info.outputFile, info.outputFormat) : undefined
@@ -2485,6 +2502,17 @@ export function createRouter(ctx: AppContext) {
         "subAgentSteer",
         { project: thisProject, thread: input.slug, detail: { subAgent: input.id, message: textDigest(input.message) } },
         async () => {
+          const child = externalChild(ctx.project, input.slug, input.id.replace(/^external_/, ""))
+          if (child) {
+            if (child.alive) await externalControl(child, { action: "message", text: input.message, request_id: input.deliveryId ?? randomUUID() })
+            else {
+              assertChildGrant(input.slug, child.permissions)
+              await operateChild(ctx.project, input.slug, { version: 1, action: "resume", id: child.id, text: input.message, request_id: input.deliveryId ?? randomUUID() }, { claudeBin: ctx.claudeBin, codexBin: ctx.codexBin })
+            }
+            ctx.tailer.tick()
+            ctx.board.refresh()
+            return { delivered: true }
+          }
           const target = subAgentSteerable(input.slug, input.id)
           if (target.sessionId === null) {
             throw new Error(target.note ?? "This sub-agent is no longer running, so it can't be steered")
@@ -2523,6 +2551,13 @@ export function createRouter(ctx: AppContext) {
       input: z.object({ slug: ThreadSlug, id: z.string() }).strict(),
       output: z.object({ stopped: z.boolean(), descendantsStopped: z.number(), note: z.string().nullable() }),
       handler: async ({ input }) => {
+        const child = externalChild(ctx.project, input.slug, input.id.replace(/^external_/, ""))
+        if (child) {
+          const stopped = await stopExternalSubtree(ctx.project, input.slug, child.id)
+          ctx.tailer.tick()
+          ctx.board.refresh()
+          return { stopped: true, descendantsStopped: stopped.descendantsStopped, note: null }
+        }
         const target = subAgentStoppable(input.slug, input.id)
         if (target.sessionId === null) {
           throw new Error(target.note ?? "This sub-agent is no longer running, so it can't be stopped")
@@ -3524,6 +3559,18 @@ export function createRouter(ctx: AppContext) {
     // A shell is keyed by its RUNTIME task id ("Command running in background with ID: bzvtnt3ig"),
     // never its launch tool_use id: that is the string the worker was actually shown and the one it will
     // reach for. Falls back to the launch id only when the ack has not landed yet.
+    ownChildAgent: mutation({
+      input: z.object({ slug: ThreadSlug, request: ChildRequest }).strict(),
+      output: z.unknown(),
+      handler: async ({ input }) => {
+        assertChildGrant(input.slug, input.request.action === "start" ? input.request.permissions : input.request.action === "resume" && input.request.id ? externalChild(ctx.project, input.slug, input.request.id)?.permissions : undefined)
+        const result = await operateChild(ctx.project, input.slug, input.request, { claudeBin: ctx.claudeBin, codexBin: ctx.codexBin })
+        ctx.tailer.tick()
+        ctx.board.refresh()
+        return result
+      },
+    }),
+
     listOwnThreadActivity: mutation({
       input: ListOwnThreadActivityInput,
       output: OwnThreadActivityResult,

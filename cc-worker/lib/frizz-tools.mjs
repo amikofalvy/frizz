@@ -835,10 +835,17 @@ const WATCH_COMMAND = {
 // WATCH_ISSUE rides at the END (2026-09-14), and SECRET, STEER and WATCH_COMMAND after it: the tool list is read by position
 // in frizz-mcp.test.ts, and a worker's runtime reads it by name, so the order costs nothing and appending
 // breaks nothing.
-const TOOLS = [SPAWN_THREAD, GOAL, TIMER, WATCH_PR, WATCH, UNWATCH, ASK, UNASK, DONE, TITLE, ACTIVITY, LINK, UNLINK, WATCH_ISSUE, SECRET, STEER, WATCH_COMMAND]
+const CHILD = {
+  name: "child",
+  description: "Launch, list, inspect, message, wait for, stop or resume a portable cross-harness child agent owned by this thread. Supply a version-1 child-agents request. A launch requires an explicit id, runtime, model, effort, permissions, prompt and cwd. Frizz uses its bundled supervisor and configured native executable, never a worker-supplied program. Reusing an id returns the same launch, never a second writer. Messages return acceptance receipts, not a claim that the child has acted on them. Resume requires a recorded closed native session, request_id and text. Unknown or unavailable adapters fail without an untracked fallback.",
+  inputSchema: { type: "object", properties: { request: { type: "object", description: "The versioned child-agents protocol request" } }, required: ["request"] },
+}
+
+const TOOLS = [SPAWN_THREAD, GOAL, TIMER, WATCH_PR, WATCH, UNWATCH, ASK, UNASK, DONE, TITLE, ACTIVITY, LINK, UNLINK, WATCH_ISSUE, SECRET, STEER, WATCH_COMMAND, CHILD]
 
 /** @type {Record<string, (args: Record<string, unknown>) => Promise<string>>} */
 const HANDLERS = {
+  [CHILD.name]: async (args) => JSON.stringify((await callRpc("ownChildAgent", { slug: threadSlug(), request: args.request }, ["wait", "stop"].includes(args.request?.action) ? 0 : DISPATCH_TIMEOUT_MS))?.result),
   [SPAWN_THREAD.name]: spawnThread,
   [GOAL.name]: goal,
   [TIMER.name]: timer,
@@ -1262,10 +1269,10 @@ async function serverLockPortWaiting() {
   }
 }
 
-async function callRpc(procedure, body) {
+async function callRpc(procedure, body, timeoutMs = DISPATCH_TIMEOUT_MS) {
   const port = await serverLockPortWaiting()
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), DISPATCH_TIMEOUT_MS)
+  const timer = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : undefined
   let res
   try {
     res = await fetch(`http://127.0.0.1:${port}${rpcPath(procedure)}`, {
@@ -2029,6 +2036,7 @@ async function watchCommand(args) {
  * `group` only orders the top-level listing.
  */
 const CLI = {
+  child: { group: "Waiting", summary: "Launch and control cross-harness child agents", examples: ["frizzctl child --input request.json"] },
   // RETIRED (2026-10-13): a question is a ```question fence. `retired` is the text the command prints in
   // place of running — as its refusal (exit 2) and as its `--help` — and it keeps the command out of the
   // top-level listing.

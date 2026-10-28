@@ -1509,7 +1509,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     // receive it. (Without this branch it fell through to the awaiting-fence logic below, which compares
     // the delivery against the thread's CURRENT fence and superseded every wake for a bare rest: queued
     // on every tick, delivered never.)
-    if (isShellFenceId(item.fenceId)) {
+    if (isShellFenceId(item.fenceId) || item.fenceId.startsWith("external-child:")) {
       return tele.turn === "idle" ? "current-idle" : "current-busy"
     }
     // The interrupt note is the same shape: sub-agents that ended have ended, whatever the thread says next.
@@ -3690,6 +3690,28 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   // THE AWAITING FENCE HAS NOTHING TO DO WITH THIS. It does not register the wait and never did; it is
   // how an agent comes to REST and states what it is waiting on (see hasDeclaredBackgroundPark). A
   // thread with no fence at all is woken here exactly the same way, which is the point.
+  function evalExternalChildCompletions(nowMs: number): void {
+    for (const row of deps.storage.allSessions()) {
+      if (row.state === "archived" || row.archived === 1) continue
+      const tele = deps.tailer.get(row.slug)
+      if (!tele || tele.authFault || tele.apiFault || threadSaidDone(deps.storage, row.slug, tele)) continue
+      for (const child of tele.retiredSubAgents ?? []) {
+        if (!child.id.startsWith("external_") || !child.finishedAt) continue
+        const fenceId = `external-child:${child.id}:${child.generation ?? child.finishedAt}`
+        const deliveryId = wakeDeliveryId(row.slug, row.session_id, fenceId)
+        if (outbox.get(deliveryId)) continue
+        const item = outbox.enqueue({
+          id: deliveryId, slug: row.slug, sessionId: row.session_id, fenceId,
+          hintKey: fenceId,
+          message: withClock(`Child agent ${child.taskId ?? child.id} (${child.label}) ${child.status}. Read its result with frizzctl child using a version-1 status request, and reconcile it into the parent task.`, tele.lastAssistantAt),
+          reason: `cross-harness child ${child.status}`,
+        }, nowMs).delivery
+        checkpoint("after-enqueue", item)
+        return
+      }
+    }
+  }
+
   function evalShellCompletions(nowMs: number): void {
     for (const row of deps.storage.allSessions()) {
       if (row.state === "archived" || row.archived === 1) continue
@@ -4839,6 +4861,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       log(`waker: command-watch pass failed: ${err instanceof Error ? err.message : String(err)}`)
     }
     try {
+      evalExternalChildCompletions(now())
       evalShellCompletions(now())
     } catch (err) {
       if (err instanceof InjectedSchedulerCrash) throw err

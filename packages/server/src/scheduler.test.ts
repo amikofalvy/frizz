@@ -189,6 +189,27 @@ function harness(): Harness {
 
 const iso = (ms: number) => new Date(ms).toISOString()
 
+test("external child completion wakes its parent once across scheduler reconstruction", async () => {
+  const h = harness()
+  try {
+    h.storage.upsertSession(row("parent"))
+    h.tele.set("parent", { ...tele(undefined, "in-flight"), pendingQuestion: true, lastAssistantAt: iso(h.clock.ms - 1000), retiredSubAgents: [{ id: "external_child", taskId: "child", label: "Codex review", status: "completed", finishedAt: iso(h.clock.ms) }] })
+    const scheduler = h.make()
+    await scheduler.tick()
+    assert.equal(h.resumes.length, 0)
+    const parent = h.tele.get("parent")
+    assert.ok(parent)
+    parent.turn = "idle"
+    h.clock.ms += 5 * 60_000
+    await scheduler.tick()
+    assert.equal(h.resumes.length, 1)
+    assert.match(h.resumes[0].message, /Child agent child.*completed/)
+    await scheduler.tick()
+    await h.make().tick()
+    assert.equal(h.resumes.length, 1)
+  } finally { h.storage.close() }
+})
+
 // ARM A REAL TIMER ROW. The `timer: <ISO instant>` fence these tests used to arm from is deleted
 // (2026-08-15) — a worker computed that instant, and one wrote it 5h55m in the past, which parsed,
 // armed nothing and stalled its thread for 5.5 hours. `mcp__frizz__timer` creates the row; the

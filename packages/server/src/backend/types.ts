@@ -416,9 +416,10 @@ export interface FrizzCli {
  * FRIZZ_NODE is the node this server runs on: the command's launcher tries it before a bare `node`,
  * because a worker's PATH varies by launch context and the launcher must not depend on it.
  */
-export function frizzCliEnv(cli: FrizzCli, slug?: string, nodeBin: string = process.execPath): Record<string, string> {
+export function frizzCliEnv(cli: FrizzCli, slug?: string, nodeBin: string = process.execPath, platform: NodeJS.Platform = process.platform): Record<string, string> {
   return {
     FRIZZ_STATE_DIR: cli.stateDir,
+    ...(platform === "win32" ? {} : { FRIZZ_CHILD_AGENTS_PROTOCOL: "1" }),
     ...(cli.serverLock ? { FRIZZ_SERVER_LOCK: cli.serverLock } : {}),
     ...(cli.projectId ? { FRIZZ_PROJECT_ID: cli.projectId } : {}),
     FRIZZ_NODE: nodeBin,

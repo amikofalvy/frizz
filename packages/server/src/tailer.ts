@@ -22,6 +22,7 @@ import { claudeBrokerDiagnosticLogPath } from "./backend/claude-broker-diagnosti
 import { claudeBrokerRecordPath, readBrokerRecord } from "./backend/claude-broker-host.ts"
 import { parseDeliveryLedger, correlateDeliveryRecord, ageDeliveries, serializeDeliveryLedger, isPromptDeliveryAttachment, type DeliveryLedgerItem } from "./delivery-ledger.ts"
 import { createCodexSubAgentTracker, type CodexSubAgentTracker } from "./codex-subagents.ts"
+import { externalChildren, externalParentSlugs, externalLineage } from "./external-agents.ts"
 import { defaultCodexHome, readCodexThreadNames, scanForeignRollouts } from "./backend/codex.ts"
 import {
   isModelFacingCarrier, reportKind, blockTaskIds, parseReportBlock, relayedTaskIds,
@@ -682,6 +683,7 @@ export type TurnState = "in-flight" | "idle"
 // A live background sub-agent as surfaced to the board (mirrors @frizz/shared SubAgentView; kept
 // as a local shape so the tailer's telemetry stays decoupled from the wire schema).
 export interface SubAgentView {
+  stoppable?: boolean
   label: string
   startedAt: string // ISO8601 of the dispatch record
   // "rested" = a DIRECT child whose run ended (the harness reported completed/failed) while the fan-out
@@ -797,6 +799,12 @@ interface ParkedForegroundLaunch {
 }
 
 interface SubAgentEntry {
+  externalGeneration?: number
+  externalLastSeen?: string
+  externalParentId?: string
+  externalDepth?: number
+  externalRested?: boolean
+  externalStoppable?: boolean
   kind: "agent" | "shell" // an Agent sub-agent vs a background Bash/Monitor shell
   toolUseId: string
   label: string // the dispatch's input.description (shell: falls back to the command's first-line summary)
@@ -873,6 +881,7 @@ export interface RetiredShellView {
 }
 
 export interface RetiredSubAgentView {
+  generation?: number
   id: string // the dispatch tool_use id
   taskId?: string // the runtime agent id the worker was shown
   label: string
@@ -893,6 +902,7 @@ export interface PendingAskData {
 // the drill-in drawer via its retained outputFile. The ring caps memory; its file may later be cleaned
 // from disk, in which case the drawer degrades to its "transcript unavailable" state.
 interface RetiredSubAgent {
+  externalGeneration?: number
   toolUseId: string
   label: string
   subagentType?: string
@@ -1040,6 +1050,7 @@ export interface TailState extends FoldState {
   // sub_agent_activity / list_agents plus each child rollout's own turn brackets (codex-subagents.ts).
   // Claude fills them from `trackDispatches` instead, so this stays undefined there.
   codexSubAgents?: CodexSubAgentTracker
+  externalAgentsFingerprint?: string
   // completed shells retained so an already-open output drawer can render the terminal tail.
   retiredShells: Map<string, RetiredShell>
   // Dispatch tool_use ids the operator has RETIRED with the × — read from the registry at prime and
@@ -1745,6 +1756,7 @@ function retireToRing(state: TailState, entry: SubAgentEntry, finishedAt: string
     outputFile: entry.outputFile,
     outputFormat: entry.outputFormat,
     taskId: entry.taskId,
+    ...(entry.externalGeneration === undefined ? {} : { externalGeneration: entry.externalGeneration }),
     startedAt: entry.startedAt,
     finishedAt,
     status,
@@ -3700,6 +3712,7 @@ export function createTailer(deps: TailerDeps): Tailer {
   }
 
   function entryStale(state: TailState, e: SubAgentEntry, nowMs: number): boolean {
+    if (e.externalLastSeen) return nowMs - Date.parse(e.externalLastSeen) > 30_000
     const path = entryTranscript(state, e)
     if (!path) return false
     // Only an agent's file is a Claude transcript: a shell's is its raw output, and a codex child's is
@@ -3775,9 +3788,11 @@ export function createTailer(deps: TailerDeps): Tailer {
       out.push({
         label: e.label,
         startedAt: e.startedAt,
-        state: entryStale(state, e, nowMs) ? "stale" : "running",
+        state: e.externalRested ? "rested" : entryStale(state, e, nowMs) ? "stale" : "running",
         subagentType: e.subagentType,
         id: e.toolUseId,
+        ...(e.externalStoppable === undefined ? {} : { stoppable: e.externalStoppable }),
+        ...(e.externalParentId ? { parentId: `external_${e.externalParentId}`, depth: e.externalDepth } : {}),
         ...(e.taskId ? { taskId: e.taskId } : {}),
         ...(lastActivityAt ? { lastActivityAt } : {}),
         ...(p?.activity ? { activity: p.activity } : {}),
@@ -3878,7 +3893,7 @@ export function createTailer(deps: TailerDeps): Tailer {
   // shell matches no retirement either, so a typo still never fires.
   function retiredSubAgentViews(state: TailState): RetiredSubAgentView[] {
     const out: RetiredSubAgentView[] = []
-    for (const r of state.retiredSubAgents.values()) out.push({ id: r.toolUseId, taskId: r.taskId, label: r.label, status: r.status, finishedAt: r.finishedAt })
+    for (const r of state.retiredSubAgents.values()) out.push({ id: r.toolUseId, taskId: r.taskId, label: r.label, status: r.status, finishedAt: r.finishedAt, ...(r.externalGeneration === undefined ? {} : { generation: r.externalGeneration }) })
     return out
   }
 
@@ -4660,6 +4675,7 @@ export function createTailer(deps: TailerDeps): Tailer {
     // A transcript whose row was hard-deleted via forgetSession must STAY gone — never let a dismissed
     // phantom's file re-surface as a read-only foreign thread on a later rescan.
     for (const id of deps.storage.forgottenIds()) registered.add(id)
+    for (const slug of externalParentSlugs(deps.project)) for (const child of externalChildren(deps.project, slug)) if (child.session_id) registered.add(child.session_id)
     return registered
   }
 
@@ -5916,6 +5932,29 @@ export function createTailer(deps: TailerDeps): Tailer {
       flushCache(nowMs)
     }
 
+    for (const slug of externalParentSlugs(deps.project)) {
+      const state = states.get(slug)
+      if (!state || !registeredStateIsCurrent(state)) continue
+      const children = externalChildren(deps.project, slug)
+      const fingerprint = JSON.stringify(children)
+      if (fingerprint === state.externalAgentsFingerprint) continue
+      state.externalAgentsFingerprint = fingerprint
+      for (const child of children) {
+        const id = `external_${child.id}`
+        const lineage = externalLineage(child, children)
+        const relation = { externalParentId: child.parent_agent_id, externalDepth: lineage.length + 1, externalStoppable: child.alive && child.capabilities.stop }
+        if (child.status === "starting" || child.status === "running") {
+          state.subAgents.set(id, { kind: "agent", toolUseId: id, taskId: child.id, label: child.label, startedAt: child.started_at, subagentType: `${child.runtime} ${child.model}/${child.effort}`, outputFile: join(child.run_dir, "events.jsonl"), externalGeneration: child.generation, externalLastSeen: child.updated_at, ...relation })
+        } else {
+          const entry = { ...(state.subAgents.get(id) ?? { kind: "agent" as const, toolUseId: id, taskId: child.id, label: child.label, startedAt: child.started_at, subagentType: `${child.runtime} ${child.model}/${child.effort}`, outputFile: join(child.run_dir, "events.jsonl") }), externalGeneration: child.generation }
+          retireLive(state, entry, child.finished_at, child.outcome ?? (child.status === "completed" ? "completed" : child.status === "failed" ? "failed" : "killed"))
+          if (children.some((descendant) => (descendant.status === "starting" || descendant.status === "running") && externalLineage(descendant, children).includes(child.id))) state.subAgents.set(id, { ...entry, ...relation, externalRested: true })
+        }
+      }
+      touchState(state)
+      dirty = true
+      transcriptDirty.push(slug)
+    }
     for (const [state, row] of visited) memoizedTelemetry(state, row)
     if (dirty) deps.onChange()
     if (transcriptDirty.length) deps.onTranscriptChange?.(transcriptDirty)

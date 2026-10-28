@@ -14,6 +14,7 @@
 // nothing but the `PROCEDURES` data table as a value. Transport concerns (fetch, RpcCallOpts, the
 // Proxy) live in rpc.ts, which is browser-only and never enters the server program.
 import type {
+  ChildAgentRequest,
   UpsertOwnLinkInput,
   UpsertOwnLinkResult,
   DropOwnLinkInput,
@@ -297,6 +298,7 @@ export interface Api {
   setOwnThreadTimer(input: SetOwnThreadTimerInput): Promise<SetOwnThreadTimerResult>
   cancelOwnThreadTimer(input: CancelOwnThreadTimerInput): Promise<CancelOwnThreadTimerResult>
   listOwnThreadTimers(input: ListOwnThreadTimersInput): Promise<OwnThreadTimersResult>
+  ownChildAgent(input: { slug: string; request: ChildAgentRequest }): Promise<unknown>
   listOwnThreadActivity(input: ListOwnThreadActivityInput): Promise<OwnThreadActivityResult>
   // Event-snooze the awaiting-background card: hide it until the thread's own background work returns
   // (the parent comes to a NEW rest). No deadline and no scheduler — the board re-surfaces it the moment
@@ -483,6 +485,7 @@ export const PROCEDURES = {
   setOwnThreadTimer: "mutation",
   cancelOwnThreadTimer: "mutation",
   listOwnThreadTimers: "mutation",
+  ownChildAgent: "mutation",
   listOwnThreadActivity: "mutation",
   snoozeAwaitingBackground: "mutation",
   forgetThread: "mutation",

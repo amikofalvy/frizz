@@ -3,6 +3,7 @@ import { createHash, type Hash } from "node:crypto"
 import { StringDecoder } from "node:string_decoder"
 import { join } from "node:path"
 import { homedir, tmpdir } from "node:os"
+import { externalDispatches } from "./external-agents.ts"
 import {
   DISPATCH_TASK_BANNER_MARKER,
   GITHUB_DISPATCH_UI_BOUNDARY,
@@ -4530,6 +4531,19 @@ function emptyLatestTranscriptPage(storage: Storage, slug: string, source?: Tran
 }
 
 export function readLatestThreadTranscriptPage(
+  project: Project,
+  storage: Storage,
+  slug: string,
+  backendFor?: (kind?: string) => AgentBackend,
+  opts: { editedFiles?: boolean } = {},
+): TranscriptPage {
+  const page = readNativeLatestThreadTranscriptPage(project, storage, slug, backendFor, opts)
+  const children = externalDispatches(project, slug)
+  if (!children.length) return page
+  return { ...page, messages: [...page.messages, ...children].sort((a, b) => (a.at ?? "").localeCompare(b.at ?? "")) }
+}
+
+function readNativeLatestThreadTranscriptPage(
   project: Project,
   storage: Storage,
   slug: string,

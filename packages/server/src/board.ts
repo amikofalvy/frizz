@@ -316,12 +316,11 @@ function hasUnretiredOwnAgents(tele: SessionTelemetry | undefined): boolean {
 // bgShellViews already empties on a dead owner.)
 function orphanedAgents(agents: ThreadView["subAgents"], ownerGone: boolean): ThreadView["subAgents"] {
   if (!ownerGone) return agents
-  return agents.map((agent) => (agent.state === "running" ? { ...agent, state: "stale" } : agent))
+  return agents.map((agent) => (agent.state === "running" && !agent.id?.startsWith("external_") ? { ...agent, state: "stale" } : agent))
 }
 
 function stampStoppable(agents: ThreadView["subAgents"], row: SessionRow): ThreadView["subAgents"] {
-  if (!isBrokerClaudeRow(row)) return agents
-  return agents.map((agent) => (agent.state === "running" ? { ...agent, stoppable: true } : agent))
+  return agents.map((agent) => (agent.state === "running" && (agent.id?.startsWith("external_") ? agent.stoppable === true : isBrokerClaudeRow(row)) ? { ...agent, stoppable: true } : agent))
 }
 
 // The same question for a background SHELL, and it is deliberately the other way round: the tailer has

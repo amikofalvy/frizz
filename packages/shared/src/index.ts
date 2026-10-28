@@ -6961,3 +6961,4 @@ export function fallbackPort(base: number): number {
 // and this survives as the integrity check on the session row's `thread_name` column — a row whose
 // stored name does not re-derive from its own slug has been tampered with or mis-keyed.
 export const threadIdentityName = (slug: string) => `frizz-${ThreadSlug.parse(slug)}`
+export { ChildRequest, type ChildAgentRequest } from "./child-agents.ts"

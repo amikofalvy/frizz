@@ -46,6 +46,7 @@ export const WORKER_PLUGIN_REQUIRED_FILES = [
   "cc-worker/bin/frizzctl",
   "cc-worker/bin/frizzctl.mjs",
   "cc-worker/lib/frizz-tools.mjs",
+  "cc-worker/lib/child-agent.mjs",
   "board/config.mjs",
   "board/agent-bindings.mjs",
   "board/index.mjs",
