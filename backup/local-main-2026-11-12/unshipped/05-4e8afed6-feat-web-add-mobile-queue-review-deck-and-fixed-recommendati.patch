@@ -1,0 +1,912 @@
+From 4e8afed69c7437380dde7923ea76f0a206eb3d9d Mon Sep 17 00:00:00 2001
+From: Andrew Mikofalvy <5668128+amikofalvy@users.noreply.github.com>
+Date: Fri, 9 Oct 2026 16:18:07 -0700
+Subject: [PATCH] feat(web): add mobile queue review deck and fixed
+ recommendations
+
+---
+ packages/web/src/components/ChatView.tsx      |  24 +++-
+ .../web/src/components/PhoneDoneButton.tsx    |  18 ++-
+ .../src/components/PhoneRecommendationBar.tsx |  57 ++++++++
+ .../web/src/components/PhoneReviewDeck.tsx    | 116 ++++++++++++++++
+ .../web/src/components/QueueNavigation.tsx    |   6 +-
+ .../components/RegisteredQuestionCards.tsx    |  41 ++++--
+ .../web/src/components/ThreadComposerBox.tsx  |   2 +-
+ packages/web/src/components/ThreadSheet.tsx   |  14 +-
+ packages/web/src/components/Toaster.tsx       |  11 +-
+ .../web/src/lib/phoneRecommendation.test.ts   |  31 +++++
+ packages/web/src/lib/phoneRecommendation.ts   |  29 ++++
+ packages/web/src/lib/phoneReviewContext.ts    |   8 ++
+ packages/web/src/lib/router.test.ts           |   1 +
+ packages/web/src/lib/router.ts                |   6 +
+ packages/web/src/lightbox-fixture.tsx         |   1 +
+ scripts/verify-queue-review.mjs               | 128 +++++++++++++++++-
+ 16 files changed, 453 insertions(+), 40 deletions(-)
+ create mode 100644 packages/web/src/components/PhoneRecommendationBar.tsx
+ create mode 100644 packages/web/src/components/PhoneReviewDeck.tsx
+ create mode 100644 packages/web/src/lib/phoneRecommendation.test.ts
+ create mode 100644 packages/web/src/lib/phoneRecommendation.ts
+ create mode 100644 packages/web/src/lib/phoneReviewContext.ts
+
+diff --git a/packages/web/src/components/ChatView.tsx b/packages/web/src/components/ChatView.tsx
+index 2081e061..69161d42 100644
+--- a/packages/web/src/components/ChatView.tsx
++++ b/packages/web/src/components/ChatView.tsx
+@@ -39,6 +39,8 @@ import { useLiveAnswering, type LiveAnswering } from "../lib/answering.ts"
+ import { useIsMobile } from "../lib/mobile.ts"
+ import { MobileAnswerSheet } from "./MobileAnswerSheet.tsx"
+ import { PhoneAnswerBar, PhoneQuestionsContext, type PhoneQuestions } from "./PhoneQuestionCards.tsx"
++import { PhoneRecommendationBar } from "./PhoneRecommendationBar.tsx"
++import { PhoneReviewContext } from "../lib/phoneReviewContext.ts"
+ import { RegisteredAnswerSheet } from "./RegisteredAnswerSheet.tsx"
+ import { sendEagerFollowUp } from "../lib/eagerComposerSubmission.ts"
+ import { limitResumeClock } from "../lib/activityTime.ts"
+@@ -244,6 +246,7 @@ export function ThreadView({ slug, onStatusApplied, onClose, virtualized = false
+ }
+ 
+ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { slug: string; virtualized: boolean; phone?: boolean; railBeside?: boolean }) {
++  const review = useContext(PhoneReviewContext)
+   const board = useBoard()
+   const thread = threadBySlug(board, slug)
+   // ANSWERED registered questions stay in the transcript, greyed, where their open card stood (see
+@@ -475,7 +478,7 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
+       <InteractionStack
+         thread={thread}
+         className="px-6 pt-5"
+-        autoFocusFirst
++        autoFocusFirst={review?.active !== false}
+       />
+       {/* A REGISTERED question sits with the pending interactions rather than in the transcript: both are
+           things the human still owes an answer to, and neither may scroll out of reach. */}
+@@ -652,6 +655,7 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
+           reaches the physical bottom edge of a tablet or a notched screen. The lifecycle footer used to
+           sit under this and carried it, until the footer went on 2026-10-05. Not on a phone: its bar
+           (Composer's phone layout) pads itself for the inset and the keyboard together. */}
++      <ThreadReviewFooter>
+       <div data-thread-chat-footer className={`z-10 shrink-0 border-t border-border/60 bg-panel ${phone ? "" : "pb-[env(safe-area-inset-bottom)]"}`}>
+         <ThreadActionBar
+           slug={slug}
+@@ -663,7 +667,9 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
+           // the prompt box anymore 'cause it's already showing up in the sidebar to the right"). The
+           // rail (FocusRail) lists every row this strip would, its saved links and Codex shells included.
+           ops={phone || railBeside ? undefined : <BackgroundOpsStrip slug={slug} transcriptShells={liveTranscriptShells} className="px-1 pt-1.5" />}
+-          phoneBarOverride={phone && openQuestions.length > 0
++          phoneBarOverride={phone && review && thread
++            ? (api) => <PhoneRecommendationBar thread={thread} questions={openQuestions} onAnswer={() => setAnswerSheetOpen(true)} onReply={api.editReply} />
++            : phone && openQuestions.length > 0
+             ? (api) => <PhoneAnswerBar count={openQuestions.length} onAnswer={() => setAnswerSheetOpen(true)} onReply={api.editReply} />
+             : undefined}
+           // The box matches the header above it: the phone bar under the phone's chrome, the desktop box
+@@ -671,7 +677,8 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
+           phoneChrome={phone}
+         />
+       </div>
+-      {phone && answerSheetOpen && <RegisteredAnswerSheet questions={openQuestions} onClose={() => setAnswerSheetOpen(false)} />}
++      </ThreadReviewFooter>
++      {phone && review?.active !== false && answerSheetOpen && <RegisteredAnswerSheet questions={openQuestions} onClose={() => setAnswerSheetOpen(false)} />}
+     </div>
+     </PhoneQuestionsContext.Provider>
+     </RegisteredAnsweringProvider>
+@@ -679,6 +686,14 @@ function ChatView({ slug, virtualized, phone = false, railBeside = false }: { sl
+   )
+ }
+ 
++// Keep the active conversation's composer outside the moving deck; previews own no action surface.
++function ThreadReviewFooter({ children }: { children: ReactNode }) {
++  const review = useContext(PhoneReviewContext)
++  if (!review) return children
++  if (!review.active || !review.dock) return null
++  return createPortal(children, review.dock)
++}
++
+ // How long after a wheel/touch/key gesture the reader still owns the scroller. Long enough to cover
+ // trackpad momentum between discrete events, short enough that it never outlives the gesture itself.
+ const READER_GESTURE_MS = 700
+@@ -918,6 +933,7 @@ function VirtualizedThreadTranscript({
+   openAtLastMessage?: boolean
+ }) {
+   const projectDir = useProjectDir()
++  const review = useContext(PhoneReviewContext)
+   const coalescedActivityMessages = useMemo(() => coalesceToolActivityMessages(messages), [messages])
+   // See the drawer's copy above: the run backs the shimmer's expansion, its newest call names it.
+   const liveToolRun = running ? liveToolActivityRun(coalescedActivityMessages) : undefined
+@@ -1538,7 +1554,7 @@ function VirtualizedThreadTranscript({
+             {row.kind === "head-anchor" ? null
+             : row.kind === "interactions" ? (
+               <>
+-                <InteractionStack thread={thread} className="px-6 pt-5" autoFocusFirst />
++                <InteractionStack thread={thread} className="px-6 pt-5" autoFocusFirst={review?.active !== false} />
+                 {/* The TAIL group only — questions asked at an older rest render up there, in place. The
+                     in-flight answer stays here whatever the questions do: it is the human's newest turn,
+                     and the delivered copy of it lands at the tail a second later. */}
+diff --git a/packages/web/src/components/PhoneDoneButton.tsx b/packages/web/src/components/PhoneDoneButton.tsx
+index 2e019f52..eee31561 100644
+--- a/packages/web/src/components/PhoneDoneButton.tsx
++++ b/packages/web/src/components/PhoneDoneButton.tsx
+@@ -1,9 +1,10 @@
+-import { useState } from "react"
++import { useContext, useState } from "react"
+ import { Check, Loader2 } from "lucide-react"
+ import type { CompletionHold, ThreadView } from "@frizz/shared"
+ import { markDoneAndAdvance } from "../lib/mobileTriage.ts"
+ import { completionHoldSummary } from "../lib/threadLifecycle.ts"
+ import { Dialog } from "./ui/Dialog.tsx"
++import { PhoneReviewContext } from "../lib/phoneReviewContext.ts"
+ 
+ // The phone thread bar's Done: the verb a resting thread's empty bar offers (approved phone design,
+ // 2026-09-30). It files the thread through the desktop check's own completion path and opens the
+@@ -16,12 +17,14 @@ import { Dialog } from "./ui/Dialog.tsx"
+ //
+ // `data-phone-done`, and never a text match on "Done": every board row carries a hidden swipe button
+ // with that same label.
+-export function PhoneDoneButton({ thread, compact }: { thread: ThreadView; compact: boolean }) {
++export function PhoneDoneButton({ thread, compact, label = "Done", disabled = false }: { thread: ThreadView; compact: boolean; label?: string; disabled?: boolean }) {
+   const [pending, setPending] = useState(false)
++  const review = useContext(PhoneReviewContext)
+   const [hold, setHold] = useState<{ hold?: CompletionHold } | null>(null)
+ 
+   async function complete(terminateLive: boolean) {
+     setPending(true)
++    review?.setBusy(true)
+     // Confirming files the thread at once (the optimistic path) and moves on, so the dialog goes now.
+     if (terminateLive) setHold(null)
+     const outcome = await markDoneAndAdvance(thread, { terminateLive })
+@@ -29,6 +32,7 @@ export function PhoneDoneButton({ thread, compact }: { thread: ThreadView; compa
+     // "done" leaves `pending` set: the thread is on its way out, and a button that re-enabled under
+     // the transition would invite a second completion.
+     if (outcome.kind !== "done") setPending(false)
++    review?.setBusy(false)
+   }
+ 
+   const summary = completionHoldSummary(hold?.hold)
+@@ -39,10 +43,10 @@ export function PhoneDoneButton({ thread, compact }: { thread: ThreadView; compa
+         data-phone-done
+         onMouseDown={(e) => e.preventDefault()}
+         onClick={() => void complete(false)}
+-        disabled={pending}
++        disabled={pending || disabled}
+         aria-label="Mark as done"
+         className={`flex shrink-0 items-center justify-center gap-1 rounded-full bg-fg font-semibold text-bg disabled:opacity-45 ${
+-          compact ? "relative h-[36px] pl-[11px] pr-[14px] text-[14px] after:absolute after:inset-x-0 after:-inset-y-[4px] after:content-['']" : "h-[42px] pl-[13px] pr-[16px] text-[15px]"
++          compact ? "relative h-[36px] pl-[11px] pr-[14px] text-[14px] after:absolute after:inset-x-0 after:-inset-y-[4px] after:content-['']" : label === "Done" ? "h-[42px] pl-[13px] pr-[16px] text-[15px]" : "h-[44px] min-w-0 flex-1 px-3 text-[14px]"
+         }`}
+       >
+         {/* The check's ink sits in the upper part of its box (its path spans y 6–17 of 24), so centred
+@@ -50,8 +54,10 @@ export function PhoneDoneButton({ thread, compact }: { thread: ThreadView; compa
+             2026-09-30). 0.1em takes it down onto the band at either size. */}
+         {pending && !hold
+           ? <Loader2 aria-hidden size={compact ? 15 : 17} className="animate-spin" />
+-          : <Check aria-hidden size={compact ? 15 : 17} strokeWidth={2.6} className="translate-y-[0.1em]" />}
+-        Done
++          // The deck uses 14px sans with the same 17px icon: 0.1em measured 0.48px low.
++          // Its 0.066em correction centers the ink on the cap band (dsf 6).
++          : <Check aria-hidden size={compact ? 15 : 17} strokeWidth={2.6} className={label === "Done" ? "translate-y-[0.1em]" : "translate-y-[0.066em]"} />}
++        {label}
+       </button>
+       <Dialog
+         open={hold !== null}
+diff --git a/packages/web/src/components/PhoneRecommendationBar.tsx b/packages/web/src/components/PhoneRecommendationBar.tsx
+new file mode 100644
+index 00000000..e4523116
+--- /dev/null
++++ b/packages/web/src/components/PhoneRecommendationBar.tsx
+@@ -0,0 +1,57 @@
++import { useContext, useRef, useState } from "react"
++import type { RegisteredQuestionView, ThreadView } from "@frizz/shared"
++import { RegisteredAnsweringContext } from "./RegisteredQuestionCards.tsx"
++import { PhoneDoneButton } from "./PhoneDoneButton.tsx"
++import { phoneRecommendation } from "../lib/phoneRecommendation.ts"
++import { PhoneReviewContext } from "../lib/phoneReviewContext.ts"
++import { leaveFiledThread, nextThreadNeedingYou } from "../lib/mobileTriage.ts"
++import { store } from "../store.ts"
++
++export function PhoneRecommendationBar({ thread, questions, onAnswer, onReply }: {
++  thread: ThreadView; questions: readonly RegisteredQuestionView[]; onAnswer: () => void; onReply: () => void
++}) {
++  const answering = useContext(RegisteredAnsweringContext)!
++  const review = useContext(PhoneReviewContext)!
++  const pending = useRef(false)
++  const [sending, setSending] = useState(false)
++  const hasDraft = questions.some((q) => [...answering.answersOf(q).values()].some((a) => a.text.trim() || a.chosen !== null || a.chosenSet?.length))
++  const recommendation = phoneRecommendation(thread, questions, hasDraft)
++  const accept = async () => {
++    if (pending.current || review.busy) return
++    // Capture the successor before optimistic answering removes this thread from the queue.
++    const next = nextThreadNeedingYou(store.board?.threads ?? [], thread.id)
++    pending.current = true
++    setSending(true)
++    review.setBusy(true)
++    try {
++      if (await answering.submitRecommended(questions)) {
++        const current = store.drawers.findLast((d) => !d.closing && d.kind === "thread")
++        if (current?.slug === thread.id) leaveFiledThread(thread.id, next)
++      }
++    } finally { pending.current = false; setSending(false); review.setBusy(false) }
++  }
++  const summary = recommendation.kind === "answers" ? recommendation.labels.join(" · ")
++    : recommendation.kind === "done" ? "Mark as done" : recommendation.reason
++  return (
++    <div data-phone-recommendation className="flex min-w-0 flex-1 flex-col gap-2">
++      <div className="text-[13px] leading-[18px]">
++        <div className="text-[11px] font-medium text-muted">{recommendation.kind === "review" ? "Review" : "Recommendation"}</div>
++        <div data-phone-recommendation-summary className="max-h-[54px] overflow-y-auto break-words text-fg">{summary}</div>
++      </div>
++      <div className="flex items-center gap-2">
++        <button type="button" data-phone-answer-reply onClick={onReply} disabled={review.busy}
++          className="min-h-[44px] shrink-0 rounded-full border border-border-strong px-3 text-[13px] text-muted disabled:opacity-45">Reply</button>
++        {recommendation.kind === "done" ? <PhoneDoneButton thread={thread} compact={false} disabled={review.busy} label="Mark as done" />
++          : <button type="button" data-phone-accept={recommendation.kind === "answers" || undefined} data-phone-answer-open={recommendation.kind === "review" || undefined}
++              onClick={recommendation.kind === "answers" ? () => void accept() : questions.length ? onAnswer : onReply}
++              disabled={review.busy || answering.sending}
++              className="min-h-[44px] min-w-0 flex-1 rounded-full bg-fg px-3 text-[14px] font-semibold text-bg disabled:opacity-45">
++              {sending ? "Sending…" : recommendation.kind === "answers" ? "Accept & send" : questions.length ? "Answer" : "Write a reply"}
++            </button>}
++        {recommendation.kind === "answers" && <button type="button" data-phone-answer-open onClick={onAnswer} disabled={review.busy}
++          className="min-h-[44px] shrink-0 px-1 text-[13px] text-muted disabled:opacity-45">Edit</button>}
++      </div>
++      {answering.error && <div role="alert" className="text-[12px] text-error">{answering.error}</div>}
++    </div>
++  )
++}
+diff --git a/packages/web/src/components/PhoneReviewDeck.tsx b/packages/web/src/components/PhoneReviewDeck.tsx
+new file mode 100644
+index 00000000..4705de5c
+--- /dev/null
++++ b/packages/web/src/components/PhoneReviewDeck.tsx
+@@ -0,0 +1,116 @@
++import { useEffect, useRef, useState } from "react"
++import { useSnapshot } from "valtio"
++import { asThreads, useBoard } from "../hooks.ts"
++import { queued } from "../groups.ts"
++import { prefs } from "../lib/prefs.ts"
++import { phoneQueue } from "../lib/mobileTriage.ts"
++import { replaceQueueThread } from "../lib/router.ts"
++import { PhoneReviewContext } from "../lib/phoneReviewContext.ts"
++import { useOptimisticallyArchived } from "../lib/optimisticArchive.ts"
++import { useOptimisticallySteered } from "../lib/steering.ts"
++import { ThreadView } from "./ChatView.tsx"
++
++// Only three real conversation surfaces are observed. Neighbors are mounted (and inert), not
++// constructed on release; promoting one preserves its DOM, measured rows and scroll position.
++export function PhoneReviewDeck({ slug, onClose }: { slug: string; onClose: () => void }) {
++  const board = useBoard()
++  const { queueOrder, queueSort } = useSnapshot(prefs)
++  const all = useOptimisticallyArchived(useOptimisticallySteered(asThreads(board?.threads ?? [])))
++  const ids = phoneQueue(all, queueOrder, queueSort).filter(queued).map((t) => t.id)
++  const index = ids.indexOf(slug)
++  const neighbors = useRef<{ slug: string; previous?: string; next?: string }>({ slug })
++  if (index >= 0) neighbors.current = { slug, previous: ids[index - 1], next: ids[index + 1] }
++  else if (neighbors.current.slug !== slug) neighbors.current = { slug }
++  const { previous, next } = neighbors.current
++  const panels = [previous, slug, next].filter((id): id is string => !!id)
++  const [dock, setDock] = useState<HTMLDivElement | null>(null)
++  const [under, setUnder] = useState<string | undefined>(next)
++  const [busy, setBusy] = useState(false)
++  const root = useRef<HTMLDivElement>(null)
++  const cards = useRef(new Map<string, HTMLDivElement>())
++  const gesture = useRef<{ x: number; y: number; horizontal: boolean; target?: string } | null>(null)
++  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
++  useEffect(() => () => clearTimeout(timer.current), [])
++  useEffect(() => {
++    clearTimeout(timer.current)
++    gesture.current = null
++    setBusy(false)
++    setUnder(next)
++    for (const el of cards.current.values()) { el.style.transition = "none"; el.style.transform = "none" }
++  }, [slug])
++
++  useEffect(() => {
++    const el = root.current
++    if (!el) return
++    const reset = () => {
++      const card = cards.current.get(slug)
++      if (card) { card.style.transition = "transform 240ms ease-out"; card.style.transform = "none" }
++      gesture.current = null
++    }
++    const start = (event: TouchEvent) => {
++      if (busy || event.touches.length !== 1 || document.getSelection()?.toString()) return
++      const target = event.target as Element
++      // Leave controls, code panning, selection and the OS edge/back gesture alone.
++      if (target.closest("button,a,input,textarea,select,pre,[contenteditable=true],[role=button]")) return
++      const p = event.touches[0]!
++      if (p.clientX < 24 || p.clientX > innerWidth - 24) return
++      gesture.current = { x: p.clientX, y: p.clientY, horizontal: false }
++    }
++    const move = (event: TouchEvent) => {
++      const g = gesture.current
++      if (!g) return
++      if (event.touches.length !== 1) { reset(); return }
++      const p = event.touches[0]!, dx = p.clientX - g.x, dy = p.clientY - g.y
++      if (!g.horizontal) {
++        if (Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(dx) * 1.2) { gesture.current = null; return }
++        if (Math.abs(dx) < 10 || Math.abs(dx) < Math.abs(dy) * 1.2) return
++        g.horizontal = true
++      }
++      event.preventDefault()
++      const neighbor = dx < 0 ? next : previous
++      g.target = neighbor && cards.current.get(neighbor)?.querySelector('[data-drawer-scroll-ready="true"]') ? neighbor : undefined
++      setUnder(g.target)
++      const card = cards.current.get(slug)
++      if (!card) return
++      const x = g.target ? dx : dx * .25, f = x / el.clientWidth
++      card.style.transition = "none"
++      card.style.transform = matchMedia("(prefers-reduced-motion:reduce)").matches ? `translateX(${x * .85}px)`
++        : `translate(${x * .85}px,${-Math.min(16, f * f * 35)}px) rotate(${Math.max(-8, Math.min(8, f * 11))}deg)`
++    }
++    const end = (event: TouchEvent) => {
++      const g = gesture.current
++      if (!g) return
++      const dx = event.changedTouches[0]!.clientX - g.x
++      if (!g.horizontal || Math.abs(dx) < 65 || !g.target || !ids.includes(g.target)) { reset(); return }
++      const target = g.target
++      gesture.current = null
++      setBusy(true)
++      const card = cards.current.get(slug)
++      const ms = matchMedia("(prefers-reduced-motion:reduce)").matches ? 0 : 260
++      if (card) { card.style.transition = `transform ${ms}ms ease-in`; card.style.transform = `translateX(${Math.sign(dx) * (el.clientWidth + 120)}px) rotate(${ms ? Math.sign(dx) * 14 : 0}deg)` }
++      timer.current = setTimeout(() => { replaceQueueThread(target) }, ms)
++    }
++    el.addEventListener("touchstart", start, { passive: true })
++    el.addEventListener("touchmove", move, { passive: false })
++    el.addEventListener("touchend", end, { passive: true })
++    el.addEventListener("touchcancel", reset)
++    return () => { el.removeEventListener("touchstart", start); el.removeEventListener("touchmove", move); el.removeEventListener("touchend", end); el.removeEventListener("touchcancel", reset) }
++  }, [slug, previous, next, busy, ids.join(" ")])
++
++  return (
++    <div data-phone-review-deck className="flex min-h-0 flex-1 flex-col bg-bg">
++      <div ref={root} data-phone-review-stage className="relative min-h-0 flex-1 overflow-hidden">
++        {panels.map((id) => (
++          <div key={id} ref={(el) => { if (el) cards.current.set(id, el); else cards.current.delete(id) }}
++            data-phone-review-card={id} data-phone-review-current={id === slug} inert={id !== slug} aria-hidden={id !== slug || undefined}
++            className={`absolute inset-0 flex min-h-0 flex-col bg-panel [transform-origin:50%_80%] ${id === slug ? "z-[3]" : id === under ? "z-[2]" : "invisible z-[1]"}`}>
++            <PhoneReviewContext.Provider value={{ active: id === slug, dock, busy, setBusy }}>
++              <ThreadView slug={id} onClose={onClose} virtualized />
++            </PhoneReviewContext.Provider>
++          </div>
++        ))}
++      </div>
++      <div ref={setDock} data-phone-review-dock className="relative z-10 shrink-0 bg-panel" />
++    </div>
++  )
++}
+diff --git a/packages/web/src/components/QueueNavigation.tsx b/packages/web/src/components/QueueNavigation.tsx
+index f0e43a2f..bac4aab4 100644
+--- a/packages/web/src/components/QueueNavigation.tsx
++++ b/packages/web/src/components/QueueNavigation.tsx
+@@ -8,6 +8,7 @@ import { queueNeighbors } from "../lib/queueNavigation.ts"
+ import { useOptimisticallyArchived } from "../lib/optimisticArchive.ts"
+ import { useOptimisticallySteered } from "../lib/steering.ts"
+ import { scrollToQueueCard } from "../store.ts"
++import { PhoneReviewContext } from "../lib/phoneReviewContext.ts"
+ 
+ // The desktop owns optimistic exits that may not have reached the board yet. Browse the cards that
+ // are actually still present, not the stale board list (especially after a reply or a snooze).
+@@ -18,6 +19,7 @@ export const QueueReviewIdsContext = createContext<readonly string[] | null>(nul
+ // with identical cap-band centres (dsf 6). Keep the padding and spacing shared across both verbs.
+ export function QueueNavigation({ slug, phone = false }: { slug: string; phone?: boolean }) {
+   const board = useBoard()
++  const review = useContext(PhoneReviewContext)
+   const { queueOrder, queueSort } = useSnapshot(prefs)
+   const renderedIds = useContext(QueueReviewIdsContext)
+   const all = useOptimisticallyArchived(useOptimisticallySteered(asThreads(board?.threads ?? [])))
+@@ -33,10 +35,10 @@ export function QueueNavigation({ slug, phone = false }: { slug: string; phone?:
+   }
+   return (
+     <nav aria-label="Queue review" data-queue-navigation className={`flex items-center gap-3 text-[12px] text-muted ${phone ? "border-b border-border px-3 py-1" : "mt-1"}`}>
+-      <button type="button" data-queue-previous disabled={!previous} onClick={() => navigate(previous)}
++      <button type="button" data-queue-previous disabled={!previous || review?.busy} onClick={() => navigate(previous)}
+         className={`${phone ? "min-h-[44px] px-2" : "py-1"} hover:text-fg disabled:opacity-35`}>Previous</button>
+       <span className="tabular-nums" aria-live="polite">{index + 1} of {ids.length}</span>
+-      <button type="button" data-queue-next disabled={!next} onClick={() => navigate(next)}
++      <button type="button" data-queue-next disabled={!next || review?.busy} onClick={() => navigate(next)}
+         className={`${phone ? "min-h-[44px] px-2" : "py-1"} hover:text-fg disabled:opacity-35`}>Next</button>
+     </nav>
+   )
+diff --git a/packages/web/src/components/RegisteredQuestionCards.tsx b/packages/web/src/components/RegisteredQuestionCards.tsx
+index dd34b3d5..0c9729a0 100644
+--- a/packages/web/src/components/RegisteredQuestionCards.tsx
++++ b/packages/web/src/components/RegisteredQuestionCards.tsx
+@@ -33,6 +33,7 @@ import { AnswersCard } from "./AnswersCard.tsx"
+ import { QueueDismissContext } from "./ChatView.tsx"
+ import { QuestionBlockCard } from "./QuestionBlockCard.tsx"
+ import { CompactQuestionList, usePhoneQuestions } from "./PhoneQuestionCards.tsx"
++import { phoneRecommendation } from "../lib/phoneRecommendation.ts"
+ 
+ function errorText(error: unknown): string {
+   const message = error instanceof Error ? error.message : "The answer could not be sent."
+@@ -53,6 +54,7 @@ export interface RegisteredAnswering {
+   dismissing: boolean
+   /** Send EVERY staged answer on the thread — placed or at an anchor, this rest's or an older one. */
+   submit: () => void
++  submitRecommended: (questions: readonly RegisteredQuestionView[]) => Promise<boolean>
+   staged: number
+   sending: boolean
+   error: string | undefined
+@@ -148,8 +150,10 @@ export function useRegisteredAnswering(thread: ThreadView | undefined): Register
+     onError: (cause) => setError(errorText(cause)),
+   })
+ 
+-  const submit = () => {
+-    if (!slug || staged.length === 0 || send.isPending) return
++  const sending = useRef(false)
++  const sendPairs = async (pairs: Array<{ q: RegisteredQuestionView; answer: QuestionAnswer }>) => {
++    if (!slug || pairs.length === 0 || send.isPending || sending.current) return false
++    sending.current = true
+     setError(undefined)
+     // Local truth FIRST, then the network — the ordering every other send on this card obeys, and the
+     // whole of what "the card goes away when I answer it" means on a machine under load.
+@@ -166,22 +170,28 @@ export function useRegisteredAnswering(thread: ThreadView | undefined): Register
+     const key = settledQuestionsKey(slug)
+     void queryClient.cancelQueries({ queryKey: key })
+     const settledAt = new Date().toISOString()
+-    const ids = new Set(stagedPairs.map((pair) => pair.q.id))
++    const ids = new Set(pairs.map((pair) => pair.q.id))
+     queryClient.setQueryData<SettledQuestion[]>(key, (prev) => [
+       ...(prev ?? []).filter((s) => !ids.has(s.id)),
+       // A secret's settled card never draws the value, not even for the beat before the server's own
+       // stored text (where the file went) replaces this.
+-      ...stagedPairs.map(({ q, answer }): SettledQuestion => ({
++      ...pairs.map(({ q, answer }): SettledQuestion => ({
+         id: q.id, spec: q.spec, askedAt: q.askedAt, settledAt, pending: true,
+         answer: q.spec.secret ? { ...answer, text: "(secret sent)" } : answer,
+       })),
+     ])
+-    send.mutate({
+-      answers: staged,
+-      drafts: stagedPairs.map(({ q }) => ({ id: q.id, keys: q.spec.secret ? [] : allPaths(q).flatMap((path) => [
+-        draftKey.question(projectDir, slug, q.id, path), pickKey(projectDir, slug, q.id, path),
+-      ]) })),
+-    })
++    try {
++      const result = await send.mutateAsync({
++        answers: pairs.map(({ answer }) => answer),
++        drafts: pairs.map(({ q }) => ({ id: q.id, keys: q.spec.secret ? [] : allPaths(q).flatMap((path) => [
++          draftKey.question(projectDir, slug, q.id, path), pickKey(projectDir, slug, q.id, path),
++        ]) })),
++      })
++      const complete = pairs.every(({ q }) => result.answered.includes(q.id))
++      if (!complete) setError("The questions changed. Review the remaining questions before continuing.")
++      return complete
++    } catch { return false }
++    finally { sending.current = false }
+   }
+ 
+   return {
+@@ -218,7 +228,16 @@ export function useRegisteredAnswering(thread: ThreadView | undefined): Register
+     },
+     dismiss: (id) => dismiss.mutate(id),
+     dismissing: dismiss.isPending,
+-    submit: () => submit(),
++    submit: () => { void sendPairs(stagedPairs) },
++    submitRecommended: async (open) => {
++      if (!thread || !open.length || open.some((q) => !questions.includes(q))) return false
++      // Read the store at the click too: an edit staged in another mount must not be overwritten.
++      const hasDraft = open.some((q) => allPaths(q).some((path) =>
++        q.spec.secret || draftStore.get(draftKey.question(projectDir, slug!, q.id, path)) || draftStore.get(pickKey(projectDir, slug!, q.id, path))))
++      const rec = phoneRecommendation(thread, open, hasDraft)
++      if (rec.kind !== "answers") return false
++      return sendPairs(open.map((q, i) => ({ q, answer: rec.answers[i]! })))
++    },
+     staged: staged.length,
+     sending: send.isPending,
+     error,
+diff --git a/packages/web/src/components/ThreadComposerBox.tsx b/packages/web/src/components/ThreadComposerBox.tsx
+index 88b5b7ff..e0f1de93 100644
+--- a/packages/web/src/components/ThreadComposerBox.tsx
++++ b/packages/web/src/components/ThreadComposerBox.tsx
+@@ -211,7 +211,7 @@ export function ThreadComposerBox({
+           phone={{
+             layout: "bar",
+             tools: controls.phoneTools,
+-            idlePrimary: canComplete && thread ? (compact) => <PhoneDoneButton thread={thread as ThreadView} compact={compact} /> : undefined,
++            idlePrimary: canComplete && thread && !phoneBarOverride ? (compact) => <PhoneDoneButton thread={thread as ThreadView} compact={compact} /> : undefined,
+             override: phoneBarOverride,
+             onLongPressSend: canInterrupt ? () => send(true) : undefined,
+           }}
+diff --git a/packages/web/src/components/ThreadSheet.tsx b/packages/web/src/components/ThreadSheet.tsx
+index 50dfcf52..1257ce5a 100644
+--- a/packages/web/src/components/ThreadSheet.tsx
++++ b/packages/web/src/components/ThreadSheet.tsx
+@@ -4,7 +4,8 @@ import { useSnapshot } from "valtio"
+ import { store } from "../store.ts"
+ import { useBoard } from "../hooks.ts"
+ import { rpc } from "../api/rpc.ts"
+-import { displayTitle } from "../groups.ts"
++import { displayTitle, queued } from "../groups.ts"
++import { PhoneReviewDeck } from "./PhoneReviewDeck.tsx"
+ import { registerDrawerFocus } from "../lib/overlays.ts"
+ import { useHoldsScrollLock, useIsTopDrawer, useNarrowDrawer, useSheetLayer } from "./ui/Sheet.tsx"
+ import { SHEET_PANEL_CLASS, SHEET_SCRIM_CLASS, sheetWidth } from "../lib/sheet.ts"
+@@ -64,6 +65,8 @@ export function ThreadSheet({ id, slug, depth, widthDepth, initiallyOpen }: { id
+   const board = useBoard()
+   const route = resolveThreadRoute(board, slug)
+   const t = route.kind === "found" ? route.thread : undefined
++  const review = useRef<boolean | null>(null)
++  if (review.current === null && t) review.current = isMobile && queued(t)
+   const projectDir = board?.projectDir
+   const atRestNow = t ? t.runtime === "turn-idle" || t.runtime === "exited" || t.runtime === "none" : false
+   const activityAt = atRestNow ? t?.lastActivityAt : undefined
+@@ -87,8 +90,9 @@ export function ThreadSheet({ id, slug, depth, widthDepth, initiallyOpen }: { id
+   useEffect(() => {
+     const el = scrollerRef.current
+     if (!el || !bodyReady) return
+-    const content = () => el.querySelector<HTMLElement>("[data-drawer-scroll-ready]")
+-    const transcriptScroller = () => el.querySelector<HTMLElement>("[data-drawer-transcript-scroll]")
++    const surface = () => el.querySelector('[data-phone-review-current="true"]') ?? el
++    const content = () => surface().querySelector<HTMLElement>("[data-drawer-scroll-ready]")
++    const transcriptScroller = () => surface().querySelector<HTMLElement>("[data-drawer-transcript-scroll]")
+     const coordinator = new DrawerInitialScrollCoordinator({
+       isActive: () => [...store.drawers].reverse().find((drawer) => !drawer.closing)?.id === id,
+       isContentReady: () => content()?.dataset.drawerScrollReady === "true",
+@@ -270,7 +274,9 @@ export function ThreadSheet({ id, slug, depth, widthDepth, initiallyOpen }: { id
+             // one the standalone page uses) instead of mounting all ~300 messages eagerly. Opening a
+             // long chat used to build 6k+ DOM nodes and burn a ~300ms long task on the main thread
+             // before the sheet was usable.
+-            <ThreadView slug={slug} onStatusApplied={close} onClose={close} virtualized />
++            isMobile && review.current
++              ? <PhoneReviewDeck slug={slug} onClose={close} />
++              : <ThreadView slug={slug} onStatusApplied={close} onClose={close} virtualized />
+           ) : bodyReady && route.kind === "missing" ? (
+             <MissingThread slug={slug} onClose={close} />
+           ) : (
+diff --git a/packages/web/src/components/Toaster.tsx b/packages/web/src/components/Toaster.tsx
+index 0af50496..8459bafc 100644
+--- a/packages/web/src/components/Toaster.tsx
++++ b/packages/web/src/components/Toaster.tsx
+@@ -3,7 +3,8 @@ import { useSnapshot } from "valtio"
+ import { Loader2 } from "lucide-react"
+ import { store, pushDrawer } from "../store.ts"
+ 
+-// Minimal toast (no dep): rises in at the BOTTOM RIGHT, holds, then sinks back down and fades.
++// Desktop feedback sits above the prompt; mobile feedback sits below the top navigation, clear of
++// the fixed recommendation dock. Only the explicit action intercepts touches.
+ // Each showToast bumps the id, which re-arms the timer so a repeat message (the same failure twice
+ // running, say) flashes again. Variants: `spinner` (in-flight feel), `sticky` (no auto-hide — replaced by the
+ // next toast, e.g. "Starting agent…" → the started confirmation), `link` (a button that opens
+@@ -33,7 +34,7 @@ export function Toaster() {
+ 
+   if (!toast) return null
+   return (
+-    <div className={`pointer-events-none fixed right-4 z-[70] flex justify-end ${drawerOpen ? "bottom-20" : "bottom-[calc(var(--queue-dock-inset,0px)+1rem)]"}`}>
++    <div className={`pointer-events-none fixed right-4 z-[70] flex justify-end max-[800px]:top-[calc(env(safe-area-inset-top)+64px)] max-[800px]:bottom-auto ${drawerOpen ? "bottom-20" : "bottom-[calc(var(--queue-dock-inset,0px)+1rem)]"}`}>
+       <div
+         data-toast
+         role="status"
+@@ -45,7 +46,7 @@ export function Toaster() {
+         // instead. `break-words` covers the other half of that failure: a long unbroken token (an
+         // absolute path, a URL) would otherwise push straight past the cap.
+         className={`flex max-w-[min(30rem,calc(100vw-2rem))] items-center gap-2.5 break-words rounded-lg border border-border-strong bg-elevated px-4 py-2 text-[13px] font-medium text-fg shadow-xl shadow-shadow-ink/40 transition-all duration-200 ease-out ${
+-          visible ? "translate-y-0 opacity-100" : "translate-y-8 opacity-0"
++          visible ? "translate-y-0 opacity-100" : "translate-y-8 max-[800px]:-translate-y-8 opacity-0"
+         }`}
+       >
+         {toast.spinner && <Loader2 size={13} className="animate-spin text-muted" />}
+@@ -56,7 +57,7 @@ export function Toaster() {
+               pushDrawer("thread", toast.link!.slug)
+               store.toast = null
+             }}
+-            className="pointer-events-auto shrink-0 rounded-md border border-border px-2 py-0.5 text-[12px] text-fg/90 transition-colors hover:bg-panel-2"
++            className={`${visible ? "pointer-events-auto" : ""} shrink-0 rounded-md border border-border px-2 py-0.5 text-[12px] text-fg/90 transition-colors hover:bg-panel-2 max-[800px]:min-h-[44px]`}
+           >
+             {toast.link.label}
+           </button>
+@@ -72,7 +73,7 @@ export function Toaster() {
+               action.run()
+             }}
+             // Clickable only while the toast shows: a faded-out Undo must not still undo.
+-            className={`${visible ? "pointer-events-auto" : ""} shrink-0 rounded-md border border-border px-2 py-0.5 text-[12px] text-fg/90 transition-colors hover:bg-panel-2`}
++            className={`${visible ? "pointer-events-auto" : ""} shrink-0 rounded-md border border-border px-2 py-0.5 text-[12px] text-fg/90 transition-colors hover:bg-panel-2 max-[800px]:min-h-[44px]`}
+           >
+             {toast.action.label}
+           </button>
+diff --git a/packages/web/src/lib/phoneRecommendation.test.ts b/packages/web/src/lib/phoneRecommendation.test.ts
+new file mode 100644
+index 00000000..ba94adcf
+--- /dev/null
++++ b/packages/web/src/lib/phoneRecommendation.test.ts
+@@ -0,0 +1,31 @@
++import { test } from "node:test"
++import assert from "node:assert/strict"
++import type { RegisteredQuestionView, ThreadView } from "@frizz/shared"
++import { phoneRecommendation } from "./phoneRecommendation.ts"
++
++const thread = (extra: Partial<ThreadView> = {}) => ({ id: "review", kind: "session", state: "open", runtime: "turn-idle", needsYou: true, subAgents: [], bgShells: [], ...extra } as ThreadView)
++const done = thread({ lastFence: { kind: "done", body: "Landed" } as ThreadView["lastFence"] })
++const question = (extra: Partial<RegisteredQuestionView["spec"]> = {}): RegisteredQuestionView => ({
++  id: "qst_test", askedAt: "2026-10-09T10:00:00Z", spec: { question: "Which lifetime?", kind: "question", options: [{ label: "Short", recommended: true }, { label: "Long" }], ...extra },
++})
++
++test("explicit complete handoff recommends Done, not merely an idle thread", () => {
++  assert.equal(phoneRecommendation(done, []).kind, "done")
++  assert.equal(phoneRecommendation(thread(), []).kind, "review")
++  assert.equal(phoneRecommendation(done, [], true).kind, "review")
++  assert.equal(phoneRecommendation({ ...done, runtime: "running" }, []).kind, "review")
++  assert.equal(phoneRecommendation({ ...done, pendingInteraction: true }, []).kind, "review")
++})
++test("questions outrank completion and build exact canonical answers as one batch", () => {
++  const q = question(), second = { ...question(), id: "qst_second" }
++  assert.deepEqual(phoneRecommendation(done, [q, second]), { kind: "answers", labels: ["Short", "Short"], answers: [q, second].map((q) => ({ questionId: q.id, question: q.spec.question, chosen: ["Short"] })) })
++})
++test("unsafe, missing, ambiguous, edited and branching choices stay manual; no partial batch", () => {
++  for (const spec of [
++    { options: [] }, { options: [{ label: "Short" }] },
++    { options: [{ label: "Short", recommended: true }, { label: "Long", recommended: true }] },
++    { kind: "multi" as const }, { secret: true }, { danger: true },
++    { options: [{ label: "Short", recommended: true, followUps: [{ question: "Which value?", kind: "question" as const }] }] },
++  ]) assert.equal(phoneRecommendation(done, [question(), question(spec)]).kind, "review", JSON.stringify(spec))
++  assert.equal(phoneRecommendation(done, [question()], true).kind, "review")
++})
+diff --git a/packages/web/src/lib/phoneRecommendation.ts b/packages/web/src/lib/phoneRecommendation.ts
+new file mode 100644
+index 00000000..9135cd48
+--- /dev/null
++++ b/packages/web/src/lib/phoneRecommendation.ts
+@@ -0,0 +1,29 @@
++import type { QuestionAnswer, RegisteredQuestionView, ThreadView } from "@frizz/shared"
++import { sessionIndicatorKind } from "../groups.ts"
++
++export type PhoneRecommendation =
++  | { kind: "answers"; labels: string[]; answers: QuestionAnswer[] }
++  | { kind: "done" }
++  | { kind: "review"; reason: string }
++
++// A recommendation is an explicit choice, not a guessed yes. Branches, secrets, destructive
++// questions and existing edits belong to the answer sheet; never send a partial batch.
++export function phoneRecommendation(thread: ThreadView, questions: readonly RegisteredQuestionView[], hasDraft = false): PhoneRecommendation {
++  if (thread.pendingAsk || thread.pendingQuestion || thread.pendingInteraction) return { kind: "review", reason: "Review the pending request" }
++  if (questions.length) {
++    if (hasDraft) return { kind: "review", reason: "Review the answers already started" }
++    const answers: QuestionAnswer[] = [], labels: string[] = []
++    for (const q of questions) {
++      const options = q.spec.options ?? []
++      const recommended = options.filter((o) => o.recommended)
++      if (q.spec.secret || q.spec.danger || q.spec.kind !== "question" || recommended.length !== 1 || recommended[0]!.followUps?.length) {
++        return { kind: "review", reason: "Answer the open questions" }
++      }
++      labels.push(recommended[0]!.label)
++      answers.push({ questionId: q.id, question: q.spec.question, chosen: [recommended[0]!.label] })
++    }
++    return { kind: "answers", labels, answers }
++  }
++  if (!hasDraft && sessionIndicatorKind(thread) === "done") return { kind: "done" }
++  return { kind: "review", reason: hasDraft ? "Continue the reply already started" : "Review the handoff" }
++}
+diff --git a/packages/web/src/lib/phoneReviewContext.ts b/packages/web/src/lib/phoneReviewContext.ts
+new file mode 100644
+index 00000000..10b68f8a
+--- /dev/null
++++ b/packages/web/src/lib/phoneReviewContext.ts
+@@ -0,0 +1,8 @@
++import { createContext } from "react"
++
++export const PhoneReviewContext = createContext<{
++  active: boolean
++  dock: HTMLElement | null
++  busy: boolean
++  setBusy: (busy: boolean) => void
++} | null>(null)
+diff --git a/packages/web/src/lib/router.test.ts b/packages/web/src/lib/router.test.ts
+index d5c16eac..41191f9e 100644
+--- a/packages/web/src/lib/router.test.ts
++++ b/packages/web/src/lib/router.test.ts
+@@ -33,6 +33,7 @@ test("queue browsing replaces the thread entry and preserves whether Back owns a
+     assert.equal(calls.at(-1)?.replace, true)
+     assert.equal(calls.at(-1)?.path.endsWith("/thread/second"), true)
+     assert.equal(appPushedCurrentEntry(), true, "board-opened review retains Back ownership")
++    assert.equal(store.drawers[0]?.id, 9000, "browsing preserves the mounted deck and its preloaded conversations")
+     globals.history = { state: { usr: null } } as History
+     replaceQueueThread("third")
+     await tick()
+diff --git a/packages/web/src/lib/router.ts b/packages/web/src/lib/router.ts
+index 09a36e0c..98b98cc3 100644
+--- a/packages/web/src/lib/router.ts
++++ b/packages/web/src/lib/router.ts
+@@ -179,6 +179,12 @@ let queueReplacement: { ownedEntry: boolean } | null = null
+ export function replaceQueueThread(slug: string): void {
+   queueReplacement = { ownedEntry: appPushedCurrentEntry() }
+   store.routeThreadSlug = null
++  const top = [...store.drawers].reverse().find((d) => !d.closing)
++  if (top?.kind === "thread") {
++    // Keep the deck and its already-rendered neighbors mounted while replacing the URL.
++    top.slug = slug
++    return
++  }
+   closeDrawersById(store.drawers.filter((d) => !d.closing).map((d) => d.id))
+   openThread(slug)
+ }
+diff --git a/packages/web/src/lightbox-fixture.tsx b/packages/web/src/lightbox-fixture.tsx
+index e8a8fad7..53462301 100644
+--- a/packages/web/src/lightbox-fixture.tsx
++++ b/packages/web/src/lightbox-fixture.tsx
+@@ -125,6 +125,7 @@ function AnswerSheet() {
+     dismiss: () => {},
+     dismissing: false,
+     submit: () => {},
++    submitRecommended: async () => false,
+     staged: 0,
+     sending: false,
+     error: undefined,
+diff --git a/scripts/verify-queue-review.mjs b/scripts/verify-queue-review.mjs
+index 660e457f..1ebcc6d1 100644
+--- a/scripts/verify-queue-review.mjs
++++ b/scripts/verify-queue-review.mjs
+@@ -106,6 +106,7 @@ try {
+   await page.waitForFunction(() => !document.querySelector('[data-queue-card="done-middle"]'))
+   await page.waitForFunction(() => Math.abs(document.querySelector('[data-queue-card-root="done-last"]').getBoundingClientRect().top - 40) < 2)
+   assert.equal((await api.query("board")).threads.find((t) => t.id === "done-middle").state, "archived")
++  await page.waitForFunction(() => getComputedStyle(document.querySelector('[data-toast]')).opacity === '1')
+   await api.mutate("setThreadState", { slug: "done-middle", state: "open" })
+ 
+   await page.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true })
+@@ -138,6 +139,43 @@ try {
+   }
+   await page.click('[data-mobile-thread-row="done-middle"]')
+   await waitPhone("done-middle")
++  const touch = await page.createCDPSession()
++  const swipe = async (direction, distance = 210, peek = false) => {
++    const start = direction < 0 ? 290 : 100, y = 300
++    await touch.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: start, y }] })
++    for (let i = 1; i <= 12; i++) {
++      await touch.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: start + direction * distance * i / 12, y }] })
++      if (peek && i === 7) {
++        const reveal = await page.evaluate(() => {
++          const front = document.querySelector('[data-phone-review-current="true"]')
++          const neighbor = document.querySelector('[data-phone-review-card="done-last"]')
++          return { preloaded: neighbor === window.preloadedNeighbor, text: neighbor.textContent.includes('Review done-last'), rotation: getComputedStyle(front).transform, dockTop: document.querySelector('[data-phone-review-dock]').getBoundingClientRect().top }
++        })
++        assert.ok(reveal.preloaded && reveal.text && reveal.rotation !== 'none', JSON.stringify(reveal))
++        assert.equal(reveal.dockTop, await page.evaluate(() => window.dockTop))
++        await page.screenshot({ path: join(out, 'mobile-swipe-reveal.png') })
++      }
++    }
++    await touch.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
++  }
++  await page.waitForFunction(() => document.querySelector('[data-phone-review-card="done-last"] [data-drawer-scroll-ready="true"]'))
++  await page.evaluate(() => {
++    window.preloadedNeighbor = document.querySelector('[data-phone-review-card="done-last"]')
++    window.dockTop = document.querySelector('[data-phone-review-dock]').getBoundingClientRect().top
++  })
++  await swipe(-1, 40)
++  await waitPhone("done-middle")
++  await swipe(-1, 210, true)
++  await waitPhone("done-last")
++  assert.equal(await page.evaluate(() => window.preloadedNeighbor === document.querySelector('[data-phone-review-current="true"]')), true, 'promoting a neighbor preserves its DOM')
++  await swipe(1)
++  await waitPhone("done-middle")
++  const scrollBefore = await page.$eval('[data-phone-review-current="true"] [data-drawer-transcript-scroll]', (el) => el.scrollTop)
++  await touch.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: 190, y: 500 }] })
++  for (let i = 1; i <= 12; i++) await touch.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: 190, y: 500 - i * 18 }] })
++  await touch.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
++  await page.waitForFunction((before) => document.querySelector('[data-phone-review-current="true"] [data-drawer-transcript-scroll]').scrollTop > before + 30, {}, scrollBefore)
++  assert.ok(page.url().endsWith('/thread/done-middle'), 'vertical touch scroll never changes the thread')
+   await page.click('[data-phone-thread-bar] [data-queue-next]')
+   await waitPhone("done-last")
+   await page.click('[data-phone-thread-bar] [data-queue-previous]')
+@@ -147,6 +185,15 @@ try {
+   await page.click('[data-phone-done]')
+   await waitPhone("done-last")
+   assert.equal((await api.query("board")).threads.find((t) => t.id === "done-middle").state, "archived")
++  await page.waitForFunction(() => getComputedStyle(document.querySelector('[data-toast]')).opacity === '1')
++  const toastBounds = await page.$eval('[data-toast]', (el) => { const r = el.getBoundingClientRect(); return { top: r.top, bottom: r.bottom } })
++  assert.ok(toastBounds.top >= 56 && toastBounds.bottom < 144, JSON.stringify(toastBounds))
++  await page.screenshot({ path: join(out, 'mobile-top-undo.png') })
++  await page.click('[data-toast-action]')
++  await waitPhone('done-middle')
++  assert.equal((await api.query('board')).threads.find((t) => t.id === 'done-middle').state, 'open', 'Undo really restores the filed thread')
++  await page.click('[data-phone-done]')
++  await waitPhone('done-last')
+   await page.click('[data-phone-thread-bar] [data-queue-previous]')
+   await waitPhone("done-first")
+   assert.equal(await page.$eval('[data-phone-thread-bar] [data-queue-previous]', (b) => b.disabled), true)
+@@ -160,9 +207,48 @@ try {
+   await page.goto(`${config.url}/thread/later-rest`, { waitUntil: "networkidle2" })
+   await waitPhone("later-rest")
+   assert.equal(await page.$eval('[data-phone-thread-bar] [data-queue-next]', (b) => b.disabled), true)
+-  await page.click('[data-phone-done]')
+-  await page.waitForFunction(() => !document.querySelector('[data-phone-thread-bar]'))
+-  assert.equal(new URL(page.url()).pathname, new URL(config.url).pathname, "Done at the end returns to the board")
++  assert.equal(await page.$('[data-phone-done]'), null, 'idle without a completion handoff is not a Done recommendation')
++  await api.mutate('ask', { slug: 'early-ask', questions: [{ question: 'Should failures be cached?', kind: 'question', options: [{ label: 'Do not cache failures', recommended: true }, { label: 'Cache failures' }] }] })
++  await page.goto(`${config.url}/thread/early-ask`, { waitUntil: 'networkidle2' })
++  await waitPhone('early-ask')
++  await page.waitForSelector('[data-phone-accept]')
++  assert.equal(await page.$eval('[data-phone-recommendation-summary]', (el) => el.textContent), 'Short · Do not cache failures')
++  await page.click('[data-phone-answer-open]')
++  await page.waitForSelector('[data-answer-sheet]')
++  await page.waitForFunction(() => document.querySelector('[data-answer-sheet]').getBoundingClientRect().bottom <= innerHeight + 1)
++  await page.click('[data-answer-option]:nth-of-type(2)')
++  await page.goBack()
++  await page.waitForFunction(() => !document.querySelector('[data-answer-sheet]'))
++  assert.equal(await page.$('[data-phone-accept]'), null, 'a manually started answer must not be overwritten by a recommendation')
++  await page.click('[data-phone-answer-open]')
++  await page.waitForSelector('[data-answer-back]:not([disabled])')
++  await page.waitForFunction(() => document.querySelector('[data-answer-sheet]').getBoundingClientRect().bottom <= innerHeight + 1)
++  await page.click('[data-answer-back]')
++  await page.click('[data-answer-write]')
++  await page.waitForSelector('[data-answer-text]')
++  await page.focus('[data-answer-text]')
++  await page.goBack()
++  await page.waitForSelector('[data-phone-accept]')
++  await page.screenshot({ path: join(out, 'mobile-recommended-answers.png') })
++  let rejectAnswers = true
++  await page.setRequestInterception(true)
++  page.on('request', (request) => {
++    if (rejectAnswers && request.url().includes('/answerQuestions')) {
++      rejectAnswers = false
++      return request.respond({ status: 500, contentType: 'application/json', body: JSON.stringify({ message: 'Negative control: answer failed' }) })
++    }
++    return request.continue()
++  })
++  await page.click('[data-phone-accept]')
++  await page.waitForSelector('[data-phone-recommendation] [role="alert"]')
++  assert.ok(page.url().endsWith('/thread/early-ask'), 'failed send stays on the same thread')
++  assert.equal((await api.query('board')).threads.find((t) => t.id === 'early-ask').questions.length, 2)
++  await page.waitForSelector('[data-phone-accept]:not([disabled])')
++  await page.click('[data-phone-accept]')
++  await waitPhone('later-rest')
++  const { questions: answers } = await api.query('threadSettledQuestions', { slug: 'early-ask' })
++  assert.deepEqual(answers.map((q) => q.answer.chosen), [['Short'], ['Do not cache failures']])
++  assert.equal((await api.query('board')).threads.find((t) => t.id === 'early-ask').state, 'open', 'accept answers never archives')
+ 
+   await page.setViewport({ width: 320, height: 740, isMobile: true, hasTouch: true })
+   await page.goto(`${config.url}/thread/done-last`, { waitUntil: "networkidle2" })
+@@ -205,6 +291,25 @@ try {
+   await page.goto(`${config.url}/thread/done-last`, { waitUntil: "networkidle2" })
+   await waitPhone("done-last")
+   await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 6, isMobile: true, hasTouch: true })
++  const { stdout: actionInk } = await execFileAsync('nub', ['scripts/ink-gaps.mjs', `${config.url}/thread/done-last`,
++    '[data-phone-answer-reply],[data-phone-done]', `--browser=${browser.wsEndpoint()}`, '--w=390', '--h=844', '--dsf=6', '--touch'], { cwd: root, encoding: 'utf8', timeout: 60_000 })
++  writeFileSync(join(out, 'action-ink-gaps.json'), actionInk)
++  const checkVertical = await page.$eval('[data-phone-done]', (el) => {
++    const node = [...el.childNodes].find((n) => n.nodeType === 3 && n.textContent.trim())
++    const span = document.createElement('span'); el.insertBefore(span, node); span.append(node)
++    const probe = document.createElement('span'); probe.style.cssText = 'display:inline-block;width:0;height:0;padding:0;margin:0;border:0'; span.append(probe)
++    const baseline = probe.getBoundingClientRect().bottom, cs = getComputedStyle(span), ctx = document.createElement('canvas').getContext('2d')
++    ctx.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`
++    const capCenter = baseline - ctx.measureText('H').actualBoundingBoxAscent / 2
++    const paths = [...el.querySelectorAll('svg path')].map((p) => p.getBoundingClientRect())
++    const glyphCenter = (Math.min(...paths.map((p) => p.top)) + Math.max(...paths.map((p) => p.bottom))) / 2
++    probe.remove(); el.insertBefore(node, span); span.remove()
++    return { capCenter, glyphCenter, residual: glyphCenter - capCenter }
++  })
++  writeFileSync(join(out, 'action-vertical.json'), JSON.stringify(checkVertical, null, 2))
++  assert.ok(Math.abs(checkVertical.residual) < .3, JSON.stringify(checkVertical))
++  const actionBox = await page.$eval('[data-phone-review-dock]', (el) => { const r = el.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height } })
++  await page.screenshot({ path: join(out, 'action-detail.png'), clip: actionBox })
+   const box = await page.$eval('[data-phone-thread-bar] [data-queue-navigation]', (el) => { const r = el.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height } })
+   await page.screenshot({ path: join(out, "navigation-detail.png"), clip: box })
+   const vertical = await page.$$eval('[data-phone-thread-bar] [data-queue-navigation] > *', (els) => els.map((el) => {
+@@ -227,16 +332,25 @@ try {
+   }))
+   writeFileSync(join(out, "navigation-vertical.json"), JSON.stringify(vertical, null, 2))
+   assert.ok(Math.max(...vertical.map((v) => v.capCenter)) - Math.min(...vertical.map((v) => v.capCenter)) < 0.3, "navigation cap bands align")
++  // The last remaining card completes back to the board, never to the head of the old list.
++  for (const thread of (await api.query('board')).threads) {
++    if (thread.id !== 'done-last' && thread.state !== 'archived') await api.mutate('setThreadState', { slug: thread.id, state: 'archived' })
++  }
++  await page.waitForFunction(() => document.querySelector('[data-phone-thread-bar] [data-queue-next]').disabled)
++  await page.click('[data-phone-done]')
++  await page.waitForFunction(() => !document.querySelector('[data-phone-thread-bar]'))
++  assert.equal(new URL(page.url()).pathname, new URL(config.url).pathname, 'Done at the end returns to the board')
+   writeFileSync(join(out, "console.json"), JSON.stringify({ pageErrors, consoleErrors, failedResources }, null, 2))
+   assert.deepEqual(pageErrors, [], "no page exceptions")
+   // adhoc-stack boots startServer directly, not the launcher/supervisor. Its restart-status probe
+   // therefore genuinely 404s. Record it rather than stub it; every OTHER resource/error must be clean.
+-  assert.ok(failedResources.every((r) => r.status === 404 && new URL(r.url).pathname === "/_frizz/control/status"), JSON.stringify(failedResources))
++  assert.equal(failedResources.filter((r) => r.status === 500 && r.url.includes('/answerQuestions')).length, 1, 'one explicit negative-control send failure')
++  assert.ok(failedResources.every((r) => (r.status === 404 && new URL(r.url).pathname === "/_frizz/control/status") || (r.status === 500 && r.url.includes('/answerQuestions'))), JSON.stringify(failedResources))
+   assert.equal(consoleErrors.length, failedResources.length, "every console error must be the known absent supervisor probe")
+-  assert.ok(consoleErrors.every((e) => e === "Failed to load resource: the server responded with a status of 404 (Not Found)"), JSON.stringify(consoleErrors))
+-  writeFileSync(join(out, "result.json"), JSON.stringify({ pass: true, pageErrors, consoleErrors, bounds, checks: ["time/state/done sorting", "preference reload", "desktop next/previous", "desktop middle Done successor", "phone next/previous without writes", "phone middle Done successor", "cold-link navigation", "end-of-list no wrap", "320px bounds", "optical gap measurements"] }, null, 2))
++  assert.ok(consoleErrors.every((e) => e === "Failed to load resource: the server responded with a status of 404 (Not Found)" || e === "Failed to load resource: the server responded with a status of 500 (Internal Server Error)"), JSON.stringify(consoleErrors))
++  writeFileSync(join(out, "result.json"), JSON.stringify({ pass: true, pageErrors, consoleErrors, bounds, checks: ["time/state/done sorting", "preference reload", "desktop next/previous", "desktop middle Done successor", "phone next/previous without writes", "pre-rendered neighbor reveal and DOM preservation", "arc drag with fixed recommendation dock", "short drag cancellation", "vertical touch history scrolling", "phone middle Done successor", "top Undo restores the thread", "manual edits block recommendations", "exact recommended answer batch without archive", "failed send stays on current thread", "idle is not Done readiness", "cold-link navigation", "end-of-list no wrap", "320px bounds", "optical gap and cap-band measurements"] }, null, 2))
+   console.log(`PASS: queue review end-to-end; evidence in ${out}`)
+-  console.log(`No page exceptions; ${failedResources.length} expected missing-supervisor status probes, no other console errors`)
++  console.log(`No page exceptions; ${failedResources.filter((r) => r.status === 404).length} expected missing-supervisor probes and one deliberate negative-control send failure, no other console errors`)
+ } finally {
+   if (browser) await browser.close()
+   stack.kill("SIGTERM")
+-- 
+2.47.1
+

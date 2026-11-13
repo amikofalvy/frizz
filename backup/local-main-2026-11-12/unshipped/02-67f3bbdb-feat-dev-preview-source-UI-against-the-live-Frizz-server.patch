@@ -1,0 +1,270 @@
+From 67f3bbdbaf6adfe5bc35299f3805a515c7ba95b8 Mon Sep 17 00:00:00 2001
+From: Andrew Mikofalvy <5668128+amikofalvy@users.noreply.github.com>
+Date: Wed, 23 Sep 2026 21:49:12 -0700
+Subject: [PATCH] feat(dev): preview source UI against the live Frizz server
+
+---
+ scripts/lib/ui-preview.mjs  | 132 ++++++++++++++++++++++++++++++++++++
+ scripts/ui-preview.mjs      |  25 +++++++
+ scripts/ui-preview.test.mjs |  78 +++++++++++++++++++++
+ 3 files changed, 235 insertions(+)
+ create mode 100644 scripts/lib/ui-preview.mjs
+ create mode 100644 scripts/ui-preview.mjs
+ create mode 100644 scripts/ui-preview.test.mjs
+
+diff --git a/scripts/lib/ui-preview.mjs b/scripts/lib/ui-preview.mjs
+new file mode 100644
+index 00000000..518556cc
+--- /dev/null
++++ b/scripts/lib/ui-preview.mjs
+@@ -0,0 +1,132 @@
++import http from "node:http"
++import { createRequire } from "node:module"
++import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
++import { join, resolve } from "node:path"
++import { fileURLToPath, pathToFileURL } from "node:url"
++import { FORWARDED_HEADERS, isTrustedLocalHttpRequest, isTrustedLocalWebSocketRequest } from "../../packages/server/src/local-origin.ts"
++
++const root = fileURLToPath(new URL("../../", import.meta.url))
++const webRoot = resolve(root, "packages/web")
++
++export function previewUpstream(value) {
++  const url = new URL(value)
++  if (url.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)
++    || url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
++    throw new Error("UI preview upstream must be an HTTP loopback origin, without credentials or a path")
++  }
++  return url
++}
++
++const apiPath = (url = "") => url === "/_frizz" || url.startsWith("/_frizz/")
++// Match what URL routing sees, including dot segments and escaped separators.
++const pathname = (url = "") => new URL(decodeURIComponent(new URL(url, "http://preview.invalid").pathname), "http://preview.invalid").pathname
++const controlPath = (url) => /^\/_frizz\/(?:[^/]+\/)?control(?:\/|$)/.test(pathname(url))
++const read = (req) => req.method === "GET" || req.method === "HEAD"
++
++// Only after validating the incoming authority may the proxy translate it to the backend's origin.
++// The production server's gate stays unchanged. Never forward a caller's asserted proxy authority.
++function backendHeaders(req, target) {
++  const headers = { ...req.headers, host: target.host }
++  if (headers.origin) headers.origin = target.origin
++  for (const name of FORWARDED_HEADERS) delete headers[name]
++  return headers
++}
++
++function rawResponse(socket, status, message, headers = []) {
++  socket.write(`HTTP/1.1 ${status} ${message}\r\n${headers.map(([k, v]) => `${k}: ${v}\r\n`).join("")}\r\n`)
++}
++
++/** A frontend and byte-stream proxy only: no Frizz server, registry, database, workers or scheduler. */
++export async function startUiPreview({ upstream, port = 9394, hot = true }) {
++  const target = previewUpstream(upstream)
++  if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error("Invalid preview port")
++  if (port && Number(target.port || 80) === port) throw new Error("Preview and backend ports must differ")
++  // Do not share dependency-optimizer state with another preview or an existing dev server.
++  const cacheRoot = resolve(root, "node_modules/.cache")
++  mkdirSync(cacheRoot, { recursive: true })
++  const cacheDir = mkdtempSync(join(cacheRoot, "frizz-ui-preview-"))
++  const sockets = new Set()
++  const track = (socket) => {
++    sockets.add(socket)
++    socket.on("error", () => socket.destroy())
++    socket.once("close", () => sockets.delete(socket))
++  }
++  let vite
++  const actualPort = () => server.address()?.port
++  const outgoing = (req) => {
++    const request = http.request(new URL(req.url, target), { method: req.method, headers: backendHeaders(req, target), agent: false })
++    request.on("socket", track)
++    return request
++  }
++  const server = http.createServer((req, res) => {
++    try { decodeURIComponent(req.url) } catch { res.writeHead(400); res.end("Invalid URL"); return }
++    const protectedPath = apiPath(req.url)
++    const allowMissing = read(req) && (!protectedPath || req.headers["sec-fetch-site"] === "same-origin" || req.url === "/_frizz/health")
++    if (!isTrustedLocalHttpRequest(req.headers, actualPort(), allowMissing)) {
++      res.writeHead(403); res.end("UI preview requires its own loopback origin"); return
++    }
++    if (controlPath(req.url) && !(read(req) && pathname(req.url) === "/_frizz/control/status")) {
++      res.writeHead(403); res.end("Deployment controls are disabled in the UI preview"); return
++    }
++    if (!protectedPath) { vite.middlewares(req, res); return }
++    const request = outgoing(req)
++    request.on("response", (response) => {
++      res.writeHead(response.statusCode, response.headers)
++      response.pipe(res)
++    })
++    request.on("error", () => {
++      if (!res.headersSent) { res.writeHead(502); res.end("Frizz backend is unavailable") }
++      else res.destroy()
++    })
++    req.on("aborted", () => request.destroy())
++    res.on("close", () => request.destroy())
++    req.pipe(request)
++  })
++  server.on("connection", track)
++  server.on("upgrade", (req, socket, head) => {
++    try { decodeURIComponent(req.url) } catch { socket.destroy(); return }
++    if (!apiPath(req.url)) return // Vite owns its separate, token-guarded HMR socket.
++    if (!isTrustedLocalWebSocketRequest(req, actualPort()) || controlPath(req.url)) {
++      rawResponse(socket, 403, "Forbidden")
++      socket.end(); return
++    }
++    const request = outgoing(req)
++    socket.on("close", () => request.destroy())
++    socket.on("error", () => request.destroy())
++    request.on("upgrade", (response, backend, backendHead) => {
++      const headers = []
++      for (let i = 0; i < response.rawHeaders.length; i += 2) headers.push([response.rawHeaders[i], response.rawHeaders[i + 1]])
++      rawResponse(socket, response.statusCode, response.statusMessage, headers)
++      if (backendHead.length) socket.write(backendHead)
++      if (head.length) backend.write(head)
++      backend.on("error", () => socket.destroy())
++      backend.on("close", () => socket.destroy())
++      socket.on("close", () => backend.destroy())
++      socket.pipe(backend).pipe(socket)
++    })
++    request.on("response", (response) => {
++      rawResponse(socket, response.statusCode, response.statusMessage, [["Connection", "close"]])
++      response.pipe(socket)
++    })
++    request.on("error", () => socket.destroy())
++    request.end()
++  })
++  const close = async () => {
++    for (const socket of sockets) socket.destroy()
++    await vite?.close()
++    if (server.listening) await new Promise((done) => server.close(done))
++    rmSync(cacheDir, { recursive: true, force: true })
++  }
++  try {
++    const require = createRequire(resolve(webRoot, "package.json"))
++    const { createServer } = await import(pathToFileURL(require.resolve("vite")).href)
++    vite = await createServer({ root: webRoot, cacheDir, configFile: resolve(webRoot, "vite.config.ts"),
++      appType: "spa", server: { middlewareMode: true, hmr: hot ? { server } : false, ...(hot ? {} : { watch: null }) },
++    })
++    await new Promise((done, reject) => {
++      server.once("error", reject)
++      server.listen(port, "127.0.0.1", () => { server.removeListener("error", reject); done() })
++    })
++    return { url: `http://127.0.0.1:${actualPort()}`, upstream: target.origin, close }
++  } catch (error) { await close(); throw error }
++}
+diff --git a/scripts/ui-preview.mjs b/scripts/ui-preview.mjs
+new file mode 100644
+index 00000000..dc41d9b6
+--- /dev/null
++++ b/scripts/ui-preview.mjs
+@@ -0,0 +1,25 @@
++// Source UI against an already-running Frizz. Never boots or updates the backend.
++// nub scripts/ui-preview.mjs --upstream=http://127.0.0.1:9393 --port=9394
++import { DEFAULT_PORT } from "@frizz/shared"
++import { startUiPreview, previewUpstream } from "./lib/ui-preview.mjs"
++
++const args = process.argv.slice(2)
++if (args.includes("--help")) {
++  console.log("Usage: nub scripts/ui-preview.mjs [--upstream=http://127.0.0.1:9393] [--port=9394]")
++  console.log("Loopback-only source UI. Queue actions affect live threads; deployment controls are blocked.")
++} else {
++  try {
++    for (const arg of args) if (!/^--(?:upstream|port)=.+$/.test(arg)) throw new Error(`Unknown option: ${arg}`)
++    const opt = (key, fallback) => args.find((arg) => arg.startsWith(`--${key}=`))?.slice(key.length + 3) ?? fallback
++    const upstream = previewUpstream(opt("upstream", `http://127.0.0.1:${DEFAULT_PORT}`))
++    const response = await fetch(new URL("/_frizz/health", upstream), { signal: AbortSignal.timeout(5000) })
++    if (!response.ok || !(await response.json()).ok) throw new Error("Upstream is not a healthy Frizz server")
++    const preview = await startUiPreview({ upstream: upstream.origin, port: Number(opt("port", String(DEFAULT_PORT + 1))) })
++    let stopping = false
++    const stop = async () => { if (stopping) return; stopping = true; await preview.close() }
++    process.on("SIGINT", () => void stop())
++    process.on("SIGTERM", () => void stop())
++    console.log(JSON.stringify({ url: preview.url, upstream: preview.upstream, pid: process.pid }))
++    console.log("Serving local UI only. Queue actions affect live threads. No backend restart; Ctrl-C stops only this preview.")
++  } catch (error) { console.error(`UI preview failed: ${error.message}`); process.exitCode = 1 }
++}
+diff --git a/scripts/ui-preview.test.mjs b/scripts/ui-preview.test.mjs
+new file mode 100644
+index 00000000..784f55cb
+--- /dev/null
++++ b/scripts/ui-preview.test.mjs
+@@ -0,0 +1,78 @@
++import { test } from "node:test"
++import assert from "node:assert/strict"
++import http from "node:http"
++import { once } from "node:events"
++import WebSocket, { WebSocketServer } from "ws"
++import { previewUpstream, startUiPreview } from "./lib/ui-preview.mjs"
++
++test("preview only targets loopback HTTP origins", () => {
++  for (const bad of ["https://127.0.0.1:9393", "http://example.com", "http://localhost.attacker.test", "http://user:pass@localhost:9393", "http://localhost:9393/path", "http://localhost:9393/?secret=1", "http://localhost:9393/#frag"]) {
++    assert.throws(() => previewUpstream(bad), /loopback/)
++  }
++  assert.equal(previewUpstream("http://127.0.0.1:9393").origin, "http://127.0.0.1:9393")
++})
++
++test("real preview forwards HTTP, SSE and WebSockets, preserving origin gates and disabling deployment controls", { timeout: 30000 }, async () => {
++  let requests = 0
++  const target = http.createServer(async (req, res) => {
++    requests++
++    if (req.url.endsWith('/events')) {
++      res.writeHead(200, { 'content-type': 'text/event-stream' }); res.write('data: streaming\n\n'); return
++    }
++    let body = ''
++    for await (const chunk of req) body += chunk
++    res.setHeader('content-type', 'application/json')
++    res.end(JSON.stringify({ path: req.url, origin: req.headers.origin, host: req.headers.host, body }))
++  })
++  const wss = new WebSocketServer({ server: target })
++  wss.on('connection', (socket, req) => {
++    requests++
++    socket.on('message', (message) => socket.send(JSON.stringify({ message: String(message), origin: req.headers.origin })))
++  })
++  target.listen(0, '127.0.0.1'); await once(target, 'listening')
++  const upstream = `http://127.0.0.1:${target.address().port}`
++  let preview, ws
++  try {
++    preview = await startUiPreview({ upstream, port: 0, hot: false })
++    const result = await fetch(`${preview.url}/_frizz/tenant/rpc/test?input=example`, { method: 'POST', headers: { origin: preview.url }, body: 'exact body' })
++    assert.deepEqual(await result.json(), { path: '/_frizz/tenant/rpc/test?input=example', origin: upstream, host: new URL(upstream).host, body: 'exact body' })
++    const before = requests
++    for (const headers of [{ origin: 'http://evil.test' }, { origin: upstream }, { origin: preview.url, 'x-forwarded-host': 'evil.test' }, { origin: preview.url, host: 'evil.test' }, {}]) {
++      const status = await new Promise((done, reject) => {
++        const req = http.request(`${preview.url}/_frizz/rpc/test`, { method: 'POST', headers }, (res) => { res.resume(); done(res.statusCode) })
++        req.on('error', reject); req.end()
++      })
++      assert.equal(status, 403, JSON.stringify(headers))
++    }
++    for (const path of ['/_frizz/control/restart', '/_frizz/control/stop', '/_frizz/tenant/control/update', '/_frizz/%63ontrol/restart', '/_frizz/tenant/../control/restart', '/_frizz/tenant%2fcontrol/update']) {
++      assert.equal((await fetch(`${preview.url}${path}`, { method: 'POST', headers: { origin: preview.url } })).status, 403)
++    }
++    assert.equal((await fetch(`${preview.url}/_frizz/rpc/test`, { headers: { 'sec-fetch-site': 'cross-site' } })).status, 403)
++    assert.equal(requests, before, 'refused requests never reach the upstream')
++    assert.equal((await fetch(`${preview.url}/_frizz/control/status`, { headers: { 'sec-fetch-site': 'same-origin' } })).status, 200, 'read-only supervisor status remains available')
++    assert.equal((await fetch(`${preview.url}/_frizz/control/restart`, { headers: { 'sec-fetch-site': 'same-origin' } })).status, 403)
++    const read = await fetch(`${preview.url}/_frizz/tenant/rpc/test`, { headers: { 'sec-fetch-site': 'same-origin' } })
++    assert.equal(read.status, 200)
++    const abort = new AbortController()
++    const sse = await fetch(`${preview.url}/_frizz/tenant/events`, { headers: { origin: preview.url }, signal: abort.signal })
++    assert.match(new TextDecoder().decode((await sse.body.getReader().read()).value), /data: streaming/)
++    abort.abort()
++    ws = new WebSocket(`${preview.url.replace('http:', 'ws:')}/_frizz/tenant/ws`, { origin: preview.url })
++    await once(ws, 'open')
++    ws.send('real socket message')
++    assert.deepEqual(JSON.parse(String((await once(ws, 'message'))[0])), { message: 'real socket message', origin: upstream })
++    for (const origin of ['http://evil.test', upstream, undefined]) {
++      const rejected = new WebSocket(`${preview.url.replace('http:', 'ws:')}/_frizz/tenant/ws`, { origin })
++      const [error] = await once(rejected, 'error')
++      assert.match(error.message, /403/)
++    }
++    assert.match(await (await fetch(`${preview.url}/project/example`)).text(), /\/src\/main.tsx/, 'source SPA routes are served, not the backend UI')
++  } finally {
++    ws?.terminate()
++    await preview?.close()
++    for (const socket of wss.clients) socket.terminate()
++    await new Promise((done) => wss.close(done))
++    target.closeAllConnections()
++    await new Promise((done) => target.close(done))
++  }
++})
+-- 
+2.47.1
+

@@ -1,0 +1,165 @@
+From f49bb5f4d084dccb38ca815b9f84909c20ff5eb2 Mon Sep 17 00:00:00 2001
+From: Andrew Mikofalvy <5668128+amikofalvy@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 22:15:42 -0700
+Subject: [PATCH] feat(dev): allow an explicit Tailscale preview origin
+
+---
+ scripts/lib/ui-preview.mjs  | 15 +++++++------
+ scripts/ui-preview.mjs      |  8 +++----
+ scripts/ui-preview.test.mjs | 42 ++++++++++++++++++++++++++++++++++++-
+ 3 files changed, 54 insertions(+), 11 deletions(-)
+
+diff --git a/scripts/lib/ui-preview.mjs b/scripts/lib/ui-preview.mjs
+index 518556cc..db470010 100644
+--- a/scripts/lib/ui-preview.mjs
++++ b/scripts/lib/ui-preview.mjs
+@@ -3,7 +3,7 @@ import { createRequire } from "node:module"
+ import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
+ import { join, resolve } from "node:path"
+ import { fileURLToPath, pathToFileURL } from "node:url"
+-import { FORWARDED_HEADERS, isTrustedLocalHttpRequest, isTrustedLocalWebSocketRequest } from "../../packages/server/src/local-origin.ts"
++import { FORWARDED_HEADERS, isTrustedLocalHttpRequest, isTrustedLocalWebSocketRequest, normalizePublicOrigin } from "../../packages/server/src/local-origin.ts"
+ 
+ const root = fileURLToPath(new URL("../../", import.meta.url))
+ const webRoot = resolve(root, "packages/web")
+@@ -37,8 +37,9 @@ function rawResponse(socket, status, message, headers = []) {
+ }
+ 
+ /** A frontend and byte-stream proxy only: no Frizz server, registry, database, workers or scheduler. */
+-export async function startUiPreview({ upstream, port = 9394, hot = true }) {
++export async function startUiPreview({ upstream, port = 9394, hot = true, publicOrigin }) {
+   const target = previewUpstream(upstream)
++  const policy = publicOrigin ? { publicOrigin: normalizePublicOrigin(publicOrigin) } : undefined
+   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error("Invalid preview port")
+   if (port && Number(target.port || 80) === port) throw new Error("Preview and backend ports must differ")
+   // Do not share dependency-optimizer state with another preview or an existing dev server.
+@@ -62,8 +63,8 @@ export async function startUiPreview({ upstream, port = 9394, hot = true }) {
+     try { decodeURIComponent(req.url) } catch { res.writeHead(400); res.end("Invalid URL"); return }
+     const protectedPath = apiPath(req.url)
+     const allowMissing = read(req) && (!protectedPath || req.headers["sec-fetch-site"] === "same-origin" || req.url === "/_frizz/health")
+-    if (!isTrustedLocalHttpRequest(req.headers, actualPort(), allowMissing)) {
+-      res.writeHead(403); res.end("UI preview requires its own loopback origin"); return
++    if (!isTrustedLocalHttpRequest(req.headers, actualPort(), allowMissing, policy)) {
++      res.writeHead(403); res.end("UI preview requires its own configured origin"); return
+     }
+     if (controlPath(req.url) && !(read(req) && pathname(req.url) === "/_frizz/control/status")) {
+       res.writeHead(403); res.end("Deployment controls are disabled in the UI preview"); return
+@@ -86,7 +87,7 @@ export async function startUiPreview({ upstream, port = 9394, hot = true }) {
+   server.on("upgrade", (req, socket, head) => {
+     try { decodeURIComponent(req.url) } catch { socket.destroy(); return }
+     if (!apiPath(req.url)) return // Vite owns its separate, token-guarded HMR socket.
+-    if (!isTrustedLocalWebSocketRequest(req, actualPort()) || controlPath(req.url)) {
++    if (!isTrustedLocalWebSocketRequest(req, actualPort(), policy) || controlPath(req.url)) {
+       rawResponse(socket, 403, "Forbidden")
+       socket.end(); return
+     }
+@@ -121,7 +122,9 @@ export async function startUiPreview({ upstream, port = 9394, hot = true }) {
+     const require = createRequire(resolve(webRoot, "package.json"))
+     const { createServer } = await import(pathToFileURL(require.resolve("vite")).href)
+     vite = await createServer({ root: webRoot, cacheDir, configFile: resolve(webRoot, "vite.config.ts"),
+-      appType: "spa", server: { middlewareMode: true, hmr: hot ? { server } : false, ...(hot ? {} : { watch: null }) },
++      appType: "spa", server: { middlewareMode: true, hmr: hot ? { server } : false, ...(hot ? {} : { watch: null }),
++        ...(policy ? { allowedHosts: [new URL(policy.publicOrigin).hostname] } : {}),
++      },
+     })
+     await new Promise((done, reject) => {
+       server.once("error", reject)
+diff --git a/scripts/ui-preview.mjs b/scripts/ui-preview.mjs
+index dc41d9b6..099f2672 100644
+--- a/scripts/ui-preview.mjs
++++ b/scripts/ui-preview.mjs
+@@ -5,16 +5,16 @@ import { startUiPreview, previewUpstream } from "./lib/ui-preview.mjs"
+ 
+ const args = process.argv.slice(2)
+ if (args.includes("--help")) {
+-  console.log("Usage: nub scripts/ui-preview.mjs [--upstream=http://127.0.0.1:9393] [--port=9394]")
+-  console.log("Loopback-only source UI. Queue actions affect live threads; deployment controls are blocked.")
++  console.log("Usage: nub scripts/ui-preview.mjs [--upstream=http://127.0.0.1:9393] [--port=9394] [--public-origin=https://machine.tailnet.ts.net:9443]")
++  console.log("Loopback-bound source UI; public-origin trusts one reverse proxy origin. Queue actions affect live threads across projects; deployment controls are blocked.")
+ } else {
+   try {
+-    for (const arg of args) if (!/^--(?:upstream|port)=.+$/.test(arg)) throw new Error(`Unknown option: ${arg}`)
++    for (const arg of args) if (!/^--(?:upstream|port|public-origin)=.+$/.test(arg)) throw new Error(`Unknown option: ${arg}`)
+     const opt = (key, fallback) => args.find((arg) => arg.startsWith(`--${key}=`))?.slice(key.length + 3) ?? fallback
+     const upstream = previewUpstream(opt("upstream", `http://127.0.0.1:${DEFAULT_PORT}`))
+     const response = await fetch(new URL("/_frizz/health", upstream), { signal: AbortSignal.timeout(5000) })
+     if (!response.ok || !(await response.json()).ok) throw new Error("Upstream is not a healthy Frizz server")
+-    const preview = await startUiPreview({ upstream: upstream.origin, port: Number(opt("port", String(DEFAULT_PORT + 1))) })
++    const preview = await startUiPreview({ upstream: upstream.origin, port: Number(opt("port", String(DEFAULT_PORT + 1))), publicOrigin: opt("public-origin", undefined) })
+     let stopping = false
+     const stop = async () => { if (stopping) return; stopping = true; await preview.close() }
+     process.on("SIGINT", () => void stop())
+diff --git a/scripts/ui-preview.test.mjs b/scripts/ui-preview.test.mjs
+index 784f55cb..881938bf 100644
+--- a/scripts/ui-preview.test.mjs
++++ b/scripts/ui-preview.test.mjs
+@@ -33,7 +33,8 @@ test("real preview forwards HTTP, SSE and WebSockets, preserving origin gates an
+   const upstream = `http://127.0.0.1:${target.address().port}`
+   let preview, ws
+   try {
+-    preview = await startUiPreview({ upstream, port: 0, hot: false })
++    const publicOrigin = 'https://preview.example.ts.net:9443'
++    preview = await startUiPreview({ upstream, port: 0, hot: false, publicOrigin })
+     const result = await fetch(`${preview.url}/_frizz/tenant/rpc/test?input=example`, { method: 'POST', headers: { origin: preview.url }, body: 'exact body' })
+     assert.deepEqual(await result.json(), { path: '/_frizz/tenant/rpc/test?input=example', origin: upstream, host: new URL(upstream).host, body: 'exact body' })
+     const before = requests
+@@ -51,6 +52,26 @@ test("real preview forwards HTTP, SSE and WebSockets, preserving origin gates an
+     assert.equal(requests, before, 'refused requests never reach the upstream')
+     assert.equal((await fetch(`${preview.url}/_frizz/control/status`, { headers: { 'sec-fetch-site': 'same-origin' } })).status, 200, 'read-only supervisor status remains available')
+     assert.equal((await fetch(`${preview.url}/_frizz/control/restart`, { headers: { 'sec-fetch-site': 'same-origin' } })).status, 403)
++    const publicHeaders = { host: new URL(publicOrigin).host, origin: publicOrigin, 'x-forwarded-proto': 'https', 'x-forwarded-for': '100.64.0.2' }
++    const proxyRequest = (path, headers, method = 'POST') => new Promise((done, reject) => {
++      const req = http.request(`${preview.url}${path}`, { method, headers: Object.fromEntries(Object.entries(headers).filter(([, value]) => value !== undefined)) }, async res => {
++        let body = ''; for await (const chunk of res) body += chunk
++        done({ status: res.statusCode, body })
++      })
++      req.on('error', reject); req.end()
++    })
++    const publicPost = await proxyRequest('/_frizz/rpc/test', publicHeaders)
++    assert.equal(publicPost.status, 200)
++    assert.equal(JSON.parse(publicPost.body).origin, upstream, 'declared proxy origin is translated only after validation')
++    assert.equal((await proxyRequest('/project/example', { ...publicHeaders, origin: undefined }, 'GET')).status, 200, 'Vite accepts exactly the declared proxy host')
++    for (const headers of [
++      { ...publicHeaders, origin: 'https://evil.test' },
++      { ...publicHeaders, origin: 'https://preview.example.ts.net:9444' },
++      { ...publicHeaders, host: 'evil.test:9443' },
++      { ...publicHeaders, host: new URL(preview.url).host },
++      { ...publicHeaders, origin: undefined },
++    ]) assert.equal((await proxyRequest('/_frizz/rpc/test', headers)).status, 403)
++    assert.equal((await proxyRequest('/_frizz/control/restart', publicHeaders)).status, 403)
+     const read = await fetch(`${preview.url}/_frizz/tenant/rpc/test`, { headers: { 'sec-fetch-site': 'same-origin' } })
+     assert.equal(read.status, 200)
+     const abort = new AbortController()
+@@ -61,6 +82,12 @@ test("real preview forwards HTTP, SSE and WebSockets, preserving origin gates an
+     await once(ws, 'open')
+     ws.send('real socket message')
+     assert.deepEqual(JSON.parse(String((await once(ws, 'message'))[0])), { message: 'real socket message', origin: upstream })
++    const publicWs = new WebSocket(`${preview.url.replace('http:', 'ws:')}/_frizz/tenant/ws`, { headers: publicHeaders })
++    try {
++      await once(publicWs, 'open')
++      publicWs.send('tailnet socket')
++      assert.deepEqual(JSON.parse(String((await once(publicWs, 'message'))[0])), { message: 'tailnet socket', origin: upstream })
++    } finally { publicWs.terminate() }
+     for (const origin of ['http://evil.test', upstream, undefined]) {
+       const rejected = new WebSocket(`${preview.url.replace('http:', 'ws:')}/_frizz/tenant/ws`, { origin })
+       const [error] = await once(rejected, 'error')
+@@ -76,3 +103,16 @@ test("real preview forwards HTTP, SSE and WebSockets, preserving origin gates an
+     await new Promise((done) => target.close(done))
+   }
+ })
++
++test("a loopback-only preview does not implicitly trust a reverse proxy", { timeout: 30000 }, async () => {
++  const preview = await startUiPreview({ upstream: 'http://127.0.0.1:9393', port: 0, hot: false })
++  try {
++    const status = await new Promise((done, reject) => {
++      const req = http.request(`${preview.url}/_frizz/rpc/test`, { method: 'POST', headers: {
++        host: 'preview.example.ts.net:9443', origin: 'https://preview.example.ts.net:9443', 'x-forwarded-proto': 'https',
++      } }, res => { res.resume(); done(res.statusCode) })
++      req.on('error', reject); req.end()
++    })
++    assert.equal(status, 403)
++  } finally { await preview.close() }
++})
+-- 
+2.47.1
+

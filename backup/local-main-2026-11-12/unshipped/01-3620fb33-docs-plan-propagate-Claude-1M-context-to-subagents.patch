@@ -1,0 +1,316 @@
+From 3620fb33278ac07f47aa8f8182fe0a3d56a4b73a Mon Sep 17 00:00:00 2001
+From: Andrew Mikofalvy <5668128+amikofalvy@users.noreply.github.com>
+Date: Tue, 29 Sep 2026 13:16:39 -0700
+Subject: [PATCH] docs(plan): propagate Claude 1M context to subagents
+
+---
+ plans/claude-subagent-context-propagation.md | 297 +++++++++++++++++++
+ 1 file changed, 297 insertions(+)
+ create mode 100644 plans/claude-subagent-context-propagation.md
+
+diff --git a/plans/claude-subagent-context-propagation.md b/plans/claude-subagent-context-propagation.md
+new file mode 100644
+index 00000000..f28d57cf
+--- /dev/null
++++ b/plans/claude-subagent-context-propagation.md
+@@ -0,0 +1,297 @@
++# Claude 1M context propagation to subagents
++
++**Status:** implementation-ready architecture  
++**Date:** 2026-09-29
++
++## Decision
++
++Treat context-window preference as an inherited launch policy, separate from model and effort.
++
++When Frizz launches a root Claude worker with a `[1m]` model variant, it will register a session-local set of internal Claude agent definitions covering every supported model and effort combination. The existing `PreToolUse(Agent)` hook will translate ordinary worker calls such as:
++
++```text
++Agent(model: "fable", subagent_type: "frizz:high", ...)
++```
++
++into a call to the matching internal definition, whose model is `fable[1m]` and whose effort is `high`. The hook removes the explicit `model` field, because an invocation model overrides a profile model.
++
++The public worker contract stays unchanged. Workers choose model and effort; Frizz supplies the inherited context policy. There is no new user setting and no instruction asking workers to type provider-specific suffixes.
++
++This design uses Claude's native Agent lifecycle. A Frizz-owned child-session broker remains the escalation path only if exact per-child, same-family fallback becomes a product requirement.
++
++## User-visible invariant
++
++> A Claude worker started with Frizz's long-context preference propagates that preference to every supported Claude subagent model at every nesting depth, unless the provider rejects that model's long-context request. Frizz shows the requested and actual result rather than silently claiming 1M.
++
++The root launch is the preference source. An operator selecting a normal alias such as `opus` continues to get Frizz's current root resolution to `opus[1m]` plus a safe bare fallback; subagents inherit that launch policy without knowing the suffix syntax.
++
++The three axes remain independent:
++
++| Axis | Owner | Examples |
++| --- | --- | --- |
++| Model | Worker dispatch | `fable`, `opus`, `sonnet`, `haiku` |
++| Effort | Worker dispatch | `low` through `max` |
++| Context preference | Frizz root launch | `prefer-1m` or `standard` |
++
++`haiku` and unknown/full model IDs are not rewritten. The existing exact alias allowlist remains the authority.
++
++## Evidence and constraints
++
++The diagnosis exercised the real Claude Code Agent schema, hooks, custom profiles, request formation, and fallback behavior on both pinned `2.1.281` and current `2.1.282` against a local fake API.
++
++| Finding | Architectural consequence |
++| --- | --- |
++| Agent input accepts only `sonnet`, `opus`, `haiku`, and `fable`. | A worker cannot pass `fable[1m]` directly. |
++| Hook `updatedInput` is revalidated against the same schema. | The hook cannot append `[1m]` to `Agent.model`. |
++| A custom agent definition accepts `model: fable[1m]`. | The suffix must live in an Agent definition, behind a schema-valid `subagent_type`. |
++| Explicit invocation `model` wins over a profile model. | Translation must delete `model` when selecting the internal profile. |
++| Omitted model and a bare same-family model preserve the parent's exact `[1m]` variant. | Omitted model remains untouched; explicit supported aliases can use the same adapter path for uniformity. |
++| `fallbackModel` inside a custom definition is ignored. | A custom profile cannot provide model-preserving fallback. |
++| The root session-wide fallback is inherited by children. | Unsupported 1M requests remain recoverable, but may fall back to the root's bare family rather than the requested child's family. |
++| `system/init.model` reports intent before a request succeeds and remains suffixed after fallback. | Init metadata must not be treated as proof of effective 1M capability. |
++| Successful extended requests carry `context-1m-2025-08-07` and report `contextWindow: 1000000`. | Completion/request evidence is authoritative for observability. |
++
++The current top-level resolver in [`claude-context-window.ts`](../packages/server/src/backend/claude-context-window.ts) is correct but only reaches the root SDK query in [`claude-agent-sdk.ts`](../packages/server/src/backend/claude-agent-sdk.ts). Nested Agent calls currently expose bare aliases through the effort-only profiles under [`cc-worker/agents/`](../cc-worker/agents/), so cross-family children revert to their default windows and compact around 200K.
++
++`CLAUDE_CODE_AUTO_COMPACT_WINDOW=1000000` is not a substitute for selecting a model variant with a 1M context. Compaction policy cannot enlarge the provider request's actual context window.
++
++## Chosen design: a session-local native Agent adapter
++
++### 1. Make the root context intent explicit
++
++Extend [`claude-context-window.ts`](../packages/server/src/backend/claude-context-window.ts) so root resolution returns semantic intent as well as CLI values:
++
++```ts
++type ClaudeContextPreference = "prefer-1m" | "standard"
++
++interface ResolvedClaudeModel {
++  model: string
++  fallbackModel?: string
++  contextPreference: ClaudeContextPreference
++}
++```
++
++The preference describes what Frizz requested, not what the provider has proven. A suffix supplied explicitly by an operator also produces `prefer-1m`. Unsupported aliases and `haiku` produce `standard`.
++
++No model or account capability is inferred from `system/init`.
++
++### 2. Generate one registry for the SDK and hook
++
++Add a pure registry builder beside the resolver:
++
++```ts
++interface ClaudeSubagentContextRegistry {
++  definitions: Record<string, AgentDefinition>
++  rewriteMap: Record<string, Partial<Record<ClaudeEffort, string>>>
++}
++
++buildClaudeSubagentContextRegistry(
++  preference: ClaudeContextPreference,
++): ClaudeSubagentContextRegistry
++```
++
++For `prefer-1m`, generate the Cartesian product of:
++
++- models: `fable`, `opus`, `sonnet`
++- efforts: `low`, `medium`, `high`, `xhigh`, `max`
++
++Each definition carries:
++
++- a reserved name such as `frizz-context-fable-high`;
++- `model: "fable[1m]"`;
++- `effort: "high"`;
++- the same minimal prompt as the public effort-only profile;
++- a terse description marking it as an internal Frizz adapter.
++
++For `standard`, return no definitions and an empty map.
++
++Pass `definitions` through the Claude Agent SDK's existing `options.agents` field. This is preferable to restoring 15 permanent markdown profiles: definitions exist only in long-context sessions, are generated from the same model allowlist, and do not add schema tokens to standard sessions.
++
++Serialize `rewriteMap` into a narrowly named worker environment variable, for example `FRIZZ_CLAUDE_AGENT_CONTEXT_MAP`. Generate both outputs in one function so the hook cannot drift from the registered definitions. Ensure [`sanitizeProviderChildEnvironment`](../packages/server/src/backend/claude-agent-sdk.ts) preserves this Frizz-owned variable.
++
++### 3. Translate only the public Frizz dispatch shape
++
++Extend [`agent-dispatch.mjs`](../cc-worker/hooks/agent-dispatch.mjs) after its existing background/name/team enforcement.
++
++A dispatch is eligible only when all are true:
++
++1. the environment map parses;
++2. `model` is one of its exact keys;
++3. `subagent_type` is exactly one public effort profile, `frizz:low` through `frizz:max`;
++4. the target definition exists.
++
++For an eligible call:
++
++- replace `subagent_type` with the mapped internal definition;
++- remove `model`;
++- preserve `prompt`, `description`, `run_in_background`, and every unrelated field;
++- append the existing orchestration epilogue exactly once.
++
++Leave these calls unchanged:
++
++- omitted model, which already inherits the parent's exact variant;
++- `haiku`, unknown aliases, and full model IDs;
++- project/user custom agent types;
++- already translated internal definitions;
++- malformed or absent policy maps.
++
++Continue to fail open on hook errors. A context adapter must never block dispatch.
++
++The worker-facing instructions in [`workerPrompt.ts`](../packages/server/src/workerPrompt.ts) should keep telling workers to choose a bare model plus `frizz:<effort>`. Add one sentence that context-window policy is inherited and provider-specific model suffixes must not be supplied.
++
++### 4. Carry the policy recursively
++
++The registry and environment variable are session-scoped. Native children and explicitly authorized grandchildren run inside the same Claude session, so the same custom definitions and hook apply at every depth.
++
++A real depth-two harness is a release gate. It must prove that a Fable child dispatched by an Opus 1M root can launch a Sonnet grandchild and that both requests carry the long-context beta. If Claude does not expose programmatic `agents` definitions at depth two, the implementation fallback is mechanically generated plugin profiles from the same registry table; the public contract and hook algorithm do not change.
++
++This is an implementation validation branch, not an unresolved product decision.
++
++### 5. Report intent and effective outcome separately
++
++Extend subagent binding/runtime metadata rather than deriving context from the root init event.
++
++Record:
++
++- requested bare model;
++- requested context preference;
++- selected internal adapter name;
++- actual child model when completion metadata exposes it;
++- actual context window from `modelUsage` when available;
++- a degradation flag when requested `prefer-1m` resolves to a non-1M window or a different family.
++
++The evidence precedence is:
++
++1. child completion `modelUsage[*].contextWindow`;
++2. actual child assistant/completion model;
++3. request/profile intent.
++
++Never promote level 3 into a claim that 1M succeeded. The subagent detail surface should render “requested 1M; actual 200K” or the actual fallback family when degradation occurs. It should not infer success from `system/init.model`.
++
++The likely capture seam is the existing post-Agent binding hook in [`agent-bind.mjs`](../cc-worker/hooks/agent-bind.mjs), with transcript/runtime projection through [`transcript.ts`](../packages/server/src/transcript.ts), [`tailer.ts`](../packages/server/src/tailer.ts), and the shared `SubAgentView` type in [`packages/shared/src/index.ts`](../packages/shared/src/index.ts). Implementation should use whichever completion record is authoritative in the pinned runtime and treat absent evidence as unknown.
++
++## Fallback contract
++
++The initial implementation deliberately keeps the existing root session-wide bare fallback.
++
++That yields three outcomes:
++
++| Outcome | Behavior |
++| --- | --- |
++| Requested child 1M succeeds | Preserve requested child family and 1M window. |
++| Requested child 1M fails and global fallback succeeds | Keep the child alive, record the actual fallback family/window, and mark degradation. |
++| Both fail | Preserve Claude's failed-task behavior and expose the failure. |
++
++This is safe degradation, not exact model preservation. A root `opus[1m]` session asking for `fable` may fall back to bare Opus if Fable 1M is unavailable. Frizz must not label that result as Fable or 1M.
++
++Exact per-child fallback from `fable[1m]` to bare `fable` is impossible with the current native Agent/profile contract. It requires the larger alternative below. The adapter is still the right first architecture because it fixes entitled accounts—the reported case—without replacing Claude's lifecycle, routing, steering, permissions, or transcript behavior.
++
++## Alternatives considered
++
++### A. Native Agent adapter — chosen
++
++**Shape:** register long-context custom definitions and rewrite schema-valid public calls to them.
++
++**Advantages:**
++
++- uses the existing Agent lifecycle and completion routing;
++- leaves the worker API model/effort-only;
++- naturally follows the root preference;
++- supports all current effort levels;
++- has a narrow, testable provider boundary;
++- avoids permanent profiles in standard sessions.
++
++**Trade-offs:**
++
++- adds 15 short definitions to long-context sessions;
++- inherited global fallback can change family;
++- depends on depth-two visibility of SDK-provided definitions, which the real harness must pin.
++
++### B. Frizz-owned child-session broker — reserved escalation
++
++**Shape:** replace native Agent dispatch with a Frizz tool that starts a child Claude SDK session using `resolveClaudeLaunchModel(requestedModel)` for every child.
++
++**Advantages:**
++
++- exact independent resolution of model, effort, and context;
++- family-preserving `fable[1m] -> fable` fallback;
++- full server-side capability and retry policy.
++
++**Costs:**
++
++- Frizz must own nested completion routing, steering, cancellation, permissions, tool inheritance, transcript association, restart recovery, and recursion;
++- it duplicates a mature provider lifecycle to gain one missing fallback dimension;
++- it expands the blast radius far beyond context propagation.
++
++Adopt this only if model-preserving fallback is promoted from an observable degradation to a hard product invariant.
++
++### Rejected mechanisms
++
++- **Direct suffixed `Agent.model`:** rejected by the tool schema before the hook.
++- **Hook suffix rewrite:** rejected by post-hook schema validation.
++- **Prompt-only propagation:** bypassable and still produces invalid Agent input.
++- **Always omit child model:** preserves the root window but destroys intentional Fable/Sonnet/Opus routing.
++- **Global `CLAUDE_CODE_SUBAGENT_MODEL`:** selects one family for the session and cannot honor per-call models.
++- **Profile-local `fallbackModel`:** ignored by both tested Claude Code versions.
++- **Inferring entitlement from root init:** init reports intent before success and remains stale after fallback.
++- **Changing only the compaction threshold:** does not change the provider context window.
++
++## Implementation sequence
++
++1. **Domain model:** add `ClaudeContextPreference` and registry generation beside the root resolver.
++2. **SDK wiring:** pass conditional `agents` definitions and the generated rewrite map into every new/resumed broker query.
++3. **Hook adapter:** translate eligible Agent calls without changing the public worker contract.
++4. **Tests:** pin resolver, registry, environment, hook eligibility, idempotence, and fail-open behavior.
++5. **Runtime evidence:** record requested versus effective child model/context and expose degradation.
++6. **Real provider harness:** run depth-one, depth-two, negative-control, and fallback cases through the pinned Claude runtime.
++7. **Promoted artifact verification:** verify the packaged plugin hook and runtime definitions from a real promoted artifact, because source-stack success does not prove bundled spawn behavior.
++
++## Verification matrix
++
++### Unit and integration coverage
++
++Add or extend:
++
++- [`claude-context-window.test.ts`](../packages/server/src/backend/claude-context-window.test.ts)
++  - supported aliases yield `prefer-1m`;
++  - unsupported/Haiku yield `standard`;
++  - registry shape is exactly 3 models × 5 efforts;
++  - every definition and rewrite target agree.
++- [`agent-dispatch-hook.test.ts`](../packages/server/src/agent-dispatch-hook.test.ts)
++  - eligible model/effort rewrite removes `model`;
++  - no-policy, omitted-model, Haiku, unknown model, and custom profile calls remain untouched;
++  - existing epilogue/background/name/team behavior remains intact;
++  - malformed maps fail open;
++  - a second hook pass is idempotent.
++- Claude SDK/broker tests
++  - long root queries receive `agents` plus the environment map;
++  - standard roots receive neither;
++  - resume preserves the same policy;
++  - sanitized environments retain only the intended Frizz key.
++- transcript/tailer tests
++  - requested intent never masquerades as actual capability;
++  - successful 1M and degraded fallback are projected distinctly.
++
++### Real-runtime harness
++
++Against the pinned Claude Code runtime and a recording fake API:
++
++1. Opus 1M root → Fable high child → Sonnet medium grandchild.
++2. Assert both child requests carry `context-1m-2025-08-07`.
++3. Assert successful usage reports `contextWindow: 1000000`.
++4. Negative control: disable the adapter and prove the cross-family request omits the beta.
++5. Reject the Fable 1M request and prove fallback does not get reported as Fable 1M.
++6. Exercise a standard root and prove no internal long-context definitions are registered.
++
++Then run the same dispatch through a promoted Frizz artifact using the project-local `frizz-artifact-e2e` procedure.
++
++## Architectural principles applied
++
++- **Model the Domain:** context preference is a first-class policy axis rather than punctuation embedded in every caller's model string.
++- **Boundary Discipline:** provider suffix translation lives at the Claude adapter/hook boundary; prompts and generic dispatch callers stay provider-agnostic.
++- **Redesign from First Principles:** model, effort, and context are orthogonal inputs with one owner each, even though Claude's native API forces their resolved representation into a combined profile.
++- **Attack the Premise:** experiments disproved the initially attractive direct-hook rewrite, so the design moves the suffix into the only validated channel instead of elaborating an impossible approach.
++
++## Completion criteria
++
++The change is complete when a real promoted artifact demonstrates a cross-family depth-two dispatch in which every eligible child carries the 1M beta, the standard-context negative control does not, fallback degradation is represented truthfully, and the existing worker-facing Agent syntax has not changed.
+-- 
+2.47.1
+

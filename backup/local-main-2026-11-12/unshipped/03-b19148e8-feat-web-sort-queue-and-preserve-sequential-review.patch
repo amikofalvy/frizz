@@ -1,0 +1,940 @@
+From b19148e86a335aba2c69a4098eb90e8377dba228 Mon Sep 17 00:00:00 2001
+From: Andrew Mikofalvy <5668128+amikofalvy@users.noreply.github.com>
+Date: Fri, 9 Oct 2026 11:17:07 -0700
+Subject: [PATCH] feat(web): sort queue and preserve sequential review
+
+---
+ packages/web/src/components/MobileBoard.tsx   |  22 +-
+ .../web/src/components/QueueNavigation.tsx    |  43 ++++
+ .../web/src/components/QueueSortControls.tsx  |  24 ++
+ packages/web/src/components/Sidebar.tsx       |   5 +-
+ .../web/src/components/ThreadComposerBox.tsx  |   2 +
+ packages/web/src/components/TodosView.tsx     |  11 +-
+ packages/web/src/groups.test.ts               |  20 ++
+ packages/web/src/groups.ts                    |  26 ++-
+ packages/web/src/lib/mobileTriage.test.ts     |  27 ++-
+ packages/web/src/lib/mobileTriage.ts          |  53 ++---
+ packages/web/src/lib/prefs.test.ts            |  11 +
+ packages/web/src/lib/prefs.ts                 |   6 +-
+ packages/web/src/lib/queueNavigation.test.ts  |  12 +
+ packages/web/src/lib/queueNavigation.ts       |   8 +
+ packages/web/src/lib/router.test.ts           |  38 +++-
+ packages/web/src/lib/router.ts                |  20 +-
+ packages/web/src/lib/settingsHelp.ts          |   2 +-
+ scripts/verify-queue-review.mjs               | 205 ++++++++++++++++++
+ 18 files changed, 470 insertions(+), 65 deletions(-)
+ create mode 100644 packages/web/src/components/QueueNavigation.tsx
+ create mode 100644 packages/web/src/components/QueueSortControls.tsx
+ create mode 100644 packages/web/src/lib/queueNavigation.test.ts
+ create mode 100644 packages/web/src/lib/queueNavigation.ts
+ create mode 100644 scripts/verify-queue-review.mjs
+
+diff --git a/packages/web/src/components/MobileBoard.tsx b/packages/web/src/components/MobileBoard.tsx
+index 4768ce19..4b97c516 100644
+--- a/packages/web/src/components/MobileBoard.tsx
++++ b/packages/web/src/components/MobileBoard.tsx
+@@ -5,11 +5,12 @@ import { activeBandThread, boardAskThread, type ThreadView } from "@frizz/shared
+ import { openThread, store } from "../store.ts"
+ import { asThreads, useBoard } from "../hooks.ts"
+ import { prefs } from "../lib/prefs.ts"
++import { QueueSortControls } from "./QueueSortControls.tsx"
++import { phoneQueue } from "../lib/mobileTriage.ts"
+ import {
+   displayTitle,
+   futureSnoozedUntil,
+   lastActiveLabelAt,
+-  needsAction,
+   restIsWorking,
+   sectionThreads,
+   sessionIndicatorKind,
+@@ -513,23 +514,15 @@ export function MobileBoard() {
+   // running reading and a just-clicked Mark-as-done drops it into Done, each folded in BEFORE any band
+   // is derived — so a row's appearance and its band always land together.
+   const all = useOptimisticallyArchived(useOptimisticallySteered(asThreads(board?.threads ?? [])))
+-  const queueOrder = useSnapshot(prefs).queueOrder
+-  const sections = useMemo(() => sectionThreads(all, queueOrder), [all, queueOrder])
++  const { queueOrder, queueSort } = useSnapshot(prefs)
++  const sections = useMemo(() => sectionThreads(all, queueOrder, queueSort), [all, queueOrder, queueSort])
+ 
+   // THE QUEUE IS `sections.active` UNSPLIT — the desktop calls `partitionActive` on it to draw its
+   // Rested/Active rule; the phone does not, which is the whole of the merge.
+   //
+-  // Ordered asks first. The rail orders the cue by rest time, which is right for a column you scan
+-  // beside a workpane; on the one screen a phone has, "what needs me" earns the top. Both groups keep
+-  // their queue order within themselves, so nothing else about the ordering changes.
+-  const queue = useMemo(() => {
+-    const asks = sections.active.filter(needsAction)
+-    const rest = sections.active.filter((t) => !needsAction(t))
+-    // PINNED leads even the asks: the phone has no pinned band, so the human's shelf folds into the
+-    // top of the one list rather than vanishing (a pinned thread is diverted OUT of `active` — and out
+-    // of `snoozed`/`inactive` — by sectionThreads, so without this it would render nowhere).
+-    return [...sections.pinned, ...asks, ...rest]
+-  }, [sections.pinned, sections.active])
++  // The same selected queue sort as the desktop. Pinned remains the human's shelf above it;
++  // running work stays below the waiting rows rather than interrupting a review.
++  const queue = useMemo(() => phoneQueue(all, queueOrder, queueSort), [all, queueOrder, queueSort])
+   // Counted with `boardAskThread` — the queue rows `needsAction` calls asks — which is also what the server
+   // counts for the projects list's accent number, so the list and this header cannot disagree.
+   const askCount = useMemo(() => all.filter(boardAskThread).length, [all])
+@@ -597,6 +590,7 @@ export function MobileBoard() {
+       {/* The list: 56 + 45 of header and tabs above; below, the "New thread" button's 50 plus 16 either
+           side, so the last row scrolls clear of it and its age column is never under the button. */}
+       <div className="flex min-h-dvh flex-col pb-[calc(82px+env(safe-area-inset-bottom))] pt-[calc(101px+env(safe-area-inset-top))]">
++        {tab === "queue" && !statusView && <div className="px-[18px]"><QueueSortControls /></div>}
+         {statusView ? (
+           // A `/status/<name>` URL is a real route on both shells; answering it with the queue would be
+           // the wrong list with nothing saying so. Same component the workpane renders.
+diff --git a/packages/web/src/components/QueueNavigation.tsx b/packages/web/src/components/QueueNavigation.tsx
+new file mode 100644
+index 00000000..f0e43a2f
+--- /dev/null
++++ b/packages/web/src/components/QueueNavigation.tsx
+@@ -0,0 +1,43 @@
++import { useSnapshot } from "valtio"
++import { createContext, useContext } from "react"
++import { asThreads, useBoard } from "../hooks.ts"
++import { orderQueue, queued } from "../groups.ts"
++import { prefs } from "../lib/prefs.ts"
++import { phoneQueue, leaveFiledThread } from "../lib/mobileTriage.ts"
++import { queueNeighbors } from "../lib/queueNavigation.ts"
++import { useOptimisticallyArchived } from "../lib/optimisticArchive.ts"
++import { useOptimisticallySteered } from "../lib/steering.ts"
++import { scrollToQueueCard } from "../store.ts"
++
++// The desktop owns optimistic exits that may not have reached the board yet. Browse the cards that
++// are actually still present, not the stale board list (especially after a reply or a snooze).
++export const QueueReviewIdsContext = createContext<readonly string[] | null>(null)
++
++// Browsing is deliberately read-only: neither button answers, snoozes nor completes anything.
++// Sans at 12px: the phone's 44px hit areas give 21.28 / 21.82px ink gaps around the count,
++// with identical cap-band centres (dsf 6). Keep the padding and spacing shared across both verbs.
++export function QueueNavigation({ slug, phone = false }: { slug: string; phone?: boolean }) {
++  const board = useBoard()
++  const { queueOrder, queueSort } = useSnapshot(prefs)
++  const renderedIds = useContext(QueueReviewIdsContext)
++  const all = useOptimisticallyArchived(useOptimisticallySteered(asThreads(board?.threads ?? [])))
++  const items = phone ? phoneQueue(all, queueOrder, queueSort).filter(queued)
++    : orderQueue(all.filter(queued), queueOrder, queueSort)
++  const ids = !phone && renderedIds ? renderedIds : items.map((t) => t.id)
++  const { index, previous, next } = queueNeighbors(ids, slug)
++  if (index < 0) return null
++  const navigate = (target: string | undefined) => {
++    if (!target) return
++    if (phone) leaveFiledThread(slug, items.find((t) => t.id === target))
++    else scrollToQueueCard(target)
++  }
++  return (
++    <nav aria-label="Queue review" data-queue-navigation className={`flex items-center gap-3 text-[12px] text-muted ${phone ? "border-b border-border px-3 py-1" : "mt-1"}`}>
++      <button type="button" data-queue-previous disabled={!previous} onClick={() => navigate(previous)}
++        className={`${phone ? "min-h-[44px] px-2" : "py-1"} hover:text-fg disabled:opacity-35`}>Previous</button>
++      <span className="tabular-nums" aria-live="polite">{index + 1} of {ids.length}</span>
++      <button type="button" data-queue-next disabled={!next} onClick={() => navigate(next)}
++        className={`${phone ? "min-h-[44px] px-2" : "py-1"} hover:text-fg disabled:opacity-35`}>Next</button>
++    </nav>
++  )
++}
+diff --git a/packages/web/src/components/QueueSortControls.tsx b/packages/web/src/components/QueueSortControls.tsx
+new file mode 100644
+index 00000000..ba519e16
+--- /dev/null
++++ b/packages/web/src/components/QueueSortControls.tsx
+@@ -0,0 +1,24 @@
++import { useSnapshot } from "valtio"
++import { prefs } from "../lib/prefs.ts"
++import type { QueueDirection, QueueSort } from "../groups.ts"
++
++export function QueueSortControls() {
++  const { queueOrder, queueSort } = useSnapshot(prefs)
++  return (
++    <div data-queue-sort-controls className="flex flex-wrap items-center gap-2 py-2 text-[12px] text-muted">
++      <select aria-label="Sort queue by" value={queueSort} title="Last updated uses the thread’s last rest, not live tool output. State groups matching icons; suggested done puts checked handoffs first."
++        onChange={(e) => { prefs.queueSort = e.target.value as QueueSort }}
++        className="min-h-[36px] min-w-0 rounded-md border border-border bg-panel px-2 py-1.5 text-fg max-[800px]:min-h-[44px]">
++        <option value="time">Last updated</option>
++        <option value="state">Thread state</option>
++        <option value="done">Suggested done first</option>
++      </select>
++      <select aria-label="Queue time order" value={queueOrder}
++        onChange={(e) => { prefs.queueOrder = e.target.value as QueueDirection }}
++        className="min-h-[36px] min-w-0 rounded-md border border-border bg-panel px-2 py-1.5 text-fg max-[800px]:min-h-[44px]">
++        <option value="fifo">Oldest first</option>
++        <option value="lifo">Newest first</option>
++      </select>
++    </div>
++  )
++}
+diff --git a/packages/web/src/components/Sidebar.tsx b/packages/web/src/components/Sidebar.tsx
+index 26f4a9f0..91eadae6 100644
+--- a/packages/web/src/components/Sidebar.tsx
++++ b/packages/web/src/components/Sidebar.tsx
+@@ -8,6 +8,7 @@ import { store, openThread, scrollToQueueCard, queueCardTargetY, pushSubAgentDra
+ import { rpc } from "../api/rpc.ts"
+ import { useBoard, asThreads } from "../hooks.ts"
+ import { prefs } from "../lib/prefs.ts"
++import { QueueSortControls } from "./QueueSortControls.tsx"
+ import { sectionThreads, externalThreads, orderByInteraction, partitionActive, needsAction, displayTitle, titleIsProvisional, isPinned, isSnoozed, parkedAwaitingHint, sessionIndicatorKind, offersRetry, futureSnoozedUntil, lastActiveLabelAt, waitNamesPr, prChecksRunning, restingOnSubAgents, restIsWorking } from "../groups.ts"
+ import { ageSpan, relativeAge, limitResumeClock } from "../lib/activityTime.ts"
+ import { useNowMs } from "../lib/liveClock.ts"
+@@ -90,7 +91,8 @@ export function Sidebar() {
+   // appearance and its POSITION always land together instead of one waiting on a round-trip the other
+   // already skipped (lib/steering.ts, lib/optimisticArchive.ts).
+   const all = useOptimisticallyArchived(useOptimisticallySteered(asThreads(board?.threads ?? [])))
+-  const sections = sectionThreads(all, useSnapshot(prefs).queueOrder)
++  const { queueOrder, queueSort } = useSnapshot(prefs)
++  const sections = sectionThreads(all, queueOrder, queueSort)
+   // Its own partition, deliberately NOT a SectionKey: sectionThreads drops external rows entirely, and
+   // that stays true — an external session must never be able to land in Active, Snoozed or Done by
+   // accident. This band is the only place they render, and they leave it by being STEERED, not by
+@@ -230,6 +232,7 @@ export function Sidebar() {
+           <DispatchForm />
+         </div>
+         <div ref={railRef} data-sidebar-rail className="min-h-0 min-w-0 overflow-y-auto overflow-x-hidden max-[800px]:overflow-y-visible">
++          <QueueSortControls />
+           {/* PINNED — the human's shelf, at the very top, above the cue (maintainer 2026-09-02, variant
+               A of the pin mockups: each row wearing the small solid pin where the cue's rest time would
+               sit). These rows are OUT of the band system entirely — sectionThreads diverts them before
+diff --git a/packages/web/src/components/ThreadComposerBox.tsx b/packages/web/src/components/ThreadComposerBox.tsx
+index f9315466..88b5b7ff 100644
+--- a/packages/web/src/components/ThreadComposerBox.tsx
++++ b/packages/web/src/components/ThreadComposerBox.tsx
+@@ -17,6 +17,7 @@ import { canInterruptAndSend } from "../lib/composerKeyboard.ts"
+ import { useIsMobile } from "../lib/mobile.ts"
+ import { threadLifecycleAvailability } from "../lib/threadLifecycle.ts"
+ import { PhoneDoneButton } from "./PhoneDoneButton.tsx"
++import { QueueNavigation } from "./QueueNavigation.tsx"
+ import { RecurringPromptControl } from "./RecurringPromptControl.tsx"
+ import type { PhoneBarApi } from "./Composer.tsx"
+ 
+@@ -193,6 +194,7 @@ export function ThreadComposerBox({
+   if (phoneBar) {
+     return (
+       <div data-thread-composer-box={surface} data-thread-action-bar="" data-phone-thread-bar="">
++        {thread && <QueueNavigation slug={thread.id} phone />}
+         <Composer
+           contextTokens={contextTokens}
+           id={id}
+diff --git a/packages/web/src/components/TodosView.tsx b/packages/web/src/components/TodosView.tsx
+index c4bfb836..abef361c 100644
+--- a/packages/web/src/components/TodosView.tsx
++++ b/packages/web/src/components/TodosView.tsx
+@@ -27,6 +27,7 @@ import { AwaitingBackgroundCard, showsRestingCard } from "./AwaitingBackgroundCa
+ import { agentCompletionCall } from "../lib/subAgentCompletion.ts"
+ import { coalesceToolActivityMessages } from "../lib/toolActivity.ts"
+ import { prefs } from "../lib/prefs.ts"
++import { QueueNavigation, QueueReviewIdsContext } from "./QueueNavigation.tsx"
+ import { ThreadComposerBox } from "./ThreadComposerBox.tsx"
+ import { ThreadSlugContext, QueueDismissContext } from "./ChatView.tsx"
+ import { HeaderActions } from "./HeaderActions.tsx"
+@@ -162,9 +163,10 @@ function AwaitingBackgroundBanner({ thread, onSnooze, onSnoozeFailed }: {
+ export function TodosView() {
+   const board = useBoard()
+   // The queue is EXACTLY the server-derived Needs-you session threads (t.needsYou) — legacy .frizz rows
+-  // never card anymore. One strictly time-ordered list (no priority band): every card orders by
+-  // last-active alone, FIFO (oldest-first) by default or LIFO per the queueOrder preference.
+-  const items = orderQueue(asThreads(board?.threads ?? []).filter(queued), useSnapshot(prefs).queueOrder)
++  // never card anymore. Time-ordered by default; optional state/done grouping uses the same comparator
++  // as the rail, with FIFO/LIFO as the time tie-break within each group.
++  const { queueOrder, queueSort } = useSnapshot(prefs)
++  const items = orderQueue(asThreads(board?.threads ?? []).filter(queued), queueOrder, queueSort)
+   const itemKey = items.map((i) => i.id).join(",")
+ 
+   // The queue does NO passive/observer-driven scrolling — no on-mount focus, no re-anchor machine
+@@ -511,6 +513,7 @@ export function TodosView() {
+       <BoardErrorsBanner board={board} />
+ 
+       {renderItems.length > 0 && (
++        <QueueReviewIdsContext.Provider value={renderItems.filter((t) => !isLeaving(t.id)).map((t) => t.id)}>
+         <div className="flex flex-col">
+           {renderItems.map((item, i) => (
+             <Fragment key={item.id}>
+@@ -528,6 +531,7 @@ export function TodosView() {
+             </Fragment>
+           ))}
+         </div>
++        </QueueReviewIdsContext.Provider>
+       )}
+ 
+       {nothingAtAll ? (
+@@ -1332,6 +1336,7 @@ const QueueCard = memo(function QueueCard({ thread, leaving, frozen, onResolve,
+               2026-09-13 ("I should be able to click on it to retitle it"). */}
+           <ThreadTitle thread={thread} className="leading-snug" />
+           <ThreadHeaderFacts thread={thread} />
++          <QueueNavigation slug={thread.id} />
+           {/* status_text is worker-authored frontmatter prose — only decision-relevant when the
+               thread is actually waiting on the human, so it renders ONLY for needs-human threads (the
+               declared awaiting-you state; blocked is now a pure machine-wait and never cards). */}
+diff --git a/packages/web/src/groups.test.ts b/packages/web/src/groups.test.ts
+index f430ee0a..8090c6c5 100644
+--- a/packages/web/src/groups.test.ts
++++ b/packages/web/src/groups.test.ts
+@@ -29,6 +29,26 @@ function thread(over: Partial<ThreadView> = {}): ThreadView {
+   }
+ }
+ 
++test("queue property sorts keep time as the tie-break and never mutate the input", () => {
++  const fence = { kind: "done", body: "Finished" } as ThreadView["lastFence"]
++  const rows = [
++    thread({ id: "rest", lastAssistantAt: "2026-10-01T00:00:00Z" }),
++    thread({ id: "new-done", lastAssistantAt: "2026-10-03T00:00:00Z", lastFence: fence }),
++    thread({ id: "ask", pendingQuestion: true, lastAssistantAt: "2026-10-04T00:00:00Z" }),
++    thread({ id: "old-done", lastAssistantAt: "2026-10-02T00:00:00Z", lastFence: fence }),
++  ]
++  const ids = (sort: "time" | "done" | "state", direction: "fifo" | "lifo" = "fifo") => orderQueue(rows, direction, sort).map((t) => t.id)
++  assert.deepEqual(ids("time"), ["rest", "old-done", "new-done", "ask"])
++  assert.deepEqual(ids("done"), ["old-done", "new-done", "rest", "ask"])
++  assert.deepEqual(ids("done", "lifo"), ["new-done", "old-done", "ask", "rest"])
++  assert.deepEqual(ids("state"), ["ask", "old-done", "new-done", "rest"])
++  assert.deepEqual(rows.map((t) => t.id), ["rest", "new-done", "ask", "old-done"])
++  // An unanswered question outranks stale completion metadata; it is not suggested done.
++  const question = thread({ id: "question", pendingQuestion: true, lastFence: fence })
++  assert.equal(sessionIndicatorKind(question), "needs-input")
++  assert.equal(orderQueue([question, rows[1]!], "fifo", "done")[0]!.id, "new-done")
++})
++
+ /** A running background shell — the plain "something it launched is still going" fixture. */
+ function shell(over: Partial<NonNullable<ThreadView["bgShells"]>[number]> = {}): NonNullable<ThreadView["bgShells"]>[number] {
+   return { label: "vite dev", startedAt: "2026-08-14T00:00:00.000Z", state: "running", id: "s1", ...over }
+diff --git a/packages/web/src/groups.ts b/packages/web/src/groups.ts
+index 66c724a5..84d270e7 100644
+--- a/packages/web/src/groups.ts
++++ b/packages/web/src/groups.ts
+@@ -164,6 +164,13 @@ export function lastActiveLabelAt(t: Pick<ThreadView, "runtime" | "lastActivityA
+ // lib/prefs.ts). FIFO (default) surfaces the longest-waiting item first so the human cycles through
+ // all work; LIFO surfaces the most-recently-active first.
+ export type QueueDirection = "fifo" | "lifo"
++export type QueueSort = "time" | "state" | "done"
++
++// Sort by the SAME resolved icon the row renders, not raw status (which can disagree with it).
++const STATE_ORDER: Record<SessionIndicatorKind, number> = {
++  "needs-input": 0, stalled: 1, limit: 2, done: 3, rest: 4,
++  pr: 5, timer: 6, background: 7, working: 8, snoozed: 9, archived: 10,
++}
+ 
+ // Attention first (needsAction), then most-recent LAST-ACTIVE first within each band (see
+ // lastActiveAt). id-tiebroken so equal-time rows hold a stable order. New array; input untouched.
+@@ -190,7 +197,7 @@ export function orderByInteraction(threads: readonly ThreadView[]): ThreadView[]
+   })
+ }
+ 
+-// The queue is a SINGLE strictly time-ordered list — no priority band. Every waiting card orders by
++// By default the queue is a SINGLE strictly time-ordered list — no priority band. Every waiting card orders by
+ // DIRECTION (a per-browser view preference — see lib/prefs.ts) alone, so the visible "oldest first"
+ // rule is literally true across every card, attention and passive alike (maintainer 2026-07-21:
+ // removed the hidden hard-attention band — "too confusing"; a fresh crash/permission-prompt no longer
+@@ -204,9 +211,16 @@ export function orderByInteraction(threads: readonly ThreadView[]): ThreadView[]
+ // lastActiveAt keys off when an AT-REST thread came to rest (matching its "Last active" label) and off
+ // the stable user-interaction time for a running row, so agent tool churn never reorders a card.
+ // id-tiebroken for a stable order among equal-age rows.
+-export function orderQueue(threads: readonly ThreadView[], direction: QueueDirection = "fifo"): ThreadView[] {
++// The operator can now explicitly group by icon or put checked handoffs first. Within each group,
++// the selected time direction and id tie-break still apply; neither property changes queue membership.
++export function orderQueue(threads: readonly ThreadView[], direction: QueueDirection = "fifo", sort: QueueSort = "time"): ThreadView[] {
+   const dir = direction === "lifo" ? -1 : 1
+   return [...threads].sort((a, b) => {
++    const ak = sessionIndicatorKind(a)
++    const bk = sessionIndicatorKind(b)
++    const group = sort === "state" ? STATE_ORDER[ak] - STATE_ORDER[bk]
++      : sort === "done" ? Number(bk === "done") - Number(ak === "done") : 0
++    if (group !== 0) return group
+     const age = (lastActiveAt(a) - lastActiveAt(b)) * dir
+     return age !== 0 ? age : a.id.localeCompare(b.id)
+   })
+@@ -687,10 +701,10 @@ export function offersRetry(t: ThreadView): boolean {
+ // This ORDER IS THE RENDER ORDER: the Sidebar splits the result with partitionActive and draws the two
+ // bands in the order they come out of here, so the array and the rail can never disagree about which
+ // band is on top.
+-export function orderActive(threads: readonly ThreadView[], direction: QueueDirection = "fifo"): ThreadView[] {
++export function orderActive(threads: readonly ThreadView[], direction: QueueDirection = "fifo", sort: QueueSort = "time"): ThreadView[] {
+   const running = threads.filter(inActiveBand)
+   const rested = threads.filter((t) => !inActiveBand(t))
+-  return [...orderQueue(rested, direction), ...orderByInteraction(running)]
++  return [...orderQueue(rested, direction, sort), ...orderByInteraction(running)]
+ }
+ 
+ // Split an ALREADY-ordered list (see orderActive) into its Active/Rested bands WITHOUT re-sorting —
+@@ -712,7 +726,7 @@ export function partitionActive(active: readonly ThreadView[]): { running: Threa
+ // row must be claimable by NO band, and keeping it out of the Record is what makes that true by
+ // construction instead of by every band remembering to exclude it.
+ export type SectionedThreads = Record<SectionKey, ThreadView[]> & { pinned: ThreadView[] }
+-export function sectionThreads(threads: readonly ThreadView[], direction: QueueDirection = "fifo"): SectionedThreads {
++export function sectionThreads(threads: readonly ThreadView[], direction: QueueDirection = "fifo", sort: QueueSort = "time"): SectionedThreads {
+   const out: SectionedThreads = { pinned: [], active: [], snoozed: [], inactive: [] }
+   for (const t of threads) {
+     if (t.kind === "session" && t.foreign === true) continue // foreign sessions never row (nor strip — dropped)
+@@ -726,7 +740,7 @@ export function sectionThreads(threads: readonly ThreadView[], direction: QueueD
+   // Pin order, oldest pin first: the band is a shelf the human arranged, so nothing about the threads'
+   // own activity may reorder it. Slug tiebreak keeps two same-instant pins stable across renders.
+   out.pinned.sort((a, b) => (a.pinnedAt ?? "").localeCompare(b.pinnedAt ?? "") || a.id.localeCompare(b.id))
+-  out.active = orderActive(out.active, direction)
++  out.active = orderActive(out.active, direction, sort)
+   out.snoozed = orderByInteraction(out.snoozed)
+   out.inactive = orderByInteraction(out.inactive)
+   return out
+diff --git a/packages/web/src/lib/mobileTriage.test.ts b/packages/web/src/lib/mobileTriage.test.ts
+index 3792cca6..70d0abbf 100644
+--- a/packages/web/src/lib/mobileTriage.test.ts
++++ b/packages/web/src/lib/mobileTriage.test.ts
+@@ -18,14 +18,14 @@ const row = (id: string, over: Partial<ThreadView> = {}) => ({
+   ...over,
+ } as unknown as ThreadView)
+ 
+-const ask = (id: string, at: string) => row(id, { pendingAsk: { question: "?" } as ThreadView["pendingAsk"], restedAt: at, lastActivityAt: at })
+-const rested = (id: string, at: string) => row(id, { restedAt: at, lastActivityAt: at })
++const ask = (id: string, at: string) => row(id, { pendingAsk: { question: "?" } as ThreadView["pendingAsk"], lastAssistantAt: at })
++const rested = (id: string, at: string) => row(id, { lastAssistantAt: at })
+ const running = (id: string) => row(id, { runtime: "running", needsYou: false })
+ 
+-test("Done opens the next ask before any rested handoff, as the phone board lists them", () => {
++test("Done advances from the current row using the same time sort as the phone board", () => {
+   const threads = [rested("r1", "2026-09-30T09:00:00.000Z"), ask("a1", "2026-09-30T09:30:00.000Z"), rested("current", "2026-09-30T08:00:00.000Z")]
+-  assert.deepEqual(phoneQueue(threads).slice(0, 1).map((t) => t.id), ["a1"])
+-  assert.equal(nextThreadNeedingYou(threads, "current", "fifo", {})?.id, "a1")
++  assert.deepEqual(phoneQueue(threads).map((t) => t.id), ["current", "r1", "a1"])
++  assert.equal(nextThreadNeedingYou(threads, "current", "fifo", {})?.id, "r1")
+ })
+ 
+ test("a running thread never needs you, so the loop skips it; with nothing left it is undefined", () => {
+@@ -39,7 +39,22 @@ test("the thread being filed is never its own next", () => {
+ })
+ 
+ test("a thread marked done a moment ago, not yet echoed by the board, is not landed on again", () => {
+-  const threads = [ask("just-done", "2026-09-30T08:00:00.000Z"), rested("r1", "2026-09-30T09:00:00.000Z"), rested("current", "2026-09-30T07:00:00.000Z")]
++  const threads = [rested("just-done", "2026-09-30T08:00:00.000Z"), rested("r1", "2026-09-30T09:00:00.000Z"), rested("current", "2026-09-30T07:00:00.000Z")]
+   assert.equal(nextThreadNeedingYou(threads, "current", "fifo", {})?.id, "just-done", "control: without the overlay it would be next")
+   assert.equal(nextThreadNeedingYou(threads, "current", "fifo", { "just-done": Date.now() })?.id, "r1")
+ })
++
++test("at the end of either time direction, Done returns to the board rather than wraps", () => {
++  const threads = [rested("first", "2026-09-30T07:00:00.000Z"), rested("last", "2026-09-30T09:00:00.000Z")]
++  assert.equal(nextThreadNeedingYou(threads, "last", "fifo", {}), undefined)
++  assert.equal(nextThreadNeedingYou(threads, "first", "lifo", {}), undefined)
++  assert.equal(nextThreadNeedingYou(threads, "missing", "fifo", {}), undefined)
++})
++
++test("explicit done-first sort overrides the phone's asks-first order", () => {
++  const done = rested("done", "2026-09-30T09:00:00.000Z")
++  done.lastFence = { kind: "done", body: "Finished" } as ThreadView["lastFence"]
++  const threads = [ask("ask", "2026-09-30T07:00:00.000Z"), done, rested("rest", "2026-09-30T08:00:00.000Z")]
++  assert.deepEqual(phoneQueue(threads, "fifo", "done").map((t) => t.id), ["done", "ask", "rest"])
++  assert.equal(nextThreadNeedingYou(threads, "done", "fifo", {}, "done")?.id, "ask")
++})
+diff --git a/packages/web/src/lib/mobileTriage.ts b/packages/web/src/lib/mobileTriage.ts
+index d1bf9671..8915cb28 100644
+--- a/packages/web/src/lib/mobileTriage.ts
++++ b/packages/web/src/lib/mobileTriage.ts
+@@ -1,8 +1,8 @@
+ import type { CompletionHold, ThreadView } from "@frizz/shared"
+ import { rpc } from "../api/rpc.ts"
+ import { closeDrawersById, openThread, showToast, store } from "../store.ts"
+-import { appPushedCurrentEntry } from "./router.ts"
+-import { displayTitle, needsAction, sectionThreads } from "../groups.ts"
++import { appPushedCurrentEntry, replaceQueueThread } from "./router.ts"
++import { displayTitle, sectionThreads } from "../groups.ts"
+ import { prefs } from "./prefs.ts"
+ import { archivingAtNow, clearArchived, markArchived, optimisticallyArchived } from "./optimisticArchive.ts"
+ import { completionArchivesImmediately } from "./threadLifecycle.ts"
+@@ -16,20 +16,18 @@ import { completionArchivesImmediately } from "./threadLifecycle.ts"
+ // ⋯ sheet. Both must pick the same next thread and restore the same way, so neither owns a copy.
+ 
+ /**
+- * The phone queue, top to bottom: pinned first, then the asks, then everything else in the queue's own
+- * order. The SAME composition MobileBoard renders (its `queue` memo) — Done advancing to a row the board
++ * The phone queue, top to bottom: pinned first, then the selected queue order, then running work.
++ * The SAME composition MobileBoard renders — Done advancing to a row the board
+  * would not have put next would make the loop feel random.
+  */
+-export function phoneQueue(threads: readonly ThreadView[], direction = prefs.queueOrder): ThreadView[] {
+-  const sections = sectionThreads(threads, direction)
+-  const asks = sections.active.filter(needsAction)
+-  const rest = sections.active.filter((t) => !needsAction(t))
+-  return [...sections.pinned, ...asks, ...rest]
++export function phoneQueue(threads: readonly ThreadView[], direction = prefs.queueOrder, sort = prefs.queueSort): ThreadView[] {
++  const sections = sectionThreads(threads, direction, sort)
++  return [...sections.pinned, ...sections.active]
+ }
+ 
+ /**
+- * The next thread that needs you after `fromSlug`: the first row of the phone queue holding a queue card
+- * (`needsYou` — an ask, or a rested handoff waiting to be read), other than the one being filed. A
++ * The next thread that needs you AFTER `fromSlug` in the chosen order, never the head of the list.
++ * At the end, return to the board rather than wrap. A
+  * running row does not need you, so the loop never lands on one. A thread the operator marked done a
+  * moment ago whose archive the board has not echoed yet is folded through the same optimistic overlay
+  * the board uses, so the loop cannot bounce back onto it.
+@@ -39,30 +37,25 @@ export function nextThreadNeedingYou(
+   fromSlug: string,
+   direction = prefs.queueOrder,
+   archivingAt: Readonly<Record<string, number>> = archivingAtNow(),
++  sort = prefs.queueSort,
+ ): ThreadView | undefined {
+-  const overlaid = threads.map((t) => optimisticallyArchived(t, archivingAt[t.id]))
+-  return phoneQueue(overlaid, direction).find((t) => t.id !== fromSlug && t.needsYou === true)
++  // Keep the departing row as the cursor, even after its optimistic archive. Never wrap to the top.
++  const ordered = phoneQueue(threads.map((t) => t.id === fromSlug ? t : optimisticallyArchived(t, archivingAt[t.id])), direction, sort)
++  const index = ordered.findIndex((t) => t.id === fromSlug)
++  return index < 0 ? undefined : ordered.slice(index + 1).find((t) => t.needsYou === true && t.state !== "archived")
+ }
+ 
+ // Leave the thread just filed: open the next one that needs you, or close back to the board.
+ //
+-// THROUGH HISTORY, NOT AROUND IT. When the app pushed the filed thread's entry (the usual case: it was
+-// opened from the board), that entry is POPPED first — exactly what the header's ← does — and the next
+-// thread then opens from the board's entry. Closing the drawer directly instead makes the router REPLACE
+-// the thread's entry with the board, leaving two board entries, so the next Back does nothing visible;
+-// and opening the next thread on top of the filed one would make Back return to a thread already done.
+-// Either way the history reads board → next, and Back from the next thread lands on the board. A cold
+-// deep link (nothing of ours to pop) keeps the direct path.
+-export function leaveFiledThread(slug: string): void {
+-  const threads = (store.board?.threads ?? []) as ThreadView[]
+-  const next = nextThreadNeedingYou(threads, slug)
+-  if (appPushedCurrentEntry()) {
+-    if (next) window.addEventListener("popstate", () => setTimeout(() => openThread(next.id), 0), { once: true })
+-    history.back()
++// Keep one review entry over the board. Next/Previous and Done all replace it, so Back never opens
++// a thread already filed and a cold link never acquires a fictitious board entry beneath it.
++export function leaveFiledThread(slug: string, next = nextThreadNeedingYou((store.board?.threads ?? []) as ThreadView[], slug)): void {
++  if (next) {
++    replaceQueueThread(next.id)
+     return
+   }
+-  if (next) {
+-    openThread(next.id)
++  if (appPushedCurrentEntry()) {
++    history.back()
+     return
+   }
+   const open = store.drawers.filter((drawer) => !drawer.closing).map((drawer) => drawer.id)
+@@ -97,9 +90,11 @@ export async function markDoneAndAdvance(thread: ThreadView, opts: { terminateLi
+   const terminateLive = opts.terminateLive === true
+   const optimistic = terminateLive || completionArchivesImmediately(thread)
+   const title = displayTitle(thread)
++  // Capture before filing OR awaiting the RPC: either can remove the cursor from the board.
++  const next = nextThreadNeedingYou((store.board?.threads ?? []) as ThreadView[], slug)
+   const filed = () => {
+     markArchived(slug)
+-    leaveFiledThread(slug)
++    leaveFiledThread(slug, next)
+     showToast(`“${title}” marked done`, { action: { label: "Undo", run: () => void undoMarkDone(slug) } })
+   }
+   if (optimistic) filed()
+diff --git a/packages/web/src/lib/prefs.test.ts b/packages/web/src/lib/prefs.test.ts
+index bd8c52f1..ad9c5ca0 100644
+--- a/packages/web/src/lib/prefs.test.ts
++++ b/packages/web/src/lib/prefs.test.ts
+@@ -2,6 +2,17 @@ import assert from "node:assert/strict"
+ import test from "node:test"
+ import { parseStoredPrefs } from "./prefs.ts"
+ 
++test("queue sort is persisted without changing an existing time-direction preference", () => {
++  for (const queueSort of ["time", "state", "done"] as const) {
++    const p = parseStoredPrefs(JSON.stringify({ queueSort, queueOrder: "lifo" }))
++    assert.equal(p.queueSort, queueSort)
++    assert.equal(p.queueOrder, "lifo")
++  }
++  for (const queueSort of [undefined, null, "invalid", 2]) {
++    assert.equal(parseStoredPrefs(JSON.stringify({ queueSort })).queueSort, "time")
++  }
++})
++
+ test("client preferences persist a validated snooze preset across reloads", () => {
+   assert.equal(parseStoredPrefs(JSON.stringify({ compactDiffs: true, snoozePreset: "3d", diffsRedefaulted: true })).snoozePreset, "3d")
+   assert.equal(parseStoredPrefs(JSON.stringify({ compactDiffs: true, snoozePreset: "tomorrow", diffsRedefaulted: true })).snoozePreset, "tomorrow")
+diff --git a/packages/web/src/lib/prefs.ts b/packages/web/src/lib/prefs.ts
+index 0040cef4..4721aa99 100644
+--- a/packages/web/src/lib/prefs.ts
++++ b/packages/web/src/lib/prefs.ts
+@@ -1,5 +1,5 @@
+ import { proxy, subscribe } from "valtio"
+-import type { QueueDirection } from "../groups.ts"
++import type { QueueDirection, QueueSort } from "../groups.ts"
+ import { DEFAULT_SNOOZE_PRESET, isSnoozePreset, type SnoozePreset } from "./snooze.ts"
+ 
+ // Client-only VIEW preferences — persisted in localStorage, never in the server Settings schema
+@@ -20,6 +20,8 @@ export interface Prefs {
+   // longest-waiting item first so the human cycles through everything; LIFO surfaces the most recently
+   // active first. See groups.ts orderQueue.
+   queueOrder: QueueDirection
++  // Optional grouping shared by cards, desktop rail and phone list; time remains the default.
++  queueSort: QueueSort
+   // The fullscreen rail's "Edited files" group folded to its heading (maintainer 2026-09-03: "make
+   // Edited Files collapsible"). Open by default — the list is the rail's one non-wait group and the
+   // reason the page has a rail at all — and remembered here rather than in the store because a
+@@ -45,6 +47,7 @@ export function parseStoredPrefs(raw: string | null): Prefs {
+     compactDiffs: true,
+     snoozePreset: DEFAULT_SNOOZE_PRESET,
+     queueOrder: "fifo",
++    queueSort: "time",
+     railFilesCollapsed: false,
+     diffsRedefaulted: true,
+   }
+@@ -64,6 +67,7 @@ export function parseStoredPrefs(raw: string | null): Prefs {
+       ...stored,
+       snoozePreset: isSnoozePreset(stored.snoozePreset) ? stored.snoozePreset : fallback.snoozePreset,
+       queueOrder: coerceQueueOrder(stored.queueOrder, fallback.queueOrder),
++      queueSort: stored.queueSort === "state" || stored.queueSort === "done" ? stored.queueSort : "time",
+       railFilesCollapsed: typeof stored.railFilesCollapsed === "boolean" ? stored.railFilesCollapsed : fallback.railFilesCollapsed,
+     }
+   } catch {
+diff --git a/packages/web/src/lib/queueNavigation.test.ts b/packages/web/src/lib/queueNavigation.test.ts
+new file mode 100644
+index 00000000..5b114026
+--- /dev/null
++++ b/packages/web/src/lib/queueNavigation.test.ts
+@@ -0,0 +1,12 @@
++import test from "node:test"
++import assert from "node:assert/strict"
++import { queueNeighbors } from "./queueNavigation.ts"
++
++test("browsing follows the list without wrapping or changing it", () => {
++  const ids = ["a", "b", "c"]
++  assert.deepEqual(queueNeighbors(ids, "b"), { index: 1, previous: "a", next: "c" })
++  assert.equal(queueNeighbors(ids, "a").previous, undefined)
++  assert.equal(queueNeighbors(ids, "c").next, undefined)
++  assert.deepEqual(queueNeighbors(ids, "missing"), { index: -1, previous: undefined, next: undefined })
++  assert.deepEqual(ids, ["a", "b", "c"])
++})
+diff --git a/packages/web/src/lib/queueNavigation.ts b/packages/web/src/lib/queueNavigation.ts
+new file mode 100644
+index 00000000..601404d7
+--- /dev/null
++++ b/packages/web/src/lib/queueNavigation.ts
+@@ -0,0 +1,8 @@
++export function queueNeighbors(ids: readonly string[], current: string) {
++  const index = ids.indexOf(current)
++  return {
++    index,
++    previous: index > 0 ? ids[index - 1] : undefined,
++    next: index >= 0 ? ids[index + 1] : undefined,
++  }
++}
+diff --git a/packages/web/src/lib/router.test.ts b/packages/web/src/lib/router.test.ts
+index df4d0d4c..6d7e596f 100644
+--- a/packages/web/src/lib/router.test.ts
++++ b/packages/web/src/lib/router.test.ts
+@@ -2,7 +2,7 @@ import { test } from "node:test"
+ import assert from "node:assert/strict"
+ import type { BoardSnapshot, ThreadView } from "@frizz/shared"
+ import { markDrawerClosing, resolveRoutedThread, store } from "../store.ts"
+-import { appPushedCurrentEntry, primeRoute, queueDestination, startRouter } from "./router.ts"
++import { appPushedCurrentEntry, primeRoute, queueDestination, replaceQueueThread, startRouter } from "./router.ts"
+ 
+ function resetStore(): void {
+   store.drawers = []
+@@ -11,6 +11,42 @@ function resetStore(): void {
+   store.board = null
+ }
+ 
++test("queue browsing replaces the thread entry and preserves whether Back owns a board entry", async () => {
++  const globals = globalThis as typeof globalThis & { location?: Location; history?: History }
++  const previous = { location: globals.location, history: globals.history }
++  const tick = () => new Promise(resolve => setTimeout(resolve, 0))
++  resetStore()
++  globals.location = { pathname: "/project/tenant" } as Location
++  globals.history = { state: null } as History
++  const calls: { path: string; replace: boolean; state?: unknown }[] = []
++  const stop = startRouter((path, options) => {
++    calls.push({ path, ...options })
++    globals.location = { pathname: path } as Location
++    globals.history = { state: { usr: options.state } } as History
++  })
++  try {
++    store.drawers = [{ id: 9000, kind: "thread", slug: "first" } as never]
++    await tick()
++    assert.equal(calls.at(-1)?.replace, false)
++    replaceQueueThread("second")
++    await tick()
++    assert.equal(calls.at(-1)?.replace, true)
++    assert.equal(calls.at(-1)?.path.endsWith("/thread/second"), true)
++    assert.equal(appPushedCurrentEntry(), true, "board-opened review retains Back ownership")
++    globals.history = { state: { usr: null } } as History
++    replaceQueueThread("third")
++    await tick()
++    assert.equal(calls.at(-1)?.replace, true)
++    assert.equal(appPushedCurrentEntry(), false, "cold review cannot pop an unrelated history entry")
++    assert.equal(store.drawers.filter(d => !d.closing).length, 1)
++  } finally {
++    stop()
++    globals.location = previous.location
++    globals.history = previous.history
++    resetStore()
++  }
++})
++
+ test("appPushedCurrentEntry does not trust a persisted router index or an old sheet entry", () => {
+   assert.equal(appPushedCurrentEntry({ usr: null, key: "a", idx: 1 }), false)
+   assert.equal(appPushedCurrentEntry({ usr: null, key: "b", idx: 4, frizzLayer: 9 }), false)
+diff --git a/packages/web/src/lib/router.ts b/packages/web/src/lib/router.ts
+index 638730a2..00232c31 100644
+--- a/packages/web/src/lib/router.ts
++++ b/packages/web/src/lib/router.ts
+@@ -1,5 +1,5 @@
+ import { subscribe } from "valtio"
+-import { store, topThreadSlug, closeDrawersById } from "../store.ts"
++import { store, topThreadSlug, closeDrawersById, openThread } from "../store.ts"
+ import { innerPath, outerPath, projectHref } from "./base-path.ts"
+ import { parseStandaloneThreadPath } from "./standaloneThreadRoute.ts"
+ 
+@@ -162,6 +162,18 @@ export function appPushedCurrentEntry(state: unknown = typeof history === "undef
+     && (usr as { frizzNavigationSession?: unknown }).frizzNavigationSession === navigationSession
+ }
+ 
++let queueReplacement: { ownedEntry: boolean } | null = null
++
++// Queue review replaces one thread with another, not another layer of the drawer stack. Keep the
++// original entry's ownership: Back from a board-opened review pops to that board; a cold link's
++// header Back closes to the board without popping an unrelated page outside Frizz.
++export function replaceQueueThread(slug: string): void {
++  queueReplacement = { ownedEntry: appPushedCurrentEntry() }
++  store.routeThreadSlug = null
++  closeDrawersById(store.drawers.filter((d) => !d.closing).map((d) => d.id))
++  openThread(slug)
++}
++
+ export function startRouter(navigate: (path: string, options: { replace: boolean; state?: { frizzNavigationSession: string } }) => void): () => void {
+   // Boot: adopt whatever the address bar says (deep link / reload restores the state).
+   primeRoute()
+@@ -176,13 +188,15 @@ export function startRouter(navigate: (path: string, options: { replace: boolean
+     // on the door left the URL exactly where it was).
+     if (parseStandaloneThreadPath(innerPath()) !== null) return
+     const path = queueDestination(currentPath())
++    const replacement = queueReplacement
++    queueReplacement = null
+     if (path === location.pathname) return
+     // A NEW topmost thread pushes history; unwinding or non-thread transitions replace. `startsWith`
+     // is checked against the INNER path: under a project prefix every path starts with `/project/`.
+     const openingThread = currentPath().startsWith("/thread/")
+     navigate(path, {
+-      replace: !openingThread,
+-      ...(openingThread ? { state: { frizzNavigationSession: navigationSession } } : {}),
++      replace: !openingThread || replacement !== null,
++      ...(openingThread && (!replacement || replacement.ownedEntry) ? { state: { frizzNavigationSession: navigationSession } } : {}),
+     })
+   })
+ }
+diff --git a/packages/web/src/lib/settingsHelp.ts b/packages/web/src/lib/settingsHelp.ts
+index 44973083..5a85f321 100644
+--- a/packages/web/src/lib/settingsHelp.ts
++++ b/packages/web/src/lib/settingsHelp.ts
+@@ -7,7 +7,7 @@ export const SETTINGS_HELP = {
+   appearance: "Applies to this browser across all projects. System follows the device appearance.",
+   localFileOpener: "Chooses how vetted local artifact links open. Markdown files open in Frizz's own reader (which carries an Open action that uses this setting), and image clicks always use the OS default viewer.",
+   density: "How much of a diff shows before you ask for it, in this browser. Compact collapses every diff to its header row (click one to open it); Comfortable shows them in full. Applies immediately.",
+-  queueOrder: "Orders the Needs-you queue and the sidebar's rested threads by when each was last active. Oldest first (FIFO, default) surfaces the longest-waiting item first so you cycle through everything; Newest first (LIFO) keeps the most recently active on top. Applies immediately in this browser.",
++  queueOrder: "Orders waiting threads by when the worker last rested. Oldest first (default) surfaces the longest-waiting handoff; Newest first puts the most recent on top. The queue's sort controls can also group matching state icons or put suggested-done handoffs first; this time order applies within each group. Applies immediately in this browser.",
+   notifications: "Shows a desktop notification when work needs attention while this window is hidden.",
+   projectRail: "Shows a permanent column of every project on this machine down the left edge. Off by default: Frizz's home is one board, and a standing list of the others is an easy way to leave the thread you were in. With it off, the home crumb in the status bar is the way back to the projects page.",
+   githubPrompt: "The prompt for every item dispatched from the GitHub picker, issues and PRs alike. The default has the worker read the whole thread, classify it, and branch — reproduce + fix-plan for a bug, a plan for a feature, an adversarial review for a PR.",
+diff --git a/scripts/verify-queue-review.mjs b/scripts/verify-queue-review.mjs
+new file mode 100644
+index 00000000..43a8e5bc
+--- /dev/null
++++ b/scripts/verify-queue-review.mjs
+@@ -0,0 +1,205 @@
++// Real tailer → board → browser queue review, with simulated workers and real lifecycle RPCs.
++// No provider dispatch and no access to the operator's board. Owns one stack and one headless Chrome.
++// nub scripts/verify-queue-review.mjs --out=/absolute/evidence/directory
++import assert from "node:assert/strict"
++import { spawn, execFile, execFileSync } from "node:child_process"
++import { mkdirSync, writeFileSync } from "node:fs"
++import { dirname, join, resolve } from "node:path"
++import { fileURLToPath } from "node:url"
++import net from "node:net"
++import { promisify } from "node:util"
++import puppeteer from "puppeteer"
++import { createRpcClient } from "./lib/rpc-client.mjs"
++import { resolveSandboxDb, sessionProjectColumns } from "./lib/sandbox-db.mjs"
++
++const root = resolve(dirname(fileURLToPath(import.meta.url)), "..")
++const execFileAsync = promisify(execFile)
++const out = process.argv.find((a) => a.startsWith("--out="))?.slice(6) ?? join(root, ".adhoc-shots/queue-review")
++mkdirSync(out, { recursive: true })
++const port = await new Promise((resolvePort) => {
++  const socket = net.createServer()
++  socket.listen(0, "127.0.0.1", () => { const p = socket.address().port; socket.close(() => resolvePort(p)) })
++})
++const stack = spawn("nub", ["scripts/adhoc-stack.mjs", `--port=${port}`], { cwd: root, stdio: ["ignore", "pipe", "pipe"] })
++const exited = new Promise((r) => stack.once("exit", r))
++let logs = ""
++stack.stdout.on("data", (b) => { logs += b; writeFileSync(join(out, "stack.log"), logs) })
++stack.stderr.on("data", (b) => { logs += b; writeFileSync(join(out, "stack.log"), logs) })
++let browser
++try {
++  const config = await new Promise((resolveConfig, reject) => {
++    const timer = setTimeout(() => reject(new Error("Stack failed to announce readiness")), 90_000)
++    stack.once("error", (e) => { clearTimeout(timer); reject(e) })
++    stack.once("exit", (code) => { clearTimeout(timer); reject(new Error(`Stack exited ${code}: ${logs.slice(-2000)}`)) })
++    let stdout = ""
++    stack.stdout.on("data", (b) => {
++      stdout += b
++      for (const line of stdout.split("\n")) {
++        try { const v = JSON.parse(line); if (v.url && v.home) { clearTimeout(timer); resolveConfig(v); return } } catch {}
++      }
++    })
++  })
++  const api = createRpcClient(config.url)
++  const sandbox = resolveSandboxDb(config.home)
++  const { cols, vals } = sessionProjectColumns(sandbox)
++  const jsonlDir = join(config.home, ".claude/projects", root.replace(/[/.]/g, "-"))
++  mkdirSync(jsonlDir, { recursive: true })
++  const specs = [
++    ["early-rest", false], ["early-ask", false], ["done-first", true],
++    ["done-middle", true], ["done-last", true], ["later-rest", false],
++  ]
++  for (const [i, [slug, done]] of specs.entries()) {
++    const sessionId = `00000000-1111-4000-9000-${String(i).padStart(12, "0")}`
++    const at = new Date(Date.now() - (80 - i * 10) * 60_000).toISOString()
++    const text = `Review ${slug}.\n\n${("The change was exercised in the real runtime. Review the handoff before deciding whether it needs another thread.\n\n").repeat(6)}${done ? "\n```done\n- Verified and landed this change.\n```" : "The worker has rested without claiming completion."}`
++    const record = (type, content) => ({ type, uuid: `${sessionId}-${type}`, timestamp: at, session_id: sessionId, cwd: root,
++      message: type === "assistant" ? { role: type, model: "claude-opus-5", id: `msg_${i}`, type: "message", stop_reason: "end_turn", content: [{ type: "text", text: content }], usage: { input_tokens: 100, output_tokens: 100 } } : { role: type, content } })
++    writeFileSync(join(jsonlDir, `${sessionId}.jsonl`), [record("user", `Review ${slug}`), record("assistant", text)].map(JSON.stringify).join("\n") + "\n")
++    execFileSync("sqlite3", [sandbox.db, `INSERT INTO session (${cols}slug, session_id, thread_name, spawned_at, title, backend, model, effort, permission_mode, rested_at) VALUES (${vals}'${slug}', '${sessionId}', 'frizz-${slug}', '${at}', 'Review ${slug}', 'claude', 'opus', 'medium', 'default', '${at}')`])
++  }
++  const deadline = Date.now() + 30_000
++  while (true) {
++    const board = await api.query("board")
++    if (board.threads.filter((t) => t.needsYou).length === specs.length) break
++    if (Date.now() > deadline) throw new Error(`Tailer did not queue fixture sessions: ${JSON.stringify(board.threads.map((t) => ({ id: t.id, needsYou: t.needsYou })))}`)
++    await new Promise((r) => setTimeout(r, 250))
++  }
++  await api.mutate("ask", { slug: "early-ask", questions: [{ question: "Which cache lifetime should this test fixture use?", kind: "question", options: [{ label: "Short", recommended: true }, { label: "Long" }] }] })
++  browser = await puppeteer.launch({ headless: true, args: ["--no-sandbox", "--use-mock-keychain"], protocolTimeout: 30_000 })
++  const page = await browser.newPage()
++  const pageErrors = []
++  const consoleErrors = []
++  const failedResources = []
++  page.on("pageerror", (e) => pageErrors.push(String(e)))
++  page.on("console", (m) => { if (m.type() === "error") consoleErrors.push(m.text()) })
++  page.on("response", (r) => { if (r.status() >= 400) failedResources.push({ status: r.status(), url: r.url() }) })
++  const cards = () => page.$$eval('[data-queue-card]:not([data-queue-leaving="true"])', (els) => els.map((el) => el.dataset.queueCard))
++  const nav = (slug, verb) => `[data-queue-card="${slug}"] [data-queue-${verb}]`
++  await page.setViewport({ width: 1440, height: 900 })
++  await page.goto(config.url, { waitUntil: "networkidle2" })
++  await page.waitForFunction(() => document.querySelectorAll("[data-queue-card]").length === 6)
++  assert.deepEqual(await cards(), specs.map(([slug]) => slug))
++  await page.select('select[aria-label="Sort queue by"]', "done")
++  assert.deepEqual(await cards(), ["done-first", "done-middle", "done-last", "early-rest", "early-ask", "later-rest"])
++  await page.select('select[aria-label="Sort queue by"]', "state")
++  assert.equal((await cards())[0], "early-ask")
++  await page.select('select[aria-label="Sort queue by"]', "done")
++  await page.select('select[aria-label="Queue time order"]', "lifo")
++  assert.deepEqual((await cards()).slice(0, 3), ["done-last", "done-middle", "done-first"])
++  await page.select('select[aria-label="Queue time order"]', "fifo")
++  await page.reload({ waitUntil: "networkidle2" })
++  assert.equal(await page.$eval('select[aria-label="Sort queue by"]', (el) => el.value), "done", "sort persists")
++  await page.click(nav("done-middle", "next"))
++  await page.waitForFunction(() => Math.abs(document.querySelector('[data-queue-card-root="done-last"]').getBoundingClientRect().top - 40) < 2)
++  await page.click(nav("done-last", "previous"))
++  await page.waitForFunction(() => Math.abs(document.querySelector('[data-queue-card-root="done-middle"]').getBoundingClientRect().top - 40) < 2)
++  assert.equal((await api.query("board")).threads.filter((t) => t.state === "archived").length, 0, "browsing changes no lifecycle state")
++  await page.screenshot({ path: join(out, "desktop.png") })
++  await page.click('[data-queue-card="done-middle"] button[aria-label="Mark as done"]')
++  await page.waitForFunction(() => !document.querySelector('[data-queue-card="done-middle"]'))
++  await page.waitForFunction(() => Math.abs(document.querySelector('[data-queue-card-root="done-last"]').getBoundingClientRect().top - 40) < 2)
++  assert.equal((await api.query("board")).threads.find((t) => t.id === "done-middle").state, "archived")
++  await api.mutate("setThreadState", { slug: "done-middle", state: "open" })
++
++  await page.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true })
++  await page.goto(config.url, { waitUntil: "networkidle2" })
++  await page.waitForSelector('[data-mobile-thread-row="done-middle"]')
++  const mobileIds = await page.$$eval('[data-mobile-thread-row]', (els) => els.map((el) => el.dataset.mobileThreadRow))
++  assert.deepEqual(mobileIds.slice(0, 3), ["done-first", "done-middle", "done-last"])
++  await page.screenshot({ path: join(out, "mobile-board.png") })
++  const waitPhone = async (slug) => {
++    await page.waitForFunction((s) => location.pathname.endsWith(`/thread/${s}`) && document.querySelectorAll('[data-phone-thread-bar] [data-queue-navigation]').length === 1, {}, slug)
++    await page.waitForFunction(() => {
++      const bar = document.querySelector('[data-phone-thread-bar]')?.getBoundingClientRect()
++      if (!bar || bar.left < -1 || bar.right > innerWidth + 1) return false
++      const b = document.querySelector('[data-phone-thread-bar] [data-queue-next]')
++      if (!b) return false
++      const r = b.getBoundingClientRect()
++      return !!document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)?.closest('[data-queue-navigation]')
++    })
++  }
++  await page.click('[data-mobile-thread-row="done-middle"]')
++  await waitPhone("done-middle")
++  await page.click('[data-phone-thread-bar] [data-queue-next]')
++  await waitPhone("done-last")
++  await page.click('[data-phone-thread-bar] [data-queue-previous]')
++  await waitPhone("done-middle")
++  assert.equal((await api.query("board")).threads.filter((t) => t.state === "archived").length, 0)
++  await page.screenshot({ path: join(out, "mobile-review.png") })
++  await page.click('[data-phone-done]')
++  await waitPhone("done-last")
++  assert.equal((await api.query("board")).threads.find((t) => t.id === "done-middle").state, "archived")
++  await page.click('[data-phone-thread-bar] [data-queue-previous]')
++  await waitPhone("done-first")
++  assert.equal(await page.$eval('[data-phone-thread-bar] [data-queue-previous]', (b) => b.disabled), true)
++  // A cold link takes the non-history route; no old thread sheet may remain behind the new one.
++  await page.goto(`${config.url}/thread/done-last`, { waitUntil: "networkidle2" })
++  await waitPhone("done-last")
++  await page.click('[data-phone-thread-bar] [data-queue-next]')
++  await waitPhone("early-rest")
++  await page.click('[data-mobile-thread-back]')
++  await page.waitForFunction(() => !document.querySelector('[data-phone-thread-bar]'))
++  await page.goto(`${config.url}/thread/later-rest`, { waitUntil: "networkidle2" })
++  await waitPhone("later-rest")
++  assert.equal(await page.$eval('[data-phone-thread-bar] [data-queue-next]', (b) => b.disabled), true)
++  await page.click('[data-phone-done]')
++  await page.waitForFunction(() => !document.querySelector('[data-phone-thread-bar]'))
++  assert.equal(new URL(page.url()).pathname, new URL(config.url).pathname, "Done at the end returns to the board")
++
++  await page.setViewport({ width: 320, height: 740, isMobile: true, hasTouch: true })
++  await page.goto(`${config.url}/thread/done-last`, { waitUntil: "networkidle2" })
++  await waitPhone("done-last")
++  const bounds = await page.$eval('[data-phone-thread-bar] [data-queue-navigation]', (el) => {
++    const r = el.getBoundingClientRect()
++    return { left: r.left, right: r.right, viewport: innerWidth, scrollWidth: document.documentElement.scrollWidth }
++  })
++  assert.ok(bounds.left >= 0 && bounds.right <= bounds.viewport && bounds.scrollWidth <= bounds.viewport, JSON.stringify(bounds))
++  await page.screenshot({ path: join(out, "mobile-320.png") })
++  // Optical pass: share this browser with the repo's actual pixel-gap instrument, no second Chrome.
++  const { stdout: ink } = await execFileAsync("nub", ["scripts/ink-gaps.mjs", config.url,
++    '[data-queue-sort-controls] select[aria-label="Sort queue by"],[data-queue-sort-controls] select[aria-label="Queue time order"]',
++    `--browser=${browser.wsEndpoint()}`, "--w=390", "--h=844", "--dsf=6", "--touch"], { cwd: root, encoding: "utf8", timeout: 60_000 })
++  writeFileSync(join(out, "sort-ink-gaps.json"), ink)
++  const { stdout: navInk } = await execFileAsync("nub", ["scripts/ink-gaps.mjs", `${config.url}/thread/done-last`,
++    '[data-phone-thread-bar] [data-queue-previous],[data-phone-thread-bar] [data-queue-navigation] span,[data-phone-thread-bar] [data-queue-next]',
++    `--browser=${browser.wsEndpoint()}`, "--w=390", "--h=844", "--dsf=6", "--touch"], { cwd: root, encoding: "utf8", timeout: 60_000 })
++  writeFileSync(join(out, "navigation-ink-gaps.json"), navInk)
++  await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 6, isMobile: true, hasTouch: true })
++  const box = await page.$eval('[data-phone-thread-bar] [data-queue-navigation]', (el) => { const r = el.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height } })
++  await page.screenshot({ path: join(out, "navigation-detail.png"), clip: box })
++  const vertical = await page.$$eval('[data-phone-thread-bar] [data-queue-navigation] > *', (els) => els.map((el) => {
++    const text = [...el.childNodes].find((n) => n.nodeType === 3 && n.textContent.trim())
++    const span = document.createElement("span")
++    el.insertBefore(span, text)
++    span.append(text)
++    const probe = document.createElement("span")
++    probe.style.cssText = "display:inline-block;width:0;height:0;padding:0;margin:0;border:0"
++    span.append(probe)
++    const baseline = probe.getBoundingClientRect().bottom
++    const cs = getComputedStyle(span)
++    const ctx = document.createElement("canvas").getContext("2d")
++    ctx.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`
++    const capCenter = baseline - ctx.measureText("H").actualBoundingBoxAscent / 2
++    probe.remove()
++    el.insertBefore(text, span)
++    span.remove()
++    return { text: text.textContent, baseline, capCenter }
++  }))
++  writeFileSync(join(out, "navigation-vertical.json"), JSON.stringify(vertical, null, 2))
++  assert.ok(Math.max(...vertical.map((v) => v.capCenter)) - Math.min(...vertical.map((v) => v.capCenter)) < 0.3, "navigation cap bands align")
++  writeFileSync(join(out, "console.json"), JSON.stringify({ pageErrors, consoleErrors, failedResources }, null, 2))
++  assert.deepEqual(pageErrors, [], "no page exceptions")
++  // adhoc-stack boots startServer directly, not the launcher/supervisor. Its restart-status probe
++  // therefore genuinely 404s. Record it rather than stub it; every OTHER resource/error must be clean.
++  assert.ok(failedResources.every((r) => r.status === 404 && new URL(r.url).pathname === "/_frizz/control/status"), JSON.stringify(failedResources))
++  assert.equal(consoleErrors.length, failedResources.length, "every console error must be the known absent supervisor probe")
++  assert.ok(consoleErrors.every((e) => e === "Failed to load resource: the server responded with a status of 404 (Not Found)"), JSON.stringify(consoleErrors))
++  writeFileSync(join(out, "result.json"), JSON.stringify({ pass: true, pageErrors, consoleErrors, bounds, checks: ["time/state/done sorting", "preference reload", "desktop next/previous", "desktop middle Done successor", "phone next/previous without writes", "phone middle Done successor", "cold-link navigation", "end-of-list no wrap", "320px bounds", "optical gap measurements"] }, null, 2))
++  console.log(`PASS: queue review end-to-end; evidence in ${out}`)
++  console.log(`No page exceptions; ${failedResources.length} expected missing-supervisor status probes, no other console errors`)
++} finally {
++  if (browser) await browser.close()
++  stack.kill("SIGTERM")
++  await exited
++  console.log("Cleaned up the owned headless browser and disposable stack")
++}
+-- 
+2.47.1
+

@@ -1,0 +1,515 @@
+From cd7e310a1e2de9133d91724b21203f163d60959d Mon Sep 17 00:00:00 2001
+From: Andrew Mikofalvy <5668128+amikofalvy@users.noreply.github.com>
+Date: Tue, 20 Oct 2026 11:42:12 -0700
+Subject: [PATCH] feat(settings): add an independent Markdown link opener
+
+---
+ packages/server/src/local-file.test.ts        | 31 +++++++
+ packages/server/src/local-file.ts             | 16 +++-
+ packages/server/src/router.ts                 | 10 +-
+ packages/server/src/settings.test.ts          | 23 ++++-
+ packages/server/src/settings.ts               |  5 +-
+ packages/shared/src/index.ts                  |  4 +
+ packages/web/src/api/contract.ts              |  2 +-
+ .../web/src/components/MarkdownDrawer.tsx     |  6 +-
+ .../web/src/components/SettingsDrawer.tsx     | 25 +++--
+ .../src/components/filePanelStack.e2e.test.ts | 92 ++++++++++++++++++-
+ packages/web/src/lib/local-file-links.ts      | 16 ++--
+ packages/web/src/lib/settingsHelp.ts          |  3 +-
+ .../web/src/local-file-opener-fixture.tsx     |  7 +-
+ packages/web/src/question-links-fixture.tsx   |  3 +-
+ 14 files changed, 209 insertions(+), 34 deletions(-)
+
+diff --git a/packages/server/src/local-file.test.ts b/packages/server/src/local-file.test.ts
+index 10fd8d4b..e0549fca 100644
+--- a/packages/server/src/local-file.test.ts
++++ b/packages/server/src/local-file.test.ts
+@@ -126,6 +126,37 @@ test("local opener canonicalizes a regular file inside its trusted root and uses
+   assert.equal(calls[0].options.windowsHide, true, "a console opener never flashes a window")
+ })
+ 
++test("Markdown defaults to preview, with an independent choice of every desktop file action", async (t) => {
++  const root = realpathSync(mkdtempSync(join(tmpdir(), "frizz-markdown-opener-")))
++  t.after(() => rmSync(root, { recursive: true, force: true }))
++  const file = join(root, "notes.MDX")
++  writeFileSync(file, "# Notes")
++  const calls: SpawnCall[] = []
++  const options = { previewMarkdown: true, spawn: fakeSpawn(calls), platform: "darwin" as const }
++  assert.deepEqual(await openLocalFile(file, "cursor", [root], options), { action: "preview", path: file })
++  assert.equal(calls.length, 0)
++  assert.deepEqual(await openLocalFile(file, "cursor", [root], { ...options, markdownOpener: "copy" }), { action: "copy", path: file })
++  assert.equal(calls.length, 0)
++  for (const [markdownOpener, args] of [
++    ["system", [file]], ["cursor", ["-a", "Cursor", file]],
++    ["vscode", ["-a", "Visual Studio Code", file]], ["finder", ["-R", file]],
++  ] as const) {
++    await openLocalFile(file, "copy", [root], { ...options, markdownOpener })
++    assert.equal(calls.at(-1)!.command, "open")
++    assert.deepEqual(calls.at(-1)!.args, args)
++  }
++  // The reader's explicit Open still leaves Frizz when links default to the reader.
++  await openLocalFile(file, "vscode", [root], { ...options, previewMarkdown: false })
++  assert.deepEqual(calls.at(-1)!.args, ["-a", "Visual Studio Code", file])
++  await openLocalFile(file, "vscode", [root], { ...options, markdownOpener: "copy", forceSystem: true })
++  assert.deepEqual(calls.at(-1)!.args, [file], "the image escape hatch still forces the OS viewer")
++  const code = join(root, "code.ts")
++  writeFileSync(code, "export {}")
++  await openLocalFile(code, "cursor", [root], { ...options, markdownOpener: "copy" })
++  assert.deepEqual(calls.at(-1)!.args, ["-a", "Cursor", code], "other files keep their own setting")
++  await assert.rejects(openLocalFile(file, "copy", [], options), /trusted roots/, "preview still runs the trust gate")
++})
++
+ test("an opener that cannot start is the RPC's error, not an unhandled `error` event", async () => {
+   // Windows audit 2026-09-11, finding 1: `xdg-open` does not exist on Windows, so the spawn emitted
+   // ENOENT with nobody listening and the control-plane child exited. Now it is a rejection the
+diff --git a/packages/server/src/local-file.ts b/packages/server/src/local-file.ts
+index 7ced61ad..39cadad2 100644
+--- a/packages/server/src/local-file.ts
++++ b/packages/server/src/local-file.ts
+@@ -2,10 +2,10 @@ import { spawn, type SpawnOptions } from "node:child_process"
+ import { existsSync, readFileSync, realpathSync, statSync } from "node:fs"
+ import { homedir } from "node:os"
+ import { dirname, isAbsolute, join, resolve, sep } from "node:path"
+-import type { LocalFileOpener } from "@frizz/shared"
++import type { LocalFileOpener, MarkdownFileOpener } from "@frizz/shared"
+ import { normalizeLocalPath } from "./local-path.ts"
+ 
+-export type LocalFileOpenResult = { action: "opened"; path: string } | { action: "copy"; path: string }
++export type LocalFileOpenResult = { action: "opened" | "copy" | "preview"; path: string }
+ 
+ /** The slice of a ChildProcess the opener needs: the two events that settle a spawn, and unref. */
+ export interface SpawnedOpener {
+@@ -252,10 +252,18 @@ export async function openLocalFile(
+   rawPath: string,
+   opener: LocalFileOpener,
+   roots: readonly string[],
+-  options: { forceSystem?: boolean; spawn?: LocalFileSpawn } & OpenerCommandOptions = {},
++  options: { forceSystem?: boolean; previewMarkdown?: boolean; markdownOpener?: MarkdownFileOpener; spawn?: LocalFileSpawn } & OpenerCommandOptions = {},
+ ): Promise<LocalFileOpenResult> {
+   const path = resolveLocalFile(rawPath, roots)
+-  const selected = options.forceSystem ? "system" : opener
++  // Decide after the trust gate. The client asks for preview-or-open on a Markdown link, while the
++  // reader's explicit Open action must always leave Frizz (using the general opener if set to Frizz).
++  const markdown = MARKDOWN_FILE_EXT.test(normalizeLocalPath(rawPath))
++  const markdownOpener = options.markdownOpener ?? "frizz"
++  if (!options.forceSystem && markdown && markdownOpener === "frizz" && options.previewMarkdown) {
++    return { action: "preview", path }
++  }
++  const selected = options.forceSystem ? "system"
++    : markdown && markdownOpener !== "frizz" ? markdownOpener : opener
+   if (selected === "copy") return { action: "copy", path }
+ 
+   const spec = localFileOpenCommand(path, selected, options)
+diff --git a/packages/server/src/router.ts b/packages/server/src/router.ts
+index 21adc56b..9b93faab 100644
+--- a/packages/server/src/router.ts
++++ b/packages/server/src/router.ts
+@@ -3442,13 +3442,17 @@ export function createRouter(ctx: AppContext) {
+     // (home-and-below + temp + project). The HTTP layer already rejects non-local/mismatched origins;
+     // this gate means the endpoint never becomes arbitrary remote-origin or whole-filesystem access.
+     openLocalFile: mutation({
+-      input: z.object({ path: z.string(), image: z.boolean().optional() }).strict(),
+-      output: z.object({ action: z.enum(["opened", "copy"]), path: z.string() }),
++      input: z.object({ path: z.string(), image: z.boolean().optional(), previewMarkdown: z.boolean().optional() }).strict(),
++      output: z.object({ action: z.enum(["opened", "copy", "preview"]), path: z.string() }),
+       handler: async ({ input }) => openLocalFile(
+         input.path,
+         ctx.getSettings().localFileOpener ?? "system",
+         openRoots,
+-        { forceSystem: input.image === true },
++        {
++          forceSystem: input.image === true,
++          previewMarkdown: input.previewMarkdown,
++          markdownOpener: ctx.getSettings().markdownFileOpener,
++        },
+       ),
+     }),
+ 
+diff --git a/packages/server/src/settings.test.ts b/packages/server/src/settings.test.ts
+index 714e82de..1389bea9 100644
+--- a/packages/server/src/settings.test.ts
++++ b/packages/server/src/settings.test.ts
+@@ -74,6 +74,27 @@ test("a project's own settings stay its own", () => {
+   }
+ })
+ 
++test("the Markdown opener defaults to Frizz, persists across projects and resets independently", () => {
++  const box = sandbox()
++  try {
++    const alpha = box.open("alpha")
++    const beta = box.open("beta")
++    alpha.setSetting("settings", { ...defaultSettings(), markdownFileOpener: undefined, localFileOpener: "cursor" })
++    assert.equal(getSettings(beta, box.home).markdownFileOpener, "frizz")
++    for (const markdownFileOpener of ["frizz", "system", "cursor", "vscode", "finder", "copy"] as const) {
++      setSettings(alpha, { ...getSettings(alpha, box.home), markdownFileOpener }, box.home)
++      const seen = getSettings(beta, box.home)
++      assert.equal(seen.markdownFileOpener, markdownFileOpener)
++      assert.equal(seen.localFileOpener, "cursor")
++    }
++    assert.equal(resetSettings(alpha, box.home).markdownFileOpener, "frizz")
++    assert.equal(getSettings(beta, box.home).markdownFileOpener, "frizz")
++    assert.equal(Settings.safeParse({ ...defaultSettings(), markdownFileOpener: "arbitrary command" }).success, false)
++  } finally {
++    box.done()
++  }
++})
++
+ // No migration ships with this: resolution falls back through the project blob, so an existing
+ // project keeps what it had until the next save promotes it.
+ test("a project that already stored a machine value keeps it with no machine file present", () => {
+@@ -134,7 +155,7 @@ test("a pre-store settings.json is read until the next save promotes it into the
+     assert.equal(getSettings(alpha, box.home).localFileOpener, "cursor")
+ 
+     setSettings(alpha, { ...getSettings(alpha, box.home), notifications: false }, box.home)
+-    assert.deepEqual(readMachineConfig(box.home, "settings", Settings.partial()), { notifications: false, localFileOpener: "cursor", projectRail: true })
++    assert.deepEqual(readMachineConfig(box.home, "settings", Settings.partial()), { notifications: false, localFileOpener: "cursor", markdownFileOpener: "frizz", projectRail: true })
+     assert.equal(JSON.parse(readFileSync(legacyMachineSettingsPath(box.home), "utf8")).notifications, undefined, "the legacy file is never written again")
+     // The store now wins outright, even where the legacy file disagrees.
+     writeLegacySettings(box.home, { localFileOpener: "vscode" })
+diff --git a/packages/server/src/settings.ts b/packages/server/src/settings.ts
+index b3158577..f6896edd 100644
+--- a/packages/server/src/settings.ts
++++ b/packages/server/src/settings.ts
+@@ -10,7 +10,7 @@ const SETTINGS_KEY = "settings"
+ /**
+  * The settings that describe the MACHINE rather than a project.
+  *
+- * `notifications` tracks an OS permission, `localFileOpener` names which editor is installed and
++ * `notifications` tracks an OS permission, the file openers name which desktop apps to use and
+  * `projectRail` is which chrome the person wants; none was ever a property of a repository. The
+  * record was created for `font` (2026-08-25), which was inconsistent before one server served every
+  * project — stored per project, mirrored per ORIGIN for a pre-paint guard — and that key is gone
+@@ -28,7 +28,7 @@ const SETTINGS_KEY = "settings"
+  * hypothetical: the first run of this change wrote `notifications: false` into the maintainer's own
+  * settings, which would have quietly turned their desktop notifications off.
+  */
+-const MACHINE_KEYS = ["notifications", "localFileOpener", "projectRail"] as const
++const MACHINE_KEYS = ["notifications", "localFileOpener", "markdownFileOpener", "projectRail"] as const
+ type MachineSettings = Pick<Settings, (typeof MACHINE_KEYS)[number]>
+ const MachineSettingsRecord = Settings.partial()
+ 
+@@ -78,6 +78,7 @@ export const defaultSettings = (): Settings => ({
+   effort: undefined,
+   notifications: true,
+   localFileOpener: "system",
++  markdownFileOpener: "frizz",
+   // 500K tokens: half the 1M window every Claude worker is dispatched with. See the schema for why a
+   // worker left to compact at 1M is the biggest single reason a Frizz thread out-spends the TUI.
+   autoCompactWindow: 500_000,
+diff --git a/packages/shared/src/index.ts b/packages/shared/src/index.ts
+index 44f2cd30..52d52df5 100644
+--- a/packages/shared/src/index.ts
++++ b/packages/shared/src/index.ts
+@@ -3778,6 +3778,8 @@ export type PermissionMode = z.infer<typeof PermissionMode>
+ // browser never gets permission to navigate to file:// or choose an arbitrary executable.
+ export const LocalFileOpener = z.enum(["system", "cursor", "vscode", "finder", "copy"])
+ export type LocalFileOpener = z.infer<typeof LocalFileOpener>
++export const MarkdownFileOpener = z.enum(["frizz", ...LocalFileOpener.options])
++export type MarkdownFileOpener = z.infer<typeof MarkdownFileOpener>
+ 
+ export const Settings = z.object({
+   // The mode NEW Claude workers launch in. Settings surfaces exactly two of them — `bypassPermissions`
+@@ -3821,6 +3823,8 @@ export const Settings = z.object({
+   // Default action for a vetted non-image local path in agent markdown. Image clicks always use the
+   // OS default viewer so screenshots retain their expected behavior.
+   localFileOpener: LocalFileOpener.optional(),
++  // Markdown links keep the built-in reader unless the person explicitly chooses a desktop action.
++  markdownFileOpener: MarkdownFileOpener.optional(),
+   // The token count at which a NEW Claude worker auto-compacts its conversation. Frizz requests the
+   // 1M context window on every dispatch (resolveClaudeLaunchModel), so without this a worker grows
+   // toward 1M before it ever compacts — and every turn past 200K re-sends up to 5x the conversation a
+diff --git a/packages/web/src/api/contract.ts b/packages/web/src/api/contract.ts
+index a59bbe2e..d523a96e 100644
+--- a/packages/web/src/api/contract.ts
++++ b/packages/web/src/api/contract.ts
+@@ -270,7 +270,7 @@ export interface Api {
+   // A live Frizz-owned runtime is deliberately unavailable: a second provider client is uncoordinated.
+   threadTerminalCommand(input: { slug: string }): Promise<{ command: string | null; mode: "attach" | "resume" | "unavailable"; reason: string | null }>
+   openExternal(input: { url: string }): Promise<void>
+-  openLocalFile(input: { path: string; image?: boolean }): Promise<{ action: "opened" | "copy"; path: string }>
++  openLocalFile(input: { path: string; image?: boolean; previewMarkdown?: boolean }): Promise<{ action: "opened" | "copy" | "preview"; path: string }>
+   // A disk-local Markdown file's source, for the built-in reader drawer. Openable-root gated and
+   // extension-locked server-side; `truncated` marks a file cut at the read ceiling.
+   localMarkdown(input: { path: string }): Promise<{ path: string; markdown: string; truncated: boolean }>
+diff --git a/packages/web/src/components/MarkdownDrawer.tsx b/packages/web/src/components/MarkdownDrawer.tsx
+index 2fbd7b02..063563be 100644
+--- a/packages/web/src/components/MarkdownDrawer.tsx
++++ b/packages/web/src/components/MarkdownDrawer.tsx
+@@ -18,7 +18,7 @@ import { Sheet } from "./ui/Sheet.tsx"
+ import { SheetHeader } from "./ui/SheetHeader.tsx"
+ 
+ // The BUILT-IN MARKDOWN READER: a right side sheet (the same slide/backdrop family as the plan and
+-// frizz-document drawers) rendering a `.md` file that lives on disk. Every link to one lands here
++// frizz-document drawers) rendering a `.md` file that lives on disk. By default, links land here
+ // instead of launching the desktop opener — a worker citing `AGENTS.md`, a backticked path that
+ // resolved to a doc, an attached `.md` — because throwing the user out of Frizz into an editor to read
+ // two paragraphs is the wrong answer to "what does that file say?".
+@@ -32,8 +32,8 @@ export const FOOTER_STYLE = { paddingBottom: "max(0.75rem, env(safe-area-inset-b
+ 
+ // The desktop-opener escape hatch. Reading is the default now, but a file you want to EDIT still
+ // belongs in the editor, and this is the only affordance left that gets it there. It honours the
+-// `localFileOpener` setting, exactly as a click on the link used to. Exported because the /full
+-// page's split FileViewerPanel is the same reader in a different frame and must not fork this.
++// Markdown-specific opener, falling back to `localFileOpener` when Markdown is set to Frizz.
++// Exported because the /full page's split FileViewerPanel must not fork this.
+ export function OpenAction({ path }: { path: string }) {
+   const open = () => {
+     rpc
+diff --git a/packages/web/src/components/SettingsDrawer.tsx b/packages/web/src/components/SettingsDrawer.tsx
+index 4f8d65b1..ae608658 100644
+--- a/packages/web/src/components/SettingsDrawer.tsx
++++ b/packages/web/src/components/SettingsDrawer.tsx
+@@ -22,6 +22,13 @@ import { Select } from "./ui/Select.tsx"
+ import { SettingsField } from "./SettingsField.tsx"
+ 
+ type NotifPerm = "default" | "granted" | "denied" | "unsupported"
++const FILE_OPENER_OPTIONS = [
++  { value: "system", label: "System default" },
++  { value: "cursor", label: "Cursor" },
++  { value: "vscode", label: "VS Code" },
++  { value: "finder", label: "Reveal in Finder" },
++  { value: "copy", label: "Copy path" },
++]
+ function currentPerm(): NotifPerm {
+   if (typeof Notification === "undefined") return "unsupported"
+   return Notification.permission as NotifPerm
+@@ -152,17 +159,21 @@ export function SettingsDrawer({ offerUpdate = false }: {
+                 variant="bordered"
+                 value={draft.localFileOpener ?? "system"}
+                 onValueChange={(v) => update({ ...draft, localFileOpener: v as Settings["localFileOpener"] })}
+-                options={[
+-                  { value: "system", label: "System default" },
+-                  { value: "cursor", label: "Cursor" },
+-                  { value: "vscode", label: "VS Code" },
+-                  { value: "finder", label: "Reveal in Finder" },
+-                  { value: "copy", label: "Copy path" },
+-                ]}
++                options={FILE_OPENER_OPTIONS}
+                 indicatorPosition="right"
+                 ariaLabel="Local file link opener"
+               />
+             </SettingsField>
++            <SettingsField label="Markdown links" help={SETTINGS_HELP.markdownFileOpener}>
++              <Select
++                variant="bordered"
++                value={draft.markdownFileOpener ?? "frizz"}
++                onValueChange={(v) => update({ ...draft, markdownFileOpener: v as Settings["markdownFileOpener"] })}
++                options={[{ value: "frizz", label: "Frizz" }, ...FILE_OPENER_OPTIONS]}
++                indicatorPosition="right"
++                ariaLabel="Markdown link opener"
++              />
++            </SettingsField>
+             </>
+           )}
+         </div>
+diff --git a/packages/web/src/components/filePanelStack.e2e.test.ts b/packages/web/src/components/filePanelStack.e2e.test.ts
+index a33771d0..0ce433ed 100644
+--- a/packages/web/src/components/filePanelStack.e2e.test.ts
++++ b/packages/web/src/components/filePanelStack.e2e.test.ts
+@@ -1,6 +1,6 @@
+ import assert from "node:assert/strict"
+ import test from "node:test"
+-import { mkdirSync } from "node:fs"
++import { mkdirSync, realpathSync } from "node:fs"
+ 
+ // Real server, real transcript, real file reads; only the absent launcher status probe is stubbed.
+ // Boot scripts/adhoc-stack.mjs, then scripts/seed-file-panel-stack.mjs --home=<its HOME>.
+@@ -10,7 +10,7 @@ const shots = process.env.FRIZZ_FILE_STACK_SHOTS
+ 
+ test("full-screen file links push readers and Escape restores the reader underneath", { skip: !baseUrl, timeout: 120_000 }, async () => {
+   const { default: puppeteer } = await import("puppeteer")
+-  const browser = await puppeteer.launch({ headless: true, args: ["--no-sandbox"] })
++  const browser = await puppeteer.launch({ headless: true, args: ["--no-sandbox", "--use-mock-keychain"] })
+   try {
+     const page = await browser.newPage()
+     const errors: string[] = []
+@@ -131,3 +131,91 @@ test("full-screen file links push readers and Escape restores the reader underne
+     await browser.close()
+   }
+ })
++
++test("Markdown links have an independent machine opener, saved through the real settings UI", { skip: !baseUrl, timeout: 120_000 }, async () => {
++  const { default: puppeteer } = await import("puppeteer")
++  const browser = await puppeteer.launch({ headless: true, protocolTimeout: 30_000, args: ["--no-sandbox", "--use-mock-keychain"] })
++  try {
++    const page = await browser.newPage()
++    await page.setViewport({ width: 1000, height: 900 })
++    await browser.defaultBrowserContext().overridePermissions(new URL(baseUrl!).origin, ["clipboard-read", "clipboard-write"])
++    const errors: string[] = []
++    page.on("pageerror", (e) => errors.push(String(e)))
++    page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()) })
++    await page.setRequestInterception(true)
++    page.on("request", (r) => {
++      if (new URL(r.url()).pathname === "/_frizz/control/status") {
++        void r.respond({ status: 200, contentType: "application/json", body: JSON.stringify({ protocol: 1, state: "ready", updateRestart: false }) })
++      } else void r.continue()
++    })
++    await page.goto(`${baseUrl}/thread/file-panel-stack`, { waitUntil: "networkidle2" })
++    const link = '[data-local-path$="/first.md"]'
++    await page.waitForSelector(link)
++    const path = realpathSync(await page.$eval(link, (el) => (el as HTMLElement).dataset.localPath!))
++    // Set the general opener to a DIFFERENT choice. No host application is launched by this test.
++    await page.evaluate(async () => {
++      const module = "/src/api/rpc.ts"; const { rpc } = await import(module)
++      await rpc.settingsSet({ ...await rpc.settingsGet(), localFileOpener: "cursor", markdownFileOpener: "frizz" })
++    })
++    await page.reload({ waitUntil: "networkidle2" })
++    await page.waitForSelector(link)
++    await page.click(link)
++    await page.waitForSelector('.frizz-sheet-panel .md-body')
++    await page.keyboard.press("Escape")
++    await page.waitForFunction(() => !document.querySelector('.frizz-sheet-panel'))
++    const settings = 'button[aria-label="Settings"]'
++    await page.click(settings)
++    const select = 'button[aria-label="Markdown link opener"]'
++    await page.waitForSelector(select)
++    assert.equal(await page.$eval(select, (el) => el.textContent?.trim()), "Frizz")
++    await page.click(select)
++    assert.deepEqual(await page.$$eval('[role="menuitemradio"]', (els) => els.map((el) => el.textContent?.trim())), [
++      "Frizz", "System default", "Cursor", "VS Code", "Reveal in Finder", "Copy path",
++    ])
++    const saved = page.waitForResponse((r) => r.url().endsWith("/rpc/settingsSet") && r.request().method() === "POST")
++    await page.$$eval('[role="menuitemradio"]', (els) => (els.find((el) => el.textContent?.trim() === "Copy path") as HTMLElement).click())
++    assert.equal((await (await saved).json()).result.markdownFileOpener, "copy")
++    assert.equal(await page.$eval('button[aria-label="Local file link opener"]', (el) => el.textContent?.trim()), "Cursor")
++    if (shots) {
++      mkdirSync(shots, { recursive: true })
++      for (const width of [1000, 740]) {
++        await page.setViewport({ width, height: 900, deviceScaleFactor: 2 })
++        await page.screenshot({ path: `${shots}/markdown-settings-${width}.png` })
++      }
++      await page.setViewport({ width: 740, height: 900, deviceScaleFactor: 6 })
++      const row = await page.$eval(select, (el) => {
++        const r = el.parentElement!.getBoundingClientRect()
++        return { x: r.x - 8, y: r.y - 8, width: r.width + 16, height: r.height + 16 }
++      })
++      await page.screenshot({ path: `${shots}/markdown-setting-detail.png`, clip: row })
++    }
++    await page.setViewport({ width: 1000, height: 900 })
++    await page.keyboard.press("Escape")
++    await page.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Settings"]'))
++    // Reload: the setting is not merely a local draft or an in-memory mirror.
++    await page.reload({ waitUntil: "networkidle2" })
++    await page.waitForSelector(link)
++    const opened = page.waitForResponse((r) => r.url().endsWith("/rpc/openLocalFile"))
++    await page.click(link)
++    assert.deepEqual((await (await opened).json()).result, { action: "copy", path })
++    await page.waitForFunction((path) => navigator.clipboard.readText().then((text) => text === path), {}, path)
++    assert.equal(await page.$('.frizz-sheet-panel .md-body'), null)
++    // The full-screen split viewer must not take priority over an explicit desktop opener.
++    await page.goto(`${baseUrl}/thread/file-panel-stack/full`, { waitUntil: "networkidle2" })
++    await page.waitForSelector(link)
++    const fullOpened = page.waitForResponse((r) => r.url().endsWith("/rpc/openLocalFile"))
++    await page.click(link)
++    assert.equal((await (await fullOpened).json()).result.action, "copy")
++    assert.equal(await page.$('[data-file-viewer-slot]'), null)
++    // Phones keep reading locally, never launching an app on the server's computer.
++    await page.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true })
++    let externalRequests = 0
++    page.on("request", (r) => { if (r.url().endsWith("/rpc/openLocalFile")) externalRequests++ })
++    await page.click(link)
++    await page.waitForSelector('.frizz-sheet-panel .md-body')
++    assert.equal(externalRequests, 0)
++    assert.deepEqual(errors, [])
++  } finally {
++    await browser.close()
++  }
++})
+diff --git a/packages/web/src/lib/local-file-links.ts b/packages/web/src/lib/local-file-links.ts
+index 673d42a6..78cfec4a 100644
+--- a/packages/web/src/lib/local-file-links.ts
++++ b/packages/web/src/lib/local-file-links.ts
+@@ -77,9 +77,9 @@ function openPicture(source: HTMLElement, path: string): void {
+   openLightbox(pictures.map((img) => lightboxImageFor(img.dataset.localPath!, img.alt)), Math.max(pictures.indexOf(source), 0))
+ }
+ 
+-// Act on a vetted local path: a `.md` file is prose Frizz can render itself, so it opens in the built-in
+-// reader instead of launching an editor; everything else goes to the server, which realpath-gates it and
+-// hands it to the opener the `localFileOpener` setting names — except on a phone, where nothing leaves
++// Act on a vetted local path: Markdown defaults to the built-in reader, but the server resolves its
++// separate `markdownFileOpener` preference on each click. Everything else uses `localFileOpener`
++// after the same realpath gate — except on a phone, where nothing leaves
+ // the browser (below). The decision lives HERE, in the one place
+ // every local-path activation passes through, rather than in each producer — markdown links, resolved
+ // inline-code paths, attachment chips, the Codex file rows and the tool-header path links all get the
+@@ -92,7 +92,8 @@ function openPicture(source: HTMLElement, path: string): void {
+ // arrives through the interceptor.
+ export function openLocalPath(path: string, image = false): void {
+   if (!image && isLocalMarkdownFile(path)) {
+-    pushMarkdownDrawer(path)
++    if (isMobileViewport()) pushMarkdownDrawer(path)
++    else void open(path, false, true)
+     return
+   }
+   // On the fullscreen page every non-image file opens in the split viewer too (source view; the
+@@ -115,10 +116,11 @@ export function openLocalPath(path: string, image = false): void {
+   void open(path, image)
+ }
+ 
+-async function open(path: string, image: boolean) {
++async function open(path: string, image: boolean, previewMarkdown = false) {
+   try {
+-    const result = await rpc.openLocalFile({ path, ...(image ? { image: true } : {}) })
+-    if (result.action === "copy") {
++    const result = await rpc.openLocalFile({ path, ...(image ? { image: true } : {}), ...(previewMarkdown ? { previewMarkdown: true } : {}) })
++    if (result.action === "preview") pushMarkdownDrawer(result.path)
++    else if (result.action === "copy") {
+       await copyTextToClipboard(result.path)
+       showToast("Copied local path")
+     }
+diff --git a/packages/web/src/lib/settingsHelp.ts b/packages/web/src/lib/settingsHelp.ts
+index 29c1cc01..85d76b40 100644
+--- a/packages/web/src/lib/settingsHelp.ts
++++ b/packages/web/src/lib/settingsHelp.ts
+@@ -5,7 +5,8 @@ export const SETTINGS_HELP = {
+   permissionMode: "The permission mode new Claude Code threads launch with. Auto runs safe actions and asks you to approve the risky ones in the thread. Bypass launches the worker with --dangerously-skip-permissions: it never asks, so nothing waits on you and nothing is checked either. Takes effect on the next thread you dispatch; to change a thread that already exists, use the picker beside its model in the prompt box. Codex threads always run with full workspace access and are unaffected.",
+   promptCacheTtl: "Which prompt-cache tier a new Claude thread writes to. A 1-hour entry costs twice the input price to write, a 5-minute entry 1.25 times; the hour only pays off when the thread's cache actually survives that long. Measured 2026-09-03: cache writes were half of a day's spend and the entries were lost every 15 to 30 minutes regardless, so 5 minutes was the cheaper tier. Automatic leaves the choice to Claude Code, which picks 1 hour on a subscription. Takes effect on the next thread you dispatch and on a thread that resumes after its worker exited.",
+   appearance: "Applies to this browser across all projects. System follows the device appearance.",
+-  localFileOpener: "Chooses how vetted local artifact links open. Markdown files open in Frizz's own reader (which carries an Open action that uses this setting), and image clicks always use the OS default viewer.",
++  localFileOpener: "Chooses how vetted local artifact links open outside Frizz. Markdown links have their own setting; when set to Frizz, the reader's Open action uses this setting. Image clicks always use the OS default viewer.",
++  markdownFileOpener: "Chooses how local Markdown links open on this computer. Frizz uses the built-in reader (the default); the other options bypass it. Independent of Local file links, and shared across projects. On a phone, Markdown always opens in Frizz.",
+   density: "How much of a diff shows before you ask for it, in this browser. Compact collapses every diff to its header row (click one to open it); Comfortable shows them in full. Applies immediately.",
+   queueOrder: "Orders waiting threads by when the worker last rested. Oldest first (default) surfaces the longest-waiting handoff; Newest first puts the most recent on top. Click a queue column header to sort by state, suggested done, or updated time; click it again to reverse. Applies immediately in this browser.",
+   notifications: "Shows a desktop notification when work needs attention while this window is hidden.",
+diff --git a/packages/web/src/local-file-opener-fixture.tsx b/packages/web/src/local-file-opener-fixture.tsx
+index 6142966b..fbd5c7fe 100644
+--- a/packages/web/src/local-file-opener-fixture.tsx
++++ b/packages/web/src/local-file-opener-fixture.tsx
+@@ -6,7 +6,7 @@ import { installLocalFileLinkInterceptor } from "./lib/local-file-links.ts"
+ import { store } from "./store.ts"
+ 
+ // Both destinations a local-file link can have, on one page. A `.md` file is rendered by Frizz's own
+-// reader (the interceptor pushes a `markdown` drawer and never calls the RPC); anything else is handed
++// reader (the server answers `preview` and the interceptor pushes a `markdown` drawer); anything else is handed
+ // to the desktop opener through `openLocalFile`. The two readouts below are what the e2e test asserts,
+ // so a regression in EITHER direction — a Markdown link that launches an editor, a PDF that silently
+ // opens a reader that cannot render it — fails loudly rather than looking fine in the markup.
+@@ -26,7 +26,10 @@ const nativeFetch = window.fetch.bind(window)
+ window.fetch = async (input, init) => {
+   const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, window.location.href)
+   if (url.pathname === "/_frizz/rpc/openLocalFile") {
+-    const body = JSON.parse(String(init?.body ?? "{}")) as { path?: string }
++    const body = JSON.parse(String(init?.body ?? "{}")) as { path?: string; previewMarkdown?: boolean }
++    if (body.previewMarkdown) return new Response(JSON.stringify({ result: { action: "preview", path: body.path } }), {
++      headers: { "content-type": "application/json", "x-frizz-boot": "local-file-fixture" },
++    })
+     const w = window as FixtureWindow
+     w.__localFileFixtureOpened = [...(w.__localFileFixtureOpened ?? []), body.path ?? ""]
+     return new Response(JSON.stringify({ result: { action: "copy", path: body.path } }), {
+diff --git a/packages/web/src/question-links-fixture.tsx b/packages/web/src/question-links-fixture.tsx
+index 1124a24c..bbdb01aa 100644
+--- a/packages/web/src/question-links-fixture.tsx
++++ b/packages/web/src/question-links-fixture.tsx
+@@ -65,7 +65,8 @@ window.fetch = async (input, init) => {
+     return json({ resolved: paths.map((p) => ({ input: p, path: REAL[p] ?? null })) })
+   }
+   if (url.pathname === "/_frizz/rpc/openLocalFile") {
+-    const body = JSON.parse(String(init?.body ?? "{}")) as { path?: string }
++    const body = JSON.parse(String(init?.body ?? "{}")) as { path?: string; previewMarkdown?: boolean }
++    if (body.previewMarkdown) return json({ action: "preview", path: body.path })
+     w.__opened!.push(body.path ?? "")
+     return json({ action: "copy", path: body.path })
+   }
+-- 
+2.47.1
+

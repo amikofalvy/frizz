@@ -1,0 +1,742 @@
+From 53b76f6bc44bf42cfb368524c9778bb0c29efb1e Mon Sep 17 00:00:00 2001
+From: Andrew Mikofalvy <5668128+amikofalvy@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 00:21:37 -0700
+Subject: [PATCH] fix(web): share snooze behavior across desktop and mobile
+
+---
+ .../components/MobileThreadActionsSheet.tsx   |  51 ++--
+ packages/web/src/components/SnoozeMenu.tsx    |  78 +-----
+ .../src/components/snoozeParity.e2e.test.ts   | 226 ++++++++++++++++++
+ packages/web/src/hooks/useThreadSnooze.ts     |  52 ++++
+ packages/web/src/lib/snooze.test.ts           |  43 ++++
+ packages/web/src/lib/snooze.ts                |  22 +-
+ scripts/e2e-web.mjs                           |   1 +
+ scripts/verify-snooze-parity.mjs              |  62 +++++
+ 8 files changed, 432 insertions(+), 103 deletions(-)
+ create mode 100644 packages/web/src/components/snoozeParity.e2e.test.ts
+ create mode 100644 packages/web/src/hooks/useThreadSnooze.ts
+ create mode 100644 scripts/verify-snooze-parity.mjs
+
+diff --git a/packages/web/src/components/MobileThreadActionsSheet.tsx b/packages/web/src/components/MobileThreadActionsSheet.tsx
+index 3d2efd76..d9fd8992 100644
+--- a/packages/web/src/components/MobileThreadActionsSheet.tsx
++++ b/packages/web/src/components/MobileThreadActionsSheet.tsx
+@@ -6,15 +6,17 @@ import { SNOOZE_PROMPT_MAX, type ThreadLinkView, type ThreadView } from "@frizz/
+ import { rpc } from "../api/rpc.ts"
+ import { showToast, store, threadBySlug } from "../store.ts"
+ import type { BoardSnapshot } from "@frizz/shared"
+-import { displayTitle, futureSnoozedUntil, offersRetry } from "../groups.ts"
++import { displayTitle, offersRetry } from "../groups.ts"
++import { useThreadSnooze } from "../hooks/useThreadSnooze.ts"
+ import { prefs } from "../lib/prefs.ts"
+ import {
+   SNOOZE_PRESETS,
+   formatSnoozeWake,
+   localDateTimeInputValue,
+-  parseLocalSnooze,
++  parseCustomSnooze,
+   snoozePresetInstant,
+   snoozePresetLabel,
++  threadSnoozeState,
+   type SnoozePreset,
+ } from "../lib/snooze.ts"
+ import { threadLifecycleAvailability } from "../lib/threadLifecycle.ts"
+@@ -114,7 +116,7 @@ function ActionsList({ thread, title, setView, dismiss, onArchived }: {
+   const snoozePreset = useSnapshot(prefs).snoozePreset
+   const lifecycle = threadLifecycleAvailability(thread)
+   const owned = thread.kind === "session" && thread.foreign !== true
+-  const snoozedUntil = futureSnoozedUntil(thread)
++  const snooze = threadSnoozeState(thread)
+   const goalOn = thread.recurringPrompt?.stopHook === true || thread.recurringPrompt?.heartbeat === true || thread.recurringPrompt?.postCompaction === true
+   const links = thread.links ?? []
+   const running = thread.runtime === "running" || thread.runtime === "spawning"
+@@ -141,7 +143,7 @@ function ActionsList({ thread, title, setView, dismiss, onArchived }: {
+           data="snooze"
+           icon={<AlarmClock size={19} />}
+           label="Snooze"
+-          value={snoozedUntil ? formatSnoozeWake(snoozedUntil) : snoozePresetLabel(snoozePreset)}
++          value={snooze.until ? formatSnoozeWake(snooze.until) : snooze.armed ? "Until activity" : snoozePresetLabel(snoozePreset)}
+           chevron
+           onClick={() => setView("snooze")}
+         />
+@@ -190,30 +192,10 @@ function ActionsList({ thread, title, setView, dismiss, onArchived }: {
+ // The desktop header's snooze menu, as a list: the same presets, the same `setThreadSnooze` and the same
+ // toasts. Unlike that menu it keeps the phone's "Snooze length" preference: the preset picked here
+ // becomes the default the board's swipe uses, which is the one gesture with no menu to choose from.
+-function useSnoozeApply(thread: ThreadView, dismiss: (then?: () => void) => void) {
+-  const [busy, setBusy] = useState(false)
+-  const [error, setError] = useState("")
+-  async function apply(until: string | null, prompt: string | null = null): Promise<void> {
+-    setBusy(true)
+-    setError("")
+-    try {
+-      await rpc.setThreadSnooze({ slug: thread.id, sessionId: thread.sessionId ?? "", until, prompt: until ? prompt : null })
+-      dismiss(() => showToast(until ? `${prompt ? "Bump scheduled" : "Snoozed"} · ${formatSnoozeWake(until)}` : "Snooze cleared"))
+-    } catch (err) {
+-      const message = err instanceof Error ? err.message : "Snooze failed"
+-      showToast(message.slice(0, 100))
+-      setError(message)
+-    } finally {
+-      setBusy(false)
+-    }
+-  }
+-  return { busy, error, setError, apply }
+-}
+-
+ function SnoozeView({ thread, back, custom, dismiss }: { thread: ThreadView; back: () => void; custom: () => void; dismiss: (then?: () => void) => void }) {
+   const selected = useSnapshot(prefs).snoozePreset
+-  const snoozedUntil = futureSnoozedUntil(thread)
+-  const { busy, apply } = useSnoozeApply(thread, dismiss)
++  const { armed, description, activity } = threadSnoozeState(thread)
++  const { busy, error, apply, applyActivity } = useThreadSnooze(thread, () => dismiss())
+   const pick = (preset: SnoozePreset) => {
+     prefs.snoozePreset = preset
+     void apply(snoozePresetInstant(preset))
+@@ -221,7 +203,7 @@ function SnoozeView({ thread, back, custom, dismiss }: { thread: ThreadView; bac
+   return (
+     <div data-thread-actions-snooze>
+       <SubTitle back={back}>Snooze</SubTitle>
+-      {snoozedUntil && <p className="px-[18px] pb-2 text-[13px] text-muted">Snoozed until {formatSnoozeWake(snoozedUntil).replace(/^(Today|Tomorrow)/, (d) => d.toLowerCase())}</p>}
++      {description && <p className="px-[18px] pb-2 text-[13px] text-muted">{description}</p>}
+       {SNOOZE_PRESETS.map((preset) => (
+         <ActionRow
+           key={preset.value}
+@@ -234,17 +216,20 @@ function SnoozeView({ thread, back, custom, dismiss }: { thread: ThreadView; bac
+           onClick={() => pick(preset.value)}
+         />
+       ))}
++      <ActionRow data="snooze-activity" disabled={busy || !activity.enabled} icon={<AlarmClock size={19} />} label="Until activity" onClick={() => void applyActivity()} />
++      {!activity.enabled && <p data-snooze-activity-reason className="px-[18px] pb-2 text-[13px] text-muted">{activity.reason}</p>}
+       <div className="my-1 h-px bg-border" />
+       <ActionRow data="snooze-custom" disabled={busy} icon={<Pencil size={19} />} label="Custom time & prompt…" chevron onClick={custom} />
+-      {snoozedUntil && <ActionRow data="snooze-wake" disabled={busy} icon={<RotateCcw size={19} />} label="Wake now" onClick={() => void apply(null)} />}
++      {armed && <ActionRow data="snooze-wake" disabled={busy} icon={<RotateCcw size={19} />} label="Wake now" onClick={() => void apply(null)} />}
++      {error && <p role="alert" className="px-[18px] py-2 text-[13px] text-danger">{error}</p>}
+     </div>
+   )
+ }
+ 
+ function CustomSnoozeView({ thread, back, dismiss }: { thread: ThreadView; back: () => void; dismiss: (then?: () => void) => void }) {
+   const selected = useSnapshot(prefs).snoozePreset
+-  const snoozedUntil = futureSnoozedUntil(thread)
+-  const { busy, error, setError, apply } = useSnoozeApply(thread, dismiss)
++  const { until: snoozedUntil } = threadSnoozeState(thread)
++  const { busy, error, setError, apply } = useThreadSnooze(thread, () => dismiss())
+   // Opens on the snooze already set, else on the selected preset — the desktop dialog's seed.
+   const [value, setValue] = useState(() => localDateTimeInputValue(new Date(snoozedUntil ?? snoozePresetInstant(selected))))
+   const [prompt, setPrompt] = useState(thread.snoozePrompt ?? "")
+@@ -252,11 +237,9 @@ function CustomSnoozeView({ thread, back, dismiss }: { thread: ThreadView; back:
+   const timeId = useId()
+   const promptId = useId()
+   const submit = () => {
+-    const parsed = parseLocalSnooze(value)
++    const parsed = parseCustomSnooze(value, prompt)
+     if (!parsed.ok) return setError(parsed.message)
+-    const text = prompt.trim()
+-    if (text.length > SNOOZE_PROMPT_MAX) return setError(`Prompt is too long (${text.length}/${SNOOZE_PROMPT_MAX})`)
+-    void apply(parsed.until, text || null)
++    void apply(parsed.until, parsed.prompt)
+   }
+   return (
+     <form data-thread-actions-snooze-custom className="flex flex-col" onSubmit={(event) => { event.preventDefault(); submit() }}>
+diff --git a/packages/web/src/components/SnoozeMenu.tsx b/packages/web/src/components/SnoozeMenu.tsx
+index ca494fdc..5af8f8c4 100644
+--- a/packages/web/src/components/SnoozeMenu.tsx
++++ b/packages/web/src/components/SnoozeMenu.tsx
+@@ -1,20 +1,17 @@
+ import { useId, useMemo, useState } from "react"
+ import { AlarmClock, AlarmClockOff, Loader2 } from "lucide-react"
+ import { SNOOZE_PROMPT_MAX, type ThreadView } from "@frizz/shared"
+-import { rpc } from "../api/rpc.ts"
+-import { futureSnoozedUntil } from "../groups.ts"
++import { useThreadSnooze } from "../hooks/useThreadSnooze.ts"
+ import {
+   DEFAULT_SNOOZE_PRESET,
+   SNOOZE_PRESETS,
+-  activitySnoozeRow,
+-  activitySnoozed,
+   formatSnoozeWake,
+   localDateTimeInputValue,
+-  parseLocalSnooze,
++  parseCustomSnooze,
+   snoozePresetInstant,
++  threadSnoozeState,
+ } from "../lib/snooze.ts"
+ import { HEADER_ICON_CLASS } from "../lib/headerIcon.ts"
+-import { showToast } from "../store.ts"
+ import { shouldSubmitStagedEnter } from "../lib/composerKeyboard.ts"
+ import { Dialog } from "./ui/Dialog.tsx"
+ import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from "./ui/Menu.tsx"
+@@ -45,16 +42,17 @@ export function SnoozeMenu({ thread, onSnoozed }: { thread: ThreadView; onSnooze
+   // tooltip nobody asked for, instead of leaving fullscreen. It stays quiet until focus or the pointer
+   // leaves the clock; focus itself still returns, which is the menu's keyboard contract.
+   const [tooltipQuiet, setTooltipQuiet] = useState(false)
+-  const [busy, setBusy] = useState(false)
+   const [customOpen, setCustomOpen] = useState(false)
+   const [customValue, setCustomValue] = useState("")
+   const [promptValue, setPromptValue] = useState("")
+-  const [customError, setCustomError] = useState("")
++  const { busy, error: customError, setError: setCustomError, apply, applyActivity } = useThreadSnooze(thread, (parked) => {
++    if (parked) onSnoozed?.()
++    setCustomOpen(false)
++  })
+   const customInputId = useId()
+   const promptInputId = useId()
+   const customFormId = useId()
+-  const snoozedUntil = futureSnoozedUntil(thread)
+-  const prompt = thread.snoozePrompt?.trim()
++  const { until: snoozedUntil, prompt, armed, description: state, activity: activityRow } = threadSnoozeState(thread)
+   const minCustom = useMemo(() => localDateTimeInputValue(new Date(Date.now() + 60_000)), [customOpen])
+   // Recomputed when the menu opens, so each row's wake time is read off the clock at the moment it is
+   // offered rather than when the header first rendered.
+@@ -64,59 +62,8 @@ export function SnoozeMenu({ thread, onSnoozed }: { thread: ThreadView; onSnooze
+       ? { value: preset.value, label: "Tomorrow", wake: wake.replace(/^Tomorrow at /, "") }
+       : { value: preset.value, label: preset.label, wake }
+   }), [open])
+-  // "Until activity": the park with no clock (lib/snooze.ts activitySnoozeRow). Read when the menu opens,
+-  // like the clock rows, so a shell that finished since the header rendered greys the row out.
+-  const activityRow = useMemo(() => activitySnoozeRow(thread), [open, thread.runtime, thread.wakesOnItsOwn])
+-  // The menu never sets both parks (each RPC clears the other), but a clock armed by another tab is the
+-  // one with a time to show, so it wins the state line.
+-  const byActivity = !snoozedUntil && activitySnoozed(thread)
+-  const armed = Boolean(snoozedUntil) || byActivity
+-  // Two shapes: a plain park only re-surfaces the card, while an armed one resumes the agent with that
+-  // text — so naming the follow-up IS the detail.
+-  const state = snoozedUntil
+-    ? (prompt ? `Bumps ${formatSnoozeWake(snoozedUntil)}` : `Snoozed until ${formatSnoozeWake(snoozedUntil)}`)
+-    : byActivity ? "Snoozed until activity" : null
+   const label = state ? (prompt ? `${state}\n${prompt}` : state) : "Snooze"
+ 
+-  // The event-snooze the resting card's own button arms (rpc.snoozeAwaitingBackground): hidden until the
+-  // thread's next rest. The server refuses it where nothing can wake the thread, which the greyed row
+-  // already says, and it replaces a clock snooze rather than stacking on one.
+-  async function applyActivity(): Promise<void> {
+-    setBusy(true)
+-    try {
+-      await rpc.snoozeAwaitingBackground({ slug: thread.id, sessionId: thread.sessionId ?? "" })
+-      showToast("Snoozed until activity")
+-      onSnoozed?.()
+-    } catch (error) {
+-      showToast((error instanceof Error ? error.message : "Snooze failed").slice(0, 100))
+-    } finally {
+-      setBusy(false)
+-    }
+-  }
+-
+-  // `bump` is what upgrades a park into a scheduled BUMP: the server arms a durable wake that resumes
+-  // this thread with exactly that text at `until`. null keeps the historical reminder behavior.
+-  async function apply(until: string | null, bump: string | null = null): Promise<void> {
+-    setBusy(true)
+-    try {
+-      await rpc.setThreadSnooze({ slug: thread.id, sessionId: thread.sessionId ?? "", until, prompt: until ? bump : null })
+-      if (until) {
+-        showToast(`${bump ? "Bump scheduled" : "Snoozed"} · ${formatSnoozeWake(until)}`)
+-        onSnoozed?.()
+-      } else {
+-        showToast("Snooze cleared")
+-      }
+-      setCustomOpen(false)
+-      setCustomError("")
+-    } catch (error) {
+-      const message = error instanceof Error ? error.message : "Snooze failed"
+-      showToast(message.slice(0, 100))
+-      setCustomError(message)
+-    } finally {
+-      setBusy(false)
+-    }
+-  }
+-
+   // An existing snooze re-opens as itself so editing the follow-up never silently moves the deadline;
+   // otherwise the dialog starts a day out.
+   function openCustom() {
+@@ -127,17 +74,12 @@ export function SnoozeMenu({ thread, onSnoozed }: { thread: ThreadView; onSnooze
+   }
+ 
+   function submitCustom() {
+-    const parsed = parseLocalSnooze(customValue)
++    const parsed = parseCustomSnooze(customValue, promptValue)
+     if (!parsed.ok) {
+       setCustomError(parsed.message)
+       return
+     }
+-    const bump = promptValue.trim()
+-    if (bump.length > SNOOZE_PROMPT_MAX) {
+-      setCustomError(`Prompt is too long (${bump.length}/${SNOOZE_PROMPT_MAX})`)
+-      return
+-    }
+-    void apply(parsed.until, bump || null)
++    void apply(parsed.until, parsed.prompt)
+   }
+ 
+   return (
+diff --git a/packages/web/src/components/snoozeParity.e2e.test.ts b/packages/web/src/components/snoozeParity.e2e.test.ts
+new file mode 100644
+index 00000000..86612fc6
+--- /dev/null
++++ b/packages/web/src/components/snoozeParity.e2e.test.ts
+@@ -0,0 +1,226 @@
++import assert from "node:assert/strict"
++import test from "node:test"
++import { createHash, randomUUID } from "node:crypto"
++import { execFile, execFileSync } from "node:child_process"
++import { promisify } from "node:util"
++import { mkdirSync, writeFileSync } from "node:fs"
++import { join } from "node:path"
++import type { BoardSnapshot, ThreadView } from "@frizz/shared"
++
++// Run with scripts/verify-snooze-parity.mjs: a disposable real server, simulated resting worker,
++// real RPC writes and board pushes. No provider credentials or worker processes are needed.
++const baseUrl = process.env.FRIZZ_SNOOZE_PARITY_E2E_URL
++
++test("desktop and phone snooze controls share timed, activity, clear and failure behavior", {
++  skip: !baseUrl, timeout: 180_000,
++}, async () => {
++  const home = process.env.FRIZZ_SNOOZE_PARITY_HOME!
++  const cwd = process.env.FRIZZ_SNOOZE_PARITY_PROJECT!
++  assert.ok(home && cwd, "only run against the wrapper's disposable stack")
++  const { resolveSandboxDb, sessionProjectColumns } = await import("../../../../scripts/lib/sandbox-db.mjs")
++  const { createRpcClient } = await import("../../../../scripts/lib/rpc-client.mjs")
++  const { launchHeadless } = await import("../../../../scripts/lib/headless-browser.mjs")
++  const api = createRpcClient(`${baseUrl}/`)
++  const sandbox = resolveSandboxDb(home)
++  const { cols, vals } = sessionProjectColumns(sandbox)
++  const slug = "snooze-parity"
++  const sessionId = randomUUID()
++  const at = new Date(Date.now() - 60_000).toISOString()
++  const jsonl = join(home, ".claude/projects", cwd.replace(/[/.]/g, "-"))
++  mkdirSync(jsonl, { recursive: true })
++  writeFileSync(join(jsonl, `${sessionId}.jsonl`), [
++    { type: "user", uuid: randomUUID(), timestamp: at, session_id: sessionId, cwd, message: { role: "user", content: "Verify shared snooze behavior" } },
++    { type: "assistant", uuid: randomUUID(), timestamp: at, session_id: sessionId, cwd, message: { id: "rest", role: "assistant", model: "claude-opus-5", stop_reason: "end_turn", content: [{ type: "text", text: "Ready for the snooze check." }], usage: { input_tokens: 2, output_tokens: 10 } } },
++  ].map((r) => JSON.stringify(r)).join("\n") + "\n")
++  // The test process is the simulated daemon's liveness token. Nothing is detached or left behind.
++  const records = join(sandbox.stateDir, "claude-broker")
++  mkdirSync(records, { recursive: true })
++  writeFileSync(join(records, `${createHash("sha256").update(sessionId).digest("hex").slice(0, 16)}.json`), JSON.stringify({ sessionId, daemonPid: process.pid, socketPath: join(records, "unused.sock") }))
++  execFileSync("sqlite3", [sandbox.db, `INSERT INTO session (${cols}slug,session_id,thread_name,spawned_at,title,backend,claude_runtime,model,effort,permission_mode,rested_at) VALUES (${vals}'${slug}','${sessionId}','frizz-${slug}','${at}','Shared snooze behavior','claude','broker','opus','high','default','${at}')`])
++  const thread = async () => ((await api.query("board")) as BoardSnapshot).threads.find((t) => t.id === slug)!
++  const waitForThread = async (predicate: (t: ThreadView) => boolean) => {
++    const deadline = Date.now() + 20_000
++    while (Date.now() < deadline) {
++      const t = await thread()
++      if (t && predicate(t)) return t
++      await new Promise((r) => setTimeout(r, 100))
++    }
++    assert.fail(`board did not reach expected state: ${JSON.stringify(await thread())}`)
++  }
++  await waitForThread((t) => t.runtime === "turn-idle")
++  const board = await api.query("board") as BoardSnapshot
++  const projectUrl = `${baseUrl}/project/${board.projectSlug}`
++  const goal = async (enabled: boolean) => {
++    await api.mutate("setThreadRecurringPrompt", { slug, sessionId, prompt: enabled ? "Check the queued work" : null, stopHook: false, heartbeat: enabled, postCompaction: false, intervalSeconds: 3600 })
++    await waitForThread((t) => (t.wakesOnItsOwn === true) === enabled)
++  }
++  const browser = await launchHeadless()
++  const page = await browser.newPage()
++  let rejectSnooze = false
++  await page.setRequestInterception(true)
++  page.on("request", (r) => {
++    // adhoc-stack has no launcher/control plane; this is unrelated to the snooze RPCs under test.
++    if (new URL(r.url()).pathname === "/_frizz/control/status") {
++      void r.respond({ status: 200, contentType: "application/json", body: JSON.stringify({ protocol: 1, state: "ready", artifactDigest: "snooze-test", updateRestart: false }) })
++    } else if (rejectSnooze && r.url().includes("/rpc/snoozeAwaitingBackground")) {
++      void r.respond({ status: 409, contentType: "application/json", body: JSON.stringify({ error: "Snooze parity test rejection" }) })
++    } else void r.continue()
++  })
++  const errors: string[] = []
++  page.on("pageerror", (e) => errors.push(String(e)))
++  page.on("console", (m) => {
++    if (m.type() === "error" && !(m.location().url?.includes("/rpc/snoozeAwaitingBackground") && m.text().includes("409 (Conflict)"))) errors.push(`${m.text()} ${m.location().url}`)
++  })
++  const shots = process.env.FRIZZ_SNOOZE_PARITY_SHOTS
++  if (shots) mkdirSync(shots, { recursive: true })
++  try {
++    for (const width of [1280, 390]) {
++      const phone = width <= 700
++      const url = `${projectUrl}/thread/${slug}${phone ? "" : "/full"}`
++      await page.setViewport({ width, height: 900, deviceScaleFactor: 1, isMobile: phone, hasTouch: phone })
++      const open = async () => {
++        if (!phone || page.url() !== url) await page.goto(url, { waitUntil: "networkidle0" })
++        if (phone) {
++          if (await page.$("[data-thread-actions-sheet]")) {
++            await page.keyboard.press("Escape")
++            await page.waitForSelector("[data-thread-actions-sheet]", { hidden: true })
++          }
++          await page.waitForSelector("[data-mobile-thread-more]")
++          await page.click("[data-mobile-thread-more]")
++          await page.waitForFunction(() => {
++            const el = document.querySelector('[data-thread-actions-sheet]')
++            const r = el?.getBoundingClientRect()
++            return r && r.height > 0 && r.top >= 0 && r.bottom <= innerHeight + 0.1
++          })
++          await page.click('[data-thread-action="snooze"]')
++          await page.waitForSelector("[data-thread-actions-snooze]")
++        } else {
++          await page.waitForSelector("[data-snooze-menu]")
++          await page.click("[data-snooze-menu]")
++          await page.waitForSelector("[data-snooze-activity]")
++        }
++      }
++      const activity = phone ? '[data-thread-action="snooze-activity"]' : '[data-snooze-activity]'
++      const clickWake = async () => {
++        if (phone) {
++          await page.click('[data-thread-action="snooze-wake"]')
++          await page.waitForSelector("[data-thread-actions-sheet]", { hidden: true })
++        }
++        else {
++          const item = await page.waitForSelector('::-p-text(Wake now)')
++          await item!.click()
++        }
++      }
++      await goal(false)
++      await open()
++      assert.equal(await page.$eval(activity, (el) => el.closest("[disabled], [aria-disabled=true], [data-disabled]") !== null), true, `${width}: no unending park`)
++      if (phone) assert.equal(await page.$eval("[data-snooze-activity-reason]", (el) => el.textContent), "Nothing can wake it")
++      await goal(true)
++      await open()
++      assert.equal(await page.$eval(activity, (el) => el.closest("[disabled], [aria-disabled=true], [data-disabled]") !== null), false)
++      if (shots) {
++        await page.screenshot({ path: join(shots, `snooze-${width}.png`) })
++        if (phone) {
++          const ink = await page.$eval(activity, (el) => {
++            const label = el.children[1] as HTMLElement
++            const probe = document.createElement("span")
++            probe.style.cssText = "display:inline-block;width:0;height:0;padding:0;margin:0;border:0"
++            label.appendChild(probe)
++            const baseline = probe.getBoundingClientRect().bottom
++            probe.remove()
++            const cs = getComputedStyle(label)
++            const canvas = document.createElement("canvas").getContext("2d")!
++            canvas.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`
++            const cap = canvas.measureText("H").actualBoundingBoxAscent
++            const rects = [...el.querySelectorAll("svg path,svg circle,svg line")].map((g) => g.getBoundingClientRect())
++            const right = Math.max(...rects.map((r) => r.right))
++            const top = Math.min(...rects.map((r) => r.top))
++            const bottom = Math.max(...rects.map((r) => r.bottom))
++            return { capOffset: baseline - cap / 2 - (top + bottom) / 2, iconToLabelGap: label.getBoundingClientRect().left - right, font: cs.fontFamily }
++          })
++          console.log("Phone snooze ink", ink)
++          writeFileSync(join(shots, "ink.json"), JSON.stringify(ink, null, 2))
++          await page.setViewport({ width, height: 900, deviceScaleFactor: 6, isMobile: true, hasTouch: true })
++          await (await page.$(activity))!.screenshot({ path: join(shots, "snooze-activity-detail.png") })
++          await page.setViewport({ width, height: 900, deviceScaleFactor: 1, isMobile: true, hasTouch: true })
++          const before = `(async () => {
++            document.querySelector('[data-mobile-thread-more]').click();
++            while (!document.querySelector('[data-thread-action="snooze"]') || document.querySelector('[data-thread-actions-sheet]').getBoundingClientRect().bottom > innerHeight + 0.1) await new Promise(requestAnimationFrame);
++            document.querySelector('[data-thread-action="snooze"]').click();
++            while (!document.querySelector('[data-thread-action="snooze-activity"]')) await new Promise(requestAnimationFrame);
++          })()`
++          const { stdout: gaps } = await promisify(execFile)("node", ["scripts/ink-gaps.mjs", url,
++            '[data-thread-action="snooze-activity"] svg,[data-thread-action="snooze-activity"] > span:nth-child(2)',
++            `--browser=${browser.wsEndpoint()}`, "--w=390", "--h=900", "--dsf=6", "--touch", `--before=${before}`,
++          ], { encoding: "utf8", timeout: 30_000 })
++          writeFileSync(join(shots, "ink-gaps.txt"), gaps)
++          console.log(gaps)
++        }
++      }
++      await page.click(activity)
++      if (phone) await page.waitForSelector("[data-thread-actions-sheet]", { hidden: true })
++      await waitForThread((t) => t.bgSnoozed === true && !t.snoozedUntil)
++      await open()
++      assert.ok((await page.evaluate(() => document.body.innerText)).includes("Snoozed until activity"))
++      await clickWake()
++      await waitForThread((t) => !t.bgSnoozed && !t.snoozedUntil)
++
++      // The custom-time forms keep their own presentation, but must submit the same trimmed prompt.
++      await open()
++      if (phone) await page.click('[data-thread-action="snooze-custom"]')
++      else await (await page.waitForSelector('::-p-text(Custom time & prompt…)'))!.click()
++      await page.waitForSelector('input[type="datetime-local"]')
++      await page.type(phone ? '[data-thread-actions-snooze-custom] textarea' : '[role="dialog"] textarea', "  Check CI  ")
++      const chosen = await page.$eval('input[type="datetime-local"]', (el) => new Date((el as HTMLInputElement).value).toISOString())
++      await page.click(phone ? '[data-thread-actions-snooze-custom] button[type="submit"]' : '[role="dialog"] button[type="submit"]')
++      if (phone) await page.waitForSelector("[data-thread-actions-sheet]", { hidden: true })
++      const bump = await waitForThread((t) => t.snoozePrompt === "Check CI")
++      assert.equal(bump.snoozedUntil, chosen, "the form preserves its selected deadline")
++      await open()
++      await clickWake()
++      await waitForThread((t) => !t.bgSnoozed && !t.snoozedUntil && !t.snoozePrompt)
++      await open()
++      await page.click(phone ? '[data-thread-action="snooze-1h"]' : '[data-snooze-preset="1h"]')
++      if (phone) await page.waitForSelector("[data-thread-actions-sheet]", { hidden: true })
++      const timed = await waitForThread((t) => Boolean(t.snoozedUntil))
++      assert.ok(Math.abs(Date.parse(timed.snoozedUntil!) - Date.now() - 3_600_000) < 10_000)
++      await open()
++      await page.click(activity)
++      if (phone) await page.waitForSelector("[data-thread-actions-sheet]", { hidden: true })
++      await waitForThread((t) => t.bgSnoozed === true && !t.snoozedUntil)
++      await open()
++      await page.click(phone ? '[data-thread-action="snooze-1d"]' : '[data-snooze-preset="1d"]')
++      if (phone) await page.waitForSelector("[data-thread-actions-sheet]", { hidden: true })
++      await waitForThread((t) => !t.bgSnoozed && Boolean(t.snoozedUntil))
++      await open()
++      await clickWake()
++      await waitForThread((t) => !t.bgSnoozed && !t.snoozedUntil)
++
++      // Inject only the failure response; successful cases above crossed the real HTTP boundary.
++      await open()
++      rejectSnooze = true
++      await page.click(activity)
++      await page.waitForFunction(() => document.body.innerText.includes("Snooze parity test rejection"))
++      assert.equal(Boolean((await thread()).bgSnoozed), false)
++      if (phone) assert.equal(await page.$eval('[data-thread-actions-snooze] [role="alert"]', (el) => el.textContent), "Snooze parity test rejection")
++      rejectSnooze = false
++      await open()
++      await page.click(activity)
++      if (phone) await page.waitForSelector("[data-thread-actions-sheet]", { hidden: true })
++      await waitForThread((t) => t.bgSnoozed === true)
++      await open()
++      await clickWake()
++      await waitForThread((t) => !t.bgSnoozed && !t.snoozedUntil)
++      console.log(`PASS ${width}: unavailable reason, activity, timed, replacement, Wake now and rejected request`)
++    }
++    for (const width of [700, 701, 800, 801]) {
++      await page.setViewport({ width, height: 900, deviceScaleFactor: 1 })
++      await page.goto(`${projectUrl}/thread/${slug}`, { waitUntil: "networkidle0" })
++      await page.waitForSelector(width <= 700 ? "[data-mobile-thread-more]" : "[data-snooze-menu]")
++      assert.equal(await page.$("[data-mobile-thread-more]") !== null, width <= 700)
++    }
++    assert.deepEqual(errors, [], "no browser errors")
++  } finally {
++    await browser.close()
++  }
++})
+diff --git a/packages/web/src/hooks/useThreadSnooze.ts b/packages/web/src/hooks/useThreadSnooze.ts
+new file mode 100644
+index 00000000..9573429f
+--- /dev/null
++++ b/packages/web/src/hooks/useThreadSnooze.ts
+@@ -0,0 +1,52 @@
++import { useRef, useState } from "react"
++import type { ThreadView } from "@frizz/shared"
++import { rpc } from "../api/rpc.ts"
++import { showToast } from "../store.ts"
++import { activitySnoozeRow, formatSnoozeWake } from "../lib/snooze.ts"
++
++// The request, pending state and feedback belong to the action. Closing a menu or unwinding a phone
++// sheet's history belongs to its caller; `parked` distinguishes a snooze from Wake now.
++export function useThreadSnooze(thread: ThreadView, onApplied: (parked: boolean) => void) {
++  const [busy, setBusy] = useState(false)
++  const [error, setError] = useState("")
++  const pending = useRef(false)
++
++  async function run(request: () => Promise<unknown>, message: string, parked: boolean) {
++    if (pending.current) return
++    pending.current = true
++    setBusy(true)
++    setError("")
++    try {
++      await request()
++      showToast(message)
++      onApplied(parked)
++    } catch (err) {
++      const message = err instanceof Error ? err.message : "Snooze failed"
++      setError(message)
++      showToast(message.slice(0, 100))
++    } finally {
++      pending.current = false
++      setBusy(false)
++    }
++  }
++
++  function apply(until: string | null, prompt: string | null = null) {
++    return run(
++      () => rpc.setThreadSnooze({ slug: thread.id, sessionId: thread.sessionId ?? "", until, prompt: until ? prompt : null }),
++      until ? `${prompt ? "Bump scheduled" : "Snoozed"} · ${formatSnoozeWake(until)}` : "Snooze cleared",
++      Boolean(until),
++    )
++  }
++
++  function applyActivity() {
++    const row = activitySnoozeRow(thread)
++    if (!row.enabled) return Promise.resolve()
++    return run(
++      () => rpc.snoozeAwaitingBackground({ slug: thread.id, sessionId: thread.sessionId ?? "" }),
++      "Snoozed until activity",
++      true,
++    )
++  }
++
++  return { busy, error, setError, apply, applyActivity }
++}
+diff --git a/packages/web/src/lib/snooze.test.ts b/packages/web/src/lib/snooze.test.ts
+index 132e8859..ec2257de 100644
+--- a/packages/web/src/lib/snooze.test.ts
++++ b/packages/web/src/lib/snooze.test.ts
+@@ -1,5 +1,6 @@
+ import { test } from "node:test"
+ import assert from "node:assert/strict"
++import { SNOOZE_PROMPT_MAX, type ThreadView } from "@frizz/shared"
+ import {
+   DEFAULT_SNOOZE_PRESET,
+   NOTHING_CAN_WAKE_IT,
+@@ -13,10 +14,52 @@ import {
+   isSnoozePreset,
+   localDateTimeInputValue,
+   parseLocalSnooze,
++  parseCustomSnooze,
+   snoozePresetInstant,
+   snoozePresetLabel,
++  threadSnoozeState,
+ } from "./snooze.ts"
+ 
++test("both snooze surfaces read the same armed state and activity eligibility", () => {
++  const now = new Date(2026, 9, 28, 12).getTime()
++  const base = { runtime: "turn-idle", wakesOnItsOwn: true } as ThreadView
++  assert.equal(threadSnoozeState(base, now).armed, false)
++  assert.deepEqual(threadSnoozeState(base, now).activity, { enabled: true })
++  const activity = { ...base, bgSnoozed: true }
++  assert.equal(threadSnoozeState(activity, now).description, "Snoozed until activity")
++  assert.equal(threadSnoozeState(activity, now).armed, true)
++  for (const runtime of ["running", "spawning", "exited"] as const) {
++    const state = threadSnoozeState({ ...activity, runtime }, now)
++    assert.equal(state.armed, false)
++    assert.equal(state.activity.enabled, false)
++  }
++  assert.equal(threadSnoozeState({ ...activity, wakesOnItsOwn: false }, now).armed, false)
++  const until = new Date(now + 3_600_000).toISOString()
++  const timed = threadSnoozeState({ ...activity, snoozedUntil: until }, now)
++  assert.equal(timed.until, until)
++  assert.equal(timed.description, `Snoozed until ${formatSnoozeWake(until, now)}`)
++  assert.equal(threadSnoozeState({ ...base, snoozedUntil: new Date(now - 1).toISOString() }, now).armed, false)
++  const bump = threadSnoozeState({ ...base, snoozedUntil: until, snoozePrompt: "  Check CI  " }, now)
++  assert.equal(bump.description, `Bumps ${formatSnoozeWake(until, now)}`)
++  assert.equal(bump.prompt, "Check CI")
++})
++
++test("custom snooze validation is shared, trims prompts, and rejects oversize or past requests", () => {
++  const now = new Date(2026, 9, 28, 12).getTime()
++  const value = "2026-10-29T12:00"
++  assert.deepEqual(parseCustomSnooze(value, "  Check CI  ", now), {
++    ok: true, until: new Date(2026, 9, 29, 12).toISOString(), prompt: "Check CI",
++  })
++  assert.deepEqual(parseCustomSnooze(value, " \n ", now), {
++    ok: true, until: new Date(2026, 9, 29, 12).toISOString(), prompt: null,
++  })
++  assert.equal(parseCustomSnooze(value, "x".repeat(SNOOZE_PROMPT_MAX), now).ok, true)
++  assert.deepEqual(parseCustomSnooze(value, "x".repeat(SNOOZE_PROMPT_MAX + 1), now), {
++    ok: false, message: `Prompt is too long (${SNOOZE_PROMPT_MAX + 1}/${SNOOZE_PROMPT_MAX})`,
++  })
++  assert.deepEqual(parseCustomSnooze("2026-10-27T12:00", "", now), { ok: false, message: "Choose a time in the future" })
++})
++
+ test("snooze preset metadata has a stable one-day default and sentence-case labels", () => {
+   assert.equal(DEFAULT_SNOOZE_PRESET, "1d")
+   // The DURATION labels are the house duration grammar (`1d`, not "1 day") — the maintainer collapsed
+diff --git a/packages/web/src/lib/snooze.ts b/packages/web/src/lib/snooze.ts
+index d0097969..f3fff8e3 100644
+--- a/packages/web/src/lib/snooze.ts
++++ b/packages/web/src/lib/snooze.ts
+@@ -1,4 +1,4 @@
+-import type { ThreadView } from "@frizz/shared"
++import { futureSnoozedUntil, SNOOZE_PROMPT_MAX, type ThreadView } from "@frizz/shared"
+ 
+ export type SnoozePreset = "1h" | "tomorrow" | "1d" | "3d" | "1w"
+ export const DEFAULT_SNOOZE_PRESET: SnoozePreset = "1d"
+@@ -183,3 +183,23 @@ export function activitySnoozeRow(t: Pick<ThreadView, "runtime" | "wakesOnItsOwn
+ export function activitySnoozed(t: Pick<ThreadView, "bgSnoozed" | "runtime" | "wakesOnItsOwn">): boolean {
+   return t.bgSnoozed === true && t.runtime === "turn-idle" && t.wakesOnItsOwn === true
+ }
++
++/** The same park, whether its controls live in a desktop menu or a phone sheet. A clock wins when
++ * another tab has armed it while the activity-snooze projection is still catching up. */
++export function threadSnoozeState(thread: ThreadView, nowMs = Date.now()) {
++  const until = futureSnoozedUntil(thread, nowMs)
++  const prompt = thread.snoozePrompt?.trim()
++  const byActivity = !until && activitySnoozed(thread)
++  const description = until
++    ? `${prompt ? "Bumps" : "Snoozed until"} ${formatSnoozeWake(until, nowMs)}`
++    : byActivity ? "Snoozed until activity" : null
++  return { until, prompt, armed: Boolean(until) || byActivity, description, activity: activitySnoozeRow(thread) }
++}
++
++export function parseCustomSnooze(value: string, prompt: string, nowMs = Date.now()) {
++  const parsed = parseLocalSnooze(value, nowMs)
++  if (!parsed.ok) return parsed
++  const text = prompt.trim()
++  if (text.length > SNOOZE_PROMPT_MAX) return { ok: false as const, message: `Prompt is too long (${text.length}/${SNOOZE_PROMPT_MAX})` }
++  return { ...parsed, prompt: text || null }
++}
+diff --git a/scripts/e2e-web.mjs b/scripts/e2e-web.mjs
+index 34ff8cb0..f7d8a3cd 100644
+--- a/scripts/e2e-web.mjs
++++ b/scripts/e2e-web.mjs
+@@ -48,6 +48,7 @@ const root = path.dirname(here);
+ // reclassifies a file when someone adds an unrelated fixture URL to it. Disagreement is an error, not
+ // a guess — this script exists because a silently-not-run test is indistinguishable from a passing one.
+ const NEEDS_REAL_STACK = [
++  "packages/web/src/components/snoozeParity.e2e.test.ts",
+   "packages/web/src/components/registeredQuestionNavigation.e2e.test.ts",
+   "packages/web/src/components/promptDraftTabs.e2e.test.ts",
+   "packages/web/src/components/filePanelStack.e2e.test.ts",
+diff --git a/scripts/verify-snooze-parity.mjs b/scripts/verify-snooze-parity.mjs
+new file mode 100644
+index 00000000..439e403e
+--- /dev/null
++++ b/scripts/verify-snooze-parity.mjs
+@@ -0,0 +1,62 @@
++// A bounded real-stack check for the shared desktop/phone snooze controls. Optional screenshots:
++//   nub scripts/verify-snooze-parity.mjs --shots=/absolute/evidence/directory
++import { spawn, execFileSync } from "node:child_process"
++import { mkdtempSync, rmSync } from "node:fs"
++import { tmpdir } from "node:os"
++import { join } from "node:path"
++import { fileURLToPath } from "node:url"
++import { createServer } from "node:net"
++import { once } from "node:events"
++
++const root = fileURLToPath(new URL("../", import.meta.url))
++const project = mkdtempSync(join(tmpdir(), "frizz-snooze-parity-"))
++execFileSync("git", ["init", "-q", project])
++const probe = createServer()
++probe.listen(0, "127.0.0.1")
++await once(probe, "listening")
++const port = probe.address().port
++await new Promise((resolve) => probe.close(resolve))
++const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("FRIZZ_")))
++const stack = spawn("nub", ["scripts/adhoc-stack.mjs", `--port=${port}`, `--project=${project}`], {
++  cwd: root, env: { ...env, FRIZZ_RUNTIMES: "path" }, stdio: ["ignore", "pipe", "pipe"],
++})
++const exited = once(stack, "exit")
++let child
++try {
++  const info = await new Promise((resolve, reject) => {
++    let lines = ""
++    const timer = setTimeout(() => reject(new Error("stack did not start within 60s")), 60_000)
++    stack.once("exit", (code) => { clearTimeout(timer); reject(new Error(`stack exited ${code}`)) })
++    stack.stderr.on("data", (data) => process.stderr.write(data))
++    stack.stdout.on("data", (data) => {
++      process.stdout.write(data)
++      lines += data
++      for (;;) {
++        const end = lines.indexOf("\n")
++        if (end < 0) break
++        const line = lines.slice(0, end)
++        lines = lines.slice(end + 1)
++        try {
++          const value = JSON.parse(line)
++          if (value.home && value.url) { clearTimeout(timer); resolve(value) }
++        } catch {}
++      }
++    })
++  })
++  const shots = process.argv.find((arg) => arg.startsWith("--shots="))?.slice(8)
++  child = spawn("nub", ["run", "test", "packages/web/src/components/snoozeParity.e2e.test.ts"], {
++    cwd: root, stdio: "inherit", env: {
++      ...env, FRIZZ_SNOOZE_PARITY_E2E_URL: `http://127.0.0.1:${port}`,
++      FRIZZ_SNOOZE_PARITY_HOME: info.home, FRIZZ_SNOOZE_PARITY_PROJECT: project,
++      ...(shots ? { FRIZZ_SNOOZE_PARITY_SHOTS: shots } : {}),
++    },
++  })
++  const [code] = await once(child, "exit")
++  process.exitCode = code ?? 1
++} finally {
++  if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGTERM")
++  if (stack.exitCode === null && stack.signalCode === null) stack.kill("SIGTERM")
++  await exited
++  rmSync(project, { recursive: true, force: true })
++  console.log("Snooze parity stack stopped; disposable project removed")
++}
+-- 
+2.47.1
+

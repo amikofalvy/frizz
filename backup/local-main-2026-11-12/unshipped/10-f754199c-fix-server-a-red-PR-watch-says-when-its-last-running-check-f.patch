@@ -1,0 +1,226 @@
+From f754199c3bd32527a6d51b9d5f3768d4ba31d383 Mon Sep 17 00:00:00 2001
+From: Andrew Mikofalvy <5668128+amikofalvy@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 09:32:34 -0700
+Subject: [PATCH] fix(server): a red PR watch says when its last running check
+ finishes
+
+A failing check is reported as soon as it goes red, even while other
+checks are still running, and the CI stamp then holds still. When the
+remaining checks finished, nothing changed in the stamp, so the watcher
+said nothing. A thread parked on the PR waiting for CI to settle sat
+there until someone looked (inkeep/agents-private#8162: the last job
+finished at 05:40Z, the thread was nudged by hand 54 minutes later).
+
+The cursor now records whether checks were still running under the
+stamp, and a red reading whose last running check finishes is reported
+once. Red reports also say how many checks are still running, or that
+every check has finished. A cursor written before this records a
+baseline and stays quiet.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../server/src/awaiting-watch.e2e.test.ts     | 45 +++++++++++++++++++
+ packages/server/src/scheduler.ts              | 18 ++++++--
+ packages/shared/src/github-wake.test.ts       | 14 ++++++
+ packages/shared/src/index.ts                  | 12 +++++
+ 4 files changed, 86 insertions(+), 3 deletions(-)
+
+diff --git a/packages/server/src/awaiting-watch.e2e.test.ts b/packages/server/src/awaiting-watch.e2e.test.ts
+index b9c6659a..04b3379f 100644
+--- a/packages/server/src/awaiting-watch.e2e.test.ts
++++ b/packages/server/src/awaiting-watch.e2e.test.ts
+@@ -466,6 +466,51 @@ test("every distinct failure speaks: a re-run on the same commit, and a second j
+   } finally { h.close() }
+ })
+ 
++// RED IS REPORTED EARLY, SO RED MUST ALSO SAY WHEN IT STOPPED MOVING. `failing` wins over `running`, so
++// the first red job speaks while the rest of CI is still going — and the stamp then holds that reading.
++// When the last running job finished, the stamp did not move and nothing was said: inkeep/agents-private#8162
++// (2026-10-29) reported red at 05:22Z with `OK Cloud Pilot / build` still running, that job went green
++// at 05:40:46Z, and the thread parked on "every check has settled" sat silent until a human looked 54
++// minutes later. One report for the settle, never one per job finishing.
++test("a red reading says once when its last running check finishes, and not for each job before that", async () => {
++  const h = await prHarness()
++  try {
++    const red = { status: "COMPLETED", conclusion: "FAILURE", name: "test:shard18", detailsUrl: "https://gh/runs/1/job/1" }
++    h.setChecks([
++      red,
++      { status: "IN_PROGRESS", name: "build", detailsUrl: "https://gh/runs/1/job/2" },
++      { status: "IN_PROGRESS", name: "e2e", detailsUrl: "https://gh/runs/1/job/3" },
++    ])
++    await h.tick()
++    assert.equal(h.delivered.length, 1, "the first red job is reported at once")
++    assert.match(h.delivered[0], /CI FAILED/)
++    assert.match(h.delivered[0], /2 checks still running/, "…and says CI has not finished")
++    h.delivered.length = 0
++
++    h.setChecks([
++      red,
++      { status: "IN_PROGRESS", name: "build", detailsUrl: "https://gh/runs/1/job/2" },
++      { status: "COMPLETED", conclusion: "SUCCESS", name: "e2e", detailsUrl: "https://gh/runs/1/job/3" },
++    ])
++    await h.tick()
++    assert.deepEqual(h.delivered, [], "one job going green while another still runs is not news")
++
++    h.setChecks([
++      red,
++      { status: "COMPLETED", conclusion: "SUCCESS", name: "build", detailsUrl: "https://gh/runs/1/job/2" },
++      { status: "COMPLETED", conclusion: "SUCCESS", name: "e2e", detailsUrl: "https://gh/runs/1/job/3" },
++    ])
++    await h.tick()
++    assert.equal(h.delivered.length, 1, "the last running check finishing is the news a parked worker waits on")
++    assert.match(h.delivered[0], /CI FAILED on [^\n]*test:shard18/)
++    assert.match(h.delivered[0], /Every check has finished/)
++    h.delivered.length = 0
++
++    await h.tick()
++    assert.deepEqual(h.delivered, [], "a settled red reading stays quiet")
++  } finally { h.close() }
++})
++
+ test("a SECOND CI failure on a new commit is reported, and a re-poll of the same commit is not", async () => {
+   const h = await prHarness()
+   try {
+diff --git a/packages/server/src/scheduler.ts b/packages/server/src/scheduler.ts
+index c5a22137..65703f7e 100644
+--- a/packages/server/src/scheduler.ts
++++ b/packages/server/src/scheduler.ts
+@@ -3010,6 +3010,9 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
+   interface PrWatchCursor {
+     seen: string[]
+     checks?: string
++    /** Whether checks were still running under the `checks` stamp. Absent means "not known" (a cursor
++     *  written before 2026-10-29), which records a baseline and says nothing, like `labels`. */
++    running?: boolean
+     report?: number
+     held?: PrWatchHeld
+     merge?: string
+@@ -3049,6 +3052,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
+         skipped: Number(c.skipped) || 0,
+         gated: Number(c.gated) || 0,
+         gating: Array.isArray(c.gating) ? c.gating.filter((x: unknown): x is string => typeof x === "string") : [],
++        ...(typeof c.running === "number" ? { running: c.running } : {}),
+       }
+       : undefined
+     const changes = Array.isArray(h.changes) ? h.changes.filter((x: unknown): x is string => typeof x === "string") : undefined
+@@ -3113,6 +3117,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
+       return {
+         seen,
+         checks: typeof parsed.checks === "string" ? parsed.checks : undefined,
++        ...(typeof parsed.running === "boolean" ? { running: parsed.running } : {}),
+         report: Number(parsed.report) || 0,
+         ...(held ? { held } : {}),
+         ...(typeof parsed.merge === "string" ? { merge: parsed.merge } : {}),
+@@ -3405,6 +3410,11 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
+       // head; only the comparison relaxes, so a cursor written before this reads exactly the same way.
+       const checksChanged = stamp !== undefined && cursor.checks !== stamp
+         && !(terminal === "gated" && stampVerdict(cursor.checks) === "gated")
++      // RED STOPPING, which the stamp cannot say (2026-10-29). `failing` wins over `running`, so red is
++      // reported at the first red job and the stamp then holds still while the rest of CI finishes. A worker
++      // parked on "every check has settled" waits for exactly that, and inkeep/agents-private#8162 sat 54
++      // minutes after its last job went green. Once per stretch of running, never once per job.
++      const ciSettled = terminal === "failing" && cursor.checks === stamp && cursor.running === true && st!.running === 0
+       // NEW review activity, against everything already reported. On the FIRST poll there is nothing
+       // reported yet, so the baseline is the REGISTRATION INSTANT: a worker registers when it opens or
+       // pushes a PR, so anything already there is its own news and telling it would spend a turn — while
+@@ -3470,6 +3480,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
+         seen: acts ? [...new Set([...cursor.seen, ...acts.map((a) => a.id)])].slice(-REVIEW_SEEN_CAP) : cursor.seen,
+         // The STAMP, so the next poll compares against the commit as well as the colour.
+         checks: stamp ?? cursor.checks,
++        ...(stamp !== undefined ? { running: st!.running > 0 } : cursor.running !== undefined ? { running: cursor.running } : {}),
+         report: cursor.report ?? 0,
+         // Each of these advances only when this poll actually READ it. A `gh`-fallback poll knows the
+         // merge verdict but not the labels, and overwriting a known baseline with "not known" would make
+@@ -3482,7 +3493,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
+           ? { exits: [...new Set([...(prMeta?.mergeExits ?? []).map((e) => e.id), ...(cursor.exits ?? [])])].slice(0, 20) }
+           : {}),
+       }
+-      if (!checksChanged && fresh.length === 0 && changes.length === 0) {
++      if (!checksChanged && !ciSettled && fresh.length === 0 && changes.length === 0) {
+         // Nothing to say, but the baseline moved: record what was seen so the FIRST poll's backlog is
+         // never re-reported, and so a later comment is measured against today rather than against the
+         // registration.
+@@ -3503,7 +3514,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
+       const carried: PrWatchHeld = {
+         items: items.slice(-REVIEW_STEER_CAP),
+         omitted: (held?.omitted ?? 0) + (fresh.length - named.length) + Math.max(0, items.length - REVIEW_STEER_CAP),
+-        ...(checksChanged && terminal
++        ...((checksChanged || ciSettled) && terminal
+           ? {
+             checks: {
+               verdict: terminal,
+@@ -3513,6 +3524,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
+               skipped: st!.skipped,
+               gated: st!.gated,
+               gating: st!.gating,
++              ...(terminal === "failing" ? { running: st!.running } : {}),
+             },
+           }
+           : held?.checks ? { checks: held.checks } : {}),
+@@ -3541,7 +3553,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
+         ...(carried.changes?.length ? { changes: carried.changes } : {}),
+         ...(carried.offMergePath ? { offMergePath: carried.offMergePath } : {}),
+         ...(review ? { review } : {}),
+-      }), `pr-watch ${key}${carried.checks ? ` CI ${carried.checks.verdict}` : ""}${carried.offMergePath ? " left merge path" : carried.changes?.length ? " state" : ""}${review ? " review" : ""}`, nowMs)
++      }), `pr-watch ${key}${carried.checks ? ` CI ${carried.checks.verdict}${ciSettled ? " settled" : ""}` : ""}${carried.offMergePath ? " left merge path" : carried.changes?.length ? " state" : ""}${review ? " review" : ""}`, nowMs)
+       deps.storage.setPrWatchCursor(w.id, JSON.stringify({ ...nextCursor, report, held: carried }))
+     }
+   }
+diff --git a/packages/shared/src/github-wake.test.ts b/packages/shared/src/github-wake.test.ts
+index eb11dea0..cd9735c6 100644
+--- a/packages/shared/src/github-wake.test.ts
++++ b/packages/shared/src/github-wake.test.ts
+@@ -316,6 +316,20 @@ test("a wake carrying CI and review activity yields both parts", () => {
+   }, "a machine-facing tail must not cost the divider")
+ })
+ 
++test("a red wake's running count costs neither the CI part nor the steer beside it", () => {
++  for (const running of [2, 0]) {
++    const text = prWatchWakeMessage({
++      target: "nubjs/nub#587",
++      checks: { verdict: "failing", passed: 1, failed: 1, failing: ["build"], running },
++      review: formatGithubWakeSteer(single),
++    })
++    assert.match(text, running ? /2 checks still running/ : /Every check has finished\./)
++    assert.deepEqual(parsePrWatchWake(text), { ref: "nubjs/nub#587", kind: "ci", verdict: "failing", failing: ["build"] })
++    const rest = text.split("\n").filter((line) => !parsePrWatchWake(line)).join("\n")
++    assert.deepEqual(parseGithubWakeSteer(rest), single, "the steer still leads what is left once the CI line comes off")
++  }
++})
++
+ // The trailer, the review steer and ordinary agent prose are all NOT status lines. A false positive here
+ // puts a divider on a message that never said a PR finished, which is worse than the card it replaces.
+ test("text with no pr-watch status line parses as none", () => {
+diff --git a/packages/shared/src/index.ts b/packages/shared/src/index.ts
+index a85bcba3..ceb01d7c 100644
+--- a/packages/shared/src/index.ts
++++ b/packages/shared/src/index.ts
+@@ -1539,6 +1539,10 @@ export function prWatchWakeMessage(input: {
+     /** `gated` only: how many workflows GitHub is holding for an approval, and which. */
+     gated?: number
+     gating?: string[]
++    /** `failing` only: how many checks were still running. A red verdict is reported at the first red
++     *  job, so without this the worker cannot tell "CI is done and red" from "red so far". Absent on a
++     *  report held across the 2026-10-29 upgrade, which then says neither. */
++    running?: number
+   }
+   /** What changed about the PR itself — a conflict appearing, a label moving, a reviewer being asked.
+    *  ONE LINE for all of them, joined with semicolons, because each is a clause and not a headline: a
+@@ -1609,6 +1613,14 @@ export function prWatchWakeMessage(input: {
+     if (lines.length) lines.push("")
+     lines.push(input.review)
+   }
++  // BELOW EVERY PART, never between the CI line and a steer: `PR_WATCH_CI_FAILED` reads the CI line whole,
++  // and `parseGithubWakeSteer` decides on the first line left once the status lines come off.
++  const running = input.checks?.verdict === "failing" ? input.checks.running : undefined
++  if (running !== undefined) {
++    lines.push("", running > 0
++      ? `${running} check${running === 1 ? "" : "s"} still running; this watcher reports again once they have all finished.`
++      : "Every check has finished.")
++  }
+   lines.push("", PR_WATCH_ARMED_TRAILER)
+   return lines.join("\n")
+ }
+-- 
+2.47.1
+

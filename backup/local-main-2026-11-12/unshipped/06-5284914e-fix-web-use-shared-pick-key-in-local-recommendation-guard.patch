@@ -1,0 +1,25 @@
+From 5284914e575c325423c61b91ac714f575ff5e99b Mon Sep 17 00:00:00 2001
+From: Andrew Mikofalvy <5668128+amikofalvy@users.noreply.github.com>
+Date: Fri, 9 Oct 2026 17:51:43 -0700
+Subject: [PATCH] fix(web): use shared pick key in local recommendation guard
+
+---
+ packages/web/src/components/RegisteredQuestionCards.tsx | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/packages/web/src/components/RegisteredQuestionCards.tsx b/packages/web/src/components/RegisteredQuestionCards.tsx
+index f6db5e65..4f0f8156 100644
+--- a/packages/web/src/components/RegisteredQuestionCards.tsx
++++ b/packages/web/src/components/RegisteredQuestionCards.tsx
+@@ -233,7 +233,7 @@ export function useRegisteredAnswering(thread: ThreadView | undefined): Register
+       if (!thread || !open.length || open.some((q) => !questions.includes(q))) return false
+       // Read the store at the click too: an edit staged in another mount must not be overwritten.
+       const hasDraft = open.some((q) => allPaths(q).some((path) =>
+-        q.spec.secret || draftStore.get(draftKey.question(projectDir, slug!, q.id, path)) || draftStore.get(pickKey(projectDir, slug!, q.id, path))))
++        q.spec.secret || draftStore.get(draftKey.question(projectDir, slug!, q.id, path)) || draftStore.get(draftKey.questionPick(projectDir, slug!, q.id, path))))
+       const rec = phoneRecommendation(thread, open, hasDraft)
+       if (rec.kind !== "answers") return false
+       return sendPairs(open.map((q, i) => ({ q, answer: rec.answers[i]! })))
+-- 
+2.47.1
+
